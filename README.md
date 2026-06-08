@@ -61,7 +61,7 @@ Abrir, registrar gain, zerar ou editar um slot não muda a posição dele na lis
 
 No celular, a lista fica separada por estratégia e cada slot mostra os gains como principal destaque visual.
 
-Cada slot mostra estratégia, quantidade grande de gains, valor, status, atualização no formato `Atualizado: data` e botões pequenos de ação. O número do slot continua existindo, mas fica discreto.
+Cada slot mostra estratégia, quantidade de gains, valor e status na mesma faixa de destaque, além dos botões pequenos de ação. O número do slot continua existindo, mas fica discreto.
 
 ## Dashboard
 
@@ -72,7 +72,7 @@ O topo mostra o resumo geral:
 
 Abaixo dele aparece o resumo por cripto, calculado automaticamente por estratégia, com lucro, gains e slots abertos de BTC, SOL e outras moedas que forem adicionadas ao sistema.
 
-A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots, filtros/adicionar slots, ferramentas de backup e Google Sheets no final.
+A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots com seletor de moeda no cabeçalho, filtros/adicionar slots, ferramentas de backup e Google Sheets no final.
 
 ## Filtros
 

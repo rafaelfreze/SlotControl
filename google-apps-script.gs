@@ -4,7 +4,7 @@ const SLOTS_SHEET = "SlotGain_Slots";
 const HISTORY_SHEET = "SlotGain_Historico";
 const STATE_CHUNK_SIZE = 40000;
 const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
-const APP_ASSET_VERSION = "slotgain-google-sheets-v6";
+const APP_ASSET_VERSION = "slotgain-google-sheets-v7";
 
 function doGet(e) {
   const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();
@@ -235,22 +235,21 @@ function getAppHtml_() {
           <section class="slots-area" aria-label="Slots">
             <div class="section-heading">
               <h2>Slots</h2>
-              <span id="slot-count">0 visiveis</span>
+              <div class="slots-heading-controls">
+                <label for="strategy-filter">Moeda</label>
+                <select id="strategy-filter">
+                  <option value="all">Todas</option>
+                  <option value="btc">BTC 1%</option>
+                  <option value="sol">SOL 5%</option>
+                </select>
+                <span id="slot-count">0 visiveis</span>
+              </div>
             </div>
             <div id="slots-container" class="slots-list"></div>
           </section>
         </section>
 
         <section class="controls-panel" aria-label="Controles">
-          <div class="field">
-            <label for="strategy-filter">Estrategia</label>
-            <select id="strategy-filter">
-              <option value="all">Todas</option>
-              <option value="btc">BTC 1%</option>
-              <option value="sol">SOL 5%</option>
-            </select>
-          </div>
-
           <div class="field">
             <label for="status-filter">Status</label>
             <select id="status-filter">

@@ -41,22 +41,21 @@
           <section class="slots-area" aria-label="Slots">
             <div class="section-heading">
               <h2>Slots</h2>
-              <span id="slot-count">0 visíveis</span>
+              <div class="slots-heading-controls">
+                <label for="strategy-filter">Moeda</label>
+                <select id="strategy-filter">
+                  <option value="all">Todas</option>
+                  <option value="btc">BTC 1%</option>
+                  <option value="sol">SOL 5%</option>
+                </select>
+                <span id="slot-count">0 visíveis</span>
+              </div>
             </div>
             <div id="slots-container" class="slots-list"></div>
           </section>
         </section>
 
         <section class="controls-panel" aria-label="Controles">
-          <div class="field">
-            <label for="strategy-filter">Estratégia</label>
-            <select id="strategy-filter">
-              <option value="all">Todas</option>
-              <option value="btc">BTC 1%</option>
-              <option value="sol">SOL 5%</option>
-            </select>
-          </div>
-
           <div class="field">
             <label for="status-filter">Status</label>
             <select id="status-filter">

@@ -437,8 +437,9 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
   const currentValue = getCurrentValue(slot);
   const formattedValue = formatUsdt(currentValue);
   const openDisabled = slot.status === "aberto" || slot.status === "hold";
+  const openButtonLabel = slot.status === "aberto" ? "Aberto" : slot.status === "hold" ? "Hold" : "Abrir";
+  const openButtonState = openDisabled ? "is-unavailable" : "";
   const gainDisabled = slot.status === "zerado";
-  const updatedAt = slot.updatedAt ? formatDate(slot.updatedAt) : "Nunca";
   const compactStatus = getCompactStatusLabel(slot.status);
   const mobileGainClass = slot.gains > 0 ? "has-gains" : "no-gains";
   const mobileGainLabel = `${slot.gains} ${slot.gains === 1 ? "GAIN" : "GAINS"}`;
@@ -459,10 +460,9 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
         </div>
         <strong class="slot-mobile-gains">${escapeHtml(mobileGainLabel)}</strong>
         <p class="slot-mobile-meta">
-          <span>${formattedValue}</span>
+          <span class="slot-mobile-value">${formattedValue}</span>
           <span class="slot-mobile-status ${status.className}">${escapeHtml(compactStatus)}</span>
         </p>
-        <p class="slot-mobile-updated">Atualizado: ${escapeHtml(updatedAt)}</p>
       </div>
       <div class="slot-cell strategy" data-label="Estratégia">${escapeHtml(strategy.title)}</div>
       <div class="slot-cell number" data-label="Slot">#${slot.number}</div>
@@ -473,10 +473,10 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
       </div>
       <div class="slot-cell gains" data-label="Gains">${slot.gains}<span class="mobile-gain-word"> ${slot.gains === 1 ? "gain" : "gains"}</span></div>
       <div class="slot-cell value" data-label="Valor">${formattedValue}</div>
-      <div class="slot-cell updated" data-label="Atualização">${updatedAt}</div>
+      <div class="slot-cell updated" data-label="Atualização">${slot.updatedAt ? formatDate(slot.updatedAt) : "Nunca"}</div>
       <div class="slot-cell actions" data-label="Ações">
         <div class="slot-actions">
-          <button class="slot-button open" type="button" data-action="open" data-id="${escapeAttribute(slot.id)}" ${openDisabled ? "disabled" : ""}>Abrir</button>
+          <button class="slot-button open ${openButtonState}" type="button" data-action="open" data-id="${escapeAttribute(slot.id)}" ${openDisabled ? "disabled" : ""}>${escapeHtml(openButtonLabel)}</button>
           <button class="slot-button gain" type="button" data-action="gain" data-id="${escapeAttribute(slot.id)}" ${gainDisabled ? "disabled" : ""}>+Gain</button>
           <button class="slot-button reset" type="button" data-action="reset" data-id="${escapeAttribute(slot.id)}">Zerar</button>
           <button class="slot-button edit" type="button" data-action="edit" data-id="${escapeAttribute(slot.id)}">Editar</button>

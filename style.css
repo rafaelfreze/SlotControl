@@ -315,7 +315,7 @@ h1 {
 
 .controls-panel {
   display: grid;
-  grid-template-columns: 150px 150px minmax(210px, 1fr);
+  grid-template-columns: 150px minmax(210px, 1fr);
   gap: 10px;
   margin-bottom: 10px;
   padding: 10px;
@@ -476,6 +476,30 @@ button:disabled {
 .section-heading span {
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.slots-heading-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slots-heading-controls label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.slots-heading-controls select {
+  width: auto;
+  min-width: 112px;
+  min-height: 32px;
+  padding: 0 28px 0 9px;
+  font-size: 0.78rem;
+  font-weight: 850;
 }
 
 .slots-list {
@@ -649,6 +673,12 @@ button:disabled {
   border-color: rgba(247, 201, 72, 0.36);
   background: var(--yellow-soft);
   color: #ffe28a;
+}
+
+.slot-button.open.is-unavailable {
+  border-color: rgba(135, 145, 161, 0.2);
+  background: rgba(135, 145, 161, 0.08);
+  color: #707b8b;
 }
 
 .slot-button.gain {
@@ -1140,14 +1170,31 @@ button:disabled {
 
   .section-heading {
     margin: 8px 0 6px;
+    gap: 8px;
   }
 
   .section-heading h2 {
     font-size: 0.96rem;
   }
 
+  .slots-heading-controls {
+    gap: 5px;
+  }
+
+  .slots-heading-controls label {
+    display: none;
+  }
+
+  .slots-heading-controls select {
+    min-width: 88px;
+    min-height: 30px;
+    padding: 0 24px 0 8px;
+    font-size: 0.72rem;
+  }
+
   .section-heading span {
     font-size: 0.78rem;
+    white-space: nowrap;
   }
 
   .slots-list {
@@ -1182,7 +1229,7 @@ button:disabled {
     align-items: start;
     gap: 5px 7px;
     min-width: 0;
-    min-height: 98px;
+    min-height: 82px;
     border: 0;
     border-bottom: 1px solid var(--line-soft);
     border-radius: 0;
@@ -1234,7 +1281,12 @@ button:disabled {
   .slot-mobile-card {
     display: grid;
     grid-area: summary;
-    gap: 2px;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "top top"
+      "gains meta";
+    align-items: center;
+    gap: 5px;
     min-width: 0;
   }
 
@@ -1243,6 +1295,7 @@ button:disabled {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    grid-area: top;
     color: var(--text);
     font-size: 0.78rem;
     font-weight: 900;
@@ -1255,23 +1308,25 @@ button:disabled {
   }
 
   .slot-mobile-gains {
+    grid-area: gains;
     color: var(--muted);
-    font-size: 1.18rem;
+    font-size: 0.98rem;
     line-height: 1;
     font-weight: 950;
+    white-space: nowrap;
   }
 
   .slot-mobile-card.has-gains .slot-mobile-gains {
     color: var(--green);
   }
 
-  .slot-mobile-meta,
-  .slot-mobile-updated {
+  .slot-mobile-meta {
     margin: 0;
+    grid-area: meta;
     color: var(--muted);
-    font-size: 0.7rem;
+    font-size: 0.98rem;
     font-weight: 750;
-    line-height: 1.18;
+    line-height: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1280,10 +1335,11 @@ button:disabled {
   .slot-mobile-meta {
     display: flex;
     align-items: center;
-    gap: 6px;
+    flex-wrap: wrap;
+    gap: 5px;
   }
 
-  .slot-mobile-meta span:first-child {
+  .slot-mobile-value {
     color: var(--text);
     font-weight: 950;
   }
@@ -1291,9 +1347,9 @@ button:disabled {
   .slot-mobile-status {
     display: inline-flex;
     align-items: center;
-    border-radius: 999px;
-    padding: 2px 6px;
-    font-size: 0.58rem;
+    border-radius: 7px;
+    padding: 2px 5px;
+    font-size: 0.86rem;
     font-weight: 950;
     text-transform: uppercase;
   }
