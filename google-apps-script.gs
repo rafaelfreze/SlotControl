@@ -4,7 +4,7 @@ const SLOTS_SHEET = "SlotGain_Slots";
 const HISTORY_SHEET = "SlotGain_Historico";
 const STATE_CHUNK_SIZE = 40000;
 const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
-const APP_ASSET_VERSION = "slotgain-google-sheets-v3";
+const APP_ASSET_VERSION = "slotgain-google-sheets-v4";
 
 function doGet(e) {
   const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();

@@ -345,8 +345,28 @@ function renderSlots() {
       <div>Atualização</div>
       <div>Ações</div>
     </div>
-    ${filteredSlots.map((slot) => renderSlotRow(slot, filteredSlots)).join("")}
+    ${renderGroupedSlotRows(filteredSlots)}
   `;
+}
+
+function renderGroupedSlotRows(slots) {
+  return Object.keys(STRATEGIES)
+    .map((strategyId) => {
+      const strategySlots = slots.filter((slot) => slot.strategyId === strategyId);
+      if (strategySlots.length === 0) {
+        return "";
+      }
+
+      const totalGains = strategySlots.reduce((sum, slot) => sum + slot.gains, 0);
+      return `
+        <div class="strategy-group-row" role="row">
+          <span>${escapeHtml(STRATEGIES[strategyId].title)}</span>
+          <strong>${strategySlots.length} slots &middot; ${totalGains} gains</strong>
+        </div>
+        ${strategySlots.map((slot) => renderSlotRow(slot, strategySlots)).join("")}
+      `;
+    })
+    .join("");
 }
 
 function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
@@ -369,9 +389,11 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
       <div class="slot-cell strategy" data-label="Estratégia">${escapeHtml(strategy.title)}</div>
       <div class="slot-cell number" data-label="Slot">#${slot.number}</div>
       <div class="slot-cell status" data-label="Status">
-        <span class="status-pill ${status.className}">${escapeHtml(status.label)}</span>
+        <span class="status-pill ${status.className}" data-short-label="${escapeAttribute(getCompactStatusLabel(slot.status))}">
+          <span class="status-full">${escapeHtml(status.label)}</span>
+        </span>
       </div>
-      <div class="slot-cell gains" data-label="Gains">${slot.gains}</div>
+      <div class="slot-cell gains" data-label="Gains">${slot.gains}<span class="mobile-gain-word"> ${slot.gains === 1 ? "gain" : "gains"}</span></div>
       <div class="slot-cell value" data-label="Valor">${formatUsdt(currentValue)}</div>
       <div class="slot-cell updated" data-label="Atualização">${updatedAt}</div>
       <div class="slot-cell actions" data-label="Ações">
@@ -384,6 +406,17 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
       </div>
     </div>
   `;
+}
+
+function getCompactStatusLabel(status) {
+  const labels = {
+    aberto: "Aberto",
+    hold: "Hold",
+    gain: "Fechado",
+    zerado: "Zerado",
+  };
+
+  return labels[status] || STATUS[status]?.label || status;
 }
 
 function getVisibleSlots() {
@@ -757,7 +790,7 @@ function markHold(slot) {
 
 function moveSlot(slot, direction) {
   normalizeSlotOrders(state.slots);
-  const visibleSlots = getVisibleSlots();
+  const visibleSlots = getVisibleSlots().filter((item) => item.strategyId === slot.strategyId);
   const currentIndex = visibleSlots.findIndex((item) => item.id === slot.id);
   const targetIndex = currentIndex + direction;
 

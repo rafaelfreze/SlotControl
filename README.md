@@ -59,7 +59,9 @@ A lista tem ordem manual. Cada slot fica no local que você definir com as setas
 
 Abrir, registrar gain, zerar ou editar um slot não muda a posição dele na lista. A ordem manual fica salva no navegador e também na planilha quando a sincronização estiver ativa.
 
-No celular, a mesma lista vira uma visualização vertical compacta para facilitar o toque nos botões.
+No celular, a lista agora fica ainda mais compacta e separada por estratégia. Cada grupo mostra o nome da estratégia, a quantidade de slots visíveis e o total de gains daquele grupo.
+
+Cada slot ocupa uma linha curta com número, status, gains, valor e botões pequenos de ação. A data de atualização fica oculta no celular para caber mais slots na tela; no desktop ela continua aparecendo na tabela.
 
 ## Dashboard
 
