@@ -399,7 +399,7 @@ button:disabled {
 
 .slot-row {
   display: grid;
-  grid-template-columns: 110px 72px 132px 64px 128px 132px minmax(268px, 1fr);
+  grid-template-columns: 70px 110px 72px 132px 64px 128px 132px minmax(230px, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 48px;
@@ -453,6 +453,29 @@ button:disabled {
 .slot-cell.updated {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.slot-cell.move {
+  display: flex;
+  gap: 5px;
+}
+
+.move-button {
+  display: grid;
+  width: 28px;
+  min-height: 28px;
+  place-items: center;
+  border: 1px solid rgba(81, 200, 255, 0.34);
+  border-radius: var(--radius);
+  background: rgba(81, 200, 255, 0.08);
+  color: #9be0ff;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.move-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
 }
 
 .status-pill {
@@ -515,12 +538,6 @@ button:disabled {
   border-color: rgba(36, 209, 141, 0.38);
   background: var(--green-soft);
   color: #76f0bd;
-}
-
-.slot-button.hold {
-  border-color: rgba(255, 122, 61, 0.38);
-  background: var(--orange-soft);
-  color: #ffb38f;
 }
 
 .slot-button.reset {
@@ -700,7 +717,7 @@ button:disabled {
   }
 
   .slot-row {
-    min-width: 1040px;
+    min-width: 1080px;
   }
 }
 
@@ -788,6 +805,10 @@ button:disabled {
     font-weight: 900;
   }
 
+  .slot-cell.move {
+    grid-column: 1 / -1;
+  }
+
   .slot-cell.number {
     justify-self: end;
   }
@@ -829,7 +850,7 @@ button:disabled {
   }
 
   .slot-button {
-    flex: 1 1 calc(20% - 5px);
+    flex: 1 1 calc(25% - 5px);
     min-width: 56px;
     padding: 0 6px;
   }
@@ -855,7 +876,7 @@ button:disabled {
   }
 
   .slot-button {
-    flex-basis: calc(33.333% - 5px);
+    flex-basis: calc(50% - 5px);
   }
 
   .modal-grid,

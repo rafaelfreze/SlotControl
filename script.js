@@ -38,13 +38,6 @@ const STATUS = {
   hold: { label: "Preso/Hold", className: "status-hold" },
 };
 
-const STATUS_ORDER = {
-  aberto: 0,
-  hold: 1,
-  gain: 2,
-  zerado: 3,
-};
-
 const stateRefs = {};
 let hasStoredState = false;
 let state = loadState();
@@ -132,9 +125,10 @@ function bindEvents() {
 
 function createDefaultState() {
   const createdAt = nowIso();
+  let order = 0;
   const slots = Object.values(STRATEGIES).flatMap((strategy) =>
     Array.from({ length: strategy.initialSlots }, (_, index) =>
-      createSlot(strategy.id, index + 1, createdAt, `slot-${strategy.id}-${index + 1}`)
+      createSlot(strategy.id, index + 1, createdAt, `slot-${strategy.id}-${index + 1}`, ++order)
     )
   );
 
@@ -156,13 +150,15 @@ function createDefaultState() {
   };
 }
 
-function createSlot(strategyId, number, createdAt = nowIso(), id = uniqueId("slot")) {
+function createSlot(strategyId, number, createdAt = nowIso(), id = uniqueId("slot"), order = null) {
   const strategy = STRATEGIES[strategyId];
+  const slotOrder = Number.isFinite(Number(order)) ? Number(order) : getNextSlotOrder();
 
   return {
     id,
     strategyId,
     number,
+    order: slotOrder,
     status: "zerado",
     gains: 0,
     baseValue: strategy.baseValue,
@@ -208,6 +204,7 @@ function normalizeState(input) {
         id: String(slot.id || uniqueId("slot")),
         strategyId: slot.strategyId,
         number,
+        order: Number.isFinite(Number(slot.order)) ? Number(slot.order) : index + 1,
         status,
         gains: isZero ? 0 : gains,
         baseValue: Number(slot.baseValue) > 0 ? Number(slot.baseValue) : strategy.baseValue,
@@ -222,6 +219,8 @@ function normalizeState(input) {
   if (normalizedSlots.length === 0) {
     return createDefaultState();
   }
+
+  normalizeSlotOrders(normalizedSlots);
 
   const normalizedHistory = Array.isArray(input.history)
     ? input.history.slice(0, MAX_HISTORY).map((item) => ({
@@ -326,10 +325,73 @@ function renderSuggestions() {
 }
 
 function renderSlots() {
+  const filteredSlots = getVisibleSlots();
+
+  stateRefs.slotCount.textContent = `${filteredSlots.length} visíveis`;
+
+  if (filteredSlots.length === 0) {
+    stateRefs.slotsContainer.innerHTML = `<div class="empty-state">Nenhum slot encontrado.</div>`;
+    return;
+  }
+
+  stateRefs.slotsContainer.innerHTML = `
+    <div class="slot-row header" role="row">
+      <div>Ordem</div>
+      <div>Estratégia</div>
+      <div>Slot</div>
+      <div>Status</div>
+      <div>Gains</div>
+      <div>Valor atual</div>
+      <div>Atualização</div>
+      <div>Ações</div>
+    </div>
+    ${filteredSlots.map((slot) => renderSlotRow(slot, filteredSlots)).join("")}
+  `;
+}
+
+function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
+  const strategy = STRATEGIES[slot.strategyId];
+  const status = STATUS[slot.status];
+  const currentValue = getCurrentValue(slot);
+  const openDisabled = slot.status === "aberto" || slot.status === "hold";
+  const gainDisabled = slot.status === "zerado";
+  const updatedAt = slot.updatedAt ? formatDate(slot.updatedAt) : "Nunca";
+  const currentIndex = visibleSlots.findIndex((item) => item.id === slot.id);
+  const moveUpDisabled = currentIndex <= 0;
+  const moveDownDisabled = currentIndex === -1 || currentIndex >= visibleSlots.length - 1;
+
+  return `
+    <div class="slot-row ${status.className}" role="row">
+      <div class="slot-cell move" data-label="Ordem">
+        <button class="move-button" type="button" data-action="move-up" data-id="${escapeAttribute(slot.id)}" aria-label="Mover slot para cima" ${moveUpDisabled ? "disabled" : ""}>↑</button>
+        <button class="move-button" type="button" data-action="move-down" data-id="${escapeAttribute(slot.id)}" aria-label="Mover slot para baixo" ${moveDownDisabled ? "disabled" : ""}>↓</button>
+      </div>
+      <div class="slot-cell strategy" data-label="Estratégia">${escapeHtml(strategy.title)}</div>
+      <div class="slot-cell number" data-label="Slot">#${slot.number}</div>
+      <div class="slot-cell status" data-label="Status">
+        <span class="status-pill ${status.className}">${escapeHtml(status.label)}</span>
+      </div>
+      <div class="slot-cell gains" data-label="Gains">${slot.gains}</div>
+      <div class="slot-cell value" data-label="Valor">${formatUsdt(currentValue)}</div>
+      <div class="slot-cell updated" data-label="Atualização">${updatedAt}</div>
+      <div class="slot-cell actions" data-label="Ações">
+        <div class="slot-actions">
+          <button class="slot-button open" type="button" data-action="open" data-id="${escapeAttribute(slot.id)}" ${openDisabled ? "disabled" : ""}>Abrir</button>
+          <button class="slot-button gain" type="button" data-action="gain" data-id="${escapeAttribute(slot.id)}" ${gainDisabled ? "disabled" : ""}>+Gain</button>
+          <button class="slot-button reset" type="button" data-action="reset" data-id="${escapeAttribute(slot.id)}">Zerar</button>
+          <button class="slot-button edit" type="button" data-action="edit" data-id="${escapeAttribute(slot.id)}">Editar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function getVisibleSlots() {
   const filter = stateRefs.strategyFilter.value;
   const statusFilter = stateRefs.statusFilter.value;
   const search = normalizeSearch(stateRefs.slotSearch.value);
-  const filteredSlots = getSortedSlots().filter((slot) => {
+
+  return getSortedSlots().filter((slot) => {
     if (filter !== "all" && slot.strategyId !== filter) {
       return false;
     }
@@ -358,58 +420,6 @@ function renderSlots() {
 
     return haystack.includes(search);
   });
-
-  stateRefs.slotCount.textContent = `${filteredSlots.length} visíveis`;
-
-  if (filteredSlots.length === 0) {
-    stateRefs.slotsContainer.innerHTML = `<div class="empty-state">Nenhum slot encontrado.</div>`;
-    return;
-  }
-
-  stateRefs.slotsContainer.innerHTML = `
-    <div class="slot-row header" role="row">
-      <div>Estratégia</div>
-      <div>Slot</div>
-      <div>Status</div>
-      <div>Gains</div>
-      <div>Valor atual</div>
-      <div>Atualização</div>
-      <div>Ações</div>
-    </div>
-    ${filteredSlots.map(renderSlotRow).join("")}
-  `;
-}
-
-function renderSlotRow(slot) {
-  const strategy = STRATEGIES[slot.strategyId];
-  const status = STATUS[slot.status];
-  const currentValue = getCurrentValue(slot);
-  const openDisabled = slot.status === "aberto" || slot.status === "hold";
-  const gainDisabled = slot.status === "zerado";
-  const holdDisabled = slot.status === "zerado" || slot.status === "hold";
-  const updatedAt = slot.updatedAt ? formatDate(slot.updatedAt) : "Nunca";
-
-  return `
-    <div class="slot-row ${status.className}" role="row">
-      <div class="slot-cell strategy" data-label="Estratégia">${escapeHtml(strategy.title)}</div>
-      <div class="slot-cell number" data-label="Slot">#${slot.number}</div>
-      <div class="slot-cell status" data-label="Status">
-        <span class="status-pill ${status.className}">${escapeHtml(status.label)}</span>
-      </div>
-      <div class="slot-cell gains" data-label="Gains">${slot.gains}</div>
-      <div class="slot-cell value" data-label="Valor">${formatUsdt(currentValue)}</div>
-      <div class="slot-cell updated" data-label="Atualização">${updatedAt}</div>
-      <div class="slot-cell actions" data-label="Ações">
-        <div class="slot-actions">
-          <button class="slot-button open" type="button" data-action="open" data-id="${escapeAttribute(slot.id)}" ${openDisabled ? "disabled" : ""}>Abrir</button>
-          <button class="slot-button gain" type="button" data-action="gain" data-id="${escapeAttribute(slot.id)}" ${gainDisabled ? "disabled" : ""}>+Gain</button>
-          <button class="slot-button hold" type="button" data-action="hold" data-id="${escapeAttribute(slot.id)}" ${holdDisabled ? "disabled" : ""}>Hold</button>
-          <button class="slot-button reset" type="button" data-action="reset" data-id="${escapeAttribute(slot.id)}">Zerar</button>
-          <button class="slot-button edit" type="button" data-action="edit" data-id="${escapeAttribute(slot.id)}">Editar</button>
-        </div>
-      </div>
-    </div>
-  `;
 }
 
 function renderHistory() {
@@ -491,7 +501,7 @@ async function reconcileCloudState({ manual = false } = {}) {
     if (!hasStoredState) {
       persistState({ touch: false, sync: false });
     }
-    setCloudStatus("Sem conexão com a planilha. Dados salvos neste navegador.", "error");
+    setCloudStatus(getCloudErrorMessage(), "error");
     if (manual) {
       showToast("Não foi possível sincronizar com a planilha.");
     }
@@ -530,7 +540,7 @@ async function saveStateToCloud() {
     setCloudStatus(`Online salvo em ${formatDate(nowIso())}.`, "ok");
   } catch (error) {
     console.warn("Falha ao salvar no Google Sheets.", error);
-    setCloudStatus("Falha ao salvar online. Cópia local preservada.", "error");
+    setCloudStatus(getCloudErrorMessage(), "error");
   } finally {
     cloudSaving = false;
     setCloudButtonDisabled(false);
@@ -545,6 +555,10 @@ async function saveStateToCloud() {
 async function cloudRequest(action, payload = {}) {
   if (!isCloudEnabled()) {
     throw new Error("Sincronização online pausada.");
+  }
+
+  if (isAppsScriptClient()) {
+    return appsScriptRequest(action, payload);
   }
 
   const response = await fetch(CLOUD_ENDPOINT, {
@@ -578,7 +592,25 @@ async function cloudRequest(action, payload = {}) {
 }
 
 function isCloudEnabled() {
-  return Boolean(CLOUD_ENDPOINT) && !new URLSearchParams(window.location.search).has("offline");
+  return (
+    (isAppsScriptClient() || Boolean(CLOUD_ENDPOINT)) &&
+    !new URLSearchParams(window.location.search).has("offline")
+  );
+}
+
+function isAppsScriptClient() {
+  return Boolean(window.google?.script?.run);
+}
+
+function appsScriptRequest(action, payload = {}) {
+  return new Promise((resolve, reject) => {
+    window.google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler((error) => {
+        reject(new Error(error?.message || String(error)));
+      })
+      .handleClientRequest(action, payload);
+  });
 }
 
 function extractCloudState(response) {
@@ -623,6 +655,14 @@ function setCloudButtonDisabled(disabled) {
   }
 }
 
+function getCloudErrorMessage() {
+  if (!isAppsScriptClient()) {
+    return "Abra pelo link do Apps Script para sincronizar com a planilha. Dados locais preservados.";
+  }
+
+  return "Sem conexão com a planilha. Dados salvos neste navegador.";
+}
+
 function handleSlotAction(event) {
   const button = event.target.closest("button[data-action]");
   if (!button) {
@@ -643,8 +683,12 @@ function handleSlotAction(event) {
     registerGain(slot);
   }
 
-  if (action === "hold") {
-    markHold(slot);
+  if (action === "move-up") {
+    moveSlot(slot, -1);
+  }
+
+  if (action === "move-down") {
+    moveSlot(slot, 1);
   }
 
   if (action === "reset") {
@@ -709,6 +753,30 @@ function markHold(slot) {
   persistState();
   render();
   showToast("Slot marcado como hold.");
+}
+
+function moveSlot(slot, direction) {
+  normalizeSlotOrders(state.slots);
+  const visibleSlots = getVisibleSlots();
+  const currentIndex = visibleSlots.findIndex((item) => item.id === slot.id);
+  const targetIndex = currentIndex + direction;
+
+  if (currentIndex === -1 || targetIndex < 0 || targetIndex >= visibleSlots.length) {
+    return;
+  }
+
+  const targetSlot = visibleSlots[targetIndex];
+  const currentOrder = slot.order;
+  slot.order = targetSlot.order;
+  targetSlot.order = currentOrder;
+  addHistory(
+    "Ordem",
+    `Slot movido ${direction < 0 ? "para cima" : "para baixo"} na lista manual.`,
+    slot
+  );
+  persistState();
+  render();
+  showToast("Posição do slot atualizada.");
 }
 
 function resetSlot(slot) {
@@ -911,6 +979,7 @@ function normalizeImportedState(input) {
 function exportCsv() {
   const headers = [
     "estrategia",
+    "ordem",
     "slot",
     "status",
     "gains",
@@ -922,6 +991,7 @@ function exportCsv() {
 
   const rows = getSortedSlots().map((slot) => [
     STRATEGIES[slot.strategyId].title,
+    getSlotOrder(slot),
     slot.number,
     STATUS[slot.status].label,
     slot.gains,
@@ -1011,11 +1081,36 @@ function getSortedSlots() {
   const strategyOrder = Object.keys(STRATEGIES);
   return [...state.slots].sort(
     (a, b) =>
-      STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
-      getCurrentValue(a) - getCurrentValue(b) ||
-      a.number - b.number ||
-      strategyOrder.indexOf(a.strategyId) - strategyOrder.indexOf(b.strategyId)
+      getSlotOrder(a) - getSlotOrder(b) ||
+      strategyOrder.indexOf(a.strategyId) - strategyOrder.indexOf(b.strategyId) ||
+      a.number - b.number
   );
+}
+
+function getSlotOrder(slot) {
+  return Number.isFinite(Number(slot.order)) ? Number(slot.order) : Number.MAX_SAFE_INTEGER;
+}
+
+function getNextSlotOrder() {
+  if (!state?.slots?.length) {
+    return 1;
+  }
+
+  return state.slots.reduce((highest, slot) => Math.max(highest, getSlotOrder(slot)), 0) + 1;
+}
+
+function normalizeSlotOrders(slots) {
+  const strategyOrder = Object.keys(STRATEGIES);
+  const orderedSlots = [...slots].sort(
+    (a, b) =>
+      getSlotOrder(a) - getSlotOrder(b) ||
+      strategyOrder.indexOf(a.strategyId) - strategyOrder.indexOf(b.strategyId) ||
+      a.number - b.number
+  );
+
+  orderedSlots.forEach((slot, index) => {
+    slot.order = index + 1;
+  });
 }
 
 function getNextSlotNumber(strategyId) {

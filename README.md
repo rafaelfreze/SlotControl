@@ -4,11 +4,13 @@ Web app para controle pessoal de operações cripto por slots. Ele salva uma có
 
 ## Modo online com Google Sheets
 
-O app já está configurado para sincronizar com esta URL do Google Apps Script:
+O app já está configurado para usar esta URL do Google Apps Script como versão online principal:
 
 `https://script.google.com/macros/s/AKfycbyW4OSUps3QD51_HZVsZiV8vSlyH0pCl4WiPtD7ihN3jYOH2TYo3nrfEl02HFnSvU8uAA/exec`
 
-Para a sincronização funcionar, o projeto do Google Apps Script dessa URL precisa estar com o código do arquivo `google-apps-script.gs`.
+Abra o SlotGain por esse link do Apps Script para sincronizar direto com a planilha. A versão do GitHub Pages pode continuar online como cópia visual/local, mas navegadores costumam bloquear a sincronização direta entre GitHub Pages e Apps Script por política de segurança.
+
+Para a sincronização funcionar, o projeto do Google Apps Script dessa URL precisa estar com o código atualizado do arquivo `google-apps-script.gs`.
 
 ### Como configurar a planilha
 
@@ -22,8 +24,9 @@ Para a sincronização funcionar, o projeto do Google Apps Script dessa URL prec
 8. Use estas opções:
    - Executar como: **Eu**.
    - Quem pode acessar: **Qualquer pessoa**.
-9. Clique em **Implantar**.
+9. Crie uma **nova versão** e clique em **Implantar**.
 10. Se o Google pedir autorização, autorize o acesso à planilha.
+11. Abra a URL `/exec` do Apps Script. Ela deve mostrar o SlotGain Control, não apenas um JSON.
 
 Depois disso, o app salva automaticamente nas abas:
 
@@ -32,6 +35,8 @@ Depois disso, o app salva automaticamente nas abas:
 - `SlotGain_Historico`: histórico das ações.
 
 O app também continua salvando uma cópia no navegador. Se a internet falhar, ele preserva os dados locais e tenta sincronizar novamente quando você usar o botão **Sincronizar agora**.
+
+Se aparecer **"Abra pelo link do Apps Script para sincronizar"**, você está usando o link do GitHub Pages. Abra a URL do Apps Script para operar com salvamento online completo.
 
 ## Como usar
 
@@ -42,22 +47,17 @@ O app também continua salvando uma cópia no navegador. Se a internet falhar, e
 3. A tela de slots aparece em formato de lista compacta.
 4. Cada linha mostra estratégia, número do slot, status, gains, valor atual, última atualização e ações rápidas.
 5. Use os botões pequenos de cada linha:
-   - Abrir: marca o slot como Aberto e ele sobe para o topo da lista.
+   - Setas: movem o slot manualmente para cima ou para baixo.
+   - Abrir: marca o slot como Aberto sem mudar a posição dele.
    - +Gain: soma um gain, recalcula o valor e muda o slot para Gain/Disponível.
-   - Hold: marca o slot como Preso/Hold.
    - Zerar: limpa status, gains e observações depois de confirmação.
-   - Editar: ajusta status, gains e observações manualmente.
+   - Editar: ajusta status, gains e observações manualmente, incluindo Preso/Hold se precisar.
 
 ## Lista compacta
 
-A lista é ordenada automaticamente nesta ordem:
+A lista tem ordem manual. Cada slot fica no local que você definir com as setas de subir e descer.
 
-1. Slots Abertos.
-2. Slots Presos/Hold.
-3. Slots com Gain/Disponíveis.
-4. Slots Zerados.
-
-Dentro de cada grupo, o app mostra primeiro o menor valor atual. Em caso de empate, aparece primeiro o menor número de slot.
+Abrir, registrar gain, zerar ou editar um slot não muda a posição dele na lista. A ordem manual fica salva no navegador e também na planilha quando a sincronização estiver ativa.
 
 No celular, a mesma lista vira uma visualização vertical compacta para facilitar o toque nos botões.
 
@@ -111,7 +111,7 @@ Clique em **Importar JSON**, escolha um backup exportado pelo app e confirme a s
 
 ## Exportar CSV
 
-Clique em **CSV** para baixar uma planilha com estratégia, número do slot, status, gains, valor base, valor atual, última atualização e observações.
+Clique em **CSV** para baixar uma planilha com estratégia, ordem manual, número do slot, status, gains, valor base, valor atual, última atualização e observações.
 
 ## Hospedar no GitHub Pages
 

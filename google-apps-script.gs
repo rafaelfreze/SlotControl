@@ -3,26 +3,39 @@ const STATE_SHEET = "SlotGain_Estado";
 const SLOTS_SHEET = "SlotGain_Slots";
 const HISTORY_SHEET = "SlotGain_Historico";
 const STATE_CHUNK_SIZE = 40000;
+const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
+const APP_ASSET_VERSION = "slotgain-google-sheets-v3";
 
 function doGet(e) {
-  const action = String((e && e.parameter && e.parameter.action) || "load").toLowerCase();
-  return handleRequest_(action, {});
+  const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();
+
+  if (action) {
+    return json_(handleData_(action, {}));
+  }
+
+  return HtmlService.createHtmlOutput(getAppHtml_())
+    .setTitle("SlotGain Control")
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 function doPost(e) {
   const payload = parsePayload_(e);
   const action = String(payload.action || "save").toLowerCase();
-  return handleRequest_(action, payload);
+  return json_(handleData_(action, payload));
 }
 
-function handleRequest_(action, payload) {
+function handleClientRequest(action, payload) {
+  return handleData_(String(action || "").toLowerCase(), payload || {});
+}
+
+function handleData_(action, payload) {
   try {
     if (action === "ping") {
-      return json_({ ok: true, app: "SlotGain Control", checkedAt: new Date().toISOString() });
+      return { ok: true, app: "SlotGain Control", checkedAt: new Date().toISOString() };
     }
 
     if (action === "load") {
-      return json_({ ok: true, state: loadState_(), loadedAt: new Date().toISOString() });
+      return { ok: true, state: loadState_(), loadedAt: new Date().toISOString() };
     }
 
     if (action === "save") {
@@ -31,12 +44,12 @@ function handleRequest_(action, payload) {
       }
 
       saveState_(payload.state);
-      return json_({ ok: true, savedAt: new Date().toISOString() });
+      return { ok: true, savedAt: new Date().toISOString() };
     }
 
-    return json_({ ok: false, error: "Acao invalida." });
+    return { ok: false, error: "Acao invalida." };
   } catch (error) {
-    return json_({ ok: false, error: String(error && error.message ? error.message : error) });
+    return { ok: false, error: String(error && error.message ? error.message : error) };
   }
 }
 
@@ -98,6 +111,7 @@ function saveSlots_(spreadsheet, slots) {
   const rows = [
     [
       "estrategia",
+      "ordem",
       "slot",
       "status",
       "gains",
@@ -111,6 +125,7 @@ function saveSlots_(spreadsheet, slots) {
   slots.forEach((slot) => {
     rows.push([
       slot.strategyId || "",
+      Number(slot.order || 0),
       slot.number || "",
       slot.status || "",
       Number(slot.gains || 0),
@@ -173,4 +188,180 @@ function json_(data) {
   return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(
     ContentService.MimeType.JSON
   );
+}
+
+function getAppHtml_() {
+  return `<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#070b12">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="SlotGain Control">
+    <base target="_top">
+    <title>SlotGain Control</title>
+    <link rel="stylesheet" href="${APP_ASSET_BASE}/style.css?v=${APP_ASSET_VERSION}">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">SG</div>
+          <div>
+            <p class="eyebrow">Controle cripto por slots</p>
+            <h1>SlotGain Control</h1>
+            <p id="last-saved" class="last-saved">Carregando dados locais...</p>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button id="export-json" class="ghost-button" type="button">Backup JSON</button>
+          <button id="import-json" class="ghost-button" type="button">Importar JSON</button>
+          <button id="export-csv" class="ghost-button" type="button">CSV</button>
+          <button id="reset-all" class="danger-button" type="button">Resetar tudo</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="dashboard" aria-label="Dashboard">
+          <article class="metric-card">
+            <span>Total atualizado</span>
+            <strong id="total-updated">0 USDT</strong>
+          </article>
+          <article class="metric-card positive">
+            <span>Lucro acumulado</span>
+            <strong id="estimated-profit">0 USDT</strong>
+          </article>
+          <article class="metric-card">
+            <span>Total de gains</span>
+            <strong id="total-gains">0</strong>
+          </article>
+          <article class="metric-card warning">
+            <span>Slots abertos</span>
+            <strong id="open-slots">0</strong>
+          </article>
+          <article class="metric-card danger">
+            <span>Slots presos/hold</span>
+            <strong id="hold-slots">0</strong>
+          </article>
+        </section>
+
+        <section class="sync-panel" aria-label="Sincronizacao Google Sheets">
+          <div>
+            <span>Google Sheets</span>
+            <strong id="cloud-status">Conectando com a planilha...</strong>
+          </div>
+          <button id="sync-cloud" class="secondary-button" type="button">Sincronizar agora</button>
+        </section>
+
+        <section id="suggestions-grid" class="suggestions-grid" aria-label="Sugestoes automaticas"></section>
+
+        <section class="controls-panel" aria-label="Controles">
+          <div class="field">
+            <label for="strategy-filter">Estrategia</label>
+            <select id="strategy-filter">
+              <option value="all">Todas</option>
+              <option value="btc">BTC 1%</option>
+              <option value="sol">SOL 5%</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="status-filter">Status</label>
+            <select id="status-filter">
+              <option value="all">Todos</option>
+              <option value="aberto">Abertos</option>
+              <option value="hold">Hold</option>
+              <option value="gain">Gain/Disponiveis</option>
+              <option value="zerado">Zerados</option>
+            </select>
+          </div>
+
+          <div class="field search-field">
+            <label for="slot-search">Busca por slot</label>
+            <input id="slot-search" type="search" placeholder="Ex.: BTC, 7, hold, gain" autocomplete="off">
+          </div>
+
+          <form id="add-slot-form" class="add-slot-form">
+            <div class="field">
+              <label for="add-strategy">Adicionar em</label>
+              <select id="add-strategy">
+                <option value="btc">BTC 1%</option>
+                <option value="sol">SOL 5%</option>
+              </select>
+            </div>
+            <div class="field compact">
+              <label for="add-quantity">Slots</label>
+              <input id="add-quantity" type="number" min="1" max="50" value="1" inputmode="numeric">
+            </div>
+            <button class="primary-button" type="submit">Adicionar slots</button>
+          </form>
+        </section>
+
+        <section class="content-layout">
+          <section class="slots-area" aria-label="Slots">
+            <div class="section-heading">
+              <h2>Slots</h2>
+              <span id="slot-count">0 visiveis</span>
+            </div>
+            <div id="slots-container" class="slots-list"></div>
+          </section>
+        </section>
+
+        <details class="history-panel">
+          <summary>
+            <span>Historico de acoes</span>
+            <strong id="history-count">0 acoes</strong>
+          </summary>
+          <ol id="history-list" class="history-list"></ol>
+        </details>
+      </main>
+    </div>
+
+    <dialog id="edit-dialog" class="modal">
+      <form id="edit-form" class="modal-card">
+        <input id="edit-slot-id" type="hidden">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Edicao manual</p>
+            <h2 id="edit-title">Slot</h2>
+          </div>
+          <button id="close-edit" class="icon-button" type="button" aria-label="Fechar">x</button>
+        </div>
+
+        <div class="modal-grid">
+          <div class="field">
+            <label for="edit-status">Status</label>
+            <select id="edit-status">
+              <option value="zerado">Zerado</option>
+              <option value="aberto">Aberto</option>
+              <option value="gain">Gain/Disponivel</option>
+              <option value="hold">Preso/Hold</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="edit-gains">Quantidade de gains</label>
+            <input id="edit-gains" type="number" min="0" step="1" inputmode="numeric">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="edit-notes">Observacoes</label>
+          <textarea id="edit-notes" rows="3" placeholder="Opcional"></textarea>
+        </div>
+
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" id="cancel-edit">Cancelar</button>
+          <button class="primary-button" type="submit">Salvar edicao</button>
+        </div>
+      </form>
+    </dialog>
+
+    <input id="import-file" type="file" accept="application/json" hidden>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="${APP_ASSET_BASE}/script.js?v=${APP_ASSET_VERSION}" defer></script>
+  </body>
+</html>`;
 }
