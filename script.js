@@ -59,10 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindElements() {
   stateRefs.totalUpdated = document.querySelector("#total-updated");
   stateRefs.estimatedProfit = document.querySelector("#estimated-profit");
-  stateRefs.btcGains = document.querySelector("#btc-gains");
-  stateRefs.solGains = document.querySelector("#sol-gains");
-  stateRefs.btcOpenSlots = document.querySelector("#btc-open-slots");
-  stateRefs.solOpenSlots = document.querySelector("#sol-open-slots");
+  stateRefs.cryptoSummary = document.querySelector("#crypto-summary");
   stateRefs.suggestionsGrid = document.querySelector("#suggestions-grid");
   stateRefs.strategyFilter = document.querySelector("#strategy-filter");
   stateRefs.statusFilter = document.querySelector("#status-filter");
@@ -264,6 +261,7 @@ function persistState(options = {}) {
 
 function render() {
   renderDashboard();
+  renderCryptoSummary();
   renderSuggestions();
   renderSlots();
   renderHistory();
@@ -275,25 +273,78 @@ function renderDashboard() {
     (acc, slot) => {
       acc.base += slot.baseValue;
       acc.updated += getCurrentValue(slot);
-      if (slot.strategyId === "btc") {
-        acc.btcGains += slot.gains;
-        acc.btcOpen += slot.status === "aberto" ? 1 : 0;
-      }
-      if (slot.strategyId === "sol") {
-        acc.solGains += slot.gains;
-        acc.solOpen += slot.status === "aberto" ? 1 : 0;
-      }
       return acc;
     },
-    { base: 0, updated: 0, btcGains: 0, solGains: 0, btcOpen: 0, solOpen: 0 }
+    { base: 0, updated: 0 }
   );
 
   stateRefs.totalUpdated.textContent = formatUsdt(totals.updated);
   stateRefs.estimatedProfit.textContent = formatUsdt(totals.updated - totals.base);
-  stateRefs.btcGains.textContent = String(totals.btcGains);
-  stateRefs.solGains.textContent = String(totals.solGains);
-  stateRefs.btcOpenSlots.textContent = String(totals.btcOpen);
-  stateRefs.solOpenSlots.textContent = String(totals.solOpen);
+}
+
+function renderCryptoSummary() {
+  if (!stateRefs.cryptoSummary) {
+    return;
+  }
+
+  const summaries = getCryptoSummaries();
+  stateRefs.cryptoSummary.innerHTML = summaries
+    .map(
+      (summary) => `
+        <article class="crypto-card">
+          <div class="crypto-card-header">
+            <h2>${escapeHtml(summary.asset)}</h2>
+            <span>${summary.slots} slots</span>
+          </div>
+          <p class="crypto-profit">Lucro: <strong>${formatUsdt(summary.profit)}</strong></p>
+          <div class="crypto-stats">
+            <span>Gains <strong>${summary.gains}</strong></span>
+            <span>Abertos <strong>${summary.open}</strong></span>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function getCryptoSummaries() {
+  const order = [];
+  const grouped = state.slots.reduce((acc, slot) => {
+    const asset = getSlotAsset(slot);
+    if (!acc[asset]) {
+      acc[asset] = {
+        asset,
+        slots: 0,
+        base: 0,
+        updated: 0,
+        profit: 0,
+        gains: 0,
+        open: 0,
+      };
+      order.push(asset);
+    }
+
+    const currentValue = getCurrentValue(slot);
+    acc[asset].slots += 1;
+    acc[asset].base += slot.baseValue;
+    acc[asset].updated += currentValue;
+    acc[asset].profit += currentValue - slot.baseValue;
+    acc[asset].gains += slot.gains;
+    acc[asset].open += slot.status === "aberto" ? 1 : 0;
+    return acc;
+  }, {});
+
+  return order.map((asset) => grouped[asset]);
+}
+
+function getSlotAsset(slot) {
+  const strategy = STRATEGIES[slot.strategyId];
+  if (strategy?.asset) {
+    return strategy.asset.toUpperCase();
+  }
+
+  const title = strategy?.title || slot.strategyId || "CRYPTO";
+  return String(title).trim().split(/\s+/)[0].toUpperCase();
 }
 
 function renderSuggestions() {
@@ -384,9 +435,13 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
   const strategy = STRATEGIES[slot.strategyId];
   const status = STATUS[slot.status];
   const currentValue = getCurrentValue(slot);
+  const formattedValue = formatUsdt(currentValue);
   const openDisabled = slot.status === "aberto" || slot.status === "hold";
   const gainDisabled = slot.status === "zerado";
   const updatedAt = slot.updatedAt ? formatDate(slot.updatedAt) : "Nunca";
+  const compactStatus = getCompactStatusLabel(slot.status);
+  const mobileGainClass = slot.gains > 0 ? "has-gains" : "no-gains";
+  const mobileGainLabel = `${slot.gains} ${slot.gains === 1 ? "GAIN" : "GAINS"}`;
   const currentIndex = visibleSlots.findIndex((item) => item.id === slot.id);
   const moveUpDisabled = currentIndex <= 0;
   const moveDownDisabled = currentIndex === -1 || currentIndex >= visibleSlots.length - 1;
@@ -397,15 +452,27 @@ function renderSlotRow(slot, visibleSlots = getSortedSlots()) {
         <button class="move-button" type="button" data-action="move-up" data-id="${escapeAttribute(slot.id)}" aria-label="Mover slot para cima" ${moveUpDisabled ? "disabled" : ""}>↑</button>
         <button class="move-button" type="button" data-action="move-down" data-id="${escapeAttribute(slot.id)}" aria-label="Mover slot para baixo" ${moveDownDisabled ? "disabled" : ""}>↓</button>
       </div>
+      <div class="slot-mobile-card ${mobileGainClass}">
+        <div class="slot-mobile-top">
+          <span>${escapeHtml(strategy.title)}</span>
+          <small>#${slot.number}</small>
+        </div>
+        <strong class="slot-mobile-gains">${escapeHtml(mobileGainLabel)}</strong>
+        <p class="slot-mobile-meta">
+          <span>${formattedValue}</span>
+          <span class="slot-mobile-status ${status.className}">${escapeHtml(compactStatus)}</span>
+        </p>
+        <p class="slot-mobile-updated">Atualizado: ${escapeHtml(updatedAt)}</p>
+      </div>
       <div class="slot-cell strategy" data-label="Estratégia">${escapeHtml(strategy.title)}</div>
       <div class="slot-cell number" data-label="Slot">#${slot.number}</div>
       <div class="slot-cell status" data-label="Status">
-        <span class="status-pill ${status.className}" data-short-label="${escapeAttribute(getCompactStatusLabel(slot.status))}">
+        <span class="status-pill ${status.className}" data-short-label="${escapeAttribute(compactStatus)}">
           <span class="status-full">${escapeHtml(status.label)}</span>
         </span>
       </div>
       <div class="slot-cell gains" data-label="Gains">${slot.gains}<span class="mobile-gain-word"> ${slot.gains === 1 ? "gain" : "gains"}</span></div>
-      <div class="slot-cell value" data-label="Valor">${formatUsdt(currentValue)}</div>
+      <div class="slot-cell value" data-label="Valor">${formattedValue}</div>
       <div class="slot-cell updated" data-label="Atualização">${updatedAt}</div>
       <div class="slot-cell actions" data-label="Ações">
         <div class="slot-actions">

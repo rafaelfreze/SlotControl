@@ -130,11 +130,12 @@ h1 {
 
 .dashboard {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .metric-card,
+.crypto-card,
 .suggestion-card,
 .controls-panel,
 .management-panel,
@@ -178,6 +179,64 @@ h1 {
 
 .metric-card.danger strong {
   color: var(--orange);
+}
+
+.crypto-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.crypto-card {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  background-color: var(--panel-2);
+}
+
+.crypto-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.crypto-card h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1;
+}
+
+.crypto-card-header span,
+.crypto-profit,
+.crypto-stats span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.crypto-profit {
+  margin: 0;
+}
+
+.crypto-profit strong {
+  color: var(--green);
+  font-size: 1rem;
+}
+
+.crypto-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.crypto-stats strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 0.95rem;
 }
 
 .suggestions-grid {
@@ -503,6 +562,10 @@ button:disabled {
 .slot-cell.updated {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.slot-mobile-card {
+  display: none;
 }
 
 .mobile-gain-word {
@@ -993,6 +1056,26 @@ button:disabled {
     gap: 6px;
   }
 
+  .crypto-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin: 7px 0;
+  }
+
+  .crypto-card {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .crypto-card h2 {
+    font-size: 0.86rem;
+  }
+
+  .crypto-profit strong,
+  .crypto-stats strong {
+    font-size: 0.86rem;
+  }
+
   .metric-card {
     min-height: 58px;
     padding: 8px 9px;
@@ -1092,20 +1175,20 @@ button:disabled {
 
   .slot-row {
     display: grid;
-    grid-template-columns: 24px 36px 60px minmax(64px, 1fr) 76px;
+    grid-template-columns: 22px minmax(0, 1fr);
     grid-template-areas:
-      "move number status value actions"
-      "move gains gains value actions";
-    align-items: center;
-    gap: 4px 5px;
+      "move summary"
+      "actions actions";
+    align-items: start;
+    gap: 5px 7px;
     min-width: 0;
-    min-height: 74px;
+    min-height: 98px;
     border: 0;
     border-bottom: 1px solid var(--line-soft);
     border-radius: 0;
     background: rgba(17, 25, 37, 0.82);
     box-shadow: none;
-    padding: 6px 7px;
+    padding: 7px 8px;
   }
 
   .slot-row:last-child {
@@ -1126,6 +1209,10 @@ button:disabled {
   }
 
   .slot-cell.strategy,
+  .slot-cell.number,
+  .slot-cell.status,
+  .slot-cell.gains,
+  .slot-cell.value,
   .slot-cell.updated {
     display: none;
   }
@@ -1144,106 +1231,117 @@ button:disabled {
     font-size: 0.7rem;
   }
 
-  .slot-cell.number {
-    grid-area: number;
-    justify-self: start;
-    font-size: 0.9rem;
-    font-weight: 950;
+  .slot-mobile-card {
+    display: grid;
+    grid-area: summary;
+    gap: 2px;
+    min-width: 0;
   }
 
-  .slot-cell.status {
-    grid-area: status;
-    grid-column: auto;
-  }
-
-  .status-pill {
-    max-width: 100%;
-    border-radius: 6px;
-    padding: 4px 5px;
-    font-size: 0.55rem;
-  }
-
-  .status-pill .status-full {
-    display: none;
-  }
-
-  .status-pill::after {
-    content: attr(data-short-label);
-  }
-
-  .slot-cell.gains,
-  .slot-cell.value {
-    display: block;
-    grid-column: auto;
+  .slot-mobile-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     color: var(--text);
-  }
-
-  .slot-cell.gains {
-    grid-area: gains;
-    color: var(--muted);
-    font-size: 0.68rem;
-    font-weight: 850;
-  }
-
-  .slot-cell.value {
-    grid-area: value;
-    justify-self: start;
     font-size: 0.78rem;
+    font-weight: 900;
+  }
+
+  .slot-mobile-top small {
+    color: var(--muted);
+    font-size: 0.62rem;
+    font-weight: 800;
+  }
+
+  .slot-mobile-gains {
+    color: var(--muted);
+    font-size: 1.18rem;
+    line-height: 1;
     font-weight: 950;
+  }
+
+  .slot-mobile-card.has-gains .slot-mobile-gains {
+    color: var(--green);
+  }
+
+  .slot-mobile-meta,
+  .slot-mobile-updated {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 750;
+    line-height: 1.18;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .slot-cell.gains::before,
-  .slot-cell.value::before,
-  .slot-cell.updated::before {
-    content: none;
+  .slot-mobile-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
-  .mobile-gain-word {
-    display: inline;
+  .slot-mobile-meta span:first-child {
+    color: var(--text);
+    font-weight: 950;
+  }
+
+  .slot-mobile-status {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 2px 6px;
+    font-size: 0.58rem;
+    font-weight: 950;
+    text-transform: uppercase;
+  }
+
+  .slot-mobile-status.status-aberto {
+    background: var(--yellow-soft);
+    color: var(--yellow);
+  }
+
+  .slot-mobile-status.status-hold {
+    background: var(--orange-soft);
+    color: var(--orange);
+  }
+
+  .slot-mobile-status.status-gain {
+    background: var(--green-soft);
+    color: var(--green);
+  }
+
+  .slot-mobile-status.status-zerado {
+    background: var(--gray-soft);
+    color: #c4ccd8;
   }
 
   .slot-cell.actions {
     grid-area: actions;
-    grid-column: auto;
-    align-self: stretch;
+    grid-column: 1 / -1;
   }
 
   .slot-actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-content: center;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-content: stretch;
-    gap: 3px;
-    height: 100%;
+    gap: 4px;
   }
 
   .slot-button {
     min-width: 0;
-    min-height: 22px;
+    min-height: 24px;
     border-radius: 6px;
     padding: 0 4px;
-    font-size: 0.6rem;
+    font-size: 0.62rem;
     line-height: 1;
   }
 
   .slot-button.open,
   .slot-button.reset {
-    font-size: 0;
     opacity: 0.78;
-  }
-
-  .slot-button.open::after,
-  .slot-button.reset::after {
-    font-size: 0.56rem;
-  }
-
-  .slot-button.open::after {
-    content: "Abr";
-  }
-
-  .slot-button.reset::after {
-    content: "Zer";
   }
 
   .history-panel {

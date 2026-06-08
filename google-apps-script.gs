@@ -4,7 +4,7 @@ const SLOTS_SHEET = "SlotGain_Slots";
 const HISTORY_SHEET = "SlotGain_Historico";
 const STATE_CHUNK_SIZE = 40000;
 const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
-const APP_ASSET_VERSION = "slotgain-google-sheets-v5";
+const APP_ASSET_VERSION = "slotgain-google-sheets-v6";
 
 function doGet(e) {
   const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();
@@ -227,30 +227,18 @@ function getAppHtml_() {
             <span>Lucro acumulado</span>
             <strong id="estimated-profit">0 USDT</strong>
           </article>
-          <article class="metric-card">
-            <span>Gains BTC</span>
-            <strong id="btc-gains">0</strong>
-          </article>
-          <article class="metric-card">
-            <span>Gains SOL</span>
-            <strong id="sol-gains">0</strong>
-          </article>
-          <article class="metric-card warning">
-            <span>Abertos BTC</span>
-            <strong id="btc-open-slots">0</strong>
-          </article>
-          <article class="metric-card warning">
-            <span>Abertos SOL</span>
-            <strong id="sol-open-slots">0</strong>
-          </article>
         </section>
 
-        <section class="sync-panel" aria-label="Sincronizacao Google Sheets">
-          <div>
-            <span>Google Sheets</span>
-            <strong id="cloud-status">Conectando com a planilha...</strong>
-          </div>
-          <button id="sync-cloud" class="secondary-button" type="button">Sincronizar agora</button>
+        <section id="crypto-summary" class="crypto-summary" aria-label="Resumo por cripto"></section>
+
+        <section class="content-layout">
+          <section class="slots-area" aria-label="Slots">
+            <div class="section-heading">
+              <h2>Slots</h2>
+              <span id="slot-count">0 visiveis</span>
+            </div>
+            <div id="slots-container" class="slots-list"></div>
+          </section>
         </section>
 
         <section class="controls-panel" aria-label="Controles">
@@ -280,24 +268,6 @@ function getAppHtml_() {
           </div>
         </section>
 
-        <section class="content-layout">
-          <section class="slots-area" aria-label="Slots">
-            <div class="section-heading">
-              <h2>Slots</h2>
-              <span id="slot-count">0 visiveis</span>
-            </div>
-            <div id="slots-container" class="slots-list"></div>
-          </section>
-        </section>
-
-        <details class="history-panel">
-          <summary>
-            <span>Historico de acoes</span>
-            <strong id="history-count">0 acoes</strong>
-          </summary>
-          <ol id="history-list" class="history-list"></ol>
-        </details>
-
         <section class="management-panel" aria-label="Ferramentas">
           <div class="management-block">
             <p class="eyebrow">Adicionar slots</p>
@@ -326,6 +296,22 @@ function getAppHtml_() {
               <button id="reset-all" class="danger-button" type="button">Resetar tudo</button>
             </div>
           </div>
+        </section>
+
+        <details class="history-panel">
+          <summary>
+            <span>Historico de acoes</span>
+            <strong id="history-count">0 acoes</strong>
+          </summary>
+          <ol id="history-list" class="history-list"></ol>
+        </details>
+
+        <section class="sync-panel" aria-label="Sincronizacao Google Sheets">
+          <div>
+            <span>Google Sheets</span>
+            <strong id="cloud-status">Conectando com a planilha...</strong>
+          </div>
+          <button id="sync-cloud" class="secondary-button" type="button">Sincronizar agora</button>
         </section>
       </main>
     </div>

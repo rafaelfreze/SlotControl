@@ -59,22 +59,20 @@ A lista tem ordem manual. Cada slot fica no local que você definir com as setas
 
 Abrir, registrar gain, zerar ou editar um slot não muda a posição dele na lista. A ordem manual fica salva no navegador e também na planilha quando a sincronização estiver ativa.
 
-No celular, a lista agora fica ainda mais compacta e separada por estratégia. Cada grupo mostra o nome da estratégia, a quantidade de slots visíveis e o total de gains daquele grupo.
+No celular, a lista fica separada por estratégia e cada slot mostra os gains como principal destaque visual.
 
-Cada slot ocupa uma linha curta com número, status, gains, valor e botões pequenos de ação. A data de atualização fica oculta no celular para caber mais slots na tela; no desktop ela continua aparecendo na tabela.
+Cada slot mostra estratégia, quantidade grande de gains, valor, status, atualização no formato `Atualizado: data` e botões pequenos de ação. O número do slot continua existindo, mas fica discreto.
 
 ## Dashboard
 
-O topo mostra apenas:
+O topo mostra o resumo geral:
 
 - Total atualizado.
 - Lucro acumulado.
-- Gains BTC.
-- Gains SOL.
-- Abertos BTC.
-- Abertos SOL.
 
-Os botões de backup, importação, CSV, reset geral e o formulário de adicionar novos slots ficam no final da página para deixar o topo mais limpo no celular.
+Abaixo dele aparece o resumo por cripto, calculado automaticamente por estratégia, com lucro, gains e slots abertos de BTC, SOL e outras moedas que forem adicionadas ao sistema.
+
+A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots, filtros/adicionar slots, ferramentas de backup e Google Sheets no final.
 
 ## Filtros
 
