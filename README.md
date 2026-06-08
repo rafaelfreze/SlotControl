@@ -69,9 +69,12 @@ O topo mostra apenas:
 
 - Total atualizado.
 - Lucro acumulado.
-- Total de gains.
-- Slots abertos.
-- Slots hold.
+- Gains BTC.
+- Gains SOL.
+- Abertos BTC.
+- Abertos SOL.
+
+Os botões de backup, importação, CSV, reset geral e o formulário de adicionar novos slots ficam no final da página para deixar o topo mais limpo no celular.
 
 ## Filtros
 

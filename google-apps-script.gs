@@ -4,7 +4,7 @@ const SLOTS_SHEET = "SlotGain_Slots";
 const HISTORY_SHEET = "SlotGain_Historico";
 const STATE_CHUNK_SIZE = 40000;
 const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
-const APP_ASSET_VERSION = "slotgain-google-sheets-v4";
+const APP_ASSET_VERSION = "slotgain-google-sheets-v5";
 
 function doGet(e) {
   const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();
@@ -215,12 +215,6 @@ function getAppHtml_() {
           </div>
         </div>
 
-        <div class="header-actions">
-          <button id="export-json" class="ghost-button" type="button">Backup JSON</button>
-          <button id="import-json" class="ghost-button" type="button">Importar JSON</button>
-          <button id="export-csv" class="ghost-button" type="button">CSV</button>
-          <button id="reset-all" class="danger-button" type="button">Resetar tudo</button>
-        </div>
       </header>
 
       <main>
@@ -234,16 +228,20 @@ function getAppHtml_() {
             <strong id="estimated-profit">0 USDT</strong>
           </article>
           <article class="metric-card">
-            <span>Total de gains</span>
-            <strong id="total-gains">0</strong>
+            <span>Gains BTC</span>
+            <strong id="btc-gains">0</strong>
+          </article>
+          <article class="metric-card">
+            <span>Gains SOL</span>
+            <strong id="sol-gains">0</strong>
           </article>
           <article class="metric-card warning">
-            <span>Slots abertos</span>
-            <strong id="open-slots">0</strong>
+            <span>Abertos BTC</span>
+            <strong id="btc-open-slots">0</strong>
           </article>
-          <article class="metric-card danger">
-            <span>Slots presos/hold</span>
-            <strong id="hold-slots">0</strong>
+          <article class="metric-card warning">
+            <span>Abertos SOL</span>
+            <strong id="sol-open-slots">0</strong>
           </article>
         </section>
 
@@ -254,8 +252,6 @@ function getAppHtml_() {
           </div>
           <button id="sync-cloud" class="secondary-button" type="button">Sincronizar agora</button>
         </section>
-
-        <section id="suggestions-grid" class="suggestions-grid" aria-label="Sugestoes automaticas"></section>
 
         <section class="controls-panel" aria-label="Controles">
           <div class="field">
@@ -282,21 +278,6 @@ function getAppHtml_() {
             <label for="slot-search">Busca por slot</label>
             <input id="slot-search" type="search" placeholder="Ex.: BTC, 7, hold, gain" autocomplete="off">
           </div>
-
-          <form id="add-slot-form" class="add-slot-form">
-            <div class="field">
-              <label for="add-strategy">Adicionar em</label>
-              <select id="add-strategy">
-                <option value="btc">BTC 1%</option>
-                <option value="sol">SOL 5%</option>
-              </select>
-            </div>
-            <div class="field compact">
-              <label for="add-quantity">Slots</label>
-              <input id="add-quantity" type="number" min="1" max="50" value="1" inputmode="numeric">
-            </div>
-            <button class="primary-button" type="submit">Adicionar slots</button>
-          </form>
         </section>
 
         <section class="content-layout">
@@ -316,6 +297,36 @@ function getAppHtml_() {
           </summary>
           <ol id="history-list" class="history-list"></ol>
         </details>
+
+        <section class="management-panel" aria-label="Ferramentas">
+          <div class="management-block">
+            <p class="eyebrow">Adicionar slots</p>
+            <form id="add-slot-form" class="add-slot-form">
+              <div class="field">
+                <label for="add-strategy">Adicionar em</label>
+                <select id="add-strategy">
+                  <option value="btc">BTC 1%</option>
+                  <option value="sol">SOL 5%</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="add-quantity">Slots</label>
+                <input id="add-quantity" type="number" min="1" max="50" value="1" inputmode="numeric">
+              </div>
+              <button class="primary-button" type="submit">Adicionar slots</button>
+            </form>
+          </div>
+
+          <div class="management-block">
+            <p class="eyebrow">Backup e dados</p>
+            <div class="footer-actions">
+              <button id="export-json" class="ghost-button" type="button">Backup JSON</button>
+              <button id="import-json" class="ghost-button" type="button">Importar JSON</button>
+              <button id="export-csv" class="ghost-button" type="button">CSV</button>
+              <button id="reset-all" class="danger-button" type="button">Resetar tudo</button>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
 

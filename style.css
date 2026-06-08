@@ -130,13 +130,14 @@ h1 {
 
 .dashboard {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
 }
 
 .metric-card,
 .suggestion-card,
 .controls-panel,
+.management-panel,
 .slots-list,
 .history-panel,
 .modal-card {
@@ -255,11 +256,37 @@ h1 {
 
 .controls-panel {
   display: grid;
-  grid-template-columns: 150px 150px minmax(210px, 1fr) minmax(330px, 0.95fr);
+  grid-template-columns: 150px 150px minmax(210px, 1fr);
   gap: 10px;
   margin-bottom: 10px;
   padding: 10px;
   background-color: var(--bg-soft);
+}
+
+.management-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 420px);
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  background-color: var(--bg-soft);
+}
+
+.management-block {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.management-block .eyebrow {
+  margin: 0;
+}
+
+.footer-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .field {
@@ -735,6 +762,10 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .management-panel {
+    grid-template-columns: 1fr;
+  }
+
   .add-slot-form {
     grid-column: 1 / -1;
   }
@@ -767,7 +798,8 @@ button:disabled {
 
   .dashboard,
   .suggestions-grid,
-  .controls-panel {
+  .controls-panel,
+  .management-panel {
     grid-template-columns: 1fr;
   }
 
@@ -977,7 +1009,8 @@ button:disabled {
 
   .sync-panel,
   .suggestion-card,
-  .controls-panel {
+  .controls-panel,
+  .management-panel {
     gap: 7px;
     margin-top: 7px;
     padding: 8px;
@@ -1016,6 +1049,10 @@ button:disabled {
 
   .add-slot-form .primary-button {
     min-height: 34px;
+  }
+
+  .footer-actions {
+    gap: 6px;
   }
 
   .section-heading {

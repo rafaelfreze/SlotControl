@@ -59,9 +59,10 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindElements() {
   stateRefs.totalUpdated = document.querySelector("#total-updated");
   stateRefs.estimatedProfit = document.querySelector("#estimated-profit");
-  stateRefs.totalGains = document.querySelector("#total-gains");
-  stateRefs.openSlots = document.querySelector("#open-slots");
-  stateRefs.holdSlots = document.querySelector("#hold-slots");
+  stateRefs.btcGains = document.querySelector("#btc-gains");
+  stateRefs.solGains = document.querySelector("#sol-gains");
+  stateRefs.btcOpenSlots = document.querySelector("#btc-open-slots");
+  stateRefs.solOpenSlots = document.querySelector("#sol-open-slots");
   stateRefs.suggestionsGrid = document.querySelector("#suggestions-grid");
   stateRefs.strategyFilter = document.querySelector("#strategy-filter");
   stateRefs.statusFilter = document.querySelector("#status-filter");
@@ -99,7 +100,7 @@ function bindEvents() {
   stateRefs.slotSearch.addEventListener("input", renderSlots);
   stateRefs.addSlotForm.addEventListener("submit", handleAddSlots);
   stateRefs.slotsContainer.addEventListener("click", handleSlotAction);
-  stateRefs.suggestionsGrid.addEventListener("click", handleSuggestionAction);
+  stateRefs.suggestionsGrid?.addEventListener("click", handleSuggestionAction);
   stateRefs.exportJson.addEventListener("click", exportJsonBackup);
   stateRefs.syncCloud.addEventListener("click", () => reconcileCloudState({ manual: true }));
   stateRefs.importJson.addEventListener("click", () => stateRefs.importFile.click());
@@ -274,22 +275,32 @@ function renderDashboard() {
     (acc, slot) => {
       acc.base += slot.baseValue;
       acc.updated += getCurrentValue(slot);
-      acc.gains += slot.gains;
-      acc.open += slot.status === "aberto" ? 1 : 0;
-      acc.hold += slot.status === "hold" ? 1 : 0;
+      if (slot.strategyId === "btc") {
+        acc.btcGains += slot.gains;
+        acc.btcOpen += slot.status === "aberto" ? 1 : 0;
+      }
+      if (slot.strategyId === "sol") {
+        acc.solGains += slot.gains;
+        acc.solOpen += slot.status === "aberto" ? 1 : 0;
+      }
       return acc;
     },
-    { base: 0, updated: 0, gains: 0, open: 0, hold: 0 }
+    { base: 0, updated: 0, btcGains: 0, solGains: 0, btcOpen: 0, solOpen: 0 }
   );
 
   stateRefs.totalUpdated.textContent = formatUsdt(totals.updated);
   stateRefs.estimatedProfit.textContent = formatUsdt(totals.updated - totals.base);
-  stateRefs.totalGains.textContent = String(totals.gains);
-  stateRefs.openSlots.textContent = String(totals.open);
-  stateRefs.holdSlots.textContent = String(totals.hold);
+  stateRefs.btcGains.textContent = String(totals.btcGains);
+  stateRefs.solGains.textContent = String(totals.solGains);
+  stateRefs.btcOpenSlots.textContent = String(totals.btcOpen);
+  stateRefs.solOpenSlots.textContent = String(totals.solOpen);
 }
 
 function renderSuggestions() {
+  if (!stateRefs.suggestionsGrid) {
+    return;
+  }
+
   if (hasOpenSlot()) {
     stateRefs.suggestionsGrid.innerHTML = `
       <article class="suggestion-card alert">
