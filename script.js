@@ -17,6 +17,7 @@ const STRATEGIES = {
     initialSlots: 25,
     dropPercent: 2,
     restartAmount: 5,
+    redistributionTarget: 50,
   },
   sol: {
     id: "sol",
@@ -28,6 +29,7 @@ const STRATEGIES = {
     initialSlots: 10,
     dropPercent: 12,
     restartAmount: 3,
+    redistributionTarget: 10,
   },
 };
 
@@ -304,6 +306,9 @@ function renderCryptoSummary() {
             <span>${summary.slots} slots</span>
           </div>
           <p class="crypto-profit">Lucro: <strong>${formatUsdt(summary.profit)}</strong></p>
+          <p class="crypto-redistribution">
+            Redistribuição: <strong>${summary.redistributionGains}/${summary.redistributionTarget} gains</strong>
+          </p>
           <div class="crypto-stats">
             <span>Gains <strong>${summary.gains}</strong></span>
             <span>Abertos <strong>${summary.open}</strong></span>
@@ -327,8 +332,16 @@ function getCryptoSummaries() {
         profit: 0,
         gains: 0,
         open: 0,
+        redistributionGains: 0,
+        redistributionTarget: 0,
+        strategyIds: new Set(),
       };
       order.push(asset);
+    }
+
+    if (!acc[asset].strategyIds.has(slot.strategyId)) {
+      acc[asset].strategyIds.add(slot.strategyId);
+      acc[asset].redistributionTarget += getRedistributionTarget(slot.strategyId);
     }
 
     const currentValue = getCurrentValue(slot);
@@ -338,6 +351,7 @@ function getCryptoSummaries() {
     acc[asset].profit += currentValue - slot.baseValue;
     acc[asset].gains += slot.gains;
     acc[asset].open += slot.status === "aberto" ? 1 : 0;
+    acc[asset].redistributionGains += isRedistributableSlot(slot) ? slot.gains : 0;
     return acc;
   }, {});
 
@@ -352,6 +366,14 @@ function getSlotAsset(slot) {
 
   const title = strategy?.title || slot.strategyId || "CRYPTO";
   return String(title).trim().split(/\s+/)[0].toUpperCase();
+}
+
+function getRedistributionTarget(strategyId) {
+  return STRATEGIES[strategyId]?.redistributionTarget || getStrategySlots(strategyId).length;
+}
+
+function isRedistributableSlot(slot) {
+  return slot.status !== "aberto" && slot.status !== "hold";
 }
 
 function renderSuggestions() {
@@ -1033,18 +1055,19 @@ function handleRedistributeGains(event) {
     return;
   }
 
-  const lockedSlots = slots.filter((slot) => slot.status === "aberto" || slot.status === "hold");
-  if (lockedSlots.length > 0) {
-    showToast("Finalize slots abertos ou hold antes de redistribuir gains.");
+  const redistributableSlots = slots.filter(isRedistributableSlot);
+  if (redistributableSlots.length === 0) {
+    showToast("Nenhum slot fechado para redistribuir.");
     return;
   }
 
-  const totalGains = slots.reduce((sum, slot) => sum + slot.gains, 0);
-  const baseGains = Math.floor(totalGains / slots.length);
-  const extraGains = totalGains % slots.length;
+  const ignoredSlots = slots.length - redistributableSlots.length;
+  const totalGains = redistributableSlots.reduce((sum, slot) => sum + slot.gains, 0);
+  const baseGains = Math.floor(totalGains / redistributableSlots.length);
+  const extraGains = totalGains % redistributableSlots.length;
   const updatedAt = nowIso();
 
-  slots.forEach((slot, index) => {
+  redistributableSlots.forEach((slot, index) => {
     const nextGains = baseGains + (index < extraGains ? 1 : 0);
     slot.gains = nextGains;
     slot.status = nextGains > 0 ? "gain" : "zerado";
@@ -1054,7 +1077,7 @@ function handleRedistributeGains(event) {
 
   addHistory(
     "Redistribuição",
-    `${totalGains} gains redistribuídos em ${slots.length} slots de ${STRATEGIES[strategyId].title}.`,
+    `${totalGains} gains redistribuídos em ${redistributableSlots.length} slots fechados de ${STRATEGIES[strategyId].title}. ${ignoredSlots} slot${ignoredSlots === 1 ? "" : "s"} aberto/hold ignorado${ignoredSlots === 1 ? "" : "s"}.`,
     { strategyId, number: null }
   );
   persistState();

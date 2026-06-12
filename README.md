@@ -77,7 +77,7 @@ A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots com s
 No final da página também ficam as ferramentas de manutenção:
 
 - Adicionar saldo: soma um valor em USDT ao valor base de cada slot da estratégia escolhida.
-- Redistribuir gains: soma os gains da estratégia e redistribui de forma equilibrada entre os slots, sem mudar a ordem manual.
+- Redistribuir gains: soma os gains dos slots fechados da estratégia e redistribui de forma equilibrada apenas entre esses slots, sem mudar a ordem manual. Slots abertos ou hold são ignorados.
 
 ## Filtros
 

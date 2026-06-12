@@ -211,19 +211,26 @@ h1 {
 
 .crypto-card-header span,
 .crypto-profit,
+.crypto-redistribution,
 .crypto-stats span {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
 }
 
-.crypto-profit {
+.crypto-profit,
+.crypto-redistribution {
   margin: 0;
 }
 
 .crypto-profit strong {
   color: var(--green);
   font-size: 1rem;
+}
+
+.crypto-redistribution strong {
+  color: var(--yellow);
+  font-size: 0.9rem;
 }
 
 .crypto-stats {
@@ -1125,6 +1132,7 @@ button:disabled {
   }
 
   .crypto-profit strong,
+  .crypto-redistribution strong,
   .crypto-stats strong {
     font-size: 0.86rem;
   }
