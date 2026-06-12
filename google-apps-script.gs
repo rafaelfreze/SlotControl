@@ -4,7 +4,7 @@ const SLOTS_SHEET = "SlotGain_Slots";
 const HISTORY_SHEET = "SlotGain_Historico";
 const STATE_CHUNK_SIZE = 40000;
 const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
-const APP_ASSET_VERSION = "slotgain-google-sheets-v7";
+const APP_ASSET_VERSION = "slotgain-google-sheets-v8";
 
 function doGet(e) {
   const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();
@@ -283,6 +283,35 @@ function getAppHtml_() {
                 <input id="add-quantity" type="number" min="1" max="50" value="1" inputmode="numeric">
               </div>
               <button class="primary-button" type="submit">Adicionar slots</button>
+            </form>
+          </div>
+
+          <div class="management-block">
+            <p class="eyebrow">Saldo e redistribuicao</p>
+            <form id="balance-form" class="tool-form">
+              <div class="field">
+                <label for="balance-strategy">Moeda</label>
+                <select id="balance-strategy">
+                  <option value="btc">BTC 1%</option>
+                  <option value="sol">SOL 5%</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="balance-amount">USDT por slot</label>
+                <input id="balance-amount" type="number" min="0.01" step="0.01" placeholder="Ex.: 5" inputmode="decimal">
+              </div>
+              <button class="primary-button" type="submit">Adicionar saldo</button>
+            </form>
+
+            <form id="redistribute-form" class="tool-form single-action">
+              <div class="field">
+                <label for="redistribute-strategy">Redistribuir gains</label>
+                <select id="redistribute-strategy">
+                  <option value="btc">BTC 1%</option>
+                  <option value="sol">SOL 5%</option>
+                </select>
+              </div>
+              <button class="secondary-button" type="submit">Redistribuir</button>
             </form>
           </div>
 

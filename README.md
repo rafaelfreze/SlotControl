@@ -74,6 +74,11 @@ Abaixo dele aparece o resumo por cripto, calculado automaticamente por estratég
 
 A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots com seletor de moeda no cabeçalho, filtros/adicionar slots, ferramentas de backup e Google Sheets no final.
 
+No final da página também ficam as ferramentas de manutenção:
+
+- Adicionar saldo: soma um valor em USDT ao valor base de cada slot da estratégia escolhida.
+- Redistribuir gains: soma os gains da estratégia e redistribui de forma equilibrada entre os slots, sem mudar a ordem manual.
+
 ## Filtros
 
 Você pode filtrar por estratégia, por status e também buscar por texto ou número do slot.

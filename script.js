@@ -67,6 +67,11 @@ function bindElements() {
   stateRefs.addSlotForm = document.querySelector("#add-slot-form");
   stateRefs.addStrategy = document.querySelector("#add-strategy");
   stateRefs.addQuantity = document.querySelector("#add-quantity");
+  stateRefs.balanceForm = document.querySelector("#balance-form");
+  stateRefs.balanceStrategy = document.querySelector("#balance-strategy");
+  stateRefs.balanceAmount = document.querySelector("#balance-amount");
+  stateRefs.redistributeForm = document.querySelector("#redistribute-form");
+  stateRefs.redistributeStrategy = document.querySelector("#redistribute-strategy");
   stateRefs.slotsContainer = document.querySelector("#slots-container");
   stateRefs.slotCount = document.querySelector("#slot-count");
   stateRefs.historyList = document.querySelector("#history-list");
@@ -96,6 +101,8 @@ function bindEvents() {
   stateRefs.statusFilter.addEventListener("change", renderSlots);
   stateRefs.slotSearch.addEventListener("input", renderSlots);
   stateRefs.addSlotForm.addEventListener("submit", handleAddSlots);
+  stateRefs.balanceForm.addEventListener("submit", handleAddBalance);
+  stateRefs.redistributeForm.addEventListener("submit", handleRedistributeGains);
   stateRefs.slotsContainer.addEventListener("click", handleSlotAction);
   stateRefs.suggestionsGrid?.addEventListener("click", handleSuggestionAction);
   stateRefs.exportJson.addEventListener("click", exportJsonBackup);
@@ -983,6 +990,78 @@ function handleAddSlots(event) {
   showToast("Slots adicionados.");
 }
 
+function handleAddBalance(event) {
+  event.preventDefault();
+
+  const strategyId = stateRefs.balanceStrategy.value;
+  const amount = Number.parseFloat(String(stateRefs.balanceAmount.value).replace(",", "."));
+  const slots = getStrategySlots(strategyId);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showToast("Informe um valor em USDT maior que zero.");
+    return;
+  }
+
+  if (slots.length === 0) {
+    showToast("Nenhum slot encontrado para essa moeda.");
+    return;
+  }
+
+  slots.forEach((slot) => {
+    slot.baseValue = roundCurrency(slot.baseValue + amount);
+    slot.updatedAt = nowIso();
+  });
+
+  addHistory(
+    "Saldo",
+    `${formatUsdt(amount)} adicionados ao valor base de cada slot em ${STRATEGIES[strategyId].title}.`,
+    { strategyId, number: null }
+  );
+  stateRefs.balanceAmount.value = "";
+  persistState();
+  render();
+  showToast("Saldo adicionado aos slots.");
+}
+
+function handleRedistributeGains(event) {
+  event.preventDefault();
+
+  const strategyId = stateRefs.redistributeStrategy.value;
+  const slots = getStrategySlots(strategyId);
+  if (slots.length === 0) {
+    showToast("Nenhum slot encontrado para redistribuir.");
+    return;
+  }
+
+  const lockedSlots = slots.filter((slot) => slot.status === "aberto" || slot.status === "hold");
+  if (lockedSlots.length > 0) {
+    showToast("Finalize slots abertos ou hold antes de redistribuir gains.");
+    return;
+  }
+
+  const totalGains = slots.reduce((sum, slot) => sum + slot.gains, 0);
+  const baseGains = Math.floor(totalGains / slots.length);
+  const extraGains = totalGains % slots.length;
+  const updatedAt = nowIso();
+
+  slots.forEach((slot, index) => {
+    const nextGains = baseGains + (index < extraGains ? 1 : 0);
+    slot.gains = nextGains;
+    slot.status = nextGains > 0 ? "gain" : "zerado";
+    slot.startedOnce = nextGains > 0;
+    slot.updatedAt = updatedAt;
+  });
+
+  addHistory(
+    "Redistribuição",
+    `${totalGains} gains redistribuídos em ${slots.length} slots de ${STRATEGIES[strategyId].title}.`,
+    { strategyId, number: null }
+  );
+  persistState();
+  render();
+  showToast("Gains redistribuídos.");
+}
+
 function applySuggestion(strategyId) {
   if (hasOpenSlot()) {
     showToast("Existem slots em aberto, aguarde finalizar antes de reiniciar ciclo automático.");
@@ -1198,6 +1277,10 @@ function getSortedSlots() {
   );
 }
 
+function getStrategySlots(strategyId) {
+  return getSortedSlots().filter((slot) => slot.strategyId === strategyId);
+}
+
 function getSlotOrder(slot) {
   return Number.isFinite(Number(slot.order)) ? Number(slot.order) : Number.MAX_SAFE_INTEGER;
 }
@@ -1234,6 +1317,10 @@ function getNextSlotNumber(strategyId) {
 
 function getCurrentValue(slot) {
   return slot.baseValue * Math.pow(1 + slot.gainRate, slot.gains);
+}
+
+function roundCurrency(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
 function hasOpenSlot() {

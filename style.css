@@ -1,25 +1,25 @@
 :root {
   color-scheme: dark;
-  --bg: #070b12;
-  --bg-soft: #0b111a;
-  --panel: #111925;
-  --panel-2: #151f2d;
-  --line: #243142;
+  --bg: #0b0e11;
+  --bg-soft: #0e1117;
+  --panel: #12161f;
+  --panel-2: #171c26;
+  --line: #2b3139;
   --line-soft: rgba(255, 255, 255, 0.08);
-  --text: #f5f7fb;
-  --muted: #9aa8bb;
-  --green: #24d18d;
-  --green-soft: rgba(36, 209, 141, 0.14);
-  --yellow: #f7c948;
-  --yellow-soft: rgba(247, 201, 72, 0.14);
-  --orange: #ff7a3d;
-  --orange-soft: rgba(255, 122, 61, 0.15);
+  --text: #f5f5f5;
+  --muted: #9aa4b2;
+  --green: #0ecb81;
+  --green-soft: rgba(14, 203, 129, 0.15);
+  --yellow: #f0b90b;
+  --yellow-soft: rgba(240, 185, 11, 0.16);
+  --orange: #f6465d;
+  --orange-soft: rgba(246, 70, 93, 0.15);
   --gray: #8791a1;
   --gray-soft: rgba(135, 145, 161, 0.14);
-  --cyan: #51c8ff;
-  --red: #ff5f63;
-  --red-soft: rgba(255, 95, 99, 0.15);
-  --shadow: 0 16px 42px rgba(0, 0, 0, 0.24);
+  --cyan: #f0b90b;
+  --red: #f6465d;
+  --red-soft: rgba(246, 70, 93, 0.15);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.35);
   --radius: 8px;
 }
 
@@ -36,8 +36,8 @@ body {
   min-height: 100%;
   margin: 0;
   background:
-    linear-gradient(180deg, rgba(81, 200, 255, 0.05), transparent 28rem),
-    linear-gradient(135deg, #070b12 0%, #0b1019 54%, #080b11 100%);
+    linear-gradient(180deg, rgba(240, 185, 11, 0.07), transparent 26rem),
+    linear-gradient(135deg, #0b0e11 0%, #11151d 56%, #080a0d 100%);
   color: var(--text);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -90,12 +90,12 @@ p {
   height: 44px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid rgba(36, 209, 141, 0.45);
+  border: 1px solid rgba(240, 185, 11, 0.58);
   border-radius: var(--radius);
   background:
-    linear-gradient(145deg, rgba(36, 209, 141, 0.18), rgba(81, 200, 255, 0.12)),
-    #0d151f;
-  color: var(--green);
+    linear-gradient(145deg, rgba(240, 185, 11, 0.22), rgba(14, 203, 129, 0.08)),
+    #11130f;
+  color: var(--yellow);
   font-weight: 900;
   box-shadow: var(--shadow);
 }
@@ -324,7 +324,7 @@ h1 {
 
 .management-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 420px);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 1.1fr) minmax(260px, 380px);
   gap: 10px;
   margin-top: 12px;
   padding: 10px;
@@ -346,6 +346,19 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.tool-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(90px, 0.7fr) minmax(128px, auto);
+  gap: 8px;
+  align-items: end;
+}
+
+.tool-form.single-action {
+  grid-template-columns: minmax(120px, 1fr) minmax(128px, auto);
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
 }
 
 .field {
@@ -420,8 +433,8 @@ textarea:focus {
 }
 
 .primary-button {
-  background: linear-gradient(135deg, #20c982, #51c8ff);
-  color: #06100d;
+  background: linear-gradient(135deg, #f0b90b, #f8d33a);
+  color: #120f05;
   font-weight: 900;
 }
 
@@ -913,6 +926,16 @@ button:disabled {
     grid-template-columns: 1fr 80px;
   }
 
+  .tool-form,
+  .tool-form.single-action {
+    grid-template-columns: 1fr 96px;
+  }
+
+  .tool-form .primary-button,
+  .tool-form .secondary-button {
+    grid-column: 1 / -1;
+  }
+
   .add-slot-form .primary-button {
     grid-column: 1 / -1;
   }
@@ -1160,7 +1183,18 @@ button:disabled {
     gap: 6px;
   }
 
+  .tool-form,
+  .tool-form.single-action {
+    grid-template-columns: minmax(0, 1fr) 76px;
+    gap: 6px;
+  }
+
   .add-slot-form .primary-button {
+    min-height: 34px;
+  }
+
+  .tool-form .primary-button,
+  .tool-form .secondary-button {
     min-height: 34px;
   }
 
