@@ -1,10 +1,11 @@
 "use strict";
 
-const STORAGE_KEY = "slotgain-control-state-v1";
+const STORAGE_KEY = "slotgain-caixeta-state-v1";
 const MAX_HISTORY = 220;
 const CLOUD_ENDPOINT =
-  "https://script.google.com/macros/s/AKfycbyW4OSUps3QD51_HZVsZiV8vSlyH0pCl4WiPtD7ihN3jYOH2TYo3nrfEl02HFnSvU8uAA/exec";
+  "https://script.google.com/macros/s/AKfycby8aMNlkQJ82UsjjwYRzSCXvx4DvdOZ2S-qj6NHVU0OEXrCU-JpPkhVXKQtwp-Ai-0S/exec";
 const CLOUD_SAVE_DEBOUNCE_MS = 900;
+let slotStatusFilter = "all";
 
 const STRATEGIES = {
   btc: {
@@ -64,7 +65,10 @@ function bindElements() {
   stateRefs.cryptoSummary = document.querySelector("#crypto-summary");
   stateRefs.suggestionsGrid = document.querySelector("#suggestions-grid");
   stateRefs.strategyFilter = document.querySelector("#strategy-filter");
-  stateRefs.statusFilter = document.querySelector("#status-filter");
+  stateRefs.slotStatusFilters = document.querySelector("#slot-status-filters");
+  stateRefs.filterCountAll = document.querySelector("#filter-count-all");
+  stateRefs.filterCountOpen = document.querySelector("#filter-count-open");
+  stateRefs.filterCountClosed = document.querySelector("#filter-count-closed");
   stateRefs.slotSearch = document.querySelector("#slot-search");
   stateRefs.addSlotForm = document.querySelector("#add-slot-form");
   stateRefs.addStrategy = document.querySelector("#add-strategy");
@@ -100,7 +104,7 @@ function bindElements() {
 
 function bindEvents() {
   stateRefs.strategyFilter.addEventListener("change", renderSlots);
-  stateRefs.statusFilter.addEventListener("change", renderSlots);
+  stateRefs.slotStatusFilters.addEventListener("click", handleSlotStatusFilter);
   stateRefs.slotSearch.addEventListener("input", renderSlots);
   stateRefs.addSlotForm.addEventListener("submit", handleAddSlots);
   stateRefs.balanceForm.addEventListener("submit", handleAddBalance);
@@ -419,9 +423,11 @@ function renderSlots() {
   const filteredSlots = getVisibleSlots();
 
   stateRefs.slotCount.textContent = `${filteredSlots.length} visíveis`;
+  renderSlotFilterCounts();
+  renderSlotFilterButtons();
 
   if (filteredSlots.length === 0) {
-    stateRefs.slotsContainer.innerHTML = `<div class="empty-state">Nenhum slot encontrado.</div>`;
+    stateRefs.slotsContainer.innerHTML = `<div class="empty-state">Nenhum slot encontrado neste filtro.</div>`;
     return;
   }
 
@@ -438,6 +444,29 @@ function renderSlots() {
     </div>
     ${renderGroupedSlotRows(filteredSlots)}
   `;
+}
+
+function handleSlotStatusFilter(event) {
+  const button = event.target.closest("button[data-slot-filter]");
+  if (!button) {
+    return;
+  }
+
+  slotStatusFilter = button.dataset.slotFilter;
+  renderSlots();
+}
+
+function renderSlotFilterCounts() {
+  const baseSlots = getSlotFilterBaseSlots();
+  stateRefs.filterCountAll.textContent = String(baseSlots.length);
+  stateRefs.filterCountOpen.textContent = String(baseSlots.filter((slot) => slot.status === "aberto").length);
+  stateRefs.filterCountClosed.textContent = String(baseSlots.filter(isRedistributableSlot).length);
+}
+
+function renderSlotFilterButtons() {
+  stateRefs.slotStatusFilters.querySelectorAll(".slot-filter-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.slotFilter === slotStatusFilter);
+  });
 }
 
 function renderGroupedSlotRows(slots) {
@@ -527,19 +556,27 @@ function getCompactStatusLabel(status) {
 }
 
 function getVisibleSlots() {
+  return getSlotFilterBaseSlots().filter((slot) => {
+    if (slotStatusFilter === "open") {
+      return slot.status === "aberto";
+    }
+
+    if (slotStatusFilter === "closed") {
+      return isRedistributableSlot(slot);
+    }
+
+    return true;
+  });
+}
+
+function getSlotFilterBaseSlots() {
   const filter = stateRefs.strategyFilter.value;
-  const statusFilter = stateRefs.statusFilter.value;
   const search = normalizeSearch(stateRefs.slotSearch.value);
 
   return getSortedSlots().filter((slot) => {
     if (filter !== "all" && slot.strategyId !== filter) {
       return false;
     }
-
-    if (statusFilter !== "all" && slot.status !== statusFilter) {
-      return false;
-    }
-
     if (!search) {
       return true;
     }
@@ -1018,6 +1055,7 @@ function handleAddBalance(event) {
   const strategyId = stateRefs.balanceStrategy.value;
   const amount = Number.parseFloat(String(stateRefs.balanceAmount.value).replace(",", "."));
   const slots = getStrategySlots(strategyId);
+  const closedSlots = slots.filter(isRedistributableSlot);
 
   if (!Number.isFinite(amount) || amount <= 0) {
     showToast("Informe um valor em USDT maior que zero.");
@@ -1029,20 +1067,25 @@ function handleAddBalance(event) {
     return;
   }
 
-  slots.forEach((slot) => {
+  if (closedSlots.length === 0) {
+    showToast("Nenhum slot fechado para adicionar saldo.");
+    return;
+  }
+
+  closedSlots.forEach((slot) => {
     slot.baseValue = roundCurrency(slot.baseValue + amount);
     slot.updatedAt = nowIso();
   });
 
   addHistory(
     "Saldo",
-    `${formatUsdt(amount)} adicionados ao valor base de cada slot em ${STRATEGIES[strategyId].title}.`,
+    `${formatUsdt(amount)} adicionados ao valor base de ${closedSlots.length} slots fechados em ${STRATEGIES[strategyId].title}.`,
     { strategyId, number: null }
   );
   stateRefs.balanceAmount.value = "";
   persistState();
   render();
-  showToast("Saldo adicionado aos slots.");
+  showToast(`Saldo adicionado em ${closedSlots.length} slots fechados.`);
 }
 
 function handleRedistributeGains(event) {

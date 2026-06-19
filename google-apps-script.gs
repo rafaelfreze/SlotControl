@@ -1,10 +1,10 @@
 const SPREADSHEET_ID = "";
-const STATE_SHEET = "SlotGain_Estado";
-const SLOTS_SHEET = "SlotGain_Slots";
-const HISTORY_SHEET = "SlotGain_Historico";
+const STATE_SHEET = "SlotGain_Caixeta_Estado";
+const SLOTS_SHEET = "SlotGain_Caixeta_Slots";
+const HISTORY_SHEET = "SlotGain_Caixeta_Historico";
 const STATE_CHUNK_SIZE = 40000;
-const APP_ASSET_BASE = "https://rafaelfreze.github.io/cripto";
-const APP_ASSET_VERSION = "slotgain-google-sheets-v9";
+const APP_ASSET_BASE = "https://rafaelfreze.github.io/caixeta";
+const APP_ASSET_VERSION = "slotgain-caixeta-v3";
 
 function doGet(e) {
   const action = String((e && e.parameter && e.parameter.action) || "").toLowerCase();
@@ -245,22 +245,22 @@ function getAppHtml_() {
                 <span id="slot-count">0 visiveis</span>
               </div>
             </div>
+            <div id="slot-status-filters" class="slot-status-filters" aria-label="Filtro rapido de slots">
+              <button class="slot-filter-button active" type="button" data-slot-filter="all">
+                Todos <strong id="filter-count-all">0</strong>
+              </button>
+              <button class="slot-filter-button" type="button" data-slot-filter="open">
+                Abertos <strong id="filter-count-open">0</strong>
+              </button>
+              <button class="slot-filter-button" type="button" data-slot-filter="closed">
+                Fechados <strong id="filter-count-closed">0</strong>
+              </button>
+            </div>
             <div id="slots-container" class="slots-list"></div>
           </section>
         </section>
 
         <section class="controls-panel" aria-label="Controles">
-          <div class="field">
-            <label for="status-filter">Status</label>
-            <select id="status-filter">
-              <option value="all">Todos</option>
-              <option value="aberto">Abertos</option>
-              <option value="hold">Hold</option>
-              <option value="gain">Gain/Disponiveis</option>
-              <option value="zerado">Zerados</option>
-            </select>
-          </div>
-
           <div class="field search-field">
             <label for="slot-search">Busca por slot</label>
             <input id="slot-search" type="search" placeholder="Ex.: BTC, 7, hold, gain" autocomplete="off">

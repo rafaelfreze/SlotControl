@@ -322,7 +322,7 @@ h1 {
 
 .controls-panel {
   display: grid;
-  grid-template-columns: 150px minmax(210px, 1fr);
+  grid-template-columns: minmax(210px, 1fr);
   gap: 10px;
   margin-bottom: 10px;
   padding: 10px;
@@ -520,6 +520,39 @@ button:disabled {
   padding: 0 28px 0 9px;
   font-size: 0.78rem;
   font-weight: 850;
+}
+
+.slot-status-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.slot-filter-button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.slot-filter-button strong {
+  color: var(--text);
+  font-weight: 950;
+}
+
+.slot-filter-button.active {
+  border-color: rgba(240, 185, 11, 0.48);
+  background: var(--yellow-soft);
+  color: var(--yellow);
+}
+
+.slot-filter-button.active strong {
+  color: var(--yellow);
 }
 
 .slots-list {
@@ -1234,6 +1267,17 @@ button:disabled {
     font-size: 0.72rem;
   }
 
+  .slot-status-filters {
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+
+  .slot-filter-button {
+    min-height: 30px;
+    padding: 0 4px;
+    font-size: 0.68rem;
+  }
+
   .section-heading span {
     font-size: 0.78rem;
     white-space: nowrap;
@@ -1271,13 +1315,13 @@ button:disabled {
     align-items: start;
     gap: 5px 7px;
     min-width: 0;
-    min-height: 82px;
+    min-height: 74px;
     border: 0;
     border-bottom: 1px solid var(--line-soft);
     border-radius: 0;
     background: rgba(17, 25, 37, 0.82);
     box-shadow: none;
-    padding: 7px 8px;
+    padding: 5px 7px;
   }
 
   .slot-row:last-child {
@@ -1315,7 +1359,7 @@ button:disabled {
 
   .move-button {
     width: 22px;
-    min-height: 22px;
+    min-height: 20px;
     padding: 0;
     font-size: 0.7rem;
   }
@@ -1328,7 +1372,7 @@ button:disabled {
       "top top"
       "gains meta";
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     min-width: 0;
   }
 
@@ -1339,7 +1383,7 @@ button:disabled {
     gap: 8px;
     grid-area: top;
     color: var(--text);
-    font-size: 0.78rem;
+    font-size: 0.74rem;
     font-weight: 900;
   }
 
@@ -1352,7 +1396,7 @@ button:disabled {
   .slot-mobile-gains {
     grid-area: gains;
     color: var(--muted);
-    font-size: 0.98rem;
+    font-size: 0.92rem;
     line-height: 1;
     font-weight: 950;
     white-space: nowrap;
@@ -1366,7 +1410,7 @@ button:disabled {
     margin: 0;
     grid-area: meta;
     color: var(--muted);
-    font-size: 0.98rem;
+    font-size: 0.92rem;
     font-weight: 750;
     line-height: 1;
     white-space: nowrap;
@@ -1391,7 +1435,8 @@ button:disabled {
     align-items: center;
     border-radius: 7px;
     padding: 2px 5px;
-    font-size: 0.86rem;
+    font-size: 0.78rem;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
     font-weight: 950;
     text-transform: uppercase;
   }
@@ -1425,15 +1470,15 @@ button:disabled {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-content: stretch;
-    gap: 4px;
+    gap: 3px;
   }
 
   .slot-button {
     min-width: 0;
-    min-height: 24px;
+    min-height: 21px;
     border-radius: 6px;
-    padding: 0 4px;
-    font-size: 0.62rem;
+    padding: 0 3px;
+    font-size: 0.58rem;
     line-height: 1;
   }
 

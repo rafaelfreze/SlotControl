@@ -6,7 +6,11 @@ Web app para controle pessoal de operações cripto por slots. Ele salva uma có
 
 O app já está configurado para usar esta URL do Google Apps Script como versão online principal:
 
-`https://script.google.com/macros/s/AKfycbyW4OSUps3QD51_HZVsZiV8vSlyH0pCl4WiPtD7ihN3jYOH2TYo3nrfEl02HFnSvU8uAA/exec`
+`https://script.google.com/macros/s/AKfycby8aMNlkQJ82UsjjwYRzSCXvx4DvdOZ2S-qj6NHVU0OEXrCU-JpPkhVXKQtwp-Ai-0S/exec`
+
+Os arquivos visuais desta cópia devem ficar publicados no GitHub Pages em:
+
+`https://rafaelfreze.github.io/caixeta/`
 
 Abra o SlotGain por esse link do Apps Script para sincronizar direto com a planilha. A versão do GitHub Pages pode continuar online como cópia visual/local, mas navegadores costumam bloquear a sincronização direta entre GitHub Pages e Apps Script por política de segurança.
 
@@ -28,11 +32,13 @@ Para a sincronização funcionar, o projeto do Google Apps Script dessa URL prec
 10. Se o Google pedir autorização, autorize o acesso à planilha.
 11. Abra a URL `/exec` do Apps Script. Ela deve mostrar o SlotGain Control, não apenas um JSON.
 
+Esta cópia usa uma chave própria no navegador: `slotgain-caixeta-state-v1`. Isso evita misturar dados com outros apps publicados no mesmo domínio `rafaelfreze.github.io`.
+
 Depois disso, o app salva automaticamente nas abas:
 
-- `SlotGain_Estado`: backup completo do app.
-- `SlotGain_Slots`: espelho dos slots em formato de planilha.
-- `SlotGain_Historico`: histórico das ações.
+- `SlotGain_Caixeta_Estado`: backup completo do app.
+- `SlotGain_Caixeta_Slots`: espelho dos slots em formato de planilha.
+- `SlotGain_Caixeta_Historico`: histórico das ações.
 
 O app também continua salvando uma cópia no navegador. Se a internet falhar, ele preserva os dados locais e tenta sincronizar novamente quando você usar o botão **Sincronizar agora**.
 
@@ -63,6 +69,12 @@ No celular, a lista fica separada por estratégia e cada slot mostra os gains co
 
 Cada slot mostra estratégia, quantidade de gains, valor e status na mesma faixa de destaque, além dos botões pequenos de ação. O número do slot continua existindo, mas fica discreto.
 
+Na área de slots existem filtros rápidos:
+
+- Todos: mostra todos os slots da moeda/busca atual.
+- Abertos: mostra apenas slots com status Aberto.
+- Fechados: mostra apenas slots fechados/zerados, ou seja, elegíveis para saldo e redistribuição.
+
 ## Dashboard
 
 O topo mostra o resumo geral:
@@ -76,7 +88,7 @@ A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots com s
 
 No final da página também ficam as ferramentas de manutenção:
 
-- Adicionar saldo: soma um valor em USDT ao valor base de cada slot da estratégia escolhida.
+- Adicionar saldo: soma um valor em USDT ao valor base apenas dos slots fechados/zerados da estratégia escolhida. Slots abertos e hold não são alterados.
 - Redistribuir gains: soma os gains dos slots fechados da estratégia e redistribui de forma equilibrada apenas entre esses slots, sem mudar a ordem manual. Slots abertos ou hold são ignorados.
 
 ## Filtros
