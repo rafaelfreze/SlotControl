@@ -1,0 +1,49 @@
+export type StrategyView = {
+  id: string;
+  key: string;
+  title: string;
+  display_name: string;
+  asset: string;
+  base_value: number | string;
+  gain_rate: number | string;
+  drop_percent: number | string;
+  restart_amount: number;
+  redistribution_target: number;
+  sort_order: number;
+};
+
+export type SlotStatus = "zerado" | "aberto" | "gain" | "hold";
+
+export type SlotView = {
+  id: string;
+  strategy_id: string;
+  status: SlotStatus;
+  gains: number;
+  base_value: number | string;
+  gain_rate: number | string;
+  slot_number: number;
+  sort_order: number;
+  notes: string;
+  updated_at: string | null;
+  strategy?: StrategyView | null;
+};
+
+export type HistoryEvent = {
+  id: string;
+  action: string;
+  detail: string;
+  event_at: string;
+  strategy_key: string | null;
+  slot_number: number | null;
+};
+
+export type SlotRow = Omit<SlotView, "strategy"> & {
+  strategies?: StrategyView | StrategyView[] | null;
+};
+
+export function normalizeSlot(slot: SlotRow): SlotView {
+  return {
+    ...slot,
+    strategy: Array.isArray(slot.strategies) ? slot.strategies[0] || null : slot.strategies || null
+  };
+}

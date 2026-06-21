@@ -3,11 +3,11 @@ import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
-import { DashboardClient } from "./dashboard-client";
+import { ConfigClient } from "./config-client";
 
-export const metadata: Metadata = { title: "Dashboard" };
+export const metadata: Metadata = { title: "Configuracoes" };
 
-export default async function DashboardPage({ searchParams }: { searchParams?: { notice?: string } }) {
+export default async function ConfigPage({ searchParams }: { searchParams?: { notice?: string } }) {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
   }
@@ -33,13 +33,13 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       .select(
         "id,strategy_id,status,gains,base_value,gain_rate,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,redistribution_target,sort_order)"
       )
-      .order("sort_order", { ascending: true }),
+      .order("sort_order", { ascending: true })
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error;
 
   return (
-    <DashboardClient
+    <ConfigClient
       userEmail={user.email || "Usuario"}
       strategies={(strategiesResponse.data ?? []) as StrategyView[]}
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}

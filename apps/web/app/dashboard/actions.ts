@@ -79,9 +79,12 @@ function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
-function finish(message: string): never {
+function finish(message: string, path = "/slots"): never {
   revalidatePath("/dashboard");
-  redirect(`/dashboard?notice=${encodeURIComponent(message)}`);
+  revalidatePath("/slots");
+  revalidatePath("/historico");
+  revalidatePath("/config");
+  redirect(`${path}?notice=${encodeURIComponent(message)}`);
 }
 
 async function addHistory(
@@ -158,7 +161,7 @@ export async function createStrategy(formData: FormData) {
     });
   }
 
-  finish("Estrategia criada.");
+  finish("Estrategia criada.", "/config");
 }
 
 export async function updateStrategy(formData: FormData) {
@@ -201,7 +204,7 @@ export async function updateStrategy(formData: FormData) {
     });
   }
 
-  finish("Estrategia atualizada.");
+  finish("Estrategia atualizada.", "/config");
 }
 
 export async function deleteStrategy(formData: FormData) {
@@ -219,7 +222,7 @@ export async function deleteStrategy(formData: FormData) {
     strategyId: null
   });
 
-  finish("Estrategia removida.");
+  finish("Estrategia removida.", "/config");
 }
 
 export async function createSlots(formData: FormData) {
@@ -271,6 +274,54 @@ export async function createSlots(formData: FormData) {
   });
 
   finish("Slots adicionados.");
+}
+
+export async function moveSlot(formData: FormData) {
+  const { supabase, user } = await getUserClient();
+  const slot = await getSlotFromForm(supabase, user.id, formData);
+  const direction = formText(formData, "direction");
+
+  if (!slot || !["up", "down"].includes(direction)) {
+    return;
+  }
+
+  const { data: strategySlots } = await supabase
+    .from("slots")
+    .select("id,slot_number,sort_order")
+    .eq("user_id", user.id)
+    .eq("strategy_id", slot.strategy_id)
+    .order("sort_order", { ascending: true });
+
+  const orderedSlots = strategySlots || [];
+  const currentIndex = orderedSlots.findIndex((item) => item.id === slot.id);
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+  const targetSlot = orderedSlots[targetIndex];
+
+  if (currentIndex < 0 || !targetSlot) {
+    finish("Slot ja esta no limite da ordem.");
+  }
+
+  await Promise.all([
+    supabase
+      .from("slots")
+      .update({ sort_order: Number(targetSlot.sort_order || 0) })
+      .eq("id", slot.id)
+      .eq("user_id", user.id),
+    supabase
+      .from("slots")
+      .update({ sort_order: Number(slot.sort_order || 0) })
+      .eq("id", targetSlot.id)
+      .eq("user_id", user.id)
+  ]);
+
+  await addHistory("Ordem", `Slot ${slot.slot_number} movido ${direction === "up" ? "para cima" : "para baixo"}.`, {
+    userId: user.id,
+    strategyId: slot.strategy_id,
+    slotId: slot.id,
+    slotNumber: slot.slot_number
+  });
+
+  finish("Ordem do slot atualizada.");
 }
 
 export async function openSlot(formData: FormData) {

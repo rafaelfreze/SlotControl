@@ -527,11 +527,20 @@ p {
   text-transform: uppercase;
 }
 
+.dashboard-tabs a span {
+  display: none;
+}
+
+.dashboard-tabs a strong {
+  font: inherit;
+}
+
 .dashboard-notice {
   margin: 0;
 }
 
-.dashboard-tabs a:hover {
+.dashboard-tabs a:hover,
+.dashboard-tabs a.active {
   background: var(--yellow-soft);
   color: var(--yellow);
 }
@@ -609,6 +618,142 @@ p {
   margin-top: 2px;
   color: var(--text);
   font-size: 0.9rem;
+}
+
+.dashboard-only-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.quick-flow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.quick-flow-card {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 9px;
+}
+
+.quick-flow-card.hot {
+  border-color: var(--line-strong);
+  background: var(--yellow-soft);
+}
+
+.quick-flow-card span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.quick-flow-card strong {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.operation-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.55fr);
+  gap: 6px;
+}
+
+.operation-strip > form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: rgba(240, 185, 11, 0.08);
+  padding: 6px;
+}
+
+.operation-strip select,
+.operation-strip input {
+  min-height: 38px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: 0;
+  background: #0a1018;
+  color: var(--text);
+  padding: 0 10px;
+}
+
+.mini-drawer {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.mini-drawer summary {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  padding: 0 10px;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.mini-drawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.mini-drawer summary::after {
+  content: "+";
+  color: var(--yellow);
+  font-size: 1rem;
+}
+
+.mini-drawer[open] summary::after {
+  content: "-";
+}
+
+.mini-drawer > .tool-form,
+.mini-drawer > .settings-list,
+.mini-drawer > .strategy-list {
+  padding: 8px;
+}
+
+.mini-drawer > .strategy-create-form {
+  margin: 8px;
+  padding: 0;
+}
+
+.slot-main-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.edit-drawer {
+  background: rgba(92, 200, 255, 0.04);
+}
+
+.edit-drawer .slot-edit-form {
+  padding: 6px;
+}
+
+.secondary-create {
+  padding: 0;
+}
+
+.compact-create-form {
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+}
+
+.history-page-panel,
+.config-summary-panel {
+  max-width: 760px;
 }
 
 .dashboard-grid {
@@ -1209,27 +1354,15 @@ p {
     line-height: 1;
   }
 
-  .dashboard-tabs a::before {
+  .dashboard-tabs a span {
     display: block;
-    margin-bottom: 3px;
     color: var(--yellow);
     font-size: 0.9rem;
   }
 
-  .dashboard-tabs a:nth-child(1)::before {
-    content: "$";
-  }
-
-  .dashboard-tabs a:nth-child(2)::before {
-    content: "#";
-  }
-
-  .dashboard-tabs a:nth-child(3)::before {
-    content: "H";
-  }
-
-  .dashboard-tabs a:nth-child(4)::before {
-    content: "C";
+  .dashboard-tabs a strong {
+    display: block;
+    margin-top: 2px;
   }
 
   .metric-grid {
@@ -1254,6 +1387,29 @@ p {
   .crypto-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 5px;
+  }
+
+  .dashboard-only-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-only-summary .metric-card {
+    min-height: 54px;
+  }
+
+  .quick-flow-grid,
+  .operation-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-flow-card {
+    min-height: 50px;
+    padding: 8px;
+  }
+
+  .operation-strip > form {
+    grid-template-columns: minmax(0, 1fr) 118px;
+    padding: 5px;
   }
 
   .crypto-card {
@@ -1335,13 +1491,24 @@ p {
     grid-template-columns: 1fr;
   }
 
-  .quick-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .quick-actions,
+  .slot-main-actions {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .slot-button {
     min-height: 34px;
-    font-size: 0.68rem;
+    padding: 0 3px;
+    font-size: 0.62rem;
+  }
+
+  .compact-create-form {
+    grid-template-columns: 1fr;
+  }
+
+  .mini-drawer summary {
+    min-height: 36px;
+    font-size: 0.7rem;
   }
 
   .compact-heading {
