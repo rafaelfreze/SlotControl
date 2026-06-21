@@ -1,6 +1,6 @@
 # SlotGain Control Web
 
-Novo aplicativo SaaS do SlotGain Control, criado em paralelo a versao Google Sheets.
+Aplicacao SaaS atual do SlotGain Control, criada com Next.js, Supabase Auth, Supabase Database e deploy preparado para Vercel.
 
 ## Rodar localmente
 

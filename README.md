@@ -1,145 +1,114 @@
 # SlotGain Control
 
-Web app para controle pessoal de operações cripto por slots. Ele salva uma cópia no `localStorage` do navegador e pode sincronizar tudo com Google Sheets usando Google Apps Script.
+SlotGain Control e um SaaS simples para controle pessoal de operacoes cripto por slots. A versao atual usa Next.js, Supabase Auth, Supabase Database com RLS e deploy preparado para Vercel.
 
-## Modo online com Google Sheets
+## Stack
 
-O app já está configurado para usar esta URL do Google Apps Script como versão online principal:
+- Next.js App Router
+- React
+- Supabase Auth
+- Supabase Database
+- Row Level Security
+- Vercel
+- PWA inicial
 
-`https://script.google.com/macros/s/AKfycbyW4OSUps3QD51_HZVsZiV8vSlyH0pCl4WiPtD7ihN3jYOH2TYo3nrfEl02HFnSvU8uAA/exec`
+## Estrutura
 
-Os arquivos visuais desta cópia devem ficar publicados no GitHub Pages em:
+```text
+apps/web/              Aplicacao Next.js
+supabase/schema.sql    Schema do banco, triggers e policies RLS
+docs/                  Documentacao tecnica da migracao
+.env.local.example     Exemplo de variaveis de ambiente
+```
 
-`https://rafaelfreze.github.io/cripto/`
+## Rodar localmente
 
-Abra o SlotGain por esse link do Apps Script para sincronizar direto com a planilha. A versão do GitHub Pages pode continuar online como cópia visual/local, mas navegadores costumam bloquear a sincronização direta entre GitHub Pages e Apps Script por política de segurança.
+```bash
+cd apps/web
+npm install
+npm run dev
+```
 
-Para a sincronização funcionar, o projeto do Google Apps Script dessa URL precisa estar com o código atualizado do arquivo `google-apps-script.gs`.
+Abra `http://localhost:3000`.
 
-### Como configurar a planilha
+## Variaveis de ambiente
 
-1. Abra sua planilha no Google Sheets.
-2. Vá em **Extensões > Apps Script**.
-3. Apague o código antigo do arquivo `Code.gs`.
-4. Cole todo o conteúdo do arquivo `google-apps-script.gs`.
-5. Clique em **Salvar**.
-6. Vá em **Implantar > Gerenciar implantações**.
-7. Edite a implantação do Web App.
-8. Use estas opções:
-   - Executar como: **Eu**.
-   - Quem pode acessar: **Qualquer pessoa**.
-9. Crie uma **nova versão** e clique em **Implantar**.
-10. Se o Google pedir autorização, autorize o acesso à planilha.
-11. Abra a URL `/exec` do Apps Script. Ela deve mostrar o SlotGain Control, não apenas um JSON.
+Crie `apps/web/.env.local` com:
 
-Depois disso, o app salva automaticamente nas abas:
+```bash
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_APP_NAME="SlotGain Control"
+NEXT_PUBLIC_LEGACY_STORAGE_KEY=slotgain-control-state-v1
+```
 
-- `SlotGain_Estado`: backup completo do app.
-- `SlotGain_Slots`: espelho dos slots em formato de planilha.
-- `SlotGain_Historico`: histórico das ações.
+O arquivo `.env.local` nao deve ser commitado.
 
-O app também continua salvando uma cópia no navegador. Se a internet falhar, ele preserva os dados locais e tenta sincronizar novamente quando você usar o botão **Sincronizar agora**.
+## Banco Supabase
 
-Se aparecer **"Abra pelo link do Apps Script para sincronizar"**, você está usando o link do GitHub Pages. Abra a URL do Apps Script para operar com salvamento online completo.
+Execute o arquivo abaixo no SQL Editor do Supabase:
 
-## Como usar
+```text
+supabase/schema.sql
+```
 
-1. Abra o arquivo `index.html` no navegador.
-2. Os slots iniciais já são criados automaticamente:
-   - BTC 1%: 25 slots com base de 10 USDT.
-   - SOL 5%: 10 slots com base de 25 USDT.
-3. A tela de slots aparece em formato de lista compacta.
-4. Cada linha mostra estratégia, número do slot, status, gains, valor atual, última atualização e ações rápidas.
-5. Use os botões pequenos de cada linha:
-   - Setas: movem o slot manualmente para cima ou para baixo.
-   - Abrir: marca o slot como Aberto sem mudar a posição dele.
-   - +Gain: soma um gain, recalcula o valor e muda o slot para Gain/Disponível.
-   - Zerar: limpa status, gains e observações depois de confirmação.
-   - Editar: ajusta status, gains e observações manualmente, incluindo Preso/Hold se precisar.
+Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-## Lista compacta
+## Supabase Auth
 
-A lista tem ordem manual. Cada slot fica no local que você definir com as setas de subir e descer.
+Para desenvolvimento local, configure no painel do Supabase:
 
-Abrir, registrar gain, zerar ou editar um slot não muda a posição dele na lista. A ordem manual fica salva no navegador e também na planilha quando a sincronização estiver ativa.
+```text
+Site URL: http://localhost:3000
+Redirect URL: http://localhost:3000/auth/callback
+```
 
-No celular, a lista fica separada por estratégia e cada slot mostra os gains como principal destaque visual.
+Depois do deploy, adicione tambem:
 
-Cada slot mostra estratégia, quantidade de gains, valor e status na mesma faixa de destaque, além dos botões pequenos de ação. O número do slot continua existindo, mas fica discreto.
+```text
+Site URL: https://SEU-DOMINIO.vercel.app
+Redirect URL: https://SEU-DOMINIO.vercel.app/auth/callback
+```
 
-Na área de slots existem filtros rápidos:
+## Deploy na Vercel
 
-- Todos: mostra todos os slots da moeda/busca atual.
-- Abertos: mostra apenas slots com status Aberto.
-- Fechados: mostra apenas slots fechados/zerados, ou seja, elegíveis para saldo e redistribuição.
+Ao importar o repositorio na Vercel:
 
-## Dashboard
+```text
+Framework Preset: Next.js
+Root Directory: apps/web
+Install Command: npm install
+Build Command: npm run build
+```
 
-O topo mostra o resumo geral:
+Configure as variaveis na Vercel:
 
-- Total atualizado.
-- Lucro acumulado.
+```bash
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
+NEXT_PUBLIC_APP_NAME="SlotGain Control"
+NEXT_PUBLIC_LEGACY_STORAGE_KEY=slotgain-control-state-v1
+```
 
-Abaixo dele aparece o resumo por cripto, calculado automaticamente por estratégia, com lucro, gains e slots abertos de BTC, SOL e outras moedas que forem adicionadas ao sistema.
+## Validacao
 
-A ordem visual da tela é: resumo geral, resumo por cripto, lista de slots com seletor de moeda no cabeçalho, filtros/adicionar slots, ferramentas de backup e Google Sheets no final.
+```bash
+cd apps/web
+npm run typecheck
+npm run lint
+npm run build
+```
 
-No final da página também ficam as ferramentas de manutenção:
+## Funcionalidades atuais
 
-- Adicionar saldo: soma um valor em USDT ao valor base apenas dos slots fechados/zerados da estratégia escolhida. Slots abertos e hold não são alterados.
-- Redistribuir gains: soma os gains dos slots fechados da estratégia e redistribui de forma equilibrada apenas entre esses slots, sem mudar a ordem manual. Slots abertos ou hold são ignorados.
-
-## Filtros
-
-Você pode filtrar por estratégia, por status e também buscar por texto ou número do slot.
-
-## Regras configuradas
-
-### BTC 1%
-
-- Nome exibido: BTC 1% | Novo Slot 2%
-- 25 slots iniciais.
-- Valor base por slot: 10 USDT.
-- Fórmula: `10 x (1,01 ^ quantidade_de_gains)`.
-- Novo slot a cada queda de 2%.
-- Se houver slots zerados, sugere o próximo zerado.
-- Se todos os 25 slots iniciais já foram usados e não houver slot aberto, sugere 5 slots de menor valor atual.
-
-### SOL 5%
-
-- Nome exibido: SOL 5% | Novo Slot 12%
-- 10 slots iniciais.
-- Valor base por slot: 25 USDT.
-- Fórmula: `25 x (1,05 ^ quantidade_de_gains)`.
-- Novo slot a cada queda de 12%.
-- Se houver slots zerados, sugere o próximo zerado.
-- Se todos os 10 slots iniciais já foram usados e não houver slot aberto, sugere 3 slots de menor valor atual.
-
-## Histórico
-
-O histórico de ações fica recolhido por padrão. Abra a seção no fim da tela para ver aberturas, gains, holds, edições, importações e resets.
-
-## Backup
-
-Mesmo com Google Sheets, é recomendado clicar em **Backup JSON** de vez em quando para baixar um arquivo com todos os slots, histórico, edições e observações.
-
-## Restaurar backup
-
-Clique em **Importar JSON**, escolha um backup exportado pelo app e confirme a substituição dos dados atuais do navegador.
-
-## Exportar CSV
-
-Clique em **CSV** para baixar uma planilha com estratégia, ordem manual, número do slot, status, gains, valor base, valor atual, última atualização e observações.
-
-## Hospedar no GitHub Pages
-
-1. Crie um repositório no GitHub.
-2. Envie os arquivos `index.html`, `style.css`, `script.js` e `README.md` para a branch principal.
-3. No GitHub, abra **Settings > Pages**.
-4. Em **Build and deployment**, escolha **Deploy from a branch**.
-5. Selecione a branch principal e a pasta `/root`.
-6. Salve. O GitHub mostrará a URL pública do app.
-
-## Usar no iPhone
-
-Abra a URL do app no Safari, toque em compartilhar e escolha **Adicionar à Tela de Início**. O app continuará usando o armazenamento local desse navegador, então mantenha backups JSON periódicos.
+- Cadastro, login e logout com Supabase Auth
+- Dashboard protegido
+- Estrategias por usuario
+- Slots por usuario
+- Filtros por status
+- Historico de acoes
+- Adicionar saldo
+- Redistribuir gains
+- Layout escuro mobile-first inspirado em ferramentas de trading

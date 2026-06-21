@@ -2,14 +2,14 @@
 
 Este documento registra a Etapa 1 da migracao do SlotGain Control para um SaaS simples com autenticacao, dados por usuario, Supabase e deploy na Vercel.
 
-## Estado atual
+## Estado anterior preservado em historico
 
-O projeto atual e uma aplicacao estatica composta por:
+Antes da limpeza do repositorio, o projeto era uma aplicacao estatica composta por:
 
 - `index.html`: estrutura da tela.
 - `style.css`: visual responsivo, tema escuro e adaptacao mobile.
 - `script.js`: estado, regras de negocio, renderizacao, localStorage, backup, CSV e sincronizacao online.
-- `google-apps-script.gs`: backend atual no Google Apps Script, usado para salvar/carregar um snapshot completo em Google Sheets.
+- `google-apps-script.gs`: backend antigo no Google Apps Script, usado para salvar/carregar um snapshot completo em Google Sheets.
 
 O app usa a chave `slotgain-control-state-v1` no `localStorage`. Quando nao existe estado salvo, ele cria automaticamente:
 
@@ -30,13 +30,13 @@ O estado atual tem esta forma principal:
 
 Cada slot guarda estrategia, numero, ordem manual, status, gains, valor base, taxa de gain, sinal de uso anterior, datas e observacoes. O historico registra acoes como abertura, gain, reset, edicao, saldo, redistribuicao, importacao e reset geral.
 
-## Preservacao da versao atual
+## Preservacao feita durante a migracao
 
-A implementacao Google Sheets foi copiada para:
+Durante a migracao, a implementacao antiga foi copiada temporariamente para:
 
 `legacy/google-sheets-v1/`
 
-Essa pasta deve ser tratada como referencia congelada da versao anterior. A migracao para Supabase deve acontecer em paralelo, sem apagar ou alterar a versao atual ate o novo app estar validado.
+Depois que o SaaS Next.js/Supabase passou a ser a versao principal, os arquivos antigos foram removidos do repositorio para evitar confusao no GitHub e na Vercel. Este documento permanece apenas como registro tecnico da migracao.
 
 ## Modelo Supabase
 
@@ -61,7 +61,7 @@ O schema tambem prepara um gatilho de novo usuario. Quando alguem cria conta pel
 
 ## Etapas de migracao
 
-1. Preservar a versao Google Sheets, documentar arquitetura atual, criar schema Supabase com RLS e preparar variaveis `.env.local`.
+1. Preservar a versao antiga durante a transicao, documentar arquitetura anterior, criar schema Supabase com RLS e preparar variaveis `.env.local`.
 2. Criar um novo app Next.js em paralelo, com Supabase client, cadastro, login, logout e dashboard protegido.
 3. Extrair a logica de slots para modulos reutilizaveis no novo app, mantendo calculos e regras atuais.
 4. Persistir estrategias, slots, historico e configuracoes no Supabase por usuario.

@@ -53,8 +53,8 @@ export default async function HomePage() {
           <p className="eyebrow">Controle por slots com dados privados</p>
           <h1>Seu painel de slots cripto pronto para virar SaaS.</h1>
           <p className="hero-text">
-            A nova versao nasce em paralelo ao Google Sheets, com Supabase Auth,
-            dashboard protegido e base preparada para dados separados por usuario.
+            Controle seus slots com Supabase Auth, dashboard protegido e dados
+            separados por usuario.
           </p>
           <div className="hero-actions">
             <Link className="solid-link large" href={email ? "/dashboard" : "/cadastro"}>
