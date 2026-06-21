@@ -249,7 +249,6 @@ export async function createSlots(formData: FormData) {
   const rows = Array.from({ length: quantity }, (_, index) => ({
     user_id: user.id,
     strategy_id: strategy.id,
-    legacy_id: `slot-${strategy.key}-${nextNumber + index}`,
     slot_number: nextNumber + index,
     sort_order: nextOrder + index,
     status: "zerado",

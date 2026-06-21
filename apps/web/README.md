@@ -21,7 +21,6 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
-NEXT_PUBLIC_LEGACY_STORAGE_KEY=slotgain-control-state-v1
 ```
 
 No Supabase, execute `../../supabase/schema.sql` antes de testar cadastro e dashboard com dados.
@@ -53,7 +52,6 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
-NEXT_PUBLIC_LEGACY_STORAGE_KEY=slotgain-control-state-v1
 ```
 
 Depois do primeiro deploy, copie a URL final da Vercel e volte ao Supabase Auth para adicionar:

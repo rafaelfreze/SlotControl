@@ -40,7 +40,6 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
-NEXT_PUBLIC_LEGACY_STORAGE_KEY=slotgain-control-state-v1
 ```
 
 O arquivo `.env.local` nao deve ser commitado.
@@ -89,7 +88,6 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
-NEXT_PUBLIC_LEGACY_STORAGE_KEY=slotgain-control-state-v1
 ```
 
 ## Validacao

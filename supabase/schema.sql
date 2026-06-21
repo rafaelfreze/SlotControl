@@ -49,7 +49,6 @@ create table if not exists public.slots (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   strategy_id uuid not null references public.strategies(id) on delete cascade,
-  legacy_id text,
   slot_number integer not null,
   sort_order integer not null,
   status text not null default 'zerado',
@@ -74,7 +73,6 @@ create table if not exists public.history_events (
   user_id uuid not null references auth.users(id) on delete cascade,
   strategy_id uuid references public.strategies(id) on delete set null,
   slot_id uuid references public.slots(id) on delete set null,
-  legacy_id text,
   action text not null,
   detail text not null default '',
   strategy_key text,
@@ -101,15 +99,6 @@ create table if not exists public.user_exports (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.legacy_imports (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  source text not null,
-  source_version text,
-  imported_snapshot jsonb,
-  imported_at timestamptz not null default now()
-);
-
 create index if not exists strategies_user_id_idx on public.strategies (user_id);
 create index if not exists slots_user_id_idx on public.slots (user_id);
 create index if not exists slots_strategy_id_idx on public.slots (strategy_id);
@@ -117,7 +106,6 @@ create index if not exists slots_user_strategy_order_idx on public.slots (user_i
 create index if not exists history_events_user_event_idx on public.history_events (user_id, event_at desc);
 create index if not exists history_events_slot_id_idx on public.history_events (slot_id);
 create index if not exists user_exports_user_created_idx on public.user_exports (user_id, created_at desc);
-create index if not exists legacy_imports_user_imported_idx on public.legacy_imports (user_id, imported_at desc);
 
 drop trigger if exists profiles_set_updated_at on public.profiles;
 create trigger profiles_set_updated_at
@@ -203,7 +191,6 @@ begin
   insert into public.slots (
     user_id,
     strategy_id,
-    legacy_id,
     slot_number,
     sort_order,
     status,
@@ -215,7 +202,6 @@ begin
   select
     target_user_id,
     strategy.id,
-    'slot-btc-' || slot_number,
     slot_number,
     slot_number,
     'zerado',
@@ -232,7 +218,6 @@ begin
   insert into public.slots (
     user_id,
     strategy_id,
-    legacy_id,
     slot_number,
     sort_order,
     status,
@@ -244,7 +229,6 @@ begin
   select
     target_user_id,
     strategy.id,
-    'slot-sol-' || slot_number,
     slot_number,
     25 + slot_number,
     'zerado',
@@ -301,7 +285,6 @@ alter table public.slots enable row level security;
 alter table public.history_events enable row level security;
 alter table public.user_settings enable row level security;
 alter table public.user_exports enable row level security;
-alter table public.legacy_imports enable row level security;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
@@ -346,11 +329,5 @@ with check (user_id = auth.uid());
 drop policy if exists "Users can manage own exports" on public.user_exports;
 create policy "Users can manage own exports"
 on public.user_exports for all
-using (user_id = auth.uid())
-with check (user_id = auth.uid());
-
-drop policy if exists "Users can manage own legacy imports" on public.legacy_imports;
-create policy "Users can manage own legacy imports"
-on public.legacy_imports for all
 using (user_id = auth.uid())
 with check (user_id = auth.uid());
