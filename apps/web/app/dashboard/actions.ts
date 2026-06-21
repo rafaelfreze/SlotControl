@@ -79,6 +79,11 @@ function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
+function finish(message: string): never {
+  revalidatePath("/dashboard");
+  redirect(`/dashboard?notice=${encodeURIComponent(message)}`);
+}
+
 async function addHistory(
   action: string,
   detail: string,
@@ -153,7 +158,7 @@ export async function createStrategy(formData: FormData) {
     });
   }
 
-  revalidatePath("/dashboard");
+  finish("Estrategia criada.");
 }
 
 export async function updateStrategy(formData: FormData) {
@@ -196,7 +201,7 @@ export async function updateStrategy(formData: FormData) {
     });
   }
 
-  revalidatePath("/dashboard");
+  finish("Estrategia atualizada.");
 }
 
 export async function deleteStrategy(formData: FormData) {
@@ -214,7 +219,7 @@ export async function deleteStrategy(formData: FormData) {
     strategyId: null
   });
 
-  revalidatePath("/dashboard");
+  finish("Estrategia removida.");
 }
 
 export async function createSlots(formData: FormData) {
@@ -265,7 +270,7 @@ export async function createSlots(formData: FormData) {
     strategyKey: strategy.key
   });
 
-  revalidatePath("/dashboard");
+  finish("Slots adicionados.");
 }
 
 export async function openSlot(formData: FormData) {
@@ -287,7 +292,7 @@ export async function openSlot(formData: FormData) {
     slotNumber: slot.slot_number
   });
 
-  revalidatePath("/dashboard");
+  finish("Slot aberto.");
 }
 
 export async function registerGain(formData: FormData) {
@@ -311,7 +316,7 @@ export async function registerGain(formData: FormData) {
     slotNumber: slot.slot_number
   });
 
-  revalidatePath("/dashboard");
+  finish("Gain registrado.");
 }
 
 export async function resetSlot(formData: FormData) {
@@ -333,7 +338,7 @@ export async function resetSlot(formData: FormData) {
     slotNumber: slot.slot_number
   });
 
-  revalidatePath("/dashboard");
+  finish("Slot zerado.");
 }
 
 export async function updateSlot(formData: FormData) {
@@ -367,7 +372,7 @@ export async function updateSlot(formData: FormData) {
     slotNumber: slot.slot_number
   });
 
-  revalidatePath("/dashboard");
+  finish("Slot editado.");
 }
 
 export async function addBalance(formData: FormData) {
@@ -400,7 +405,7 @@ export async function addBalance(formData: FormData) {
     strategyId
   });
 
-  revalidatePath("/dashboard");
+  finish("Saldo adicionado.");
 }
 
 export async function redistributeGains(formData: FormData) {
@@ -447,7 +452,7 @@ export async function redistributeGains(formData: FormData) {
     strategyId
   });
 
-  revalidatePath("/dashboard");
+  finish("Gains redistribuidos.");
 }
 
 async function getSlotFromForm(

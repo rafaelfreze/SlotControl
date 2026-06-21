@@ -67,7 +67,7 @@ p {
   width: min(1180px, 100%);
   min-height: 100svh;
   margin: 0 auto;
-  padding: max(18px, env(safe-area-inset-top)) 16px 32px;
+  padding: max(14px, env(safe-area-inset-top)) 12px 32px;
 }
 
 .top-nav,
@@ -207,7 +207,7 @@ p {
 }
 
 .dashboard-header h1 {
-  font-size: clamp(1.8rem, 3vw, 2.8rem);
+  font-size: clamp(1.4rem, 3vw, 2.35rem);
 }
 
 .hero-text,
@@ -487,7 +487,7 @@ p {
 .dashboard-shell {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
   width: min(1440px, 100%);
 }
 
@@ -527,6 +527,10 @@ p {
   text-transform: uppercase;
 }
 
+.dashboard-notice {
+  margin: 0;
+}
+
 .dashboard-tabs a:hover {
   background: var(--yellow-soft);
   color: var(--yellow);
@@ -534,16 +538,17 @@ p {
 
 .metric-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .metric-card {
-  min-height: 76px;
-  padding: 10px;
+  min-height: 64px;
+  padding: 8px;
 }
 
 .metric-card strong {
-  font-size: clamp(1rem, 2vw, 1.25rem);
+  margin-top: 5px;
+  font-size: clamp(0.92rem, 2vw, 1.18rem);
   line-height: 1.05;
   overflow-wrap: anywhere;
 }
@@ -555,17 +560,17 @@ p {
 .crypto-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .crypto-card {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 70%), var(--panel-strong);
   box-shadow: var(--shadow);
-  padding: 10px;
+  padding: 8px;
 }
 
 .crypto-card-header {
@@ -608,7 +613,7 @@ p {
 
 .dashboard-grid {
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 10px;
+  gap: 8px;
 }
 
 .dashboard-grid.lower-grid {
@@ -616,7 +621,7 @@ p {
 }
 
 .panel-card {
-  padding: 10px;
+  padding: 8px;
 }
 
 .panel-heading {
@@ -624,7 +629,7 @@ p {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .panel-heading span {
@@ -640,23 +645,27 @@ p {
 .slot-filter-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 5px;
+  margin-bottom: 6px;
 }
 
 .slot-filter-row button {
-  display: flex;
+  display: grid;
   min-height: 32px;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
+  place-items: center;
+  gap: 1px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.035);
   color: var(--muted);
   cursor: pointer;
-  font-size: 0.76rem;
+  font-size: 0.68rem;
   font-weight: 850;
+}
+
+.slot-filter-row button strong {
+  display: block;
+  font-size: 0.86rem;
 }
 
 .slot-filter-row button.active {
@@ -685,11 +694,11 @@ p {
   display: grid;
   grid-template-columns: 54px minmax(130px, 1fr) 68px minmax(155px, 0.85fr);
   align-items: center;
-  gap: 8px;
-  min-height: 48px;
+  gap: 6px;
+  min-height: 44px;
   cursor: pointer;
   list-style: none;
-  padding: 7px 9px;
+  padding: 6px 8px;
 }
 
 .slot-item summary::-webkit-details-marker {
@@ -758,10 +767,10 @@ p {
 
 .slot-actions-panel {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   border-top: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.025);
-  padding: 8px;
+  padding: 6px;
 }
 
 .quick-actions {
@@ -776,7 +785,7 @@ p {
 
 .slot-button {
   display: inline-flex;
-  min-height: 30px;
+  min-height: 32px;
   width: 100%;
   align-items: center;
   justify-content: center;
@@ -820,7 +829,7 @@ p {
 .slot-edit-form {
   display: grid;
   grid-template-columns: minmax(96px, 0.7fr) 78px 104px minmax(120px, 1fr) 86px;
-  gap: 6px;
+  gap: 5px;
   align-items: end;
 }
 
@@ -861,13 +870,13 @@ p {
 .side-stack {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .tool-form {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .strategy-create-form {
@@ -885,7 +894,7 @@ p {
 
 .tool-form input,
 .tool-form select {
-  min-height: 36px;
+  min-height: 34px;
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -943,7 +952,7 @@ p {
 .strategy-list,
 .history-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .strategy-item,
@@ -952,7 +961,7 @@ p {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.035);
-  padding: 10px;
+  padding: 8px;
 }
 
 .strategy-item,
@@ -1017,7 +1026,7 @@ p {
 
 .settings-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .settings-list div {
@@ -1028,7 +1037,7 @@ p {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.035);
-  padding: 10px;
+  padding: 8px;
 }
 
 .settings-list span {
@@ -1045,6 +1054,35 @@ p {
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-strategies {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.nested-heading {
+  margin-bottom: 0;
+}
+
+.compact-action {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
+.tool-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.3;
 }
 
 @media (max-width: 880px) {
@@ -1084,18 +1122,53 @@ p {
 }
 
 @media (max-width: 560px) {
+  body {
+    background:
+      linear-gradient(180deg, rgba(240, 185, 11, 0.07), transparent 250px),
+      #070b12;
+  }
+
   .page-shell {
-    padding-right: 10px;
-    padding-left: 10px;
+    padding-right: 8px;
+    padding-bottom: calc(84px + env(safe-area-inset-bottom));
+    padding-left: 8px;
   }
 
   .top-nav,
   .dashboard-header {
     display: grid;
+    gap: 8px;
   }
 
   .dashboard-brand {
     align-items: start;
+    gap: 8px;
+  }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+    font-size: 0.86rem;
+  }
+
+  .eyebrow {
+    margin-bottom: 3px;
+    font-size: 0.62rem;
+  }
+
+  .dashboard-header h1 {
+    margin-bottom: 3px;
+    font-size: 1.35rem;
+  }
+
+  .muted-text {
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+
+  .dashboard-header .ghost-button {
+    justify-self: stretch;
+    min-height: 32px;
   }
 
   .nav-actions {
@@ -1111,17 +1184,90 @@ p {
   }
 
   .preview-metrics,
-  .feature-grid,
-  .metric-grid {
+  .feature-grid {
     grid-template-columns: 1fr;
   }
 
   .dashboard-tabs {
+    position: fixed;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    left: 8px;
+    top: auto;
+    z-index: 50;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border-color: rgba(240, 185, 11, 0.26);
+    background: rgba(7, 11, 18, 0.94);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.54);
+    padding: 5px;
+  }
+
+  .dashboard-tabs a {
+    min-height: 42px;
+    padding: 0 2px;
+    font-size: 0.62rem;
+    line-height: 1;
+  }
+
+  .dashboard-tabs a::before {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--yellow);
+    font-size: 0.9rem;
+  }
+
+  .dashboard-tabs a:nth-child(1)::before {
+    content: "$";
+  }
+
+  .dashboard-tabs a:nth-child(2)::before {
+    content: "#";
+  }
+
+  .dashboard-tabs a:nth-child(3)::before {
+    content: "H";
+  }
+
+  .dashboard-tabs a:nth-child(4)::before {
+    content: "C";
+  }
+
+  .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .metric-card {
+    min-height: 58px;
+    padding: 7px;
+  }
+
+  .metric-card span {
+    font-size: 0.62rem;
+  }
+
+  .metric-card strong {
+    margin-top: 4px;
+    font-size: 0.92rem;
   }
 
   .crypto-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .crypto-card {
+    padding: 7px;
+  }
+
+  .crypto-card h2 {
+    font-size: 0.84rem;
+  }
+
+  .crypto-card-header span,
+  .crypto-card p,
+  .crypto-stats span {
+    font-size: 0.62rem;
   }
 
   .market-preview {
@@ -1133,29 +1279,55 @@ p {
   }
 
   .slot-filter-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .slot-filter-row button {
-    min-height: 30px;
-    font-size: 0.66rem;
+    min-height: 36px;
+    padding: 0 2px;
+    font-size: 0.56rem;
+  }
+
+  .slot-filter-row button strong {
+    font-size: 0.78rem;
   }
 
   .slot-item summary {
-    grid-template-columns: 34px minmax(0, 1fr);
-    gap: 5px 7px;
-    min-height: 70px;
-    padding: 7px;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    gap: 4px 6px;
+    min-height: 58px;
+    padding: 5px 6px;
+  }
+
+  .slot-order {
+    font-size: 0.68rem;
+  }
+
+  .slot-main strong,
+  .slot-value strong {
+    font-size: 0.78rem;
+  }
+
+  .slot-main span,
+  .slot-gains span {
+    font-size: 0.58rem;
   }
 
   .slot-gains {
-    grid-column: 1 / -1;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-column: 3;
+    grid-row: 1;
+    justify-items: end;
     align-items: baseline;
   }
 
+  .slot-gains strong {
+    font-size: 0.86rem;
+  }
+
   .slot-value {
-    grid-column: 1 / -1;
+    grid-column: 2 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px;
   }
 
   .slot-edit-form,
@@ -1167,8 +1339,14 @@ p {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .slot-button {
+    min-height: 34px;
+    font-size: 0.68rem;
+  }
+
   .compact-heading {
     display: grid;
+    gap: 6px;
   }
 
   .compact-select {
@@ -1177,6 +1355,7 @@ p {
 
   .settings-list div {
     display: grid;
+    gap: 3px;
   }
 
   .settings-list strong {

@@ -55,7 +55,7 @@ export type HistoryEvent = {
   slot_number: number | null;
 };
 
-type SlotFilter = "all" | "aberto" | "gain" | "zerado";
+type SlotFilter = "all" | "aberto" | "closed" | "gain";
 
 type DashboardClientProps = {
   userEmail: string;
@@ -63,6 +63,7 @@ type DashboardClientProps = {
   slots: SlotView[];
   history: HistoryEvent[];
   setupError: string | null;
+  initialNotice: string | null;
 };
 
 function formatUsdt(value: number) {
@@ -119,13 +120,18 @@ function formatDate(value: string | null) {
   }).format(date);
 }
 
-export function DashboardClient({ userEmail, strategies, slots, history, setupError }: DashboardClientProps) {
+export function DashboardClient({ userEmail, strategies, slots, history, setupError, initialNotice }: DashboardClientProps) {
   const [slotFilter, setSlotFilter] = useState<SlotFilter>("all");
   const [strategyFilter, setStrategyFilter] = useState("all");
+  const [notice, setNotice] = useState<string | null>(initialNotice);
 
   const visibleSlots = useMemo(
     () =>
       slots.filter((slot) => {
+        if (slotFilter === "closed") {
+          return slot.status === "gain" || slot.status === "zerado";
+        }
+
         if (slotFilter !== "all" && slot.status !== slotFilter) {
           return false;
         }
@@ -144,7 +150,33 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
   const openSlots = slots.filter((slot) => slot.status === "aberto").length;
   const gainSlots = slots.filter((slot) => slot.status === "gain").length;
   const zeroSlots = slots.filter((slot) => slot.status === "zerado").length;
+  const closedSlots = gainSlots + zeroSlots;
   const totalGains = slots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
+
+  function exportBackup() {
+    const backup = {
+      app: "SlotGain Control",
+      exportedAt: new Date().toISOString(),
+      user: userEmail,
+      strategies,
+      slots,
+      history
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `slotgain-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setNotice("Backup exportado com os dados carregados do Supabase.");
+  }
+
+  function announce(message: string) {
+    setNotice(message);
+  }
 
   return (
     <main className="page-shell dashboard-shell">
@@ -163,15 +195,21 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
       </header>
 
       <nav className="dashboard-tabs" aria-label="Areas do painel">
-        <a href="#dashboard">Dashboard</a>
-        <a href="#slots">Slots</a>
-        <a href="#historico">Historico</a>
-        <a href="#configuracoes">Configuracoes</a>
+        <a href="#dashboard"><span>Dashboard</span></a>
+        <a href="#slots"><span>Slots</span></a>
+        <a href="#historico"><span>Historico</span></a>
+        <a href="#configuracoes"><span>Config</span></a>
       </nav>
 
       {setupError ? (
         <section className="inline-alert dashboard-alert">
           Falha ao carregar dados do Supabase: {setupError}
+        </section>
+      ) : null}
+
+      {notice ? (
+        <section className="form-success dashboard-notice" role="status">
+          {notice}
         </section>
       ) : null}
 
@@ -255,15 +293,15 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
             >
               Abertos <strong>{openSlots}</strong>
             </button>
-            <button type="button" className={slotFilter === "gain" ? "active" : ""} onClick={() => setSlotFilter("gain")}>
-              Gain <strong>{gainSlots}</strong>
-            </button>
             <button
               type="button"
-              className={slotFilter === "zerado" ? "active" : ""}
-              onClick={() => setSlotFilter("zerado")}
+              className={slotFilter === "closed" ? "active" : ""}
+              onClick={() => setSlotFilter("closed")}
             >
-              Zerados <strong>{zeroSlots}</strong>
+              Fechados <strong>{closedSlots}</strong>
+            </button>
+            <button type="button" className={slotFilter === "gain" ? "active" : ""} onClick={() => setSlotFilter("gain")}>
+              Gain <strong>{gainSlots}</strong>
             </button>
           </div>
 
@@ -290,19 +328,29 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
                   <div className="quick-actions">
                     <form action={openSlot}>
                       <input type="hidden" name="slotId" value={slot.id} />
-                      <button className="slot-button open" type="submit" disabled={slot.status === "aberto"}>
+                      <button
+                        className="slot-button open"
+                        type="submit"
+                        disabled={slot.status === "aberto"}
+                        onClick={() => announce("Abrindo slot no Supabase...")}
+                      >
                         Abrir
                       </button>
                     </form>
                     <form action={registerGain}>
                       <input type="hidden" name="slotId" value={slot.id} />
-                      <button className="slot-button gain" type="submit" disabled={slot.status === "zerado"}>
+                      <button
+                        className="slot-button gain"
+                        type="submit"
+                        disabled={slot.status === "zerado"}
+                        onClick={() => announce("Registrando gain no Supabase...")}
+                      >
                         +Gain
                       </button>
                     </form>
                     <form action={resetSlot}>
                       <input type="hidden" name="slotId" value={slot.id} />
-                      <button className="slot-button reset" type="submit">
+                      <button className="slot-button reset" type="submit" onClick={() => announce("Zerando slot no Supabase...")}>
                         Zerar
                       </button>
                     </form>
@@ -330,7 +378,7 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
                       Observacoes
                       <input name="notes" type="text" defaultValue={slot.notes || ""} />
                     </label>
-                    <button className="slot-button edit" type="submit">
+                    <button className="slot-button edit" type="submit" onClick={() => announce("Salvando edicao no Supabase...")}>
                       Editar
                     </button>
                   </form>
@@ -342,8 +390,7 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
         </article>
 
         <aside className="side-stack">
-          <StrategiesPanel strategies={strategies} />
-          <ToolsPanel strategies={strategies} />
+          <ToolsPanel strategies={strategies} announce={announce} />
         </aside>
       </section>
 
@@ -368,11 +415,11 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
           </div>
         </article>
 
-        <article id="configuracoes" className="panel-card">
+        <article id="configuracoes" className="panel-card settings-panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Configuracoes</p>
-              <h2>Conta e dados</h2>
+              <h2>Estrategias e backup</h2>
             </div>
           </div>
           <div className="settings-list">
@@ -388,20 +435,31 @@ export function DashboardClient({ userEmail, strategies, slots, history, setupEr
               <span>Slots</span>
               <strong>{slots.length}</strong>
             </div>
+            <div>
+              <span>Backup</span>
+              <button className="ghost-button compact-action" type="button" onClick={exportBackup}>
+                Exportar JSON
+              </button>
+            </div>
+            <div>
+              <span>Preferencia</span>
+              <strong>Tema escuro mobile</strong>
+            </div>
           </div>
+          <StrategiesPanel strategies={strategies} announce={announce} />
         </article>
       </section>
     </main>
   );
 }
 
-function StrategiesPanel({ strategies }: { strategies: StrategyView[] }) {
+function StrategiesPanel({ strategies, announce }: { strategies: StrategyView[]; announce: (message: string) => void }) {
   return (
-    <article className="panel-card">
-      <div className="panel-heading">
+    <section className="settings-strategies">
+      <div className="panel-heading nested-heading">
         <div>
           <p className="eyebrow">Estrategias</p>
-          <h2>CRUD</h2>
+          <h2>BTC, SOL e novas moedas</h2>
         </div>
         <span>{strategies.length}</span>
       </div>
@@ -439,7 +497,7 @@ function StrategiesPanel({ strategies }: { strategies: StrategyView[] }) {
           Meta
           <input name="redistributionTarget" type="number" min="0" step="1" placeholder="50" />
         </label>
-        <button className="solid-button" type="submit">
+        <button className="solid-button" type="submit" onClick={() => announce("Criando estrategia no Supabase...")}>
           Criar
         </button>
       </form>
@@ -489,25 +547,29 @@ function StrategiesPanel({ strategies }: { strategies: StrategyView[] }) {
                   defaultValue={strategy.redistribution_target}
                 />
               </label>
-              <button className="slot-button edit" type="submit">
+              <button className="slot-button edit" type="submit" onClick={() => announce("Atualizando estrategia no Supabase...")}>
                 Salvar
               </button>
             </form>
             <form action={deleteStrategy}>
               <input type="hidden" name="strategyId" value={strategy.id} />
               <input type="hidden" name="title" value={strategy.title} />
-              <button className="danger-button full-width-button" type="submit">
+              <button
+                className="danger-button full-width-button"
+                type="submit"
+                onClick={() => announce("Removendo estrategia no Supabase...")}
+              >
                 Remover estrategia
               </button>
             </form>
           </details>
         ))}
       </div>
-    </article>
+    </section>
   );
 }
 
-function ToolsPanel({ strategies }: { strategies: StrategyView[] }) {
+function ToolsPanel({ strategies, announce }: { strategies: StrategyView[]; announce: (message: string) => void }) {
   return (
     <>
       <article className="panel-card">
@@ -532,7 +594,12 @@ function ToolsPanel({ strategies }: { strategies: StrategyView[] }) {
             Slots
             <input name="quantity" type="number" min="1" max="50" defaultValue="1" required />
           </label>
-          <button className="solid-button" type="submit" disabled={strategies.length === 0}>
+          <button
+            className="solid-button"
+            type="submit"
+            disabled={strategies.length === 0}
+            onClick={() => announce("Criando slots no Supabase...")}
+          >
             Adicionar slots
           </button>
         </form>
@@ -560,10 +627,16 @@ function ToolsPanel({ strategies }: { strategies: StrategyView[] }) {
             USDT por slot
             <input name="amount" type="number" min="0.01" step="0.01" placeholder="Ex.: 5" required />
           </label>
-          <button className="solid-button" type="submit" disabled={strategies.length === 0}>
+          <button
+            className="solid-button"
+            type="submit"
+            disabled={strategies.length === 0}
+            onClick={() => announce("Adicionando saldo nos slots fechados...")}
+          >
             Adicionar saldo
           </button>
         </form>
+        <p className="tool-hint">Aplica apenas em slots fechados: Gain e Zerado.</p>
         <form className="tool-form single-action-form" action={redistributeGains}>
           <label>
             Redistribuir
@@ -575,10 +648,16 @@ function ToolsPanel({ strategies }: { strategies: StrategyView[] }) {
               ))}
             </select>
           </label>
-          <button className="ghost-button" type="submit" disabled={strategies.length === 0}>
+          <button
+            className="ghost-button"
+            type="submit"
+            disabled={strategies.length === 0}
+            onClick={() => announce("Redistribuindo gains nos slots fechados...")}
+          >
             Redistribuir gains
           </button>
         </form>
+        <p className="tool-hint">Redistribui somente gains de slots fechados. Slots abertos ficam intactos.</p>
       </article>
     </>
   );

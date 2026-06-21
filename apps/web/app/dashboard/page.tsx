@@ -19,7 +19,7 @@ function normalizeSlot(slot: SlotRow): SlotView {
   };
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage({ searchParams }: { searchParams?: { notice?: string } }) {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
   }
@@ -62,6 +62,7 @@ export default async function DashboardPage() {
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
       history={(historyResponse.data ?? []) as HistoryEvent[]}
       setupError={setupError?.message || null}
+      initialNotice={searchParams?.notice || null}
     />
   );
 }
