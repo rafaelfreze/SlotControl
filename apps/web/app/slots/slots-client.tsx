@@ -15,11 +15,16 @@ type SlotsClientProps = {
   slots: SlotView[];
   setupError: string | null;
   initialNotice: string | null;
+  initialAsset: string | null;
+  initialFlow: string | null;
 };
 
-export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice }: SlotsClientProps) {
-  const [slotFilter, setSlotFilter] = useState<SlotFilter>("aberto");
-  const [strategyFilter, setStrategyFilter] = useState("all");
+export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
+  const initialStrategyId =
+    strategies.find((strategy) => strategy.asset.toUpperCase() === initialAsset?.toUpperCase())?.id || "all";
+  const initialSlotFilter: SlotFilter = initialFlow === "abrir" ? "closed" : initialFlow === "gain" ? "aberto" : "aberto";
+  const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialSlotFilter);
+  const [strategyFilter, setStrategyFilter] = useState(initialStrategyId);
   const [notice, setNotice] = useState<string | null>(initialNotice);
 
   const openSlots = slots.filter((slot) => slot.status === "aberto").length;

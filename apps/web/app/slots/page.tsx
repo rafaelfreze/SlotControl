@@ -7,7 +7,11 @@ import { SlotsClient } from "./slots-client";
 
 export const metadata: Metadata = { title: "Slots" };
 
-export default async function SlotsPage({ searchParams }: { searchParams?: { notice?: string } }) {
+export default async function SlotsPage({
+  searchParams
+}: {
+  searchParams?: { notice?: string; asset?: string; flow?: string };
+}) {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
   }
@@ -45,6 +49,8 @@ export default async function SlotsPage({ searchParams }: { searchParams?: { not
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
+      initialAsset={searchParams?.asset || null}
+      initialFlow={searchParams?.flow || null}
     />
   );
 }

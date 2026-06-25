@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
@@ -18,6 +19,10 @@ async function getSessionEmail() {
 export default async function HomePage() {
   const email = await getSessionEmail();
 
+  if (email) {
+    redirect("/dashboard");
+  }
+
   return (
     <main className="page-shell landing-shell">
       <nav className="top-nav" aria-label="Principal">
@@ -31,20 +36,12 @@ export default async function HomePage() {
           </span>
         </Link>
         <div className="nav-actions">
-          {email ? (
-            <Link className="ghost-link" href="/dashboard">
-              Abrir painel
-            </Link>
-          ) : (
-            <>
-              <Link className="ghost-link" href="/login">
-                Entrar
-              </Link>
-              <Link className="solid-link" href="/cadastro">
-                Criar conta
-              </Link>
-            </>
-          )}
+          <Link className="ghost-link" href="/login">
+            Entrar
+          </Link>
+          <Link className="solid-link" href="/cadastro">
+            Criar conta
+          </Link>
         </div>
       </nav>
 
@@ -57,8 +54,8 @@ export default async function HomePage() {
             separados por usuario.
           </p>
           <div className="hero-actions">
-            <Link className="solid-link large" href={email ? "/dashboard" : "/cadastro"}>
-              {email ? "Ir para o dashboard" : "Comecar agora"}
+            <Link className="solid-link large" href="/cadastro">
+              Comecar agora
             </Link>
             <Link className="ghost-link large" href="/login">
               Ja tenho conta
