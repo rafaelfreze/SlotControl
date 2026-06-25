@@ -16,6 +16,9 @@ type SlotRecord = {
   gains: number;
   base_value: number | string;
   gain_rate: number | string;
+  preco_entrada: number | string | null;
+  preco_atual: number | string | null;
+  preco_alvo: number | string | null;
 };
 
 type StrategyRecord = {
@@ -25,6 +28,7 @@ type StrategyRecord = {
   asset: string;
   base_value: number | string;
   gain_rate: number | string;
+  drop_percent?: number | string;
 };
 
 async function getUserClient() {
@@ -263,6 +267,9 @@ export async function createSlots(formData: FormData) {
     gains: 0,
     base_value: Number(strategy.base_value || 0),
     gain_rate: Number(strategy.gain_rate || 0),
+    preco_alvo: null,
+    preco_atual: null,
+    preco_entrada: null,
     started_once: false
   }));
 
@@ -333,7 +340,16 @@ export async function openSlot(formData: FormData) {
 
   await supabase
     .from("slots")
-    .update({ status: "aberto", started_once: true })
+    .update({
+      status: "aberto",
+      started_once: true,
+      preco_alvo:
+        Number(slot.preco_alvo || 0) > 0
+          ? Number(slot.preco_alvo)
+          : Number(slot.preco_entrada || 0) > 0
+            ? Number(slot.preco_entrada) * (1 + Number(slot.gain_rate || 0))
+            : null
+    })
     .eq("id", slot.id)
     .eq("user_id", user.id);
   await addHistory("Abertura", `Slot aberto com valor calculado de ${formatUsdt(currentValue(slot))}.`, {
@@ -398,6 +414,9 @@ export async function updateSlot(formData: FormData) {
   const status = formText(formData, "status") as SlotStatus;
   const gains = Math.max(0, formInt(formData, "gains", 0));
   const baseValue = Math.max(0, formNumber(formData, "baseValue", 0));
+  const entryPrice = Math.max(0, formNumber(formData, "entryPrice", 0));
+  const currentPrice = Math.max(0, formNumber(formData, "currentPrice", 0));
+  const targetPrice = Math.max(0, formNumber(formData, "targetPrice", 0));
   const notes = formText(formData, "notes");
 
   if (!slot || !["zerado", "aberto", "gain"].includes(status)) {
@@ -410,6 +429,9 @@ export async function updateSlot(formData: FormData) {
       status,
       gains: status === "zerado" ? 0 : gains,
       base_value: baseValue,
+      preco_entrada: entryPrice > 0 ? entryPrice : null,
+      preco_atual: currentPrice > 0 ? currentPrice : null,
+      preco_alvo: targetPrice > 0 ? targetPrice : entryPrice > 0 ? entryPrice * Number(slot.gain_rate || 0) + entryPrice : null,
       started_once: status !== "zerado",
       notes: status === "zerado" ? "" : notes
     })
@@ -424,6 +446,61 @@ export async function updateSlot(formData: FormData) {
   });
 
   finish("Slot editado.");
+}
+
+export async function applyStrategyMarketPrices(formData: FormData) {
+  const { supabase, user } = await getUserClient();
+  const strategyId = formText(formData, "strategyId");
+  const firstEntryPrice = Math.max(0, formNumber(formData, "firstEntryPrice", 0));
+  const currentPrice = Math.max(0, formNumber(formData, "currentPrice", 0));
+
+  if (!strategyId || firstEntryPrice <= 0) {
+    return;
+  }
+
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("id,key,title,asset,base_value,gain_rate,drop_percent")
+    .eq("id", strategyId)
+    .eq("user_id", user.id)
+    .single<StrategyRecord>();
+
+  if (!strategy) {
+    return;
+  }
+
+  const { data: slots } = await supabase
+    .from("slots")
+    .select("id,slot_number,sort_order")
+    .eq("user_id", user.id)
+    .eq("strategy_id", strategyId)
+    .order("sort_order", { ascending: true });
+
+  const dropRate = Math.max(0, Number(strategy.drop_percent || 0)) / 100;
+  const gainRate = Number(strategy.gain_rate || 0);
+
+  await Promise.all(
+    (slots || []).map((slot, index) => {
+      const entryPrice = firstEntryPrice * Math.pow(1 - dropRate, index);
+      return supabase
+        .from("slots")
+        .update({
+          preco_entrada: entryPrice,
+          preco_atual: currentPrice > 0 ? currentPrice : null,
+          preco_alvo: entryPrice * (1 + gainRate)
+        })
+        .eq("id", slot.id)
+        .eq("user_id", user.id);
+    })
+  );
+
+  await addHistory("Marcacao a mercado", `Precos de entrada aplicados em ${slots?.length || 0} slots de ${strategy.title}.`, {
+    userId: user.id,
+    strategyId,
+    strategyKey: strategy.key
+  });
+
+  finish("Precos de marcacao atualizados.");
 }
 
 export async function addBalance(formData: FormData) {
@@ -518,7 +595,7 @@ async function getSlotFromForm(
 
   const { data } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("id", slotId)
     .eq("user_id", userId)
     .single<SlotRecord>();

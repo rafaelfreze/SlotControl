@@ -4,7 +4,14 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { redistributeGains } from "@/app/dashboard/actions";
-import { formatUsdt, getCurrentValue } from "@/lib/slotgain/format";
+import {
+  formatSignedPercent,
+  formatSignedUsdt,
+  formatUsdt,
+  getCurrentValue,
+  getMarkedSlotValue,
+  getOpenMarketMetrics
+} from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type DashboardClientProps = {
@@ -20,7 +27,9 @@ type StrategySummary = {
   asset: "BTC" | "SOL";
   name: string;
   total: number;
-  profit: number;
+  realizedProfit: number;
+  openResult: number;
+  markedEquity: number;
   openSlots: number;
   totalSlots: number;
   gains: number;
@@ -32,6 +41,10 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   const strategySlots = strategy ? slots.filter((slot) => slot.strategy_id === strategy.id) : [];
   const base = strategySlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const total = strategySlots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
+  const markedEquity = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot), 0);
+  const openResult = strategySlots
+    .filter((slot) => slot.status === "aberto")
+    .reduce((sum, slot) => sum + getOpenMarketMetrics(slot).resultadoAbertoUsdt, 0);
   const gains = strategySlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const fallbackTarget = asset === "BTC" ? 50 : 10;
   const target = Math.max(1, Number(strategy?.redistribution_target || fallbackTarget));
@@ -41,7 +54,9 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
     asset,
     name: asset === "BTC" ? "Bitcoin" : "Solana",
     total,
-    profit: total - base,
+    realizedProfit: total - base,
+    openResult,
+    markedEquity,
     openSlots: strategySlots.filter((slot) => slot.status === "aberto").length,
     totalSlots: strategySlots.length,
     gains,
@@ -53,10 +68,16 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
   const [showRedistribute, setShowRedistribute] = useState(false);
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
-  const profit = totalUpdated - totalBase;
-  const openSlots = slots.filter((slot) => slot.status === "aberto").length;
-  const totalGains = slots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
-
+  const realizedProfit = totalUpdated - totalBase;
+  const openSlotsList = slots.filter((slot) => slot.status === "aberto");
+  const openResult = openSlotsList.reduce((sum, slot) => sum + getOpenMarketMetrics(slot).resultadoAbertoUsdt, 0);
+  const markedEquity = slots.reduce((sum, slot) => sum + getMarkedSlotValue(slot), 0);
+  const averageDistance =
+    openSlotsList.length > 0
+      ? openSlotsList.reduce((sum, slot) => sum + getOpenMarketMetrics(slot).distanciaAteGainPercentual, 0) /
+        openSlotsList.length
+      : 0;
+  const openSlots = openSlotsList.length;
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC"), [strategies, slots]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL"), [strategies, slots]);
   const defaultRedistributionStrategy = btc.strategy?.id || sol.strategy?.id || strategies[0]?.id || "";
@@ -89,10 +110,11 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       ) : null}
 
       <section className="mobile-metrics" aria-label="Resumo principal">
-        <MetricCard icon="▱" title="Total atualizado" value={formatUsdt(totalUpdated)} helper="+ 2,75% hoje ↗" tone="green" />
-        <MetricCard icon="▥" title="Lucro acumulado" value={formatUsdt(profit)} helper="+ 1,25% hoje ↗" tone="gold" />
-        <MetricCard icon="▰" title="Slots abertos" value={String(openSlots)} helper={`de ${slots.length} disponiveis`} tone="purple" />
-        <MetricCard icon="♕" title="Total de gains" value={String(totalGains)} helper={`de ${Math.max(60, btc.target + sol.target)} para redistribuir`} tone="blue" />
+        <MetricCard icon="$" title="Lucro realizado" value={formatUsdt(realizedProfit)} helper="Somente vendido" tone="green" />
+        <MetricCard icon="~" title="Resultado em aberto" value={formatSignedUsdt(openResult)} helper="Marcado a mercado" tone={openResult < 0 ? "red" : "green"} />
+        <MetricCard icon="M" title="Patrimonio marcado" value={formatUsdt(markedEquity)} helper="Fechados + abertos" tone="gold" />
+        <MetricCard icon="#" title="Slots abertos" value={String(openSlots)} helper={`de ${slots.length} disponiveis`} tone="purple" />
+        <MetricCard icon="%" title="Distancia media" value={formatSignedPercent(averageDistance)} helper="Ate gain" tone="blue" />
       </section>
 
       <StrategyCard summary={btc} accent="gold" />
@@ -166,7 +188,7 @@ function MetricCard({
   title: string;
   value: string;
   helper: string;
-  tone: "green" | "gold" | "purple" | "blue";
+  tone: "green" | "gold" | "purple" | "blue" | "red";
 }) {
   const [amount, unit] = value.split(" USDT");
 
@@ -204,7 +226,13 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
           Total <strong>{formatUsdt(summary.total)}</strong>
         </span>
         <span>
-          Lucro <strong>{formatUsdt(summary.profit)}</strong>
+          Lucro realizado <strong>{formatUsdt(summary.realizedProfit)}</strong>
+        </span>
+        <span>
+          Resultado aberto <strong className={summary.openResult < 0 ? "negative-value" : ""}>{formatSignedUsdt(summary.openResult)}</strong>
+        </span>
+        <span>
+          Patrimonio marcado <strong>{formatUsdt(summary.markedEquity)}</strong>
         </span>
         <span>
           Slots abertos <strong>{summary.openSlots}</strong>

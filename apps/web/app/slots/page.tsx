@@ -35,7 +35,7 @@ export default async function SlotsPage({
     supabase
       .from("slots")
       .select(
-        "id,strategy_id,status,gains,base_value,gain_rate,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,redistribution_target,sort_order)"
+        "id,strategy_id,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,redistribution_target,sort_order)"
       )
       .order("sort_order", { ascending: true })
   ]);

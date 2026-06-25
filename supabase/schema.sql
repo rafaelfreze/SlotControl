@@ -55,6 +55,9 @@ create table if not exists public.slots (
   gains integer not null default 0,
   base_value numeric(18, 8) not null,
   gain_rate numeric(12, 8) not null,
+  preco_entrada numeric(18, 8),
+  preco_atual numeric(18, 8),
+  preco_alvo numeric(18, 8),
   started_once boolean not null default false,
   notes text not null default '',
   created_at timestamptz not null default now(),
@@ -106,6 +109,10 @@ create index if not exists slots_user_strategy_order_idx on public.slots (user_i
 create index if not exists history_events_user_event_idx on public.history_events (user_id, event_at desc);
 create index if not exists history_events_slot_id_idx on public.history_events (slot_id);
 create index if not exists user_exports_user_created_idx on public.user_exports (user_id, created_at desc);
+
+alter table public.slots add column if not exists preco_entrada numeric(18, 8);
+alter table public.slots add column if not exists preco_atual numeric(18, 8);
+alter table public.slots add column if not exists preco_alvo numeric(18, 8);
 
 drop trigger if exists profiles_set_updated_at on public.profiles;
 create trigger profiles_set_updated_at

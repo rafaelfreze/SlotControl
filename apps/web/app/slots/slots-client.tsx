@@ -3,8 +3,26 @@
 import { useMemo, useState } from "react";
 
 import { AppShell } from "@/components/app/app-shell";
-import { addBalance, createSlots, moveSlot, openSlot, redistributeGains, registerGain, resetSlot, updateSlot } from "@/app/dashboard/actions";
-import { formatDate, formatUsdt, getCurrentValue, getStatusLabel } from "@/lib/slotgain/format";
+import {
+  addBalance,
+  applyStrategyMarketPrices,
+  createSlots,
+  moveSlot,
+  openSlot,
+  redistributeGains,
+  registerGain,
+  resetSlot,
+  updateSlot
+} from "@/app/dashboard/actions";
+import {
+  formatDate,
+  formatSignedPercent,
+  formatSignedUsdt,
+  formatUsdt,
+  getCurrentValue,
+  getOpenMarketMetrics,
+  getStatusLabel
+} from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type SlotFilter = "aberto" | "gain" | "closed" | "all";
@@ -102,6 +120,33 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
         </details>
       </section>
 
+      <details className="panel-card mini-drawer market-price-drawer">
+        <summary>Marcacao a mercado</summary>
+        <form className="tool-form compact-create-form" action={applyStrategyMarketPrices}>
+          <label>
+            Moeda
+            <select name="strategyId" required>
+              {strategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Entrada do primeiro slot
+            <input name="firstEntryPrice" type="number" min="0.00000001" step="0.00000001" placeholder="Ex.: 65000" required />
+          </label>
+          <label>
+            Preco atual
+            <input name="currentPrice" type="number" min="0" step="0.00000001" placeholder="Ex.: 66800" />
+          </label>
+          <button className="solid-button" type="submit" disabled={strategies.length === 0} onClick={() => announce("Atualizando precos...")}>
+            Aplicar
+          </button>
+        </form>
+      </details>
+
       <article className="panel-card slots-panel">
         <div className="panel-heading compact-heading">
           <div>
@@ -135,63 +180,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
         <div className="slot-list">
           {visibleSlots.map((slot) => (
-            <details key={slot.id} className={`slot-item status-${slot.status}`}>
-              <summary>
-                <div className="slot-order">#{slot.slot_number}</div>
-                <div className="slot-main">
-                  <strong>{slot.strategy?.title || "Estrategia"}</strong>
-                  <span>{formatDate(slot.updated_at)}</span>
-                </div>
-                <div className="slot-gains">
-                  <strong>{slot.gains}</strong>
-                  <span>{slot.gains === 1 ? "gain" : "gains"}</span>
-                </div>
-                <div className="slot-value">
-                  <strong>{formatUsdt(getCurrentValue(slot))}</strong>
-                  <span className={`status-pill status-${slot.status}`}>{getStatusLabel(slot.status)}</span>
-                </div>
-              </summary>
-
-              <div className="slot-actions-panel">
-                <div className="quick-actions slot-main-actions">
-                  <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
-                  <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
-                  <SlotAction action={openSlot} slotId={slot.id} label="Abrir" className="open" disabled={slot.status === "aberto"} onClick={() => announce("Abrindo slot...")} />
-                  <SlotAction action={registerGain} slotId={slot.id} label="+Gain" className="gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
-                  <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" className="reset" onClick={() => announce("Zerando slot...")} />
-                </div>
-
-                <details className="mini-drawer edit-drawer">
-                  <summary>Editar</summary>
-                  <form className="slot-edit-form" action={updateSlot}>
-                    <input type="hidden" name="slotId" value={slot.id} />
-                    <label>
-                      Status
-                      <select name="status" defaultValue={slot.status === "hold" ? "gain" : slot.status}>
-                        <option value="zerado">Zerado</option>
-                        <option value="aberto">Aberto</option>
-                        <option value="gain">Gain</option>
-                      </select>
-                    </label>
-                    <label>
-                      Gains
-                      <input name="gains" type="number" min="0" step="1" defaultValue={slot.gains} />
-                    </label>
-                    <label>
-                      Base USDT
-                      <input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} />
-                    </label>
-                    <label className="wide-field">
-                      Observacoes
-                      <input name="notes" type="text" defaultValue={slot.notes || ""} />
-                    </label>
-                    <button className="slot-button edit" type="submit" onClick={() => announce("Salvando edicao...")}>
-                      Salvar edicao
-                    </button>
-                  </form>
-                </details>
-              </div>
-            </details>
+            <SlotItem key={slot.id} slot={slot} announce={announce} />
           ))}
           {visibleSlots.length === 0 ? <p className="empty-copy padded-empty">Nenhum slot neste filtro.</p> : null}
         </div>
@@ -220,6 +209,111 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
         </form>
       </details>
     </AppShell>
+  );
+}
+
+function SlotItem({ slot, announce }: { slot: SlotView; announce: (message: string) => void }) {
+  const market = getOpenMarketMetrics(slot);
+
+  return (
+            <details className={`slot-item status-${slot.status}`}>
+              <summary>
+                <div className="slot-order">#{slot.slot_number}</div>
+                <div className="slot-main">
+                  <strong>{slot.strategy?.title || "Estrategia"}</strong>
+                  <span>{formatDate(slot.updated_at)}</span>
+                </div>
+                <div className="slot-gains">
+                  <strong>{slot.gains}</strong>
+                  <span>{slot.gains === 1 ? "gain" : "gains"}</span>
+                </div>
+                <div className="slot-value">
+                  <strong>{formatUsdt(getCurrentValue(slot))}</strong>
+                  <span className={`status-pill status-${slot.status}`}>{getStatusLabel(slot.status)}</span>
+                </div>
+              </summary>
+
+              <div className="slot-actions-panel">
+                {slot.status === "aberto" ? (
+                  <div className="open-market-grid">
+                    <MarketStat label="Entrada" value={market.precoEntrada > 0 ? String(market.precoEntrada) : "-"} />
+                    <MarketStat label="Atual" value={market.precoAtual > 0 ? String(market.precoAtual) : "-"} />
+                    <MarketStat label="Alvo" value={market.precoAlvo > 0 ? String(market.precoAlvo) : "-"} tone="yellow" />
+                    <MarketStat label="Valor inicial" value={formatUsdt(market.valorSlot)} />
+                    <MarketStat label="Valor marcado" value={formatUsdt(market.valorMarcado)} />
+                    <MarketStat
+                      label="Resultado USDT"
+                      value={formatSignedUsdt(market.resultadoAbertoUsdt)}
+                      tone={market.resultadoAbertoUsdt < 0 ? "red" : "green"}
+                    />
+                    <MarketStat
+                      label="Resultado %"
+                      value={formatSignedPercent(market.resultadoAbertoPercentual)}
+                      tone={market.resultadoAbertoUsdt < 0 ? "red" : "green"}
+                    />
+                    <MarketStat label="Ate gain" value={formatSignedPercent(market.distanciaAteGainPercentual)} tone="yellow" />
+                  </div>
+                ) : null}
+                <div className="quick-actions slot-main-actions">
+                  <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
+                  <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
+                  <SlotAction action={openSlot} slotId={slot.id} label="Abrir" className="open" disabled={slot.status === "aberto"} onClick={() => announce("Abrindo slot...")} />
+                  <SlotAction action={registerGain} slotId={slot.id} label="+Gain" className="gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
+                  <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" className="reset" onClick={() => announce("Zerando slot...")} />
+                </div>
+
+                <details className="mini-drawer edit-drawer">
+                  <summary>Editar</summary>
+                  <form className="slot-edit-form" action={updateSlot}>
+                    <input type="hidden" name="slotId" value={slot.id} />
+                    <label>
+                      Status
+                      <select name="status" defaultValue={slot.status === "hold" ? "gain" : slot.status}>
+                        <option value="zerado">Zerado</option>
+                        <option value="aberto">Aberto</option>
+                        <option value="gain">Gain</option>
+                      </select>
+                    </label>
+                    <label>
+                      Gains
+                      <input name="gains" type="number" min="0" step="1" defaultValue={slot.gains} />
+                    </label>
+                    <label>
+                      Base USDT
+                      <input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} />
+                    </label>
+                    <label>
+                      Preco entrada
+                      <input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_entrada || 0) || ""} />
+                    </label>
+                    <label>
+                      Preco atual
+                      <input name="currentPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_atual || 0) || ""} />
+                    </label>
+                    <label>
+                      Preco alvo
+                      <input name="targetPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_alvo || 0) || ""} />
+                    </label>
+                    <label className="wide-field">
+                      Observacoes
+                      <input name="notes" type="text" defaultValue={slot.notes || ""} />
+                    </label>
+                    <button className="slot-button edit" type="submit" onClick={() => announce("Salvando edicao...")}>
+                      Salvar edicao
+                    </button>
+                  </form>
+                </details>
+              </div>
+            </details>
+  );
+}
+
+function MarketStat({ label, value, tone }: { label: string; value: string; tone?: "green" | "red" | "yellow" }) {
+  return (
+    <span className={tone ? `market-stat ${tone}` : "market-stat"}>
+      <em>{label}</em>
+      <strong>{value}</strong>
+    </span>
   );
 }
 

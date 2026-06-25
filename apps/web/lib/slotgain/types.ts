@@ -21,6 +21,9 @@ export type SlotView = {
   gains: number;
   base_value: number | string;
   gain_rate: number | string;
+  preco_entrada: number | string | null;
+  preco_atual: number | string | null;
+  preco_alvo: number | string | null;
   slot_number: number;
   sort_order: number;
   notes: string;
