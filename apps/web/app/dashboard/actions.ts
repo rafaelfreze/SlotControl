@@ -83,6 +83,53 @@ function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
+async function getSuggestedEntryPriceFromLastOpen(
+  supabase: Awaited<ReturnType<typeof getUserClient>>["supabase"],
+  userId: string,
+  slot: SlotRecord
+) {
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("asset")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", userId)
+    .single<Pick<StrategyRecord, "asset">>();
+
+  const asset = strategy?.asset?.toUpperCase();
+  if (!asset) {
+    return 0;
+  }
+
+  const { data: sameAssetStrategies } = await supabase
+    .from("strategies")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("asset", asset);
+
+  const strategyIds = (sameAssetStrategies || []).map((item) => item.id);
+  if (!strategyIds.length) {
+    return 0;
+  }
+
+  const { data: lastOpenSlots } = await supabase
+    .from("slots")
+    .select("preco_entrada")
+    .eq("user_id", userId)
+    .in("strategy_id", strategyIds)
+    .eq("status", "aberto")
+    .neq("id", slot.id)
+    .not("preco_entrada", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(1);
+
+  const lastEntryPrice = Number(lastOpenSlots?.[0]?.preco_entrada || 0);
+  if (lastEntryPrice <= 0) {
+    return 0;
+  }
+
+  return lastEntryPrice * (asset === "SOL" ? 0.92 : 0.98);
+}
+
 function finish(message: string, path = "/slots"): never {
   revalidatePath("/dashboard");
   revalidatePath("/slots");
@@ -334,7 +381,10 @@ export async function openSlot(formData: FormData) {
     return;
   }
 
-  const entryPrice = Math.max(0, formNumber(formData, "entryPrice", 0));
+  let entryPrice = Math.max(0, formNumber(formData, "entryPrice", 0));
+  if (entryPrice <= 0) {
+    entryPrice = await getSuggestedEntryPriceFromLastOpen(supabase, user.id, slot);
+  }
   const targetPrice = entryPrice > 0 ? entryPrice * (1 + Number(slot.gain_rate || 0)) : null;
 
   await supabase

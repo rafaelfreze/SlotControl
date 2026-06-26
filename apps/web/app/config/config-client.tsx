@@ -46,19 +46,42 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
         <StatCard title="Slots" value={String(slots.length)} tone="purple" />
       </div>
 
-      {btc ? <StrategySection strategy={btc} tone="gold" /> : null}
-      {sol ? <StrategySection strategy={sol} tone="purple" /> : null}
+      <SectionCard title="Estrategias" subtitle="Operacional" tone="gold">
+        <div className="strategy-settings-grid">
+          {btc ? <StrategySection strategy={btc} tone="gold" /> : null}
+          {sol ? <StrategySection strategy={sol} tone="purple" /> : null}
+        </div>
+      </SectionCard>
 
-      <SectionCard title="Conta" subtitle="Acesso e backup" tone="green">
-        <div className="settings-list modern-settings account-settings">
+      <SectionCard title="Conta" subtitle="Acesso" tone="green">
+        <div className="settings-list modern-settings">
           <div><span>Usuario logado</span><strong>{userEmail}</strong></div>
           <div><span>Email</span><strong>{userEmail}</strong></div>
           <div><span>Plano</span><strong>Gratuito</strong></div>
-          <div><span>Backup</span><button className="ghost-button compact-action" type="button" onClick={exportBackup}>Exportar JSON</button></div>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Backup" subtitle="Dados" tone="blue">
+        <div className="settings-list modern-settings account-settings">
+          <div><span>Exportacao</span><button className="ghost-button compact-action" type="button" onClick={exportBackup}>Exportar JSON</button></div>
           <div className="account-actions">
             <LogoutButton label="Trocar conta" className="ghost-button compact-action" />
             <LogoutButton label="Sair da conta" className="danger-button compact-action" />
           </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Preferencias" subtitle="Interface" tone="purple">
+        <div className="settings-list modern-settings">
+          <div><span>Tema</span><strong>Dark premium</strong></div>
+          <div><span>Moedas</span><strong>BTC e SOL</strong></div>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Sistema" subtitle="Aplicativo" tone="neutral">
+        <div className="settings-list modern-settings">
+          <div><span>Versao</span><strong>SlotGain Control</strong></div>
+          <div><span>Ambiente</span><strong>Supabase</strong></div>
         </div>
       </SectionCard>
 
@@ -81,7 +104,11 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
 
 function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "gold" | "purple" }) {
   return (
-    <SectionCard title={strategy.title} subtitle={strategy.asset} tone={tone}>
+    <article className={`strategy-setting-card ${tone}`}>
+      <div className="strategy-setting-heading">
+        <span>{strategy.asset}</span>
+        <strong>{strategy.title}</strong>
+      </div>
       <details className="mini-drawer strategy-editor modern-editor">
         <summary>
           <strong>{strategy.asset}</strong>
@@ -103,6 +130,6 @@ function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "go
           <button className="danger-button full-width-button" type="submit">Remover estrategia</button>
         </form>
       </details>
-    </SectionCard>
+    </article>
   );
 }

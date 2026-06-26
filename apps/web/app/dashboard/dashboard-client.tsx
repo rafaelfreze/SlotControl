@@ -11,6 +11,7 @@ import {
   getMarkedSlotValue,
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
+import { MobileBottomNav } from "@/components/app/mobile-ui";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -146,6 +147,7 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <p className="mobile-session">{userEmail}</p>
+      <MobileBottomNav />
     </main>
   );
 }

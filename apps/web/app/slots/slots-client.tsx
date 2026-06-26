@@ -42,8 +42,42 @@ function getAssetFromStrategy(slot: SlotView) {
   return slot.strategy?.asset?.toUpperCase() || "BTC";
 }
 
+function getOpenTimestamp(slot: SlotView) {
+  const timestamp = slot.updated_at ? new Date(slot.updated_at).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortByOpenDate(slots: SlotView[]) {
+  return [...slots].sort((first, second) => {
+    const dateDiff = getOpenTimestamp(first) - getOpenTimestamp(second);
+    return dateDiff || first.sort_order - second.sort_order;
+  });
+}
+
+function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], livePrice?: number) {
+  const asset = getAssetFromStrategy(slot);
+  const lastOpenSlot = sortByOpenDate(
+    slots.filter(
+      (candidate) =>
+        candidate.id !== slot.id &&
+        candidate.status === "aberto" &&
+        getAssetFromStrategy(candidate) === asset &&
+        Number(candidate.preco_entrada || 0) > 0
+    )
+  ).at(-1);
+
+  if (lastOpenSlot) {
+    const dropMultiplier = asset === "SOL" ? 0.92 : 0.98;
+    return Number(lastOpenSlot.preco_entrada || 0) * dropMultiplier;
+  }
+
+  return livePrice || 0;
+}
+
 export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
   const livePrices = useLivePrices();
+  const liveBtcPrice = livePrices.prices.BTC;
+  const liveSolPrice = livePrices.prices.SOL;
   const initialSelectedAsset: AssetFilter = initialAsset?.toUpperCase() === "SOL" ? "SOL" : initialAsset?.toUpperCase() === "BTC" ? "BTC" : "ALL";
   const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
@@ -54,26 +88,43 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
     [selectedAsset, slots]
   );
   const visibleSlots = useMemo(
-    () =>
-      scopedSlots.filter((slot) => {
+    () => {
+      const filtered = scopedSlots.filter((slot) => {
         if (slotFilter === "closed") return slot.status === "gain" || slot.status === "zerado";
         if (slotFilter === "all") return true;
         return slot.status === slotFilter;
-      }),
+      });
+
+      if (slotFilter === "aberto") {
+        return sortByOpenDate(filtered);
+      }
+
+      return filtered;
+    },
     [scopedSlots, slotFilter]
   );
   const openOrderById = useMemo(() => {
-    let openIndex = 0;
-    return visibleSlots.reduce<Record<string, number>>((order, slot) => {
-      if (slot.status === "aberto") {
-        openIndex += 1;
-        order[slot.id] = openIndex;
-      }
-      return order;
-    }, {});
-  }, [visibleSlots]);
+    const order: Record<string, number> = {};
+    const assetCounts: Record<string, number> = {};
+    const openSlotsByAsset = sortByOpenDate(scopedSlots.filter((slot) => slot.status === "aberto"));
 
-  const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]), 0);
+    openSlotsByAsset.forEach((slot) => {
+      const asset = getAssetFromStrategy(slot);
+      assetCounts[asset] = (assetCounts[asset] || 0) + 1;
+      order[slot.id] = assetCounts[asset];
+    });
+
+    return order;
+  }, [scopedSlots]);
+
+  const suggestedEntryById = useMemo(() => {
+    return scopedSlots.reduce<Record<string, number>>((suggestions, slot) => {
+      suggestions[slot.id] = getSuggestedEntryPrice(slot, scopedSlots, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice);
+      return suggestions;
+    }, {});
+  }, [scopedSlots, liveBtcPrice, liveSolPrice]);
+
+  const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const gains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
@@ -92,11 +143,11 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
       <section className={`live-price-strip ${livePrices.status}`}>
         <div>
           <span>BTCUSDT</span>
-          <strong>{formatPrice(livePrices.prices.BTC)}</strong>
+          <strong>{formatPrice(liveBtcPrice)}</strong>
         </div>
         <div>
           <span>SOLUSDT</span>
-          <strong>{formatPrice(livePrices.prices.SOL)}</strong>
+          <strong>{formatPrice(liveSolPrice)}</strong>
         </div>
         <div>
           <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "preço desatualizado" : "Offline"}</span>
@@ -174,7 +225,8 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
           <SlotCard
             key={slot.id}
             slot={slot}
-            livePrice={livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]}
+            livePrice={getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice}
+            suggestedEntryPrice={suggestedEntryById[slot.id] || 0}
             openOrderNumber={openOrderById[slot.id] || null}
             announce={announce}
           />
@@ -208,11 +260,13 @@ function SelectStrategy({ name, strategies, selectedAsset }: { name: string; str
 function SlotCard({
   slot,
   livePrice,
+  suggestedEntryPrice,
   openOrderNumber,
   announce
 }: {
   slot: SlotView;
   livePrice?: number;
+  suggestedEntryPrice: number;
   openOrderNumber: number | null;
   announce: (message: string) => void;
 }) {
@@ -248,14 +302,22 @@ function SlotCard({
         <div className="slot-card-actions">
           <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
           <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
-          <SlotAction
-            action={openSlot}
-            slotId={slot.id}
-            label="Abrir"
-            disabled={slot.status === "aberto"}
-            hidden={{ entryPrice: livePrice ? String(livePrice) : "" }}
-            onClick={() => announce("Abrindo slot...")}
-          />
+          {slot.status === "aberto" ? (
+            <button className="slot-button" type="button" disabled>
+              Abrir
+            </button>
+          ) : (
+            <form className="tool-form stacked-form slot-open-form" action={openSlot}>
+              <input type="hidden" name="slotId" value={slot.id} />
+              <label>
+                Preco entrada
+                <input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={suggestedEntryPrice || ""} />
+              </label>
+              <button className="slot-button" type="submit" onClick={() => announce("Abrindo slot...")}>
+                Abrir
+              </button>
+            </form>
+          )}
           <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
           <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
         </div>

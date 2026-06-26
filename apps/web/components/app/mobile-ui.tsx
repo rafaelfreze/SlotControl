@@ -1,9 +1,17 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
+
+const bottomNavItems = [
+  { href: "/dashboard", label: "Inicio", icon: "◆" },
+  { href: "/slots", label: "Slots", icon: "▦" },
+  { href: "/historico", label: "Historico", icon: "▤" },
+  { href: "/config", label: "Config", icon: "⚙" }
+];
 
 export function AppHeader({
   title = "SLOTGAIN",
@@ -19,7 +27,7 @@ export function AppHeader({
   return (
     <header className="mobile-app-header sg-header">
       <Link className="mobile-icon-button sg-back-button" href={backHref || "/dashboard"} aria-label="Voltar">
-        {backHref ? "<" : <><span /><span /><span /></>}
+        {backHref ? "‹" : <><span /><span /><span /></>}
       </Link>
       <div className="mobile-brand">
         <span className="mobile-brand-mark">SG</span>
@@ -29,13 +37,37 @@ export function AppHeader({
         </div>
       </div>
       <Link className="mobile-icon-button settings-icon" href={rightHref} aria-label="Configuracoes">
-        *
+        ⚙
       </Link>
     </header>
   );
 }
 export function MobileScreen({ children }: { children: ReactNode }) {
-  return <main className="mobile-dashboard-shell app-screen">{children}</main>;
+  return (
+    <main className="mobile-dashboard-shell app-screen">
+      {children}
+      <MobileBottomNav />
+    </main>
+  );
+}
+
+export function MobileBottomNav() {
+  const pathname = usePathname();
+
+  return (
+    <nav className="mobile-bottom-nav" aria-label="Menu principal">
+      {bottomNavItems.map((item) => {
+        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+
+        return (
+          <Link key={item.href} href={item.href} className={active ? "active" : ""}>
+            <span aria-hidden="true">{item.icon}</span>
+            <strong>{item.label}</strong>
+          </Link>
+        );
+      })}
+    </nav>
+  );
 }
 export function StatCard({ title, value, helper, tone = "neutral" }: { title: string; value: string; helper?: string; tone?: Tone }) {
   return (
