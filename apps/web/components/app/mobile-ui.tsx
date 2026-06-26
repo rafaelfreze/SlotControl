@@ -1,9 +1,17 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
+
+const bottomNavItems = [
+  { href: "/dashboard", label: "Inicio", icon: "\u2302" },
+  { href: "/slots", label: "Slots", icon: "\u25A6" },
+  { href: "/historico", label: "Historico", icon: "\u25A4" },
+  { href: "/config", label: "Config", icon: "\u2699" }
+];
 
 export function AppHeader({
   title = "SLOTGAIN",
@@ -36,7 +44,31 @@ export function AppHeader({
 }
 
 export function MobileScreen({ children }: { children: ReactNode }) {
-  return <main className="mobile-dashboard-shell app-screen">{children}</main>;
+  return (
+    <main className="mobile-dashboard-shell app-screen">
+      {children}
+      <MobileBottomNav />
+    </main>
+  );
+}
+
+export function MobileBottomNav() {
+  const pathname = usePathname();
+
+  return (
+    <nav className="mobile-bottom-nav" aria-label="Menu principal">
+      {bottomNavItems.map((item) => {
+        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+
+        return (
+          <Link key={item.href} href={item.href} className={active ? "active" : ""}>
+            <span aria-hidden="true">{item.icon}</span>
+            <strong>{item.label}</strong>
+          </Link>
+        );
+      })}
+    </nav>
+  );
 }
 
 export function StatCard({ title, value, helper, tone = "neutral" }: { title: string; value: string; helper?: string; tone?: Tone }) {

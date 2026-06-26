@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import { AppHeader } from "@/components/app/mobile-ui";
+import { AppHeader, MobileBottomNav } from "@/components/app/mobile-ui";
 import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
 import {
   formatPrice,
@@ -143,6 +143,7 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <p className="mobile-session">{userEmail}</p>
+      <MobileBottomNav />
     </main>
   );
 }
