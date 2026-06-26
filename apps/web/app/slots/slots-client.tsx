@@ -253,17 +253,26 @@ function SlotCard({
         <span>Gains<strong>{slot.gains}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
-      <div className="slot-market-strip">
-        <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
-        <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
-      </div>
+      {slot.status === "aberto" ? (
+        <div className="slot-market-strip">
+          <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
+          <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
+        </div>
+      ) : null}
       <details className="mini-drawer slot-more-drawer">
         <summary>Ver mais</summary>
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
         <div className="slot-card-actions">
           <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
           <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
-          <SlotAction action={openSlot} slotId={slot.id} label="Abrir" disabled={slot.status === "aberto"} onClick={() => announce("Abrindo slot...")} />
+          <SlotAction
+            action={openSlot}
+            slotId={slot.id}
+            label="Abrir"
+            disabled={slot.status === "aberto"}
+            hidden={{ entryPrice: livePrice ? String(livePrice) : "" }}
+            onClick={() => announce("Abrindo slot...")}
+          />
           <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
           <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
         </div>

@@ -46,8 +46,13 @@ export type SlotRow = Omit<SlotView, "strategy"> & {
 };
 
 export function normalizeSlot(slot: SlotRow): SlotView {
+  const isOpen = slot.status === "aberto";
+
   return {
     ...slot,
+    preco_entrada: isOpen ? slot.preco_entrada : null,
+    preco_atual: isOpen ? slot.preco_atual : null,
+    preco_alvo: isOpen ? slot.preco_alvo : null,
     strategy: Array.isArray(slot.strategies) ? slot.strategies[0] || null : slot.strategies || null
   };
 }

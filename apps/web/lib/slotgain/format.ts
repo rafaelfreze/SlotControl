@@ -30,6 +30,20 @@ export function getOpenMarketMetrics(
   livePrice?: number
 ) {
   const valorSlot = getCurrentValue(slot);
+  if (slot.status !== "aberto") {
+    return {
+      precoEntrada: 0,
+      precoAtual: 0,
+      precoAlvo: 0,
+      valorSlot,
+      valorMarcado: valorSlot,
+      resultadoAbertoUsdt: 0,
+      resultadoAbertoPercentual: 0,
+      distanciaAteGainPercentual: 0,
+      hasPrices: false
+    };
+  }
+
   const precoEntrada = Number(slot.preco_entrada || 0);
   const precoAtual = Number(livePrice || slot.preco_atual || 0);
   const precoAlvo = Number(slot.preco_alvo || (precoEntrada > 0 ? precoEntrada * (1 + Number(slot.gain_rate || 0)) : 0));
