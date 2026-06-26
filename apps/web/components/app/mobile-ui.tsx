@@ -34,11 +34,9 @@ export function AppHeader({
     </header>
   );
 }
-
 export function MobileScreen({ children }: { children: ReactNode }) {
   return <main className="mobile-dashboard-shell app-screen">{children}</main>;
 }
-
 export function StatCard({ title, value, helper, tone = "neutral" }: { title: string; value: string; helper?: string; tone?: Tone }) {
   return (
     <article className={`mobile-metric-card stat-card ${tone}`}>
@@ -125,13 +123,5 @@ export function FilterChips<T extends string>({
         </button>
       ))}
     </div>
-  );
-}
-
-export function ProgressBar({ value, tone = "gold" }: { value: number; tone?: Tone }) {
-  return (
-    <i className={`sg-progress ${tone}`}>
-      <b style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
-    </i>
   );
 }

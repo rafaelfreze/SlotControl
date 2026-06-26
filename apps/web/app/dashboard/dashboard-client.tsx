@@ -32,8 +32,6 @@ type StrategySummary = {
   markedEquity: number;
   openSlots: number;
   totalSlots: number;
-  gains: number;
-  target: number;
 };
 
 function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset: "BTC" | "SOL", livePrice?: number): StrategySummary {
@@ -45,10 +43,6 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   const openResult = strategySlots
     .filter((slot) => slot.status === "aberto")
     .reduce((sum, slot) => sum + getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt, 0);
-  const gains = strategySlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
-  const fallbackTarget = asset === "BTC" ? 50 : 10;
-  const target = Math.max(1, Number(strategy?.redistribution_target || fallbackTarget));
-
   return {
     strategy,
     asset,
@@ -58,9 +52,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
     openResult,
     markedEquity,
     openSlots: strategySlots.filter((slot) => slot.status === "aberto").length,
-    totalSlots: strategySlots.length,
-    gains,
-    target
+    totalSlots: strategySlots.length
   };
 }
 
@@ -141,14 +133,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       <section className="primary-actions-grid" aria-label="Acoes principais">
         <ActionLink href="/slots?flow=abrir" icon="+" title="Abrir" subtitle="Operacao" tone="green" />
         <ActionLink href="/slots?flow=gain" icon="↗" title="Registrar" subtitle="Gain" tone="gold" />
-        <Link className="dashboard-action-card" href="/redistribuir">
-          <span className="action-orb purple">◔</span>
-          <span>
-            <strong>Redistribuir</strong>
-            <em>Saldo</em>
-          </span>
-          <b>›</b>
-        </Link>
         <ActionLink href="/historico" icon="▤" title="Historico" subtitle="De operacoes" tone="blue" />
       </section>
 
@@ -195,8 +179,6 @@ function MetricCard({
 }
 
 function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "gold" | "purple" }) {
-  const progress = Math.min(100, Math.round((summary.gains / summary.target) * 100));
-
   return (
     <Link className={`asset-card ${accent}`} href={`/slots?asset=${summary.asset}`}>
       <div className="asset-heading">
@@ -223,20 +205,6 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
         <span>
           Slots abertos <strong>{summary.openSlots}</strong>
         </span>
-      </div>
-
-      <div className="redistribution-line">
-        <p>Redistribuicao</p>
-        <div>
-          <strong>
-            {summary.gains} / {summary.target}
-          </strong>
-          <span>gains</span>
-          <i>
-            <b style={{ width: `${progress}%` }} />
-          </i>
-          <em>{progress}%</em>
-        </div>
       </div>
 
       <span className="details-button">Ver detalhes ›</span>

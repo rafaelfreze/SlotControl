@@ -7,7 +7,7 @@ import { formatDate } from "@/lib/slotgain/format";
 import type { HistoryEvent } from "@/lib/slotgain/types";
 
 type AssetFilter = "ALL" | "BTC" | "SOL";
-type ActionFilter = "all" | "abertura" | "gain" | "redistribuicao" | "zerar";
+type ActionFilter = "all" | "abertura" | "gain" | "zerar";
 
 export function HistoricoClient({ userEmail, history, error }: { userEmail: string; history: HistoryEvent[]; error: string | null }) {
   const [asset, setAsset] = useState<AssetFilter>("ALL");
@@ -18,12 +18,14 @@ export function HistoricoClient({ userEmail, history, error }: { userEmail: stri
       history.filter((item) => {
         const key = (item.strategy?.asset || item.strategy_key || "").toUpperCase();
         const actionKey = item.action.toLowerCase();
+        if (actionKey.includes("redistribu")) {
+          return false;
+        }
         const assetOk = asset === "ALL" || key === asset;
         const actionOk =
           action === "all" ||
           (action === "abertura" && actionKey.includes("abertura")) ||
           (action === "gain" && actionKey.includes("gain")) ||
-          (action === "redistribuicao" && actionKey.includes("redistribu")) ||
           (action === "zerar" && actionKey.includes("zerar"));
         return assetOk && actionOk;
       }),
@@ -49,7 +51,6 @@ export function HistoricoClient({ userEmail, history, error }: { userEmail: stri
         options={[
           { label: "Abertura", value: "abertura" },
           { label: "Gain", value: "gain" },
-          { label: "Redistrib.", value: "redistribuicao" },
           { label: "Zeragem", value: "zerar" },
           { label: "Todos", value: "all" }
         ]}

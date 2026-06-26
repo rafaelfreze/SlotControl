@@ -123,7 +123,6 @@ export async function createStrategy(formData: FormData) {
   const gainRate = Math.max(0, formNumber(formData, "gainRate", 0)) / 100;
   const dropPercent = Math.max(0, formNumber(formData, "dropPercent", 0));
   const restartAmount = Math.max(0, formInt(formData, "restartAmount", 0));
-  const redistributionTarget = Math.max(0, formInt(formData, "redistributionTarget", 0));
 
   if (!title || !asset || !key) {
     return;
@@ -151,7 +150,6 @@ export async function createStrategy(formData: FormData) {
       initial_slots: 0,
       drop_percent: dropPercent,
       restart_amount: restartAmount,
-      redistribution_target: redistributionTarget,
       sort_order: nextOrder
     })
     .select("id,key,title")
@@ -177,7 +175,6 @@ export async function updateStrategy(formData: FormData) {
   const gainRate = Math.max(0, formNumber(formData, "gainRate", 0)) / 100;
   const dropPercent = Math.max(0, formNumber(formData, "dropPercent", 0));
   const restartAmount = Math.max(0, formInt(formData, "restartAmount", 0));
-  const redistributionTarget = Math.max(0, formInt(formData, "redistributionTarget", 0));
 
   if (!id || !title || !asset) {
     return;
@@ -192,8 +189,7 @@ export async function updateStrategy(formData: FormData) {
       base_value: baseValue,
       gain_rate: gainRate,
       drop_percent: dropPercent,
-      restart_amount: restartAmount,
-      redistribution_target: redistributionTarget
+      restart_amount: restartAmount
     })
     .eq("id", id)
     .eq("user_id", user.id)
@@ -537,53 +533,6 @@ export async function addBalance(formData: FormData) {
   });
 
   finish("Saldo adicionado.");
-}
-
-export async function redistributeGains(formData: FormData) {
-  const { supabase, user } = await getUserClient();
-  const strategyId = formText(formData, "strategyId");
-
-  if (!strategyId) {
-    return;
-  }
-
-  const { data: slots } = await supabase
-    .from("slots")
-    .select("id,gains,slot_number,strategy_id,status,base_value,gain_rate,sort_order")
-    .eq("user_id", user.id)
-    .eq("strategy_id", strategyId)
-    .in("status", ["zerado", "gain"])
-    .order("sort_order", { ascending: true });
-
-  if (!slots?.length) {
-    return;
-  }
-
-  const totalGains = slots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
-  const baseGains = Math.floor(totalGains / slots.length);
-  const extraGains = totalGains % slots.length;
-
-  await Promise.all(
-    slots.map((slot, index) => {
-      const gains = baseGains + (index < extraGains ? 1 : 0);
-      return supabase
-        .from("slots")
-        .update({
-          gains,
-          status: gains > 0 ? "gain" : "zerado",
-          started_once: gains > 0
-        })
-        .eq("id", slot.id)
-        .eq("user_id", user.id);
-    })
-  );
-
-  await addHistory("Redistribuicao", `${totalGains} gains redistribuidos em ${slots.length} slots fechados.`, {
-    userId: user.id,
-    strategyId
-  });
-
-  finish("Gains redistribuidos.");
 }
 
 async function getSlotFromForm(

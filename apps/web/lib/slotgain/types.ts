@@ -8,7 +8,6 @@ export type StrategyView = {
   gain_rate: number | string;
   drop_percent: number | string;
   restart_amount: number;
-  redistribution_target: number;
   sort_order: number;
 };
 

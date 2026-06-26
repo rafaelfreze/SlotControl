@@ -49,17 +49,6 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
       {btc ? <StrategySection strategy={btc} tone="gold" /> : null}
       {sol ? <StrategySection strategy={sol} tone="purple" /> : null}
 
-      <SectionCard title="Redistribuicao" subtitle="Limites por ativo" tone="blue">
-        <div className="settings-list modern-settings">
-          {strategies.map((strategy) => (
-            <div key={strategy.id}>
-              <span>{strategy.asset}</span>
-              <strong>{strategy.redistribution_target} gains</strong>
-            </div>
-          ))}
-        </div>
-      </SectionCard>
-
       <SectionCard title="Conta" subtitle="Acesso e backup" tone="green">
         <div className="settings-list modern-settings account-settings">
           <div><span>Usuario logado</span><strong>{userEmail}</strong></div>
@@ -83,7 +72,6 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           <label>Gain %<input name="gainRate" type="number" min="0" step="0.01" required /></label>
           <label>Queda %<input name="dropPercent" type="number" min="0" step="0.01" /></label>
           <label>Reinicio<input name="restartAmount" type="number" min="0" step="1" /></label>
-          <label>Meta redistribuicao<input name="redistributionTarget" type="number" min="0" step="1" /></label>
           <button className="solid-button" type="submit">Criar estrategia</button>
         </form>
       </details>
@@ -107,7 +95,6 @@ function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "go
           <label>Gain %<input name="gainRate" type="number" min="0" step="0.01" defaultValue={formatPercent(strategy.gain_rate)} /></label>
           <label>Queda %<input name="dropPercent" type="number" min="0" step="0.01" defaultValue={formatDecimal(strategy.drop_percent)} /></label>
           <label>Reinicio<input name="restartAmount" type="number" min="0" step="1" defaultValue={strategy.restart_amount} /></label>
-          <label>Meta<input name="redistributionTarget" type="number" min="0" step="1" defaultValue={strategy.redistribution_target} /></label>
           <button className="slot-button edit" type="submit">Salvar</button>
         </form>
         <form action={deleteStrategy}>

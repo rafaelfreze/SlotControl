@@ -8,12 +8,11 @@ import {
   createSlots,
   moveSlot,
   openSlot,
-  redistributeGains,
   registerGain,
   resetSlot,
   updateSlot
 } from "@/app/dashboard/actions";
-import { AppHeader, FilterChips, MobileScreen, ProgressBar, SectionCard, StatCard } from "@/components/app/mobile-ui";
+import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
   formatDate,
   formatPrice,
@@ -78,9 +77,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const gains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
-  const currentStrategy = strategies.find((strategy) => strategy.asset.toUpperCase() === selectedAsset) || strategies[0];
-  const redistributionTarget = Math.max(1, Number(currentStrategy?.redistribution_target || (selectedAsset === "SOL" ? 10 : 50)));
-  const progress = Math.min(100, (gains / redistributionTarget) * 100);
   const tone = selectedAsset === "SOL" ? "purple" : "gold";
   const title = selectedAsset === "ALL" ? "Slots" : `Slots ${selectedAsset}`;
 
@@ -139,15 +135,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
             <StatCard title="Abertos" value={String(open)} tone="gold" />
             <StatCard title="Gains" value={String(gains)} tone="blue" />
           </div>
-          <div className="redistribution-line">
-            <p>Redistribuicao</p>
-            <div>
-              <strong>{gains} / {redistributionTarget}</strong>
-              <span>gains</span>
-              <ProgressBar value={progress} tone={tone} />
-              <em>{Math.round(progress)}%</em>
-            </div>
-          </div>
         </div>
       </SectionCard>
 
@@ -167,10 +154,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
             <label>Moeda<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={selectedAsset} /></label>
             <label>USDT por slot<input name="amount" type="number" min="0.01" step="0.01" required /></label>
             <button className="solid-button" type="submit">Adicionar</button>
-          </form>
-          <form className="tool-form stacked-form" action={redistributeGains}>
-            <label>Redistribuir<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={selectedAsset} /></label>
-            <button className="ghost-button" type="submit">Redistribuir</button>
           </form>
         </details>
       </div>
