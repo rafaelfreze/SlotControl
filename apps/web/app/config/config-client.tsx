@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { createStrategy, deleteStrategy, updateStrategy } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
+import { LogoutButton } from "@/components/auth/logout-button";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -59,12 +60,16 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
         </div>
       </SectionCard>
 
-      <SectionCard title="Conta" subtitle="Backup e preferencias" tone="green">
-        <div className="settings-list modern-settings">
-          <div><span>Usuario</span><strong>{userEmail}</strong></div>
-          <div><span>Tema</span><strong>Escuro premium</strong></div>
-          <div><span>Persistencia</span><strong>Supabase</strong></div>
+      <SectionCard title="Conta" subtitle="Acesso e backup" tone="green">
+        <div className="settings-list modern-settings account-settings">
+          <div><span>Usuario logado</span><strong>{userEmail}</strong></div>
+          <div><span>Email</span><strong>{userEmail}</strong></div>
+          <div><span>Plano</span><strong>Gratuito</strong></div>
           <div><span>Backup</span><button className="ghost-button compact-action" type="button" onClick={exportBackup}>Exportar JSON</button></div>
+          <div className="account-actions">
+            <LogoutButton label="Trocar conta" className="ghost-button compact-action" />
+            <LogoutButton label="Sair da conta" className="danger-button compact-action" />
+          </div>
         </div>
       </SectionCard>
 

@@ -3114,3 +3114,195 @@ p {
     font-size: 0.54rem;
   }
 }
+
+/* Final mobile overflow and density pass */
+.mobile-dashboard-shell *,
+.section-card *,
+.modern-slot-card *,
+.dashboard-action-card * {
+  min-width: 0;
+}
+
+.mobile-brand,
+.asset-title,
+.dashboard-action-card,
+.slot-card-top,
+.slot-card-values,
+.slot-market-strip,
+.settings-list div,
+.timeline-item {
+  overflow: hidden;
+}
+
+.mobile-brand strong,
+.mobile-brand div > span,
+.asset-title strong,
+.asset-title em,
+.dashboard-action-card strong,
+.dashboard-action-card em,
+.slot-card-top strong,
+.slot-card-top span,
+.slot-card-top em,
+.slot-card-values span,
+.slot-card-values strong,
+.slot-market-strip span,
+.slot-market-strip strong,
+.settings-list strong,
+.settings-list span,
+.timeline-item strong,
+.timeline-item p,
+.timeline-item small,
+.filter-chips button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-brand strong,
+.mobile-brand div > span,
+.asset-title strong,
+.asset-title em,
+.slot-card-top strong,
+.slot-card-top span,
+.slot-card-top em,
+.settings-list strong,
+.settings-list span,
+.timeline-item small {
+  white-space: nowrap;
+}
+
+.mobile-metric-card p,
+.dashboard-action-card strong,
+.dashboard-action-card em,
+.asset-stats span,
+.slot-card-values span,
+.slot-market-strip span {
+  overflow-wrap: anywhere;
+}
+
+.dashboard-action-card {
+  align-content: center;
+}
+
+.primary-actions-grid .dashboard-action-card {
+  grid-template-columns: 23px minmax(0, 1fr);
+  min-height: 44px;
+  padding: 6px;
+}
+
+.primary-actions-grid .action-orb {
+  width: 23px;
+  height: 23px;
+}
+
+.primary-actions-grid .dashboard-action-card strong {
+  font-size: 0.52rem;
+  line-height: 1.02;
+}
+
+.primary-actions-grid .dashboard-action-card em {
+  font-size: 0.46rem;
+  line-height: 1.02;
+}
+
+.modern-slot-card {
+  padding: 8px;
+}
+
+.slot-card-values,
+.slot-market-strip {
+  align-items: end;
+}
+
+.slot-card-values span,
+.slot-market-strip span {
+  display: grid;
+  line-height: 1.05;
+}
+
+.slot-more-drawer {
+  margin-top: 1px;
+}
+
+.slot-more-drawer > summary {
+  justify-content: center;
+  border: 1px solid rgba(176, 194, 216, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.slot-internal-id {
+  margin: 6px 0;
+  color: #778393;
+  font-size: 0.56rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.slot-more-drawer .edit-drawer {
+  margin-top: 6px;
+}
+
+.account-settings .account-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.account-actions button {
+  width: 100%;
+}
+
+@media (max-width: 390px) {
+  .mobile-dashboard-shell {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .mobile-metric-card {
+    min-height: 70px;
+    padding: 6px 5px;
+  }
+
+  .mobile-metric-card p {
+    font-size: 0.42rem;
+  }
+
+  .mobile-metric-card strong {
+    font-size: 0.7rem;
+  }
+
+  .asset-card,
+  .section-card {
+    padding: 9px;
+  }
+
+  .asset-stats {
+    gap: 5px;
+  }
+
+  .asset-stats span {
+    font-size: 0.45rem;
+  }
+
+  .asset-stats strong {
+    font-size: 0.62rem;
+  }
+
+  .primary-actions-grid {
+    gap: 5px;
+  }
+
+  .primary-actions-grid .dashboard-action-card {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .primary-actions-grid .dashboard-action-card em {
+    display: none;
+  }
+}

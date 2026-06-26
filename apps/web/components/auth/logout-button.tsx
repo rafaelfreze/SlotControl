@@ -5,7 +5,7 @@ import { useTransition } from "react";
 
 import { createClient } from "@/lib/supabase/browser";
 
-export function LogoutButton() {
+export function LogoutButton({ label = "Sair", className = "ghost-button" }: { label?: string; className?: string }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -19,8 +19,8 @@ export function LogoutButton() {
   }
 
   return (
-    <button className="ghost-button" type="button" onClick={handleLogout} disabled={isPending}>
-      {isPending ? "Saindo..." : "Sair"}
+    <button className={className} type="button" onClick={handleLogout} disabled={isPending}>
+      {isPending ? "Saindo..." : label}
     </button>
   );
 }

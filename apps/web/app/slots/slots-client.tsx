@@ -63,6 +63,16 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
       }),
     [scopedSlots, slotFilter]
   );
+  const openOrderById = useMemo(() => {
+    let openIndex = 0;
+    return visibleSlots.reduce<Record<string, number>>((order, slot) => {
+      if (slot.status === "aberto") {
+        openIndex += 1;
+        order[slot.id] = openIndex;
+      }
+      return order;
+    }, {});
+  }, [visibleSlots]);
 
   const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
@@ -178,7 +188,13 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
       <div className="modern-slot-list">
         {visibleSlots.map((slot) => (
-          <SlotCard key={slot.id} slot={slot} livePrice={livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]} announce={announce} />
+          <SlotCard
+            key={slot.id}
+            slot={slot}
+            livePrice={livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]}
+            openOrderNumber={openOrderById[slot.id] || null}
+            announce={announce}
+          />
         ))}
         {visibleSlots.length === 0 ? <p className="empty-copy padded-empty">Nenhum slot neste filtro.</p> : null}
       </div>
@@ -206,17 +222,28 @@ function SelectStrategy({ name, strategies, selectedAsset }: { name: string; str
   );
 }
 
-function SlotCard({ slot, livePrice, announce }: { slot: SlotView; livePrice?: number; announce: (message: string) => void }) {
+function SlotCard({
+  slot,
+  livePrice,
+  openOrderNumber,
+  announce
+}: {
+  slot: SlotView;
+  livePrice?: number;
+  openOrderNumber: number | null;
+  announce: (message: string) => void;
+}) {
   const asset = getAssetFromStrategy(slot);
   const tone = asset === "SOL" ? "purple" : "gold";
   const market = getOpenMarketMetrics(slot, livePrice);
   const statusClass = slot.status === "aberto" ? "open" : slot.status === "gain" ? "gain" : "closed";
+  const visualLabel = slot.status === "aberto" && openOrderNumber ? `Aberto #${openOrderNumber}` : getStatusLabel(slot.status);
 
   return (
     <article className={`modern-slot-card ${tone} ${statusClass}`}>
       <div className="slot-card-top">
         <div>
-          <span>Slot #{slot.slot_number}</span>
+          <span>{visualLabel}</span>
           <strong>{asset}</strong>
         </div>
         <em>{getStatusLabel(slot.status)}</em>
@@ -226,32 +253,34 @@ function SlotCard({ slot, livePrice, announce }: { slot: SlotView; livePrice?: n
         <span>Gains<strong>{slot.gains}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
-      {slot.status === "aberto" ? (
-        <div className="slot-market-strip">
-          <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
-          <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
-        </div>
-      ) : null}
-      <div className="slot-card-actions">
-        <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
-        <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
-        <SlotAction action={openSlot} slotId={slot.id} label="Abrir" disabled={slot.status === "aberto"} onClick={() => announce("Abrindo slot...")} />
-        <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
-        <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
+      <div className="slot-market-strip">
+        <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
+        <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
       </div>
-      <details className="mini-drawer edit-drawer">
-        <summary>Editar</summary>
-        <form className="tool-form stacked-form" action={updateSlot}>
-          <input type="hidden" name="slotId" value={slot.id} />
-          <label>Status<select name="status" defaultValue={slot.status === "hold" ? "gain" : slot.status}><option value="zerado">Zerado</option><option value="aberto">Aberto</option><option value="gain">Gain</option></select></label>
-          <label>Gains<input name="gains" type="number" min="0" step="1" defaultValue={slot.gains} /></label>
-          <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
-          <label>Preco entrada<input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_entrada || 0) || ""} /></label>
-          <label>Preco atual<input name="currentPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_atual || 0) || ""} /></label>
-          <label>Preco alvo<input name="targetPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_alvo || 0) || ""} /></label>
-          <label>Observacoes<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
-          <button className="slot-button edit" type="submit">Salvar</button>
-        </form>
+      <details className="mini-drawer slot-more-drawer">
+        <summary>Ver mais</summary>
+        <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
+        <div className="slot-card-actions">
+          <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
+          <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
+          <SlotAction action={openSlot} slotId={slot.id} label="Abrir" disabled={slot.status === "aberto"} onClick={() => announce("Abrindo slot...")} />
+          <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
+          <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
+        </div>
+        <details className="mini-drawer edit-drawer">
+          <summary>Editar dados</summary>
+          <form className="tool-form stacked-form" action={updateSlot}>
+            <input type="hidden" name="slotId" value={slot.id} />
+            <label>Status<select name="status" defaultValue={slot.status === "hold" ? "gain" : slot.status}><option value="zerado">Zerado</option><option value="aberto">Aberto</option><option value="gain">Gain</option></select></label>
+            <label>Gains<input name="gains" type="number" min="0" step="1" defaultValue={slot.gains} /></label>
+            <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
+            <label>Preco entrada<input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_entrada || 0) || ""} /></label>
+            <label>Preco atual<input name="currentPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_atual || 0) || ""} /></label>
+            <label>Preco alvo<input name="targetPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_alvo || 0) || ""} /></label>
+            <label>Observacoes<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
+            <button className="slot-button edit" type="submit">Salvar</button>
+          </form>
+        </details>
       </details>
     </article>
   );
