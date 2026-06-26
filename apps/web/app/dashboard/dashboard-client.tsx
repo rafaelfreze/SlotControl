@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
-import { redistributeGains } from "@/app/dashboard/actions";
 import {
   formatSignedPercent,
   formatSignedUsdt,
@@ -65,7 +64,6 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
 }
 
 export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice }: DashboardClientProps) {
-  const [showRedistribute, setShowRedistribute] = useState(false);
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
   const realizedProfit = totalUpdated - totalBase;
@@ -80,7 +78,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
   const openSlots = openSlotsList.length;
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC"), [strategies, slots]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL"), [strategies, slots]);
-  const defaultRedistributionStrategy = btc.strategy?.id || sol.strategy?.id || strategies[0]?.id || "";
 
   return (
     <main className="mobile-dashboard-shell">
@@ -123,14 +120,14 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       <section className="primary-actions-grid" aria-label="Acoes principais">
         <ActionLink href="/slots?flow=abrir" icon="+" title="Abrir" subtitle="Operacao" tone="green" />
         <ActionLink href="/slots?flow=gain" icon="↗" title="Registrar" subtitle="Gain" tone="gold" />
-        <button className="dashboard-action-card" type="button" onClick={() => setShowRedistribute(true)}>
+        <Link className="dashboard-action-card" href="/redistribuir">
           <span className="action-orb purple">◔</span>
           <span>
             <strong>Redistribuir</strong>
             <em>Saldo</em>
           </span>
           <b>›</b>
-        </button>
+        </Link>
         <ActionLink href="/historico" icon="▤" title="Historico" subtitle="De operacoes" tone="blue" />
       </section>
 
@@ -144,35 +141,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <p className="mobile-session">{userEmail}</p>
-
-      {showRedistribute ? (
-        <div className="confirm-backdrop" role="dialog" aria-modal="true" aria-label="Confirmar redistribuicao">
-          <div className="confirm-card">
-            <h2>Redistribuir saldo?</h2>
-            <p>Os gains serao redistribuidos apenas nos slots fechados da estrategia escolhida.</p>
-            <form action={redistributeGains}>
-              <label>
-                Estrategia
-                <select name="strategyId" defaultValue={defaultRedistributionStrategy} required>
-                  {strategies.map((strategy) => (
-                    <option key={strategy.id} value={strategy.id}>
-                      {strategy.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="confirm-actions">
-                <button className="ghost-button" type="button" onClick={() => setShowRedistribute(false)}>
-                  Cancelar
-                </button>
-                <button className="solid-button" type="submit" disabled={!defaultRedistributionStrategy}>
-                  Confirmar
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
     </main>
   );
 }

@@ -38,6 +38,7 @@ export type HistoryEvent = {
   event_at: string;
   strategy_key: string | null;
   slot_number: number | null;
+  strategy?: Pick<StrategyView, "asset" | "key"> | null;
 };
 
 export type SlotRow = Omit<SlotView, "strategy"> & {
