@@ -593,7 +593,7 @@ p {
   width: min(100%, 430px);
   min-height: 100svh;
   margin: 0 auto;
-  padding: max(18px, env(safe-area-inset-top)) 17px calc(18px + env(safe-area-inset-bottom));
+  padding: calc(18px + env(safe-area-inset-top)) 17px calc(18px + env(safe-area-inset-bottom));
   background:
     radial-gradient(circle at 50% 5%, rgba(37, 177, 255, 0.12), transparent 34%),
     radial-gradient(circle at 5% 42%, rgba(240, 185, 11, 0.08), transparent 24%),
@@ -606,7 +606,8 @@ p {
   grid-template-columns: 48px minmax(0, 1fr) 48px;
   align-items: center;
   gap: 13px;
-  margin-bottom: 18px;
+  margin-top: 2px;
+  margin-bottom: 16px;
 }
 
 .mobile-icon-button {
@@ -3684,6 +3685,49 @@ body {
   border: 1px solid rgba(120, 151, 177, 0.18);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.025);
+}
+
+.mobile-app-header,
+.dashboard-header {
+  padding-top: env(safe-area-inset-top);
+}
+
+.mobile-bottom-nav strong,
+.filter-chips button,
+.dashboard-action-card strong,
+.dashboard-action-card em,
+.mobile-metric-card p,
+.mobile-metric-card em,
+.slot-card-top span,
+.slot-card-top em,
+.slot-card-values span,
+.slot-market-strip span,
+.settings-list span,
+.settings-list strong {
+  white-space: nowrap;
+}
+
+.mobile-bottom-nav strong,
+.filter-chips button,
+.dashboard-action-card strong,
+.dashboard-action-card em,
+.slot-card-top span,
+.slot-card-top em,
+.slot-card-values span,
+.slot-market-strip span,
+.settings-list span,
+.settings-list strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboard-action-card strong,
+.dashboard-action-card em {
+  white-space: nowrap;
+}
+
+.mobile-bottom-nav a {
+  padding-inline: 4px;
 }
 
 .slot-open-form label {

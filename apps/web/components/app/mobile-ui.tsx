@@ -7,10 +7,10 @@ import type { ReactNode } from "react";
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
 
 const bottomNavItems = [
-  { href: "/dashboard", label: "Inicio", icon: "◆" },
+  { href: "/dashboard", label: "Home", icon: "◆" },
   { href: "/slots", label: "Slots", icon: "▦" },
-  { href: "/historico", label: "Historico", icon: "▤" },
-  { href: "/config", label: "Config", icon: "⚙" }
+  { href: "/historico", label: "Hist", icon: "▤" },
+  { href: "/config", label: "Cfg", icon: "⚙" }
 ];
 
 export function AppHeader({

@@ -49,8 +49,8 @@ function getOpenTimestamp(slot: SlotView) {
 
 function sortByOpenDate(slots: SlotView[]) {
   return [...slots].sort((first, second) => {
-    const dateDiff = getOpenTimestamp(first) - getOpenTimestamp(second);
-    return dateDiff || first.sort_order - second.sort_order;
+    const priceDiff = Number(second.preco_entrada || 0) - Number(first.preco_entrada || 0);
+    return priceDiff || getOpenTimestamp(first) - getOpenTimestamp(second) || first.sort_order - second.sort_order;
   });
 }
 

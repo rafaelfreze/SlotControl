@@ -119,7 +119,7 @@ async function getSuggestedEntryPriceFromLastOpen(
     .eq("status", "aberto")
     .neq("id", slot.id)
     .not("preco_entrada", "is", null)
-    .order("updated_at", { ascending: false })
+    .order("preco_entrada", { ascending: true })
     .limit(1);
 
   const lastEntryPrice = Number(lastOpenSlots?.[0]?.preco_entrada || 0);
