@@ -16,13 +16,16 @@ import {
 import { AppHeader, FilterChips, MobileScreen, ProgressBar, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
   formatDate,
+  formatPrice,
   formatSignedPercent,
   formatSignedUsdt,
   formatUsdt,
   getCurrentValue,
+  getMarkedSlotValue,
   getOpenMarketMetrics,
   getStatusLabel
 } from "@/lib/slotgain/format";
+import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type SlotFilter = "aberto" | "gain" | "closed" | "all";
@@ -43,6 +46,7 @@ function getAssetFromStrategy(slot: SlotView) {
 }
 
 export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
+  const livePrices = useLivePrices();
   const initialSelectedAsset: AssetFilter = initialAsset?.toUpperCase() === "SOL" ? "SOL" : initialAsset?.toUpperCase() === "BTC" ? "BTC" : "ALL";
   const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
@@ -62,7 +66,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
     [scopedSlots, slotFilter]
   );
 
-  const total = scopedSlots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
+  const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const gains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
@@ -81,6 +85,24 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
       <AppHeader title={title.toUpperCase()} subtitle={userEmail} backHref="/dashboard" />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
+      <section className={`live-price-strip ${livePrices.status}`}>
+        <div>
+          <span>BTCUSDT</span>
+          <strong>{formatPrice(livePrices.prices.BTC)}</strong>
+        </div>
+        <div>
+          <span>SOLUSDT</span>
+          <strong>{formatPrice(livePrices.prices.SOL)}</strong>
+        </div>
+        <div>
+          <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "preço desatualizado" : "Offline"}</span>
+          <strong>
+            {livePrices.lastUpdated
+              ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
+              : "--:--"}
+          </strong>
+        </div>
+      </section>
 
       <FilterChips
         value={selectedAsset}
@@ -158,7 +180,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
       <div className="modern-slot-list">
         {visibleSlots.map((slot) => (
-          <SlotCard key={slot.id} slot={slot} announce={announce} />
+          <SlotCard key={slot.id} slot={slot} livePrice={livePrices.prices[getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC"]} announce={announce} />
         ))}
         {visibleSlots.length === 0 ? <p className="empty-copy padded-empty">Nenhum slot neste filtro.</p> : null}
       </div>
@@ -186,10 +208,10 @@ function SelectStrategy({ name, strategies, selectedAsset }: { name: string; str
   );
 }
 
-function SlotCard({ slot, announce }: { slot: SlotView; announce: (message: string) => void }) {
+function SlotCard({ slot, livePrice, announce }: { slot: SlotView; livePrice?: number; announce: (message: string) => void }) {
   const asset = getAssetFromStrategy(slot);
   const tone = asset === "SOL" ? "purple" : "gold";
-  const market = getOpenMarketMetrics(slot);
+  const market = getOpenMarketMetrics(slot, livePrice);
   const statusClass = slot.status === "aberto" ? "open" : slot.status === "gain" ? "gain" : "closed";
 
   return (
@@ -202,13 +224,14 @@ function SlotCard({ slot, announce }: { slot: SlotView; announce: (message: stri
         <em>{getStatusLabel(slot.status)}</em>
       </div>
       <div className="slot-card-values">
-        <span>Valor atual<strong>{formatUsdt(getCurrentValue(slot))}</strong></span>
+        <span>Valor atual<strong>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
         <span>Gains<strong>{slot.gains}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status === "aberto" ? (
         <div className="slot-market-strip">
           <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
+          <span>Atual<strong>{market.precoAtual || "-"}</strong></span>
           <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
           <span>Distancia<strong>{formatSignedPercent(market.distanciaAteGainPercentual)}</strong></span>
           <span className={market.resultadoAbertoUsdt < 0 ? "negative" : "positive"}>Aberto<strong>{formatSignedUsdt(market.resultadoAbertoUsdt)}</strong></span>

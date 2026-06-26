@@ -539,6 +539,55 @@ p {
   margin: 0;
 }
 
+.live-price-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  border: 1px solid rgba(176, 194, 216, 0.16);
+  border-radius: 14px;
+  background:
+    linear-gradient(140deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015)),
+    rgba(6, 14, 23, 0.9);
+  padding: 9px;
+}
+
+.live-price-strip div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.live-price-strip span {
+  color: #aeb8c7;
+  font-size: 0.58rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.live-price-strip strong {
+  color: #fff;
+  font-size: 0.78rem;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.live-price-strip.online {
+  border-color: rgba(14, 203, 129, 0.28);
+}
+
+.live-price-strip.online div:last-child strong {
+  color: #10d984;
+}
+
+.live-price-strip.offline {
+  border-color: rgba(246, 70, 93, 0.28);
+}
+
+.live-price-strip.offline div:last-child strong,
+.live-price-strip.offline div:last-child span {
+  color: #ffb4bd;
+}
+
 .mobile-dashboard-shell {
   width: min(100%, 430px);
   min-height: 100svh;

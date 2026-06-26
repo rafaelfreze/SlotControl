@@ -6,11 +6,13 @@ import { useMemo } from "react";
 import {
   formatSignedPercent,
   formatSignedUsdt,
+  formatPrice,
   formatUsdt,
   getCurrentValue,
   getMarkedSlotValue,
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
+import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type DashboardClientProps = {
@@ -35,15 +37,15 @@ type StrategySummary = {
   target: number;
 };
 
-function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset: "BTC" | "SOL"): StrategySummary {
+function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset: "BTC" | "SOL", livePrice?: number): StrategySummary {
   const strategy = strategies.find((item) => item.asset.toUpperCase() === asset) || null;
   const strategySlots = strategy ? slots.filter((slot) => slot.strategy_id === strategy.id) : [];
   const base = strategySlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
-  const total = strategySlots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
-  const markedEquity = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot), 0);
+  const total = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrice), 0);
+  const markedEquity = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrice), 0);
   const openResult = strategySlots
     .filter((slot) => slot.status === "aberto")
-    .reduce((sum, slot) => sum + getOpenMarketMetrics(slot).resultadoAbertoUsdt, 0);
+    .reduce((sum, slot) => sum + getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt, 0);
   const gains = strategySlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const fallbackTarget = asset === "BTC" ? 50 : 10;
   const target = Math.max(1, Number(strategy?.redistribution_target || fallbackTarget));
@@ -64,20 +66,31 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
 }
 
 export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice }: DashboardClientProps) {
+  const livePrices = useLivePrices();
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
   const realizedProfit = totalUpdated - totalBase;
   const openSlotsList = slots.filter((slot) => slot.status === "aberto");
-  const openResult = openSlotsList.reduce((sum, slot) => sum + getOpenMarketMetrics(slot).resultadoAbertoUsdt, 0);
-  const markedEquity = slots.reduce((sum, slot) => sum + getMarkedSlotValue(slot), 0);
+  const openResult = openSlotsList.reduce(
+    (sum, slot) => sum + getOpenMarketMetrics(slot, livePrices.prices[slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC"]).resultadoAbertoUsdt,
+    0
+  );
+  const markedEquity = slots.reduce(
+    (sum, slot) => sum + getMarkedSlotValue(slot, livePrices.prices[slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC"]),
+    0
+  );
   const averageDistance =
     openSlotsList.length > 0
-      ? openSlotsList.reduce((sum, slot) => sum + getOpenMarketMetrics(slot).distanciaAteGainPercentual, 0) /
+      ? openSlotsList.reduce(
+          (sum, slot) =>
+            sum + getOpenMarketMetrics(slot, livePrices.prices[slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC"]).distanciaAteGainPercentual,
+          0
+        ) /
         openSlotsList.length
       : 0;
   const openSlots = openSlotsList.length;
-  const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC"), [strategies, slots]);
-  const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL"), [strategies, slots]);
+  const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
+  const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
 
   return (
     <main className="mobile-dashboard-shell">
@@ -105,6 +118,25 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
           {initialNotice}
         </section>
       ) : null}
+
+      <section className={`live-price-strip ${livePrices.status}`}>
+        <div>
+          <span>BTCUSDT</span>
+          <strong>{formatPrice(livePrices.prices.BTC)}</strong>
+        </div>
+        <div>
+          <span>SOLUSDT</span>
+          <strong>{formatPrice(livePrices.prices.SOL)}</strong>
+        </div>
+        <div>
+          <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "preço desatualizado" : "Offline"}</span>
+          <strong>
+            {livePrices.lastUpdated
+              ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
+              : "--:--"}
+          </strong>
+        </div>
+      </section>
 
       <section className="mobile-metrics" aria-label="Resumo principal">
         <MetricCard icon="$" title="Lucro realizado" value={formatUsdt(realizedProfit)} helper="Somente vendido" tone="green" />

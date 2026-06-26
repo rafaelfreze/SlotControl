@@ -26,11 +26,12 @@ export function getCurrentValue(slot: Pick<SlotView, "base_value" | "gain_rate" 
 }
 
 export function getOpenMarketMetrics(
-  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo">
+  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo">,
+  livePrice?: number
 ) {
   const valorSlot = getCurrentValue(slot);
   const precoEntrada = Number(slot.preco_entrada || 0);
-  const precoAtual = Number(slot.preco_atual || 0);
+  const precoAtual = Number(livePrice || slot.preco_atual || 0);
   const precoAlvo = Number(slot.preco_alvo || (precoEntrada > 0 ? precoEntrada * (1 + Number(slot.gain_rate || 0)) : 0));
   const hasPrices = slot.status === "aberto" && precoEntrada > 0 && precoAtual > 0;
   const valorMarcado = hasPrices ? valorSlot * (precoAtual / precoEntrada) : valorSlot;
@@ -51,8 +52,17 @@ export function getOpenMarketMetrics(
   };
 }
 
-export function getMarkedSlotValue(slot: SlotView) {
-  return slot.status === "aberto" ? getOpenMarketMetrics(slot).valorMarcado : getCurrentValue(slot);
+export function getMarkedSlotValue(slot: SlotView, livePrice?: number) {
+  return slot.status === "aberto" ? getOpenMarketMetrics(slot, livePrice).valorMarcado : getCurrentValue(slot);
+}
+
+export function formatPrice(value: number | null | undefined) {
+  if (!value) return "-";
+
+  return new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: value > 100 ? 2 : 4
+  }).format(value);
 }
 
 export function formatSignedUsdt(value: number) {
