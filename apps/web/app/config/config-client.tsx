@@ -5,6 +5,7 @@ import { useState } from "react";
 import { createStrategy, deleteStrategy, updateStrategy } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
+import { useAutoGainSetting } from "@/lib/slotgain/auto-gain";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -18,6 +19,7 @@ type ConfigClientProps = {
 
 export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice }: ConfigClientProps) {
   const [notice, setNotice] = useState<string | null>(initialNotice);
+  const { enabled: autoGainEnabled, setEnabled: setAutoGainEnabled } = useAutoGainSetting();
   const btc = strategies.find((strategy) => strategy.asset.toUpperCase() === "BTC");
   const sol = strategies.find((strategy) => strategy.asset.toUpperCase() === "SOL");
 
@@ -73,6 +75,17 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
 
       <SectionCard title="Preferencias" subtitle="Interface" tone="purple">
         <div className="settings-list modern-settings">
+          <div className="settings-action-row">
+            <span>Auto Gain</span>
+            <button
+              className={`auto-gain-toggle ${autoGainEnabled ? "active" : ""}`}
+              type="button"
+              aria-pressed={autoGainEnabled}
+              onClick={() => setAutoGainEnabled(!autoGainEnabled)}
+            >
+              {autoGainEnabled ? "ON" : "OFF"}
+            </button>
+          </div>
           <div><span>Tema</span><strong>Dark premium</strong></div>
           <div><span>Moedas</span><strong>BTC e SOL</strong></div>
         </div>

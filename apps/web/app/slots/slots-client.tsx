@@ -13,6 +13,7 @@ import {
   updateSlot
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
+import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
 import {
   formatDate,
   formatPrice,
@@ -82,6 +83,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
   const [notice, setNotice] = useState<string | null>(initialNotice);
+  const { enabled: autoGainEnabled } = useAutoGainSetting();
 
   const scopedSlots = useMemo(
     () => slots.filter((slot) => selectedAsset === "ALL" || getAssetFromStrategy(slot) === selectedAsset),
@@ -135,11 +137,20 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
     setNotice(message);
   }
 
+  useAutoGainWatcher({
+    enabled: autoGainEnabled,
+    slots,
+    prices: { BTC: liveBtcPrice, SOL: liveSolPrice },
+    readKey: livePrices.lastUpdated?.getTime() || null,
+    onRegistered: ({ message }) => setNotice(message)
+  });
+
   return (
     <MobileScreen>
       <AppHeader title={title.toUpperCase()} subtitle={userEmail} backHref="/dashboard" />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
+      {autoGainEnabled ? <section className="auto-gain-badge">Auto Gain ativo</section> : null}
       <section className={`live-price-strip ${livePrices.status}`}>
         <div>
           <span>BTCUSDT</span>

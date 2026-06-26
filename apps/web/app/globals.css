@@ -3815,6 +3815,51 @@ body {
   font-size: 1rem;
 }
 
+.auto-gain-badge {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  border: 1px solid rgba(0, 224, 152, 0.34);
+  border-radius: 999px;
+  background: rgba(0, 224, 152, 0.08);
+  color: var(--sg-success);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.settings-action-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.auto-gain-toggle {
+  min-width: 64px;
+  min-height: 34px;
+  border: 1px solid rgba(120, 151, 177, 0.28);
+  border-radius: 999px;
+  background: rgba(5, 19, 30, 0.82);
+  color: var(--sg-muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.auto-gain-toggle.active {
+  border-color: rgba(0, 224, 152, 0.52);
+  background: rgba(0, 224, 152, 0.14);
+  color: var(--sg-success);
+}
+
 .timeline-list {
   gap: 8px;
 }

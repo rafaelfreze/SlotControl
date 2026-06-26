@@ -432,6 +432,86 @@ export async function registerGain(formData: FormData) {
   finish("Gain registrado.");
 }
 
+export async function registerAutoGain(payload: { slotId: string; currentPrice: number; targetPrice?: number }) {
+  const { supabase, user } = await getUserClient();
+  const slotId = String(payload.slotId || "");
+  const currentPrice = Number(payload.currentPrice || 0);
+
+  if (!slotId || currentPrice <= 0) {
+    return { registered: false };
+  }
+
+  const { data: slot } = await supabase
+    .from("slots")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .eq("id", slotId)
+    .eq("user_id", user.id)
+    .single<SlotRecord>();
+
+  if (!slot || slot.status !== "aberto") {
+    return { registered: false };
+  }
+
+  const targetPrice = Number(slot.preco_alvo || payload.targetPrice || 0);
+  if (targetPrice <= 0 || currentPrice < targetPrice) {
+    return { registered: false };
+  }
+
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,title,asset")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "title" | "asset">>();
+
+  const gains = Number(slot.gains || 0) + 1;
+  const valueBefore = currentValue(slot);
+  const nextSlot = { ...slot, gains };
+  const valueAfter = currentValue(nextSlot);
+
+  const { data: updatedSlot } = await supabase
+    .from("slots")
+    .update({ status: "gain", gains, started_once: true, preco_entrada: null, preco_atual: null, preco_alvo: null })
+    .eq("id", slot.id)
+    .eq("user_id", user.id)
+    .eq("status", "aberto")
+    .select("id")
+    .single();
+
+  if (!updatedSlot) {
+    return { registered: false };
+  }
+
+  const asset = strategy?.asset?.toUpperCase() || "BTC";
+  const message = `Gain automatico registrado no ${asset} - Slot ${slot.slot_number}`;
+
+  await addHistory(
+    "auto_gain",
+    [
+      message,
+      `Alvo: ${formatUsdt(targetPrice)}`,
+      `Preco atual: ${formatUsdt(currentPrice)}`,
+      `Valor antes: ${formatUsdt(valueBefore)}`,
+      `Valor depois: ${formatUsdt(valueAfter)}`,
+      `Data: ${new Date().toISOString()}`
+    ].join(" | "),
+    {
+      userId: user.id,
+      strategyId: slot.strategy_id,
+      slotId: slot.id,
+      strategyKey: strategy?.key || null,
+      slotNumber: slot.slot_number
+    }
+  );
+
+  revalidatePath("/dashboard");
+  revalidatePath("/slots");
+  revalidatePath("/historico");
+  revalidatePath("/config");
+
+  return { registered: true, message, asset, slotId: slot.id, slotNumber: slot.slot_number };
+}
+
 export async function resetSlot(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import {
   formatSignedUsdt,
@@ -12,6 +12,7 @@ import {
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { MobileBottomNav } from "@/components/app/mobile-ui";
+import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -59,6 +60,8 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
 
 export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice }: DashboardClientProps) {
   const livePrices = useLivePrices();
+  const [notice, setNotice] = useState<string | null>(initialNotice);
+  const { enabled: autoGainEnabled } = useAutoGainSetting();
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
   const realizedProfit = totalUpdated - totalBase;
@@ -74,6 +77,14 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
   const openSlots = openSlotsList.length;
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
+
+  useAutoGainWatcher({
+    enabled: autoGainEnabled,
+    slots,
+    prices: { BTC: livePrices.prices.BTC, SOL: livePrices.prices.SOL },
+    readKey: livePrices.lastUpdated?.getTime() || null,
+    onRegistered: ({ message }) => setNotice(message)
+  });
 
   return (
     <main className="mobile-dashboard-shell">
@@ -96,9 +107,9 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </header>
 
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados do Supabase: {setupError}</section> : null}
-      {initialNotice ? (
+      {notice ? (
         <section className="form-success dashboard-notice" role="status">
-          {initialNotice}
+          {notice}
         </section>
       ) : null}
 
