@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import { AppHeader, MobileBottomNav } from "@/components/app/mobile-ui";
+import { AppHeader } from "@/components/app/mobile-ui";
 import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
 import {
   formatPrice,
@@ -118,19 +118,19 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <section className="mobile-metrics" aria-label="Resumo principal">
-        <MetricCard icon="$" title="Lucro realizado" value={formatUsdt(realizedProfit)} helper="Somente vendido" tone="green" />
-        <MetricCard icon="~" title="Resultado em aberto" value={formatSignedUsdt(openResult)} helper="Marcado a mercado" tone={openResult < 0 ? "red" : "green"} />
-        <MetricCard icon="M" title="Patrimonio marcado" value={formatUsdt(markedEquity)} helper="Fechados + abertos" tone="gold" />
-        <MetricCard icon="#" title="Slots abertos" value={String(openSlots)} helper={`de ${slots.length} disponiveis`} tone="purple" />
+        <MetricCard icon="$" title="Lucro" value={formatUsdt(realizedProfit)} helper="Vendido" tone="green" />
+        <MetricCard icon="~" title="Aberto" value={formatSignedUsdt(openResult)} helper="Mercado" tone={openResult < 0 ? "red" : "green"} />
+        <MetricCard icon="M" title="Patrimonio" value={formatUsdt(markedEquity)} helper="Total" tone="gold" />
+        <MetricCard icon="#" title="Slots" value={String(openSlots)} helper={`de ${slots.length}`} tone="purple" />
       </section>
 
       <StrategyCard summary={btc} accent="gold" />
       <StrategyCard summary={sol} accent="purple" />
 
       <section className="primary-actions-grid" aria-label="Acoes principais">
-        <ActionLink href="/slots?flow=abrir" icon="+" title="Abrir" subtitle="Operacao" tone="green" />
-        <ActionLink href="/slots?flow=gain" icon="G" title="Registrar" subtitle="Gain" tone="gold" />
-        <ActionLink href="/historico" icon="H" title="Historico" subtitle="Operacoes" tone="blue" />
+        <ActionLink href="/slots?flow=abrir" icon="+" title="Abrir" subtitle="" tone="green" />
+        <ActionLink href="/slots?flow=gain" icon="G" title="Gain" subtitle="" tone="gold" />
+        <ActionLink href="/historico" icon="H" title="Historico" subtitle="" tone="blue" />
       </section>
 
       <section className="quick-summary-card" aria-label="Resumo rapido">
@@ -143,7 +143,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <p className="mobile-session">{userEmail}</p>
-      <MobileBottomNav />
     </main>
   );
 }
@@ -195,13 +194,13 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
           Total <strong>{formatUsdt(summary.total)}</strong>
         </span>
         <span>
-          Lucro realizado <strong>{formatUsdt(summary.realizedProfit)}</strong>
+          Lucro <strong>{formatUsdt(summary.realizedProfit)}</strong>
         </span>
         <span>
-          Resultado aberto <strong className={summary.openResult < 0 ? "negative-value" : ""}>{formatSignedUsdt(summary.openResult)}</strong>
+          Aberto <strong className={summary.openResult < 0 ? "negative-value" : ""}>{formatSignedUsdt(summary.openResult)}</strong>
         </span>
         <span>
-          Slots abertos <strong>{summary.openSlots}</strong>
+          Slots <strong>{summary.openSlots}</strong>
         </span>
       </div>
 
@@ -228,7 +227,7 @@ function ActionLink({
       <span className={`action-orb ${tone}`}>{icon}</span>
       <span>
         <strong>{title}</strong>
-        <em>{subtitle}</em>
+        {subtitle ? <em>{subtitle}</em> : null}
       </span>
       <b>{`\u203A`}</b>
     </Link>
