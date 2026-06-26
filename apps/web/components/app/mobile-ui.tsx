@@ -1,17 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
-
-const bottomNavItems = [
-  { href: "/dashboard", label: "Home", icon: "◆" },
-  { href: "/slots", label: "Slots", icon: "▦" },
-  { href: "/historico", label: "Hist", icon: "▤" },
-  { href: "/config", label: "Cfg", icon: "⚙" }
-];
 
 export function AppHeader({
   title = "SLOTGAIN",
@@ -26,8 +18,8 @@ export function AppHeader({
 }) {
   return (
     <header className="mobile-app-header sg-header">
-      <Link className="mobile-icon-button sg-back-button" href={backHref || "/dashboard"} aria-label="Voltar">
-        {backHref ? "‹" : <><span /><span /><span /></>}
+      <Link className="mobile-icon-button sg-back-button" href={backHref || "/dashboard"} aria-label={backHref ? "Voltar" : "Abrir menu de slots"}>
+        {backHref ? <span className="mobile-icon-glyph">{`\u2039`}</span> : <><span /><span /><span /></>}
       </Link>
       <div className="mobile-brand">
         <span className="mobile-brand-mark">SG</span>
@@ -37,38 +29,16 @@ export function AppHeader({
         </div>
       </div>
       <Link className="mobile-icon-button settings-icon" href={rightHref} aria-label="Configuracoes">
-        ⚙
+        <span className="mobile-icon-glyph">{`\u2699`}</span>
       </Link>
     </header>
   );
 }
+
 export function MobileScreen({ children }: { children: ReactNode }) {
-  return (
-    <main className="mobile-dashboard-shell app-screen">
-      {children}
-      <MobileBottomNav />
-    </main>
-  );
+  return <main className="mobile-dashboard-shell app-screen">{children}</main>;
 }
 
-export function MobileBottomNav() {
-  const pathname = usePathname();
-
-  return (
-    <nav className="mobile-bottom-nav" aria-label="Menu principal">
-      {bottomNavItems.map((item) => {
-        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-
-        return (
-          <Link key={item.href} href={item.href} className={active ? "active" : ""}>
-            <span aria-hidden="true">{item.icon}</span>
-            <strong>{item.label}</strong>
-          </Link>
-        );
-      })}
-    </nav>
-  );
-}
 export function StatCard({ title, value, helper, tone = "neutral" }: { title: string; value: string; helper?: string; tone?: Tone }) {
   return (
     <article className={`mobile-metric-card stat-card ${tone}`}>
@@ -118,7 +88,7 @@ export function ActionButton({
         <strong>{title}</strong>
         {subtitle ? <em>{subtitle}</em> : null}
       </span>
-      <b>›</b>
+      <b>{`\u203A`}</b>
     </>
   );
 

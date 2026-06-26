@@ -3,16 +3,16 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import { AppHeader } from "@/components/app/mobile-ui";
+import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
 import {
-  formatSignedUsdt,
   formatPrice,
+  formatSignedUsdt,
   formatUsdt,
   getCurrentValue,
   getMarkedSlotValue,
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
-import { MobileBottomNav } from "@/components/app/mobile-ui";
-import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -45,6 +45,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   const openResult = strategySlots
     .filter((slot) => slot.status === "aberto")
     .reduce((sum, slot) => sum + getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt, 0);
+
   return {
     strategy,
     asset,
@@ -88,23 +89,7 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
 
   return (
     <main className="mobile-dashboard-shell">
-      <header className="mobile-app-header">
-        <Link className="mobile-icon-button" href="/slots" aria-label="Abrir menu de slots">
-          <span />
-          <span />
-          <span />
-        </Link>
-        <div className="mobile-brand">
-          <span className="mobile-brand-mark">SG</span>
-          <div>
-            <strong>SLOTGAIN</strong>
-            <span>CONTROL</span>
-          </div>
-        </div>
-        <Link className="mobile-icon-button settings-icon" href="/config" aria-label="Abrir configuracoes">
-          ⚙
-        </Link>
-      </header>
+      <AppHeader title="SLOTGAIN" subtitle="CONTROL" />
 
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados do Supabase: {setupError}</section> : null}
       {notice ? (
@@ -123,7 +108,7 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
           <strong>{formatPrice(livePrices.prices.SOL)}</strong>
         </div>
         <div>
-          <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "preço desatualizado" : "Offline"}</span>
+          <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "Preco desatualizado" : "Offline"}</span>
           <strong>
             {livePrices.lastUpdated
               ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
@@ -144,21 +129,20 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
 
       <section className="primary-actions-grid" aria-label="Acoes principais">
         <ActionLink href="/slots?flow=abrir" icon="+" title="Abrir" subtitle="Operacao" tone="green" />
-        <ActionLink href="/slots?flow=gain" icon="↗" title="Registrar" subtitle="Gain" tone="gold" />
-        <ActionLink href="/historico" icon="▤" title="Historico" subtitle="De operacoes" tone="blue" />
+        <ActionLink href="/slots?flow=gain" icon="G" title="Registrar" subtitle="Gain" tone="gold" />
+        <ActionLink href="/historico" icon="H" title="Historico" subtitle="Operacoes" tone="blue" />
       </section>
 
       <section className="quick-summary-card" aria-label="Resumo rapido">
         <h2>Resumo rapido</h2>
         <div>
-          <SummaryItem icon="↑" title="Melhor mes" value="+8,75 USDT" detail="Junho/2025" tone="green" />
-          <SummaryItem icon="↓" title="Pior mes" value="-1,23 USDT" detail="Maio/2025" tone="red" />
-          <SummaryItem icon="◷" title="Tempo em operacao" value="128 dias" detail="Desde 06/02/2025" tone="blue" />
+          <SummaryItem icon="+" title="Melhor mes" value="+8,75 USDT" detail="Junho/2025" tone="green" />
+          <SummaryItem icon="-" title="Pior mes" value="-1,23 USDT" detail="Maio/2025" tone="red" />
+          <SummaryItem icon="T" title="Tempo em operacao" value="128 dias" detail="Desde 06/02/2025" tone="blue" />
         </div>
       </section>
 
       <p className="mobile-session">{userEmail}</p>
-      <MobileBottomNav />
     </main>
   );
 }
@@ -196,7 +180,7 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
     <Link className={`asset-card ${accent}`} href={`/slots?asset=${summary.asset}`}>
       <div className="asset-heading">
         <div className="asset-title">
-          <span className={`asset-icon ${summary.asset.toLowerCase()}`}>{summary.asset === "BTC" ? "₿" : "S"}</span>
+          <span className={`asset-icon ${summary.asset.toLowerCase()}`}>{summary.asset === "BTC" ? `\u20BF` : "S"}</span>
           <div>
             <strong>{summary.asset}</strong>
             <em>{summary.name}</em>
@@ -220,7 +204,7 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
         </span>
       </div>
 
-      <span className="details-button">Ver detalhes ›</span>
+      <span className="details-button">Ver detalhes {`\u203A`}</span>
     </Link>
   );
 }
@@ -245,7 +229,7 @@ function ActionLink({
         <strong>{title}</strong>
         <em>{subtitle}</em>
       </span>
-      <b>›</b>
+      <b>{`\u203A`}</b>
     </Link>
   );
 }

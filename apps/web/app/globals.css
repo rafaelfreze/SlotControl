@@ -3914,3 +3914,333 @@ body {
     font-size: 0.56rem;
   }
 }
+
+/* Layout corrections after compact refresh */
+.mobile-dashboard-shell,
+.mobile-dashboard-shell.app-screen,
+.page-shell {
+  min-height: 100dvh;
+  padding:
+    calc(env(safe-area-inset-top) + 14px)
+    14px
+    calc(env(safe-area-inset-bottom) + 18px);
+}
+
+.mobile-app-header {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.mobile-icon-button,
+.mobile-brand-mark {
+  align-self: center;
+}
+
+.mobile-icon-button {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+}
+
+.mobile-icon-glyph {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  font-size: 1.45rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mobile-brand {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mobile-brand > div {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mobile-brand strong {
+  font-size: clamp(0.98rem, 3.9vw, 1.1rem);
+  line-height: 1;
+}
+
+.mobile-brand div > span {
+  max-width: none;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  line-height: 1.15;
+}
+
+.mobile-session {
+  margin: 10px 0 0;
+  padding-inline: 2px;
+  font-size: 0.72rem;
+}
+
+.dashboard-notice,
+.auto-gain-badge {
+  margin-bottom: 10px;
+}
+
+.live-price-strip {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+
+.mobile-metrics,
+.asset-summary-stats,
+.primary-actions-grid,
+.modern-slot-list,
+.quick-summary-card,
+.asset-card,
+.section-card {
+  width: 100%;
+}
+
+.mobile-metrics {
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.mobile-metric-card {
+  min-height: 128px;
+  padding: 12px 10px;
+}
+
+.mobile-metric-card p {
+  min-height: 32px;
+  margin: 10px 0 6px;
+  font-size: 0.64rem;
+  line-height: 1.24;
+}
+
+.mobile-metric-card strong {
+  font-size: clamp(0.98rem, 3.5vw, 1.15rem);
+  line-height: 1.08;
+}
+
+.mobile-metric-card em {
+  margin-top: 8px;
+  font-size: 0.64rem;
+  line-height: 1.2;
+}
+
+.asset-card {
+  margin-bottom: 12px;
+  padding: 14px;
+}
+
+.asset-heading {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.asset-title {
+  min-width: 0;
+}
+
+.asset-title > div {
+  min-width: 0;
+}
+
+.asset-title strong {
+  font-size: 1.15rem;
+}
+
+.asset-title em {
+  margin-top: 4px;
+  font-size: 0.78rem;
+}
+
+.asset-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 0;
+  padding: 10px 0;
+}
+
+.asset-stats span {
+  gap: 4px;
+  min-height: 56px;
+  padding: 0 10px;
+  align-content: start;
+  font-size: 0.62rem;
+  line-height: 1.2;
+}
+
+.asset-stats strong {
+  margin-top: 0;
+  font-size: clamp(0.78rem, 2.7vw, 0.95rem);
+  line-height: 1.1;
+}
+
+.details-button,
+.dashboard-action-card,
+.mini-drawer summary,
+.slot-button,
+.solid-button,
+.ghost-button,
+.danger-button {
+  min-height: 42px;
+}
+
+.primary-actions-grid {
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.primary-actions-grid .dashboard-action-card {
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-height: 72px;
+  padding: 10px 9px;
+  gap: 9px;
+  justify-items: start;
+  text-align: left;
+}
+
+.primary-actions-grid .action-orb {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  font-size: 0.8rem;
+}
+
+.primary-actions-grid .dashboard-action-card strong,
+.primary-actions-grid .dashboard-action-card em {
+  white-space: normal;
+  text-overflow: clip;
+}
+
+.primary-actions-grid .dashboard-action-card strong {
+  font-size: 0.7rem;
+  line-height: 1.1;
+}
+
+.primary-actions-grid .dashboard-action-card em {
+  margin-top: 3px;
+  font-size: 0.62rem;
+  line-height: 1.1;
+}
+
+.quick-summary-card {
+  padding: 14px;
+}
+
+.quick-summary-card > div {
+  gap: 12px;
+}
+
+.modern-slot-list {
+  gap: 10px;
+}
+
+.modern-slot-card {
+  width: 100%;
+  padding: 12px;
+}
+
+.slot-card-top {
+  align-items: start;
+  margin-bottom: 10px;
+}
+
+.slot-card-top strong {
+  font-size: 1rem;
+}
+
+.slot-card-values {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.slot-card-values span,
+.slot-market-strip span {
+  gap: 3px;
+  font-size: 0.62rem;
+  line-height: 1.2;
+}
+
+.slot-card-values strong,
+.slot-market-strip strong {
+  font-size: 0.82rem;
+  line-height: 1.12;
+}
+
+.slot-market-strip {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+@media (max-width: 560px) {
+  .mobile-dashboard-shell,
+  .mobile-dashboard-shell.app-screen,
+  .page-shell {
+    padding:
+      calc(env(safe-area-inset-top) + 12px)
+      12px
+      calc(env(safe-area-inset-bottom) + 16px);
+  }
+
+  .mobile-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mobile-metric-card {
+    min-height: 120px;
+  }
+
+  .asset-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 0;
+  }
+
+  .asset-stats span:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .primary-actions-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 390px) {
+  .mobile-brand {
+    gap: 10px;
+  }
+
+  .mobile-brand-mark {
+    width: 42px;
+    height: 42px;
+  }
+
+  .mobile-brand strong {
+    font-size: 0.92rem;
+  }
+
+  .mobile-brand div > span {
+    font-size: 0.66rem;
+  }
+
+  .primary-actions-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .primary-actions-grid .dashboard-action-card {
+    min-height: 54px;
+  }
+}
