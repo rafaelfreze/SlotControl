@@ -17,8 +17,6 @@ import { AppHeader, FilterChips, MobileScreen, ProgressBar, SectionCard, StatCar
 import {
   formatDate,
   formatPrice,
-  formatSignedPercent,
-  formatSignedUsdt,
   formatUsdt,
   getCurrentValue,
   getMarkedSlotValue,
@@ -231,10 +229,7 @@ function SlotCard({ slot, livePrice, announce }: { slot: SlotView; livePrice?: n
       {slot.status === "aberto" ? (
         <div className="slot-market-strip">
           <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
-          <span>Atual<strong>{market.precoAtual || "-"}</strong></span>
           <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
-          <span>Distancia<strong>{formatSignedPercent(market.distanciaAteGainPercentual)}</strong></span>
-          <span className={market.resultadoAbertoUsdt < 0 ? "negative" : "positive"}>Aberto<strong>{formatSignedUsdt(market.resultadoAbertoUsdt)}</strong></span>
         </div>
       ) : null}
       <div className="slot-card-actions">

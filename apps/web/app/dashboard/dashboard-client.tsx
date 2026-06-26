@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useMemo } from "react";
 
 import {
-  formatSignedPercent,
   formatSignedUsdt,
   formatPrice,
   formatUsdt,
@@ -79,15 +78,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
     (sum, slot) => sum + getMarkedSlotValue(slot, livePrices.prices[slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC"]),
     0
   );
-  const averageDistance =
-    openSlotsList.length > 0
-      ? openSlotsList.reduce(
-          (sum, slot) =>
-            sum + getOpenMarketMetrics(slot, livePrices.prices[slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC"]).distanciaAteGainPercentual,
-          0
-        ) /
-        openSlotsList.length
-      : 0;
   const openSlots = openSlotsList.length;
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
@@ -143,7 +133,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
         <MetricCard icon="~" title="Resultado em aberto" value={formatSignedUsdt(openResult)} helper="Marcado a mercado" tone={openResult < 0 ? "red" : "green"} />
         <MetricCard icon="M" title="Patrimonio marcado" value={formatUsdt(markedEquity)} helper="Fechados + abertos" tone="gold" />
         <MetricCard icon="#" title="Slots abertos" value={String(openSlots)} helper={`de ${slots.length} disponiveis`} tone="purple" />
-        <MetricCard icon="%" title="Distancia media" value={formatSignedPercent(averageDistance)} helper="Ate gain" tone="blue" />
       </section>
 
       <StrategyCard summary={btc} accent="gold" />
@@ -230,9 +219,6 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
         </span>
         <span>
           Resultado aberto <strong className={summary.openResult < 0 ? "negative-value" : ""}>{formatSignedUsdt(summary.openResult)}</strong>
-        </span>
-        <span>
-          Patrimonio marcado <strong>{formatUsdt(summary.markedEquity)}</strong>
         </span>
         <span>
           Slots abertos <strong>{summary.openSlots}</strong>

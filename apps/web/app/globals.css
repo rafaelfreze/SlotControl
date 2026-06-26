@@ -2286,6 +2286,499 @@ p {
   line-height: 1.3;
 }
 
+/* Compact premium mobile system */
+.mobile-dashboard-shell {
+  width: min(100%, 430px);
+  padding: max(10px, env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
+}
+
+.app-screen {
+  gap: 8px;
+}
+
+.mobile-app-header {
+  grid-template-columns: 38px minmax(0, 1fr) 38px;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sg-header {
+  margin-bottom: 0;
+}
+
+.mobile-icon-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  gap: 4px;
+}
+
+.mobile-icon-button span {
+  width: 16px;
+}
+
+.settings-icon {
+  font-size: 1.02rem;
+}
+
+.mobile-brand {
+  gap: 10px;
+}
+
+.mobile-brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  font-size: 1.24rem;
+}
+
+.mobile-brand strong {
+  color: #ffb30d;
+  font-size: 0.9rem;
+}
+
+.mobile-brand div > span {
+  margin-top: 3px;
+  font-size: 0.64rem;
+}
+
+.live-price-strip {
+  gap: 5px;
+  border-radius: 12px;
+  padding: 6px 8px;
+}
+
+.live-price-strip div {
+  gap: 2px;
+}
+
+.live-price-strip span {
+  font-size: 0.48rem;
+}
+
+.live-price-strip strong {
+  font-size: 0.66rem;
+}
+
+.mobile-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.mobile-metric-card {
+  min-height: 76px;
+  padding: 7px 6px;
+  border-radius: 12px;
+}
+
+.metric-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 0.66rem;
+}
+
+.mobile-metric-card p {
+  min-height: 22px;
+  margin: 8px 0 4px;
+  font-size: 0.46rem;
+  line-height: 1.15;
+}
+
+.mobile-metric-card strong {
+  font-size: 0.78rem;
+}
+
+.mobile-metric-card strong small {
+  font-size: 0.52rem;
+}
+
+.mobile-metric-card em {
+  margin-top: 5px;
+  font-size: 0.49rem;
+  line-height: 1.1;
+}
+
+.asset-card,
+.section-card,
+.quick-summary-card,
+.dashboard-action-card,
+.modern-slot-card,
+.timeline-item {
+  border-radius: 12px;
+}
+
+.asset-card {
+  margin-bottom: 8px;
+  padding: 12px;
+}
+
+.asset-heading {
+  gap: 8px;
+}
+
+.asset-title {
+  gap: 9px;
+}
+
+.asset-icon {
+  width: 34px;
+  height: 34px;
+  font-size: 1.18rem;
+}
+
+.asset-title strong {
+  font-size: 1.06rem;
+}
+
+.asset-title em {
+  margin-top: 3px;
+  font-size: 0.68rem;
+}
+
+.slot-count {
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 0.66rem;
+}
+
+.asset-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+  padding: 9px 0;
+}
+
+.asset-stats span,
+.asset-stats span:nth-child(2n) {
+  gap: 4px;
+  border-right: 1px solid rgba(176, 194, 216, 0.13);
+  font-size: 0.5rem;
+  line-height: 1.12;
+}
+
+.asset-stats span:last-child {
+  border-right: 0;
+}
+
+.asset-stats strong {
+  font-size: 0.68rem;
+}
+
+.redistribution-line {
+  padding-top: 8px;
+}
+
+.redistribution-line p {
+  margin-bottom: 5px;
+  font-size: 0.56rem;
+}
+
+.redistribution-line > div {
+  gap: 6px;
+}
+
+.redistribution-line strong,
+.redistribution-line em {
+  font-size: 0.82rem;
+}
+
+.redistribution-line span {
+  font-size: 0.64rem;
+}
+
+.redistribution-line i,
+.sg-progress {
+  height: 6px;
+}
+
+.details-button {
+  min-height: 30px;
+  margin-top: 8px;
+  border-radius: 8px;
+  font-size: 0.68rem;
+}
+
+.primary-actions-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.dashboard-action-card {
+  grid-template-columns: 25px minmax(0, 1fr);
+  gap: 6px;
+  min-height: 48px;
+  padding: 7px;
+}
+
+.dashboard-action-card b {
+  display: none;
+}
+
+.action-orb {
+  width: 25px;
+  height: 25px;
+  font-size: 0.74rem;
+}
+
+.dashboard-action-card strong {
+  font-size: 0.56rem;
+}
+
+.dashboard-action-card em {
+  margin-top: 2px;
+  font-size: 0.49rem;
+}
+
+.quick-summary-card {
+  padding: 10px 12px;
+}
+
+.quick-summary-card h2 {
+  margin-bottom: 8px;
+  font-size: 0.62rem;
+}
+
+.quick-summary-card > div {
+  gap: 6px;
+}
+
+.summary-item {
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.summary-item span {
+  width: 18px;
+  height: 18px;
+  font-size: 0.6rem;
+}
+
+.summary-item p {
+  margin-bottom: 4px;
+  font-size: 0.5rem;
+}
+
+.summary-item strong {
+  font-size: 0.66rem;
+}
+
+.summary-item em {
+  margin-top: 3px;
+  font-size: 0.5rem;
+}
+
+.mobile-session {
+  margin-top: 6px;
+  font-size: 0.58rem;
+}
+
+.section-card {
+  padding: 10px;
+}
+
+.section-card-heading {
+  margin-bottom: 8px;
+}
+
+.section-card-heading p {
+  margin-bottom: 2px;
+  font-size: 0.56rem;
+}
+
+.section-card-heading h2 {
+  font-size: 0.9rem;
+}
+
+.filter-chips {
+  gap: 5px;
+}
+
+.filter-chips button {
+  min-height: 29px;
+  gap: 5px;
+  padding: 0 9px;
+  font-size: 0.62rem;
+}
+
+.stat-card {
+  min-height: 68px;
+}
+
+.asset-page-summary {
+  gap: 8px;
+}
+
+.asset-summary-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.stacked-form {
+  gap: 7px;
+  padding-top: 7px;
+}
+
+.stacked-form label,
+.tool-form label {
+  gap: 4px;
+  font-size: 0.6rem;
+}
+
+.stacked-form input,
+.stacked-form select,
+.tool-form input,
+.tool-form select {
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 0 8px;
+}
+
+.solid-link,
+.ghost-link,
+.solid-button,
+.ghost-button,
+.danger-button {
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+}
+
+.mini-drawer summary {
+  min-height: 31px;
+  padding: 0 9px;
+  font-size: 0.62rem;
+}
+
+.mini-drawer > .tool-form,
+.mini-drawer > .settings-list,
+.mini-drawer > .strategy-list {
+  padding: 7px;
+}
+
+.modern-slot-list,
+.timeline-list,
+.settings-list,
+.strategy-list,
+.history-list {
+  gap: 7px;
+}
+
+.modern-slot-card {
+  gap: 7px;
+  padding: 9px;
+}
+
+.slot-card-top,
+.slot-card-values,
+.slot-card-actions,
+.slot-market-strip {
+  gap: 5px;
+}
+
+.slot-card-top span,
+.slot-card-values span,
+.slot-market-strip span {
+  font-size: 0.52rem;
+}
+
+.slot-card-top strong {
+  margin-top: 2px;
+  font-size: 0.92rem;
+}
+
+.slot-card-top em {
+  padding: 4px 7px;
+  font-size: 0.54rem;
+}
+
+.slot-card-values {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.slot-card-values strong,
+.slot-market-strip strong {
+  margin-top: 2px;
+  font-size: 0.62rem;
+}
+
+.slot-market-strip {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.slot-card-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.slot-card-actions .slot-button,
+.slot-button {
+  min-height: 28px;
+  border-radius: 7px;
+  padding: 0 3px;
+  font-size: 0.54rem;
+}
+
+.timeline-item {
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+}
+
+.timeline-item > span {
+  width: 28px;
+  height: 28px;
+  font-size: 0.56rem;
+}
+
+.timeline-item strong {
+  font-size: 0.78rem;
+}
+
+.timeline-item p {
+  margin: 3px 0;
+  font-size: 0.66rem;
+  line-height: 1.25;
+}
+
+.timeline-item small {
+  font-size: 0.56rem;
+}
+
+.settings-list div,
+.strategy-item,
+.history-item,
+.strategy-editor,
+.market-stat {
+  border-radius: 8px;
+  padding: 7px;
+}
+
+.settings-list span,
+.strategy-item span,
+.strategy-editor span,
+.history-item span,
+.history-item small {
+  font-size: 0.62rem;
+}
+
+.settings-list strong {
+  font-size: 0.72rem;
+}
+
+.redistribute-confirm-form {
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.redistribute-confirm-form .ghost-link {
+  min-height: 32px;
+}
+
 @media (max-width: 880px) {
   .hero-grid,
   .dashboard-grid,
@@ -2583,5 +3076,41 @@ p {
 
   .settings-list strong {
     text-align: left;
+  }
+}
+
+@media (max-width: 560px) {
+  .mobile-dashboard-shell {
+    padding: max(10px, env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-metrics,
+  .asset-summary-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .asset-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .primary-actions-grid,
+  .quick-actions,
+  .slot-main-actions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .slot-card-actions {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .mini-drawer summary {
+    min-height: 31px;
+    font-size: 0.62rem;
+  }
+
+  .slot-button,
+  .slot-card-actions .slot-button {
+    min-height: 28px;
+    font-size: 0.54rem;
   }
 }
