@@ -108,7 +108,9 @@ export function useAutoGainWatcher({
         return;
       }
 
-      const targetPrice = Number(slot.preco_alvo || 0);
+      const entryPrice = Number(slot.preco_entrada || 0);
+      const strategyGainRate = Number(slot.strategy?.gain_rate ?? slot.gain_rate ?? 0);
+      const targetPrice = entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : Number(slot.preco_alvo || 0);
       if (targetPrice <= 0) {
         return;
       }

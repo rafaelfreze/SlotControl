@@ -83,6 +83,21 @@ function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
+async function getCurrentStrategyGainRate(
+  supabase: Awaited<ReturnType<typeof getUserClient>>["supabase"],
+  userId: string,
+  strategyId: string
+) {
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("gain_rate")
+    .eq("id", strategyId)
+    .eq("user_id", userId)
+    .single<Pick<StrategyRecord, "gain_rate">>();
+
+  return Number(strategy?.gain_rate || 0);
+}
+
 async function getSuggestedEntryPriceFromLastOpen(
   supabase: Awaited<ReturnType<typeof getUserClient>>["supabase"],
   userId: string,
@@ -385,7 +400,8 @@ export async function openSlot(formData: FormData) {
   if (entryPrice <= 0) {
     entryPrice = await getSuggestedEntryPriceFromLastOpen(supabase, user.id, slot);
   }
-  const targetPrice = entryPrice > 0 ? entryPrice * (1 + Number(slot.gain_rate || 0)) : null;
+  const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
+  const targetPrice = entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : null;
 
   await supabase
     .from("slots")
@@ -452,17 +468,19 @@ export async function registerAutoGain(payload: { slotId: string; currentPrice: 
     return { registered: false };
   }
 
-  const targetPrice = Number(slot.preco_alvo || payload.targetPrice || 0);
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,title,asset,gain_rate")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "title" | "asset" | "gain_rate">>();
+
+  const entryPrice = Number(slot.preco_entrada || 0);
+  const strategyGainRate = Number(strategy?.gain_rate || 0);
+  const targetPrice = entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : Number(slot.preco_alvo || payload.targetPrice || 0);
   if (targetPrice <= 0 || currentPrice < targetPrice) {
     return { registered: false };
   }
-
-  const { data: strategy } = await supabase
-    .from("strategies")
-    .select("key,title,asset")
-    .eq("id", slot.strategy_id)
-    .eq("user_id", user.id)
-    .single<Pick<StrategyRecord, "key" | "title" | "asset">>();
 
   const gains = Number(slot.gains || 0) + 1;
   const valueBefore = currentValue(slot);
@@ -550,6 +568,8 @@ export async function updateSlot(formData: FormData) {
     return;
   }
 
+  const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
+
   await supabase
     .from("slots")
     .update({
@@ -558,7 +578,7 @@ export async function updateSlot(formData: FormData) {
       base_value: baseValue,
       preco_entrada: isOpen && entryPrice > 0 ? entryPrice : null,
       preco_atual: isOpen && currentPrice > 0 ? currentPrice : null,
-      preco_alvo: isOpen && targetPrice > 0 ? targetPrice : isOpen && entryPrice > 0 ? entryPrice * Number(slot.gain_rate || 0) + entryPrice : null,
+      preco_alvo: isOpen && entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : isOpen && targetPrice > 0 ? targetPrice : null,
       started_once: status !== "zerado",
       notes: status === "zerado" ? "" : notes
     })

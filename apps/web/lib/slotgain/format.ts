@@ -26,7 +26,7 @@ export function getCurrentValue(slot: Pick<SlotView, "base_value" | "gain_rate" 
 }
 
 export function getOpenMarketMetrics(
-  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo">,
+  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo" | "strategy">,
   livePrice?: number
 ) {
   const valorSlot = getCurrentValue(slot);
@@ -46,7 +46,8 @@ export function getOpenMarketMetrics(
 
   const precoEntrada = Number(slot.preco_entrada || 0);
   const precoAtual = Number(livePrice || slot.preco_atual || 0);
-  const precoAlvo = Number(slot.preco_alvo || (precoEntrada > 0 ? precoEntrada * (1 + Number(slot.gain_rate || 0)) : 0));
+  const strategyGainRate = Number(slot.strategy?.gain_rate ?? slot.gain_rate ?? 0);
+  const precoAlvo = Number(precoEntrada > 0 ? precoEntrada * (1 + strategyGainRate) : slot.preco_alvo || 0);
   const hasPrices = slot.status === "aberto" && precoEntrada > 0 && precoAtual > 0;
   const valorMarcado = hasPrices ? valorSlot * (precoAtual / precoEntrada) : valorSlot;
   const resultadoAbertoUsdt = hasPrices ? valorMarcado - valorSlot : 0;
