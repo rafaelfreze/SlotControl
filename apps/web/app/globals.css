@@ -5137,13 +5137,13 @@ body {
 }
 
 .asset-summary-stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .asset-summary-stats .mobile-metric-card {
-  min-height: 102px;
-  padding: 10px 8px;
+  min-height: 108px;
+  padding: 10px;
 }
 
 .asset-summary-stats .mobile-metric-card p {
