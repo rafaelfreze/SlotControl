@@ -18,7 +18,7 @@ export function AppHeader({
 }) {
   return (
     <header className="mobile-app-header sg-header">
-      <Link className="mobile-icon-button sg-back-button" href={backHref || "/dashboard"} aria-label={backHref ? "Voltar" : "Abrir menu de slots"}>
+      <Link className="mobile-icon-button sg-back-button" href={backHref || "/slots"} aria-label={backHref ? "Voltar" : "Abrir menu de slots"}>
         {backHref ? <span className="mobile-icon-glyph">{`\u2039`}</span> : <><span /><span /><span /></>}
       </Link>
       <div className="mobile-brand">

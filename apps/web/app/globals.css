@@ -4882,3 +4882,384 @@ body {
     grid-template-columns: 1fr 0.65fr 1fr;
   }
 }
+
+/* Premium mobile UI pass */
+:root {
+  --sg-radius-card: 16px;
+  --sg-radius-control: 13px;
+}
+
+body {
+  background:
+    radial-gradient(circle at 50% -8rem, rgba(255, 176, 0, 0.09), transparent 18rem),
+    radial-gradient(circle at 100% 16rem, rgba(158, 72, 255, 0.08), transparent 16rem),
+    linear-gradient(180deg, #02070d 0%, #03111a 46%, #02070d 100%);
+}
+
+.mobile-dashboard-shell,
+.mobile-dashboard-shell.app-screen,
+.page-shell {
+  max-width: 430px;
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 16px)
+    14px
+    calc(env(safe-area-inset-bottom, 0px) + 22px);
+  background:
+    linear-gradient(180deg, rgba(3, 12, 20, 0.97), rgba(2, 9, 15, 0.99)),
+    radial-gradient(circle at 50% 0, rgba(0, 156, 255, 0.08), transparent 16rem);
+}
+
+.mobile-app-header {
+  grid-template-columns: 46px minmax(0, 1fr) 46px;
+  gap: 12px;
+  min-height: 54px;
+  margin-bottom: 14px;
+}
+
+.mobile-icon-button {
+  width: 46px;
+  height: 46px;
+  min-width: 46px;
+  border-color: rgba(120, 151, 177, 0.24);
+  border-radius: var(--sg-radius-control);
+  background:
+    linear-gradient(145deg, rgba(17, 35, 50, 0.94), rgba(5, 18, 29, 0.96));
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.06), 0 14px 30px rgba(0, 0, 0, 0.28);
+}
+
+.settings-icon {
+  border-color: rgba(158, 72, 255, 0.34);
+}
+
+.mobile-brand {
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.mobile-brand-mark {
+  width: 48px;
+  height: 48px;
+  border: 2px solid var(--sg-gold);
+  border-radius: 15px;
+  background:
+    linear-gradient(145deg, rgba(255, 176, 0, 0.2), rgba(4, 15, 24, 0.96));
+  color: var(--sg-gold);
+  box-shadow: 0 0 24px rgba(255, 176, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.mobile-brand strong {
+  font-size: 1.02rem;
+}
+
+.mobile-brand div > span {
+  color: #e6edf4;
+  font-size: 0.66rem;
+}
+
+.form-success.dashboard-notice,
+.auto-gain-badge {
+  border-radius: 999px;
+  text-align: center;
+}
+
+.live-price-strip,
+.mobile-metric-card,
+.asset-card,
+.section-card,
+.dashboard-action-card,
+.quick-summary-card,
+.modern-slot-card,
+.timeline-item,
+.settings-list div,
+.strategy-setting-card {
+  border-radius: var(--sg-radius-card);
+  background:
+    linear-gradient(145deg, rgba(14, 31, 45, 0.9), rgba(5, 17, 27, 0.95));
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.045), 0 14px 32px rgba(0, 0, 0, 0.24);
+}
+
+.live-price-strip {
+  min-height: 66px;
+  border-color: rgba(0, 224, 152, 0.24);
+  padding: 11px 12px;
+}
+
+.live-price-strip div {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+}
+
+.live-price-strip span {
+  color: #9eb0bf;
+  font-size: 0.58rem;
+  font-weight: 850;
+}
+
+.live-price-strip strong {
+  font-size: 0.86rem;
+}
+
+.mobile-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mobile-metric-card {
+  min-height: 132px;
+  padding: 12px;
+  border-color: rgba(120, 151, 177, 0.22);
+}
+
+.metric-icon,
+.action-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+}
+
+.mobile-metric-card p {
+  margin: 12px 0 8px;
+  color: #9fb1c1;
+  font-size: 0.64rem;
+  letter-spacing: 0;
+}
+
+.mobile-metric-card strong {
+  color: #f7fbff;
+  font-size: 1.36rem;
+}
+
+.mobile-metric-card strong small {
+  color: #d6e1ea;
+  font-size: 0.7rem;
+}
+
+.mobile-metric-card em {
+  color: var(--sg-green);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.asset-card {
+  padding: 14px;
+}
+
+.asset-card.gold {
+  border-color: rgba(255, 176, 0, 0.72);
+}
+
+.asset-card.purple {
+  border-color: rgba(158, 72, 255, 0.72);
+}
+
+.asset-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+}
+
+.slot-count {
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 0.68rem;
+}
+
+.asset-stats {
+  border-top: 1px solid rgba(120, 151, 177, 0.18);
+  border-bottom: 1px solid rgba(120, 151, 177, 0.18);
+  margin-top: 12px;
+}
+
+.asset-stats span {
+  min-height: 58px;
+  padding-inline: 12px;
+}
+
+.asset-stats strong {
+  font-size: 0.96rem;
+}
+
+.details-button,
+.mini-drawer summary {
+  border-radius: 12px;
+  background: rgba(4, 17, 28, 0.58);
+}
+
+.primary-actions-grid {
+  gap: 10px;
+}
+
+.primary-actions-grid .dashboard-action-card {
+  min-height: 82px;
+  border-radius: var(--sg-radius-card);
+}
+
+.primary-actions-grid .dashboard-action-card strong {
+  font-size: 0.67rem;
+  text-transform: uppercase;
+}
+
+.quick-summary-card {
+  padding: 13px;
+}
+
+.quick-summary-card > div {
+  gap: 8px;
+}
+
+.summary-item {
+  grid-template-columns: 24px minmax(0, 1fr);
+}
+
+.filter-chips {
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filter-chips button {
+  min-height: 38px;
+  border-radius: 999px;
+  background: rgba(9, 24, 36, 0.86);
+}
+
+.filter-chips button.active {
+  background: linear-gradient(145deg, rgba(255, 176, 0, 0.22), rgba(158, 72, 255, 0.16));
+}
+
+.section-card {
+  padding: 13px;
+}
+
+.asset-page-summary .asset-heading {
+  margin-bottom: 4px;
+}
+
+.asset-summary-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.asset-summary-stats .mobile-metric-card {
+  min-height: 102px;
+  padding: 10px 8px;
+}
+
+.asset-summary-stats .mobile-metric-card p {
+  white-space: normal;
+}
+
+.asset-summary-stats .mobile-metric-card strong {
+  font-size: 1rem;
+}
+
+.compact-actions .section-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.compact-actions .mini-drawer summary {
+  min-height: 54px;
+}
+
+.modern-slot-card {
+  padding: 12px;
+}
+
+.modern-slot-card.gold {
+  border-left-color: var(--sg-gold);
+}
+
+.modern-slot-card.purple {
+  border-left-color: var(--sg-purple);
+}
+
+.slot-card-top {
+  align-items: center;
+}
+
+.slot-card-top strong {
+  font-size: 1.16rem;
+}
+
+.slot-card-values {
+  padding-top: 8px;
+  border-top: 1px solid rgba(120, 151, 177, 0.16);
+}
+
+.slot-market-strip {
+  border-color: rgba(120, 151, 177, 0.18);
+  background: rgba(4, 17, 28, 0.54);
+}
+
+.slot-more-drawer > summary {
+  min-height: 38px;
+}
+
+.settings-list div {
+  border-color: rgba(120, 151, 177, 0.18);
+}
+
+.settings-list span {
+  font-size: 0.62rem;
+}
+
+.settings-list strong {
+  font-size: 0.82rem;
+}
+
+.account-actions {
+  gap: 8px;
+}
+
+.timeline-item {
+  padding: 12px;
+}
+
+@media (max-width: 380px) {
+  .mobile-dashboard-shell,
+  .mobile-dashboard-shell.app-screen,
+  .page-shell {
+    padding-inline: 11px;
+  }
+
+  .mobile-app-header {
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
+  }
+
+  .mobile-icon-button,
+  .mobile-brand-mark {
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+  }
+
+  .mobile-brand {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .mobile-metric-card {
+    min-height: 116px;
+  }
+
+  .mobile-metric-card strong {
+    font-size: 1.08rem;
+  }
+
+  .asset-summary-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .primary-actions-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .primary-actions-grid.compact-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .primary-actions-grid .dashboard-action-card {
+    min-height: 64px;
+  }
+}
