@@ -13,7 +13,7 @@ import {
   updateSlot
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
-import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
+import { getAutomationModeLabel, isAutomationActive, useAutomationSetting, useAutomationWatcher } from "@/lib/slotgain/auto-gain";
 import {
   formatDate,
   formatPrice,
@@ -83,7 +83,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { enabled: autoGainEnabled } = useAutoGainSetting();
+  const { mode: automationMode } = useAutomationSetting();
 
   const scopedSlots = useMemo(
     () => slots.filter((slot) => selectedAsset === "ALL" || getAssetFromStrategy(slot) === selectedAsset),
@@ -92,7 +92,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const visibleSlots = useMemo(
     () => {
       const filtered = scopedSlots.filter((slot) => {
-        if (slotFilter === "closed") return slot.status === "gain" || slot.status === "zerado";
+      if (slotFilter === "closed") return slot.status === "gain" || slot.status === "zerado" || slot.status === "hold";
         if (slotFilter === "all") return true;
         return slot.status === slotFilter;
       });
@@ -137,8 +137,8 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
     setNotice(message);
   }
 
-  useAutoGainWatcher({
-    enabled: autoGainEnabled,
+  useAutomationWatcher({
+    mode: automationMode,
     slots,
     prices: { BTC: liveBtcPrice, SOL: liveSolPrice },
     readKey: livePrices.lastUpdated?.getTime() || null,
@@ -150,7 +150,9 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
       <AppHeader title={title.toUpperCase()} subtitle={userEmail} backHref="/dashboard" />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
-      {autoGainEnabled ? <section className="auto-gain-badge">Auto Gain ativo</section> : null}
+      <section className={`auto-gain-badge ${isAutomationActive(automationMode) ? "active" : ""}`}>
+        Automacao: {getAutomationModeLabel(automationMode)}
+      </section>
       <section className={`live-price-strip ${livePrices.status}`}>
         <div>
           <span>BTCUSDT</span>
@@ -226,7 +228,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
         options={[
           { label: "Abertos", value: "aberto", count: scopedSlots.filter((slot) => slot.status === "aberto").length },
           { label: "Gain", value: "gain", count: scopedSlots.filter((slot) => slot.status === "gain").length },
-          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado").length },
+          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado" || slot.status === "hold").length },
           { label: "Todos", value: "all", count: scopedSlots.length }
         ]}
       />
@@ -301,10 +303,10 @@ function SlotCard({
         <span>Gains<strong>{slot.gains}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
-      {slot.status === "aberto" ? (
+      {slot.status === "aberto" || slot.status === "hold" ? (
         <div className="slot-market-strip">
-          <span>Entrada<strong>{market.precoEntrada || "-"}</strong></span>
-          <span>Alvo<strong>{market.precoAlvo || "-"}</strong></span>
+          <span>Entrada<strong>{slot.status === "hold" ? Number(slot.preco_entrada || 0) || "-" : market.precoEntrada || "-"}</strong></span>
+          <span>Alvo<strong>{slot.status === "hold" ? Number(slot.preco_alvo || 0) || "-" : market.precoAlvo || "-"}</strong></span>
         </div>
       ) : null}
       <details className="mini-drawer slot-more-drawer">
@@ -329,14 +331,14 @@ function SlotCard({
               </button>
             </form>
           )}
-          <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado"} onClick={() => announce("Registrando gain...")} />
+          <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado" || slot.status === "hold"} onClick={() => announce("Registrando gain...")} />
           <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
         </div>
         <details className="mini-drawer edit-drawer">
           <summary>Editar dados</summary>
           <form className="tool-form stacked-form" action={updateSlot}>
             <input type="hidden" name="slotId" value={slot.id} />
-            <label>Status<select name="status" defaultValue={slot.status === "hold" ? "gain" : slot.status}><option value="zerado">Zerado</option><option value="aberto">Aberto</option><option value="gain">Gain</option></select></label>
+            <label>Status<select name="status" defaultValue={slot.status}><option value="zerado">Zerado</option><option value="hold">Aguardando entrada</option><option value="aberto">Aberto</option><option value="gain">Gain</option></select></label>
             <label>Gains<input name="gains" type="number" min="0" step="1" defaultValue={slot.gains} /></label>
             <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
             <label>Preco entrada<input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_entrada || 0) || ""} /></label>

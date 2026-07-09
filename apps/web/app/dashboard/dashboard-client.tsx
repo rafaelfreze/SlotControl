@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { AppHeader } from "@/components/app/mobile-ui";
-import { useAutoGainSetting, useAutoGainWatcher } from "@/lib/slotgain/auto-gain";
+import { getAutomationModeLabel, isAutomationActive, useAutomationSetting, useAutomationWatcher } from "@/lib/slotgain/auto-gain";
 import {
   formatPrice,
   formatSignedUsdt,
@@ -62,7 +62,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
 export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { enabled: autoGainEnabled } = useAutoGainSetting();
+  const { mode: automationMode } = useAutomationSetting();
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
   const realizedProfit = totalUpdated - totalBase;
@@ -79,8 +79,8 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
 
-  useAutoGainWatcher({
-    enabled: autoGainEnabled,
+  useAutomationWatcher({
+    mode: automationMode,
     slots,
     prices: { BTC: livePrices.prices.BTC, SOL: livePrices.prices.SOL },
     readKey: livePrices.lastUpdated?.getTime() || null,
@@ -97,6 +97,9 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
           {notice}
         </section>
       ) : null}
+      <section className={`auto-gain-badge ${isAutomationActive(automationMode) ? "active" : ""}`}>
+        Automacao: {getAutomationModeLabel(automationMode)}
+      </section>
 
       <section className={`live-price-strip ${livePrices.status}`}>
         <div>

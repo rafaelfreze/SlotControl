@@ -5263,3 +5263,32 @@ body {
     min-height: 64px;
   }
 }
+
+.auto-gain-badge:not(.active) {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(9, 18, 29, 0.72);
+  color: var(--sg-muted);
+  box-shadow: none;
+}
+
+.automation-mode-grid,
+.export-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.automation-mode-grid .auto-gain-toggle {
+  width: 100%;
+  justify-content: center;
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.export-actions-grid .compact-action {
+  width: 100%;
+  justify-content: center;
+  min-height: 40px;
+  text-align: center;
+}

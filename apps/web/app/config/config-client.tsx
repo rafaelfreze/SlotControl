@@ -5,7 +5,7 @@ import { useState } from "react";
 import { createStrategy, deleteStrategy, updateStrategy } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
-import { useAutoGainSetting } from "@/lib/slotgain/auto-gain";
+import { getAutomationModeLabel, useAutomationSetting, type AutomationMode } from "@/lib/slotgain/auto-gain";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -19,7 +19,7 @@ type ConfigClientProps = {
 
 export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice }: ConfigClientProps) {
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { enabled: autoGainEnabled, setEnabled: setAutoGainEnabled } = useAutoGainSetting();
+  const { mode: automationMode, setMode: setAutomationMode } = useAutomationSetting();
   const btc = strategies.find((strategy) => strategy.asset.toUpperCase() === "BTC");
   const sol = strategies.find((strategy) => strategy.asset.toUpperCase() === "SOL");
 
@@ -75,16 +75,26 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
 
       <SectionCard title="Preferencias" subtitle="Interface" tone="purple">
         <div className="settings-list modern-settings">
-          <div className="settings-action-row">
-            <span>Auto Gain</span>
-            <button
-              className={`auto-gain-toggle ${autoGainEnabled ? "active" : ""}`}
-              type="button"
-              aria-pressed={autoGainEnabled}
-              onClick={() => setAutoGainEnabled(!autoGainEnabled)}
-            >
-              {autoGainEnabled ? "ON" : "OFF"}
-            </button>
+          <div className="settings-action-row automation-mode-row">
+            <span>Automacao</span>
+            <strong>{getAutomationModeLabel(automationMode)}</strong>
+          </div>
+          <div className="automation-mode-grid" role="group" aria-label="Modo de automacao">
+            {[
+              ["off", "Desligada"],
+              ["exit_only", "Somente saida"],
+              ["entry_exit", "Entrada e saida"]
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                className={`auto-gain-toggle ${automationMode === value ? "active" : ""}`}
+                type="button"
+                aria-pressed={automationMode === value}
+                onClick={() => setAutomationMode(value as AutomationMode)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           <div><span>Tema</span><strong>Dark premium</strong></div>
           <div><span>Moedas</span><strong>BTC e SOL</strong></div>

@@ -23,9 +23,9 @@ export default async function HistoricoPage() {
 
   const { data, error } = await supabase
     .from("history_events")
-    .select("id,action,detail,event_at,strategy_key,slot_number,strategies(asset,key)")
+    .select("id,action,detail,event_at,strategy_id,slot_id,strategy_key,slot_number,strategies(asset,key)")
     .order("event_at", { ascending: false })
-    .limit(120);
+    .limit(1000);
 
   const history = ((data ?? []) as Array<HistoryEvent & { strategies?: HistoryEvent["strategy"] | HistoryEvent["strategy"][] }>).map(
     (item) => ({

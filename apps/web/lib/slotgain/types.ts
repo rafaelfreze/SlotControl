@@ -35,6 +35,8 @@ export type HistoryEvent = {
   action: string;
   detail: string;
   event_at: string;
+  strategy_id: string | null;
+  slot_id: string | null;
   strategy_key: string | null;
   slot_number: number | null;
   strategy?: Pick<StrategyView, "asset" | "key"> | null;
@@ -45,13 +47,13 @@ export type SlotRow = Omit<SlotView, "strategy"> & {
 };
 
 export function normalizeSlot(slot: SlotRow): SlotView {
-  const isOpen = slot.status === "aberto";
+  const keepsPrices = slot.status === "aberto" || slot.status === "hold";
 
   return {
     ...slot,
-    preco_entrada: isOpen ? slot.preco_entrada : null,
-    preco_atual: isOpen ? slot.preco_atual : null,
-    preco_alvo: isOpen ? slot.preco_alvo : null,
+    preco_entrada: keepsPrices ? slot.preco_entrada : null,
+    preco_atual: slot.status === "aberto" ? slot.preco_atual : null,
+    preco_alvo: keepsPrices ? slot.preco_alvo : null,
     strategy: Array.isArray(slot.strategies) ? slot.strategies[0] || null : slot.strategies || null
   };
 }

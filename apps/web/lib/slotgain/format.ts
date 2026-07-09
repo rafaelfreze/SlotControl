@@ -98,7 +98,7 @@ export function getStatusLabel(status: SlotStatus) {
     zerado: "Zerado",
     aberto: "Aberto",
     gain: "Gain",
-    hold: "Hold"
+    hold: "Aguardando"
   };
 
   return labels[status] || status;

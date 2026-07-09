@@ -5,14 +5,14 @@ import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
-type SlotStatus = "zerado" | "aberto" | "gain";
+type SlotStatus = "zerado" | "aberto" | "gain" | "hold";
 
 type SlotRecord = {
   id: string;
   strategy_id: string;
   slot_number: number;
   sort_order: number;
-  status: SlotStatus | "hold";
+  status: SlotStatus;
   gains: number;
   base_value: number | string;
   gain_rate: number | string;
@@ -81,6 +81,32 @@ function formatUsdt(value: number) {
 
 function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains">) {
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
+}
+
+type HistoryMetadata = {
+  asset?: string | null;
+  eventType?: string;
+  expectedPrice?: number | null;
+  executedPrice?: number | null;
+  targetPrice?: number | null;
+  slotValue?: number | null;
+  gains?: number | null;
+  statusBefore?: string | null;
+  statusAfter?: string | null;
+  realizedProfit?: number | null;
+  note?: string | null;
+};
+
+function historyDetail(message: string, metadata?: HistoryMetadata) {
+  if (!metadata) {
+    return message;
+  }
+
+  return JSON.stringify({
+    message,
+    ...metadata,
+    eventAt: new Date().toISOString()
+  });
 }
 
 async function getCurrentStrategyGainRate(
@@ -162,6 +188,7 @@ async function addHistory(
     slotId?: string | null;
     strategyKey?: string | null;
     slotNumber?: number | null;
+    metadata?: HistoryMetadata;
   }
 ) {
   const { supabase } = await getUserClient();
@@ -170,7 +197,7 @@ async function addHistory(
     strategy_id: payload.strategyId || null,
     slot_id: payload.slotId || null,
     action,
-    detail,
+    detail: historyDetail(detail, payload.metadata),
     strategy_key: payload.strategyKey || null,
     slot_number: payload.slotNumber || null
   });
@@ -402,6 +429,12 @@ export async function openSlot(formData: FormData) {
   }
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
   const targetPrice = entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : null;
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,asset")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "asset">>();
 
   await supabase
     .from("slots")
@@ -418,7 +451,20 @@ export async function openSlot(formData: FormData) {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
-    slotNumber: slot.slot_number
+    strategyKey: strategy?.key || null,
+    slotNumber: slot.slot_number,
+    metadata: {
+      asset: strategy?.asset || null,
+      eventType: "entrada_manual",
+      expectedPrice: entryPrice || null,
+      executedPrice: entryPrice || null,
+      targetPrice,
+      slotValue: currentValue(slot),
+      gains: Number(slot.gains || 0),
+      statusBefore: slot.status,
+      statusAfter: "aberto",
+      note: "Entrada manual registrada pelo usuario."
+    }
   });
 
   finish("Slot aberto.");
@@ -427,12 +473,21 @@ export async function openSlot(formData: FormData) {
 export async function registerGain(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
-  if (!slot || slot.status === "zerado") {
+  if (!slot || slot.status === "zerado" || slot.status === "hold") {
     return;
   }
 
   const gains = Number(slot.gains || 0) + 1;
   const nextSlot = { ...slot, gains };
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,asset")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "asset">>();
+  const valueBefore = currentValue(slot);
+  const valueAfter = currentValue(nextSlot);
+
   await supabase
     .from("slots")
     .update({ status: "gain", gains, started_once: true, preco_entrada: null, preco_atual: null, preco_alvo: null })
@@ -442,10 +497,109 @@ export async function registerGain(formData: FormData) {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
-    slotNumber: slot.slot_number
+    strategyKey: strategy?.key || null,
+    slotNumber: slot.slot_number,
+    metadata: {
+      asset: strategy?.asset || null,
+      eventType: "gain_manual",
+      expectedPrice: Number(slot.preco_alvo || 0) || null,
+      executedPrice: Number(slot.preco_atual || 0) || null,
+      targetPrice: Number(slot.preco_alvo || 0) || null,
+      slotValue: valueAfter,
+      gains,
+      statusBefore: slot.status,
+      statusAfter: "gain",
+      realizedProfit: valueAfter - valueBefore,
+      note: "Gain manual registrado pelo usuario."
+    }
   });
 
   finish("Gain registrado.");
+}
+
+export async function registerAutomaticEntry(payload: { slotId: string; currentPrice: number }) {
+  const { supabase, user } = await getUserClient();
+  const slotId = String(payload.slotId || "");
+  const currentPrice = Number(payload.currentPrice || 0);
+
+  if (!slotId || currentPrice <= 0) {
+    return { registered: false };
+  }
+
+  const { data: slot } = await supabase
+    .from("slots")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .eq("id", slotId)
+    .eq("user_id", user.id)
+    .single<SlotRecord>();
+
+  if (!slot || slot.status === "aberto") {
+    return { registered: false };
+  }
+
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,title,asset,gain_rate")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "title" | "asset" | "gain_rate">>();
+
+  const entryPrice = Number(slot.preco_entrada || 0);
+  const strategyGainRate = Number(strategy?.gain_rate || 0);
+  const targetPrice = Number(slot.preco_alvo || 0) > 0 ? Number(slot.preco_alvo || 0) : entryPrice * (1 + strategyGainRate);
+
+  if (entryPrice <= 0 || targetPrice <= 0 || currentPrice > entryPrice || !["zerado", "gain", "hold"].includes(slot.status)) {
+    return { registered: false };
+  }
+
+  const { data: updatedSlot } = await supabase
+    .from("slots")
+    .update({
+      status: "aberto",
+      started_once: true,
+      preco_entrada: entryPrice,
+      preco_atual: currentPrice,
+      preco_alvo: targetPrice
+    })
+    .eq("id", slot.id)
+    .eq("user_id", user.id)
+    .in("status", ["zerado", "gain", "hold"])
+    .select("id")
+    .single();
+
+  if (!updatedSlot) {
+    return { registered: false };
+  }
+
+  const asset = strategy?.asset?.toUpperCase() || "BTC";
+  const message = `Entrada automatica registrada no ${asset} - Slot ${slot.slot_number}`;
+
+  await addHistory("entrada_automatica", message, {
+    userId: user.id,
+    strategyId: slot.strategy_id,
+    slotId: slot.id,
+    strategyKey: strategy?.key || null,
+    slotNumber: slot.slot_number,
+    metadata: {
+      asset,
+      eventType: "entrada_automatica",
+      expectedPrice: entryPrice,
+      executedPrice: currentPrice,
+      targetPrice,
+      slotValue: currentValue(slot),
+      gains: Number(slot.gains || 0),
+      statusBefore: slot.status,
+      statusAfter: "aberto",
+      note: "Preco atual atingiu o preco de entrada configurado. Nenhuma ordem real foi enviada."
+    }
+  });
+
+  revalidatePath("/dashboard");
+  revalidatePath("/slots");
+  revalidatePath("/historico");
+  revalidatePath("/config");
+
+  return { registered: true, message, asset, slotId: slot.id, slotNumber: slot.slot_number };
 }
 
 export async function registerAutoGain(payload: { slotId: string; currentPrice: number; targetPrice?: number }) {
@@ -503,24 +657,26 @@ export async function registerAutoGain(payload: { slotId: string; currentPrice: 
   const asset = strategy?.asset?.toUpperCase() || "BTC";
   const message = `Gain automatico registrado no ${asset} - Slot ${slot.slot_number}`;
 
-  await addHistory(
-    "auto_gain",
-    [
-      message,
-      `Alvo: ${formatUsdt(targetPrice)}`,
-      `Preco atual: ${formatUsdt(currentPrice)}`,
-      `Valor antes: ${formatUsdt(valueBefore)}`,
-      `Valor depois: ${formatUsdt(valueAfter)}`,
-      `Data: ${new Date().toISOString()}`
-    ].join(" | "),
-    {
-      userId: user.id,
-      strategyId: slot.strategy_id,
-      slotId: slot.id,
-      strategyKey: strategy?.key || null,
-      slotNumber: slot.slot_number
+  await addHistory("auto_gain", message, {
+    userId: user.id,
+    strategyId: slot.strategy_id,
+    slotId: slot.id,
+    strategyKey: strategy?.key || null,
+    slotNumber: slot.slot_number,
+    metadata: {
+      asset,
+      eventType: "saida_automatica",
+      expectedPrice: targetPrice,
+      executedPrice: currentPrice,
+      targetPrice,
+      slotValue: valueAfter,
+      gains,
+      statusBefore: slot.status,
+      statusAfter: "gain",
+      realizedProfit: valueAfter - valueBefore,
+      note: "Preco atual atingiu o alvo configurado. Nenhuma ordem real foi enviada."
     }
-  );
+  });
 
   revalidatePath("/dashboard");
   revalidatePath("/slots");
@@ -536,6 +692,12 @@ export async function resetSlot(formData: FormData) {
   if (!slot) {
     return;
   }
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,asset")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "asset">>();
 
   await supabase
     .from("slots")
@@ -546,7 +708,20 @@ export async function resetSlot(formData: FormData) {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
-    slotNumber: slot.slot_number
+    strategyKey: strategy?.key || null,
+    slotNumber: slot.slot_number,
+    metadata: {
+      asset: strategy?.asset || null,
+      eventType: "zerar",
+      expectedPrice: Number(slot.preco_entrada || 0) || null,
+      executedPrice: Number(slot.preco_atual || 0) || null,
+      targetPrice: Number(slot.preco_alvo || 0) || null,
+      slotValue: currentValue(slot),
+      gains: Number(slot.gains || 0),
+      statusBefore: slot.status,
+      statusAfter: "zerado",
+      note: "Slot zerado manualmente."
+    }
   });
 
   finish("Slot zerado.");
@@ -562,13 +737,19 @@ export async function updateSlot(formData: FormData) {
   const currentPrice = Math.max(0, formNumber(formData, "currentPrice", 0));
   const targetPrice = Math.max(0, formNumber(formData, "targetPrice", 0));
   const notes = formText(formData, "notes");
-  const isOpen = status === "aberto";
+  const keepsPrices = status === "aberto" || status === "hold";
 
-  if (!slot || !["zerado", "aberto", "gain"].includes(status)) {
+  if (!slot || !["zerado", "aberto", "gain", "hold"].includes(status)) {
     return;
   }
 
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
+  const { data: strategy } = await supabase
+    .from("strategies")
+    .select("key,asset")
+    .eq("id", slot.strategy_id)
+    .eq("user_id", user.id)
+    .single<Pick<StrategyRecord, "key" | "asset">>();
 
   await supabase
     .from("slots")
@@ -576,9 +757,9 @@ export async function updateSlot(formData: FormData) {
       status,
       gains: status === "zerado" ? 0 : gains,
       base_value: baseValue,
-      preco_entrada: isOpen && entryPrice > 0 ? entryPrice : null,
-      preco_atual: isOpen && currentPrice > 0 ? currentPrice : null,
-      preco_alvo: isOpen && entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : isOpen && targetPrice > 0 ? targetPrice : null,
+      preco_entrada: keepsPrices && entryPrice > 0 ? entryPrice : null,
+      preco_atual: status === "aberto" && currentPrice > 0 ? currentPrice : null,
+      preco_alvo: keepsPrices && entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : keepsPrices && targetPrice > 0 ? targetPrice : null,
       started_once: status !== "zerado",
       notes: status === "zerado" ? "" : notes
     })
@@ -589,7 +770,20 @@ export async function updateSlot(formData: FormData) {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
-    slotNumber: slot.slot_number
+    strategyKey: strategy?.key || null,
+    slotNumber: slot.slot_number,
+    metadata: {
+      asset: strategy?.asset || null,
+      eventType: "edicao",
+      expectedPrice: keepsPrices && entryPrice > 0 ? entryPrice : null,
+      executedPrice: status === "aberto" && currentPrice > 0 ? currentPrice : null,
+      targetPrice: keepsPrices && entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : keepsPrices && targetPrice > 0 ? targetPrice : null,
+      slotValue: baseValue,
+      gains: status === "zerado" ? 0 : gains,
+      statusBefore: slot.status,
+      statusAfter: status,
+      note: notes || "Slot editado manualmente."
+    }
   });
 
   finish("Slot editado.");
