@@ -13,9 +13,13 @@ type ParsedHistory = {
   message: string;
   asset: string;
   eventType: string;
+  origin: string;
   expectedPrice: number | null;
   executedPrice: number | null;
+  currentPrice: number | null;
   targetPrice: number | null;
+  valueBefore: number | null;
+  valueAfter: number | null;
   slotValue: number | null;
   gains: number | null;
   statusBefore: string | null;
@@ -25,13 +29,21 @@ type ParsedHistory = {
 };
 
 type ExportRow = {
+  "ID Evento": string;
+  "User ID": string;
+  "Created At": string;
   Data: string;
   Ativo: string;
   Slot: string;
   Evento: string;
+  "Evento Padronizado": string;
+  Origem: string;
   "Preco de Entrada": string;
   "Preco Executado": string;
+  "Preco Atual": string;
   "Preco Alvo": string;
+  "Valor Antes": string;
+  "Valor Depois": string;
   "Valor do Slot": string;
   "Gains do Slot": string;
   "Status Antes": string;
@@ -40,36 +52,86 @@ type ExportRow = {
   Observacao: string;
 };
 
+function parseLooseNumber(value: string | undefined) {
+  if (!value) return null;
+  const normalized = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function extractLegacyNumbers(text: string) {
+  return {
+    targetPrice: parseLooseNumber(text.match(/(?:alvo|preco alvo|preço alvo)[:\s]+([\d.,]+)/i)?.[1]),
+    currentPrice: parseLooseNumber(text.match(/(?:preco atual|preço atual|atual)[:\s]+([\d.,]+)/i)?.[1]),
+    valueBefore: parseLooseNumber(text.match(/valor antes[:\s]+([\d.,]+)/i)?.[1]),
+    valueAfter: parseLooseNumber(text.match(/valor depois[:\s]+([\d.,]+)/i)?.[1])
+  };
+}
+
+function normalizeEventType(action: string, eventType: string) {
+  const value = `${action} ${eventType}`.toLowerCase();
+  if (value.includes("auto_gain") || value.includes("saida_automatica")) return "GAIN_AUTOMATICO";
+  if (value.includes("gain")) return "GAIN_MANUAL";
+  if (value.includes("entrada_automatica")) return "ABERTURA_AUTOMATICA";
+  if (value.includes("abertura") || value.includes("entrada")) return "ABERTURA_MANUAL";
+  if (value.includes("marcacao")) return "MARCACAO_MERCADO";
+  if (value.includes("editar") || value.includes("edicao")) return "EDICAO";
+  if (value.includes("zerar")) return "ZERAGEM";
+  if (value.includes("estrategia")) return "ESTRATEGIA";
+  return eventType || action;
+}
+
+function inferOrigin(action: string, eventType: string, origin?: string | null) {
+  if (origin) return origin;
+  const value = `${action} ${eventType}`.toLowerCase();
+  if (value.includes("auto") || value.includes("cron")) return "AUTO_GAIN";
+  if (value.includes("estrategia") || value.includes("automacao")) return "SISTEMA";
+  return "MANUAL";
+}
+
 function parseHistoryDetail(item: HistoryEvent): ParsedHistory {
   try {
     const parsed = JSON.parse(item.detail) as Partial<ParsedHistory>;
+    const legacy = extractLegacyNumbers(item.detail);
+    const valueBefore = parsed.valueBefore ?? legacy.valueBefore ?? null;
+    const valueAfter = parsed.valueAfter ?? legacy.valueAfter ?? null;
     return {
       message: String(parsed.message || item.detail || "Registro criado no Supabase."),
       asset: String(parsed.asset || item.strategy?.asset || item.strategy_key || "").toUpperCase(),
       eventType: String(parsed.eventType || item.action),
+      origin: inferOrigin(item.action, String(parsed.eventType || item.action), parsed.origin),
       expectedPrice: parsed.expectedPrice ?? null,
       executedPrice: parsed.executedPrice ?? null,
-      targetPrice: parsed.targetPrice ?? null,
-      slotValue: parsed.slotValue ?? null,
+      currentPrice: parsed.currentPrice ?? legacy.currentPrice ?? null,
+      targetPrice: parsed.targetPrice ?? legacy.targetPrice ?? null,
+      valueBefore,
+      valueAfter,
+      slotValue: parsed.slotValue ?? valueAfter ?? valueBefore ?? null,
       gains: parsed.gains ?? null,
       statusBefore: parsed.statusBefore ?? null,
       statusAfter: parsed.statusAfter ?? null,
-      realizedProfit: parsed.realizedProfit ?? null,
+      realizedProfit: parsed.realizedProfit ?? (valueBefore !== null && valueAfter !== null ? valueAfter - valueBefore : null),
       note: parsed.note ?? null
     };
   } catch {
+    const legacy = extractLegacyNumbers(item.detail || "");
+    const realizedProfit = legacy.valueBefore !== null && legacy.valueAfter !== null ? legacy.valueAfter - legacy.valueBefore : null;
     return {
       message: item.detail || "Registro criado no Supabase.",
       asset: String(item.strategy?.asset || item.strategy_key || "").toUpperCase(),
       eventType: item.action,
+      origin: inferOrigin(item.action, item.action),
       expectedPrice: null,
-      executedPrice: null,
-      targetPrice: null,
-      slotValue: null,
+      executedPrice: legacy.currentPrice,
+      currentPrice: legacy.currentPrice,
+      targetPrice: legacy.targetPrice,
+      valueBefore: legacy.valueBefore,
+      valueAfter: legacy.valueAfter,
+      slotValue: legacy.valueAfter ?? legacy.valueBefore,
       gains: null,
       statusBefore: null,
       statusAfter: null,
-      realizedProfit: null,
+      realizedProfit,
       note: item.detail || null
     };
   }
@@ -97,13 +159,21 @@ function toExportRows(history: HistoryEvent[]): ExportRow[] {
     const parsed = parseHistoryDetail(item);
 
     return {
+      "ID Evento": item.id,
+      "User ID": item.user_id || "",
+      "Created At": item.created_at ? formatExportDate(item.created_at) : "",
       Data: formatExportDate(item.event_at),
       Ativo: parsed.asset || "-",
       Slot: item.slot_number ? String(item.slot_number) : "",
       Evento: parsed.eventType || item.action,
+      "Evento Padronizado": normalizeEventType(item.action, parsed.eventType),
+      Origem: parsed.origin,
       "Preco de Entrada": numberCell(parsed.expectedPrice),
       "Preco Executado": numberCell(parsed.executedPrice),
+      "Preco Atual": numberCell(parsed.currentPrice),
       "Preco Alvo": numberCell(parsed.targetPrice),
+      "Valor Antes": numberCell(parsed.valueBefore),
+      "Valor Depois": numberCell(parsed.valueAfter),
       "Valor do Slot": numberCell(parsed.slotValue),
       "Gains do Slot": parsed.gains === null ? "" : String(parsed.gains),
       "Status Antes": parsed.statusBefore || "",
@@ -137,13 +207,8 @@ function downloadCsv(fileName: string, rows: Array<Record<string, string>>) {
   downloadBlob(fileName, `\uFEFF${csv}`, "text/csv;charset=utf-8");
 }
 
-function downloadExcel(fileName: string, rows: Array<Record<string, string>>) {
-  const headers = Object.keys(rows[0] || { Aviso: "Sem dados" });
-  const body = rows.length ? rows : [{ Aviso: "Sem dados" }];
-  const table = `<table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body
-    .map((row) => `<tr>${headers.map((header) => `<td>${row[header] || ""}</td>`).join("")}</tr>`)
-    .join("")}</tbody></table>`;
-  downloadBlob(fileName, `\uFEFF${table}`, "application/vnd.ms-excel;charset=utf-8");
+function downloadExcelCsv(fileName: string, rows: Array<Record<string, string>>) {
+  downloadCsv(fileName, rows);
 }
 
 function getMonthKey(value: string) {
@@ -303,32 +368,32 @@ export function HistoricoClient({ userEmail, history, error }: { userEmail: stri
           <button type="button" className="ghost-button compact-action" onClick={() => downloadCsv("historico-completo.csv", toExportRows(history))}>
             CSV completo
           </button>
-          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcel("historico-completo.xls", toExportRows(history))}>
-            Excel completo
+          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcelCsv("historico-completo-excel.csv", toExportRows(history))}>
+            Excel CSV completo
           </button>
           <button type="button" className="ghost-button compact-action" onClick={() => downloadCsv("historico-btc.csv", toExportRows(history.filter((item) => parseHistoryDetail(item).asset === "BTC")))}>
             CSV BTC
           </button>
-          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcel("historico-btc.xls", toExportRows(history.filter((item) => parseHistoryDetail(item).asset === "BTC")))}>
-            Excel BTC
+          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcelCsv("historico-btc-excel.csv", toExportRows(history.filter((item) => parseHistoryDetail(item).asset === "BTC")))}>
+            Excel CSV BTC
           </button>
           <button type="button" className="ghost-button compact-action" onClick={() => downloadCsv("historico-sol.csv", toExportRows(history.filter((item) => parseHistoryDetail(item).asset === "SOL")))}>
             CSV SOL
           </button>
-          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcel("historico-sol.xls", toExportRows(history.filter((item) => parseHistoryDetail(item).asset === "SOL")))}>
-            Excel SOL
+          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcelCsv("historico-sol-excel.csv", toExportRows(history.filter((item) => parseHistoryDetail(item).asset === "SOL")))}>
+            Excel CSV SOL
           </button>
           <button type="button" className="ghost-button compact-action" onClick={() => downloadCsv("resumo-mensal.csv", toMonthlySummary(history))}>
             CSV mensal
           </button>
-          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcel("resumo-mensal.xls", toMonthlySummary(history))}>
-            Excel mensal
+          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcelCsv("resumo-mensal-excel.csv", toMonthlySummary(history))}>
+            Excel CSV mensal
           </button>
           <button type="button" className="ghost-button compact-action" onClick={() => downloadCsv("resumo-por-slot.csv", toSlotSummary(history))}>
             CSV slots
           </button>
-          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcel("resumo-por-slot.xls", toSlotSummary(history))}>
-            Excel slots
+          <button type="button" className="ghost-button compact-action" onClick={() => downloadExcelCsv("resumo-por-slot-excel.csv", toSlotSummary(history))}>
+            Excel CSV slots
           </button>
         </div>
       </SectionCard>

@@ -79,9 +79,13 @@ function historyDetail(
   metadata: {
     asset: string;
     eventType: string;
+    origin?: "MANUAL" | "AUTO_GAIN" | "CRON" | "SISTEMA" | "IMPORTACAO";
     expectedPrice: number | null;
     executedPrice: number | null;
+    currentPrice?: number | null;
     targetPrice: number | null;
+    valueBefore?: number | null;
+    valueAfter?: number | null;
     slotValue: number | null;
     gains: number | null;
     statusBefore: string | null;
@@ -91,9 +95,28 @@ function historyDetail(
   }
 ) {
   return JSON.stringify({
+    schemaVersion: 2,
     message,
+    origin: metadata.origin || "CRON",
     ...metadata,
+    duplicateKey: historyFingerprint(metadata),
     eventAt: new Date().toISOString()
+  });
+}
+
+function historyFingerprint(metadata: Parameters<typeof historyDetail>[1]) {
+  return JSON.stringify({
+    eventType: metadata.eventType,
+    expectedPrice: metadata.expectedPrice,
+    executedPrice: metadata.executedPrice,
+    currentPrice: metadata.currentPrice ?? null,
+    targetPrice: metadata.targetPrice,
+    valueBefore: metadata.valueBefore ?? null,
+    valueAfter: metadata.valueAfter ?? null,
+    slotValue: metadata.slotValue,
+    gains: metadata.gains,
+    statusBefore: metadata.statusBefore,
+    statusAfter: metadata.statusAfter
   });
 }
 
@@ -124,6 +147,28 @@ async function insertHistory(
   metadata: Parameters<typeof historyDetail>[1]
 ) {
   const strategy = normalizeStrategy(slot);
+  const duplicateKey = historyFingerprint(metadata);
+  const threeSecondsAgo = new Date(Date.now() - 3000).toISOString();
+  const { data: recentEvents } = await supabase
+    .from("history_events")
+    .select("detail")
+    .eq("user_id", slot.user_id)
+    .eq("slot_id", slot.id)
+    .eq("action", action)
+    .gte("created_at", threeSecondsAgo)
+    .limit(5);
+
+  const hasDuplicate = (recentEvents || []).some((event) => {
+    try {
+      return JSON.parse(String(event.detail || "{}")).duplicateKey === duplicateKey;
+    } catch {
+      return false;
+    }
+  });
+
+  if (hasDuplicate) {
+    return;
+  }
 
   await supabase.from("history_events").insert({
     user_id: slot.user_id,
@@ -182,12 +227,16 @@ async function executeAutomaticEntry({
   const message = `Entrada automatica registrada no ${asset} - Slot ${slot.slot_number}`;
 
   await insertHistory(supabase, slot, "entrada_automatica", message, {
-    asset,
-    eventType: "entrada_automatica",
-    expectedPrice: entryPrice,
-    executedPrice: confirmedPrice,
-    targetPrice,
-    slotValue: currentValue(slot),
+      asset,
+      eventType: "entrada_automatica",
+      origin: "CRON",
+      expectedPrice: entryPrice,
+      executedPrice: confirmedPrice,
+      currentPrice: confirmedPrice,
+      targetPrice,
+      valueBefore: currentValue(slot),
+      valueAfter: currentValue(slot),
+      slotValue: currentValue(slot),
     gains: Number(slot.gains || 0),
     statusBefore: slot.status,
     statusAfter: "aberto",
@@ -248,9 +297,13 @@ async function executeAutomaticExit({
   await insertHistory(supabase, slot, "auto_gain", message, {
     asset,
     eventType: "saida_automatica",
+    origin: "CRON",
     expectedPrice: targetPrice,
     executedPrice: confirmedPrice,
+    currentPrice: confirmedPrice,
     targetPrice,
+    valueBefore,
+    valueAfter,
     slotValue: valueAfter,
     gains,
     statusBefore: slot.status,

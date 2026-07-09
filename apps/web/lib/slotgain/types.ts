@@ -32,9 +32,11 @@ export type SlotView = {
 
 export type HistoryEvent = {
   id: string;
+  user_id?: string | null;
   action: string;
   detail: string;
   event_at: string;
+  created_at?: string | null;
   strategy_id: string | null;
   slot_id: string | null;
   strategy_key: string | null;

@@ -23,7 +23,7 @@ export default async function HistoricoPage() {
 
   const { data, error } = await supabase
     .from("history_events")
-    .select("id,action,detail,event_at,strategy_id,slot_id,strategy_key,slot_number,strategies(asset,key)")
+    .select("id,user_id,action,detail,event_at,created_at,strategy_id,slot_id,strategy_key,slot_number,strategies(asset,key)")
     .order("event_at", { ascending: false })
     .limit(1000);
 
