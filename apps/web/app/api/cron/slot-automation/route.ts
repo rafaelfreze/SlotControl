@@ -32,6 +32,17 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: true, stats });
   } catch (error) {
     console.error("[slot-automation-cron] erro", error instanceof Error ? error.message : "Erro desconhecido");
+    console.error(error);
+    if (error instanceof Error) {
+      console.error(error.stack);
+    }
+
+    try {
+      console.error(JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+    } catch (jsonError) {
+      console.error("[slot-automation-cron] erro ao serializar excecao", jsonError);
+    }
+
     return NextResponse.json({ ok: false, error: "Cron execution failed" }, { status: 500 });
   }
 }

@@ -121,22 +121,61 @@ function historyFingerprint(metadata: Parameters<typeof historyDetail>[1]) {
 }
 
 async function fetchBinancePrice(asset: Asset) {
-  const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${BINANCE_SYMBOLS[asset]}`, {
-    cache: "no-store"
-  });
+  const url = `https://api.binance.com/api/v3/ticker/price?symbol=${BINANCE_SYMBOLS[asset]}`;
+  const method = "GET";
 
-  if (!response.ok) {
-    throw new Error(`Falha ao buscar preco ${asset}`);
+  console.log("[fetchBinancePrice] ASSET", asset);
+  console.log("[fetchBinancePrice] URL", url);
+  console.log("[fetchBinancePrice] METHOD", method);
+
+  try {
+    const response = await fetch(url, {
+      method,
+      cache: "no-store"
+    });
+
+    console.log("[fetchBinancePrice] STATUS", response.status);
+    console.log("[fetchBinancePrice] STATUS_TEXT", response.statusText);
+
+    const body = await response.text();
+    console.log("[fetchBinancePrice] BODY", body);
+
+    if (!response.ok) {
+      throw new Error(`Falha ao buscar preco ${asset}. Status ${response.status}. Body: ${body}`);
+    }
+
+    let payload: { price?: string };
+    try {
+      payload = JSON.parse(body) as { price?: string };
+    } catch (error) {
+      console.error("[fetchBinancePrice] JSON_PARSE_ERROR", error);
+      if (error instanceof Error) {
+        console.error("[fetchBinancePrice] JSON_PARSE_STACK", error.stack);
+      }
+      throw error;
+    }
+
+    const price = Number(payload.price);
+
+    if (!Number.isFinite(price) || price <= 0) {
+      throw new Error(`Preco invalido ${asset}. Body: ${body}`);
+    }
+
+    return price;
+  } catch (error) {
+    console.error("[fetchBinancePrice] EXCEPTION", error);
+    if (error instanceof Error) {
+      console.error("[fetchBinancePrice] EXCEPTION_STACK", error.stack);
+    }
+
+    try {
+      console.error("[fetchBinancePrice] EXCEPTION_JSON", JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+    } catch (jsonError) {
+      console.error("[fetchBinancePrice] EXCEPTION_JSON_ERROR", jsonError);
+    }
+
+    throw error;
   }
-
-  const payload = (await response.json()) as { price?: string };
-  const price = Number(payload.price);
-
-  if (!Number.isFinite(price) || price <= 0) {
-    throw new Error(`Preco invalido ${asset}`);
-  }
-
-  return price;
 }
 
 async function insertHistory(
