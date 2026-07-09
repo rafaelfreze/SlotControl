@@ -4,7 +4,13 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { AppHeader } from "@/components/app/mobile-ui";
-import { getAutomationModeLabel, isAutomationActive, useAutomationSetting, useAutomationWatcher } from "@/lib/slotgain/auto-gain";
+import {
+  getAutomationModeLabel,
+  isAutomationActive,
+  useAutomationSetting,
+  useAutomationWatcher,
+  type AutomationMode
+} from "@/lib/slotgain/auto-gain";
 import {
   formatPrice,
   formatSignedUsdt,
@@ -22,6 +28,7 @@ type DashboardClientProps = {
   slots: SlotView[];
   setupError: string | null;
   initialNotice: string | null;
+  initialAutomationMode: AutomationMode;
 };
 
 type StrategySummary = {
@@ -59,10 +66,10 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice }: DashboardClientProps) {
+export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { mode: automationMode } = useAutomationSetting();
+  const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
   const realizedProfit = totalUpdated - totalBase;

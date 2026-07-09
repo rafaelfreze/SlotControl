@@ -19,6 +19,8 @@ Preencha em `apps/web/.env.local`:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
 ```
@@ -50,9 +52,13 @@ No painel da Vercel, replique estas variaveis:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
 ```
+
+`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` sao variaveis exclusivamente server-side. O cron da Vercel usa `GET /api/cron/slot-automation` com o header `Authorization: Bearer CRON_SECRET` para processar entrada e saida automatica sem abrir ordens reais na Binance.
 
 Depois do primeiro deploy, copie a URL final da Vercel e volte ao Supabase Auth para adicionar:
 

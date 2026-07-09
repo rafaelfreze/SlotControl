@@ -13,7 +13,13 @@ import {
   updateSlot
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
-import { getAutomationModeLabel, isAutomationActive, useAutomationSetting, useAutomationWatcher } from "@/lib/slotgain/auto-gain";
+import {
+  getAutomationModeLabel,
+  isAutomationActive,
+  useAutomationSetting,
+  useAutomationWatcher,
+  type AutomationMode
+} from "@/lib/slotgain/auto-gain";
 import {
   formatDate,
   formatPrice,
@@ -37,6 +43,7 @@ type SlotsClientProps = {
   initialNotice: string | null;
   initialAsset: string | null;
   initialFlow: string | null;
+  initialAutomationMode: AutomationMode;
 };
 
 function getAssetFromStrategy(slot: SlotView) {
@@ -75,7 +82,7 @@ function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], livePrice?: n
   return livePrice || 0;
 }
 
-export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
+export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, initialAutomationMode }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const liveBtcPrice = livePrices.prices.BTC;
   const liveSolPrice = livePrices.prices.SOL;
@@ -83,7 +90,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { mode: automationMode } = useAutomationSetting();
+  const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
 
   const scopedSlots = useMemo(
     () => slots.filter((slot) => selectedAsset === "ALL" || getAssetFromStrategy(slot) === selectedAsset),

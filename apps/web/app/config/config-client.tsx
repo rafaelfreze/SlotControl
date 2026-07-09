@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 
-import { createStrategy, deleteStrategy, updateStrategy } from "@/app/dashboard/actions";
+import { createStrategy, deleteStrategy, updateAutomationMode, updateStrategy } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { getAutomationModeLabel, useAutomationSetting, type AutomationMode } from "@/lib/slotgain/auto-gain";
@@ -15,11 +15,13 @@ type ConfigClientProps = {
   slots: SlotView[];
   setupError: string | null;
   initialNotice: string | null;
+  initialAutomationMode: AutomationMode;
 };
 
-export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice }: ConfigClientProps) {
+export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode }: ConfigClientProps) {
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { mode: automationMode, setMode: setAutomationMode } = useAutomationSetting();
+  const [isSavingAutomation, startAutomationTransition] = useTransition();
+  const { mode: automationMode, setMode: setAutomationMode } = useAutomationSetting(initialAutomationMode);
   const btc = strategies.find((strategy) => strategy.asset.toUpperCase() === "BTC");
   const sol = strategies.find((strategy) => strategy.asset.toUpperCase() === "SOL");
 
@@ -90,7 +92,16 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
                 className={`auto-gain-toggle ${automationMode === value ? "active" : ""}`}
                 type="button"
                 aria-pressed={automationMode === value}
-                onClick={() => setAutomationMode(value as AutomationMode)}
+                disabled={isSavingAutomation}
+                onClick={() => {
+                  const nextMode = value as AutomationMode;
+                  setAutomationMode(nextMode);
+                  startAutomationTransition(async () => {
+                    const result = await updateAutomationMode(nextMode);
+                    setAutomationMode(result.mode);
+                    setNotice("Modo de automacao salvo para app e Vercel Cron.");
+                  });
+                }}
               >
                 {label}
               </button>
@@ -98,6 +109,7 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           </div>
           <div><span>Tema</span><strong>Dark premium</strong></div>
           <div><span>Moedas</span><strong>BTC e SOL</strong></div>
+          <div><span>Backend</span><strong>Vercel Cron ativo</strong></div>
         </div>
       </SectionCard>
 

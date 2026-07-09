@@ -52,11 +52,15 @@ export function isAutomationActive(mode: AutomationMode) {
   return mode !== "off";
 }
 
-export function useAutomationSetting() {
-  const [mode, setModeState] = useState<AutomationMode>("off");
+export function useAutomationSetting(initialMode: AutomationMode = "off") {
+  const [mode, setModeState] = useState<AutomationMode>(initialMode);
 
   useEffect(() => {
-    setModeState(readStoredAutomationMode());
+    const storedMode = readStoredAutomationMode();
+    const nextMode = storedMode === "off" && initialMode !== "off" ? initialMode : storedMode;
+    setModeState(nextMode);
+    window.localStorage.setItem(AUTOMATION_STORAGE_KEY, nextMode);
+    window.localStorage.setItem(LEGACY_AUTO_GAIN_STORAGE_KEY, String(nextMode !== "off"));
 
     function syncFromStorage() {
       setModeState(readStoredAutomationMode());
@@ -71,7 +75,7 @@ export function useAutomationSetting() {
       window.removeEventListener(AUTOMATION_EVENT, syncFromStorage);
       window.removeEventListener(LEGACY_AUTO_GAIN_EVENT, syncFromStorage);
     };
-  }, []);
+  }, [initialMode]);
 
   function setMode(nextMode: AutomationMode) {
     setModeState(nextMode);
@@ -84,8 +88,8 @@ export function useAutomationSetting() {
   return { mode, setMode, enabled: mode !== "off" };
 }
 
-export function useAutoGainSetting() {
-  const { mode, setMode, enabled } = useAutomationSetting();
+export function useAutoGainSetting(initialMode: AutomationMode = "off") {
+  const { mode, setMode, enabled } = useAutomationSetting(initialMode);
 
   return {
     enabled,

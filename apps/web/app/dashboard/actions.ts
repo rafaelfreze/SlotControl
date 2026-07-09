@@ -31,6 +31,12 @@ type StrategyRecord = {
   drop_percent?: number | string;
 };
 
+type AutomationMode = "off" | "exit_only" | "entry_exit";
+
+function normalizeAutomationMode(value: string): AutomationMode {
+  return value === "exit_only" || value === "entry_exit" ? value : "off";
+}
+
 async function getUserClient() {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
@@ -312,6 +318,44 @@ export async function deleteStrategy(formData: FormData) {
   });
 
   finish("Estrategia removida.", "/config");
+}
+
+export async function updateAutomationMode(mode: AutomationMode) {
+  const { supabase, user } = await getUserClient();
+  const automationMode = normalizeAutomationMode(mode);
+
+  const { data: currentSettings } = await supabase
+    .from("user_settings")
+    .select("settings")
+    .eq("user_id", user.id)
+    .maybeSingle<{ settings: Record<string, unknown> | null }>();
+
+  const settings = {
+    ...(currentSettings?.settings || {}),
+    automationMode,
+    autoGainEnabled: automationMode !== "off"
+  };
+
+  await supabase.from("user_settings").upsert({
+    user_id: user.id,
+    settings
+  });
+
+  await addHistory("Automacao", `Modo de automacao alterado para ${automationMode}.`, {
+    userId: user.id,
+    metadata: {
+      eventType: "configuracao_automacao",
+      statusBefore: null,
+      statusAfter: automationMode,
+      note: "Configuracao salva para uso pelo app e pelo Vercel Cron."
+    }
+  });
+
+  revalidatePath("/dashboard");
+  revalidatePath("/slots");
+  revalidatePath("/config");
+
+  return { mode: automationMode };
 }
 
 export async function createSlots(formData: FormData) {

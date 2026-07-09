@@ -38,6 +38,8 @@ Crie `apps/web/.env.local` com:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
 ```
@@ -86,9 +88,13 @@ Configure as variaveis na Vercel:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
 ```
+
+`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` sao usados somente no backend. Cadastre ambos na Vercel; nunca exponha essas variaveis no frontend. O Vercel Cron chama `GET /api/cron/slot-automation` a cada minuto com `Authorization: Bearer CRON_SECRET`.
 
 ## Validacao
 
