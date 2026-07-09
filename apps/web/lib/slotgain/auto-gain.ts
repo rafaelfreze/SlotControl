@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import { registerAutoGain, registerAutomaticEntry } from "@/app/dashboard/actions";
+import { registerAutoGain, registerAutomaticEntry, updateAutomationMode } from "@/app/dashboard/actions";
 import type { SlotView } from "@/lib/slotgain/types";
 
 const AUTOMATION_STORAGE_KEY = "slotgain:automation-mode";
@@ -54,6 +54,7 @@ export function isAutomationActive(mode: AutomationMode) {
 
 export function useAutomationSetting(initialMode: AutomationMode = "off") {
   const [mode, setModeState] = useState<AutomationMode>(initialMode);
+  const hasSyncedStoredModeRef = useRef(false);
 
   useEffect(() => {
     const storedMode = readStoredAutomationMode();
@@ -61,6 +62,13 @@ export function useAutomationSetting(initialMode: AutomationMode = "off") {
     setModeState(nextMode);
     window.localStorage.setItem(AUTOMATION_STORAGE_KEY, nextMode);
     window.localStorage.setItem(LEGACY_AUTO_GAIN_STORAGE_KEY, String(nextMode !== "off"));
+
+    if (!hasSyncedStoredModeRef.current && storedMode !== "off" && storedMode !== initialMode) {
+      hasSyncedStoredModeRef.current = true;
+      void updateAutomationMode(storedMode).catch(() => {
+        hasSyncedStoredModeRef.current = false;
+      });
+    }
 
     function syncFromStorage() {
       setModeState(readStoredAutomationMode());

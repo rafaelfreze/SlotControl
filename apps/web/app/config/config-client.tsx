@@ -97,9 +97,14 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
                   const nextMode = value as AutomationMode;
                   setAutomationMode(nextMode);
                   startAutomationTransition(async () => {
-                    const result = await updateAutomationMode(nextMode);
-                    setAutomationMode(result.mode);
-                    setNotice("Modo de automacao salvo para app e Vercel Cron.");
+                    try {
+                      const result = await updateAutomationMode(nextMode);
+                      setAutomationMode(result.mode);
+                      setNotice("Modo de automacao salvo para app e Vercel Cron.");
+                    } catch {
+                      setAutomationMode(initialAutomationMode);
+                      setNotice("Nao foi possivel salvar a automacao no Supabase.");
+                    }
                   });
                 }}
               >

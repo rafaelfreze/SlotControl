@@ -336,10 +336,14 @@ export async function updateAutomationMode(mode: AutomationMode) {
     autoGainEnabled: automationMode !== "off"
   };
 
-  await supabase.from("user_settings").upsert({
+  const { error: upsertError } = await supabase.from("user_settings").upsert({
     user_id: user.id,
     settings
   });
+
+  if (upsertError) {
+    throw new Error("Falha ao salvar configuracao de automacao.");
+  }
 
   await addHistory("Automacao", `Modo de automacao alterado para ${automationMode}.`, {
     userId: user.id,
