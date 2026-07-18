@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { type ReactNode, useState, useTransition } from "react";
 
 import { createStrategy, deleteStrategy, updateAutomationMode, updateStrategy } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
@@ -16,9 +16,10 @@ type ConfigClientProps = {
   setupError: string | null;
   initialNotice: string | null;
   initialAutomationMode: AutomationMode;
+  notifications: ReactNode;
 };
 
-export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode }: ConfigClientProps) {
+export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, notifications }: ConfigClientProps) {
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const [isSavingAutomation, startAutomationTransition] = useTransition();
   const { mode: automationMode, setMode: setAutomationMode } = useAutomationSetting(initialAutomationMode);
@@ -117,6 +118,8 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           <div><span>Backend</span><strong>Vercel Cron ativo</strong></div>
         </div>
       </SectionCard>
+
+      {notifications}
 
       <SectionCard title="Sistema" subtitle="Aplicativo" tone="neutral">
         <div className="settings-list modern-settings">

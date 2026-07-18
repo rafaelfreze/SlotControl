@@ -209,7 +209,7 @@ async function insertHistory(
     return;
   }
 
-  await supabase.from("history_events").insert({
+  const { error: historyError } = await supabase.from("history_events").insert({
     user_id: slot.user_id,
     strategy_id: slot.strategy_id,
     slot_id: slot.id,
@@ -218,6 +218,9 @@ async function insertHistory(
     strategy_key: strategy?.key || null,
     slot_number: slot.slot_number
   });
+  if (historyError) {
+    throw historyError;
+  }
 }
 
 async function executeAutomaticEntry({
@@ -434,6 +437,15 @@ export async function runSlotAutomationCron(): Promise<AutomationStats> {
     } catch (error) {
       stats.errors.push(error instanceof Error ? error.message : "Erro desconhecido no slot");
     }
+  }
+
+  try {
+    const { processPendingPushNotifications } = await import("@/lib/push/server");
+    await processPendingPushNotifications(25);
+  } catch (error) {
+    console.error("[push-worker] automation_dispatch_failed", {
+      message: error instanceof Error ? error.message : "Erro desconhecido"
+    });
   }
 
   return stats;

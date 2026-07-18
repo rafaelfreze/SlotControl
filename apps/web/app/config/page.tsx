@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { PushNotificationsSettings } from "@/components/app/push-notifications-settings";
+import { DEFAULT_NOTIFICATION_PREFERENCES, type NotificationPreferences, type PushSubscriptionRecord } from "@/lib/push/types";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
 import { ConfigClient } from "./config-client";
 
@@ -32,7 +34,7 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, settingsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, settingsResponse, preferencesResponse, subscriptionsResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -45,10 +47,12 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
         "id,strategy_id,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
-    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>()
+    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>(),
+    supabase.from("notification_preferences").select("global_enabled,btc_entry_enabled,btc_exit_enabled,sol_entry_enabled,sol_exit_enabled,manual_events_enabled,automatic_events_enabled,privacy_mode,quiet_hours_enabled,quiet_hours_start,quiet_hours_end").eq("user_id", user.id).maybeSingle(),
+    supabase.from("push_subscriptions").select("id,endpoint,user_agent,device_name,platform,is_active,created_at,last_success_at").eq("user_id", user.id).order("created_at", { ascending: false })
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || preferencesResponse.error || subscriptionsResponse.error;
 
   return (
     <ConfigClient
@@ -58,6 +62,7 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
       initialAutomationMode={getAutomationMode(settingsResponse.data?.settings)}
+      notifications={<PushNotificationsSettings initialPreferences={{ ...DEFAULT_NOTIFICATION_PREFERENCES, ...(preferencesResponse.data as Partial<NotificationPreferences> | null) }} subscriptions={(subscriptionsResponse.data || []) as PushSubscriptionRecord[]} vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || null} />}
     />
   );
 }

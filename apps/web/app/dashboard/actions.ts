@@ -252,7 +252,7 @@ async function addHistory(
     }
   }
 
-  await supabase.from("history_events").insert({
+  const { error: historyError } = await supabase.from("history_events").insert({
     user_id: payload.userId,
     strategy_id: payload.strategyId || null,
     slot_id: payload.slotId || null,
@@ -261,6 +261,22 @@ async function addHistory(
     strategy_key: payload.strategyKey || null,
     slot_number: payload.slotNumber || null
   });
+
+  if (historyError) {
+    throw new Error("Falha ao registrar o histórico da operação.");
+  }
+
+  if (["Abertura", "Gain", "entrada_automatica", "auto_gain"].includes(action)) {
+    try {
+      const { processPendingPushNotifications } = await import("@/lib/push/server");
+      await processPendingPushNotifications(10);
+    } catch (error) {
+      console.error("[push-worker] immediate_dispatch_failed", {
+        action,
+        message: error instanceof Error ? error.message : "Erro desconhecido"
+      });
+    }
+  }
 }
 
 export async function createStrategy(formData: FormData) {
@@ -538,7 +554,7 @@ export async function openSlot(formData: FormData) {
     .eq("user_id", user.id)
     .single<Pick<StrategyRecord, "key" | "asset">>();
 
-  await supabase
+  const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
     .update({
       status: "aberto",
@@ -548,7 +564,13 @@ export async function openSlot(formData: FormData) {
       preco_alvo: targetPrice
     })
     .eq("id", slot.id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .neq("status", "aberto")
+    .select("id")
+    .maybeSingle();
+  if (updateError || !updatedSlot) {
+    throw new Error("O slot não pôde ser aberto porque foi atualizado por outra operação.");
+  }
   await addHistory("Abertura", `Slot aberto com valor calculado de ${formatUsdt(currentValue(slot))}.`, {
     userId: user.id,
     strategyId: slot.strategy_id,
@@ -579,7 +601,7 @@ export async function openSlot(formData: FormData) {
 export async function registerGain(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
-  if (!slot || slot.status === "zerado" || slot.status === "hold") {
+  if (!slot || slot.status !== "aberto") {
     return;
   }
 
@@ -594,11 +616,17 @@ export async function registerGain(formData: FormData) {
   const valueBefore = currentValue(slot);
   const valueAfter = currentValue(nextSlot);
 
-  await supabase
+  const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
     .update({ status: "gain", gains, started_once: true, preco_entrada: null, preco_atual: null, preco_alvo: null })
     .eq("id", slot.id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .eq("status", "aberto")
+    .select("id")
+    .maybeSingle();
+  if (updateError || !updatedSlot) {
+    throw new Error("O slot não pôde ser fechado porque foi atualizado por outra operação.");
+  }
   await addHistory("Gain", `Gain registrado. Novo valor: ${formatUsdt(currentValue(nextSlot))}.`, {
     userId: user.id,
     strategyId: slot.strategy_id,
