@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import { AppHeader } from "@/components/app/mobile-ui";
+import { AppHeader, MobileScreen } from "@/components/app/mobile-ui";
 import {
   getAutomationModeLabel,
   isAutomationActive,
@@ -100,7 +100,7 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
   });
 
   return (
-    <main className="mobile-dashboard-shell">
+    <MobileScreen>
       <AppHeader title="SLOTGAIN" subtitle="CONTROL" />
 
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados do Supabase: {setupError}</section> : null}
@@ -160,7 +160,7 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <p className="mobile-session">{userEmail}</p>
-    </main>
+    </MobileScreen>
   );
 }
 

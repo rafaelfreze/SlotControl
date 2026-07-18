@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
 
@@ -36,7 +37,34 @@ export function AppHeader({
 }
 
 export function MobileScreen({ children }: { children: ReactNode }) {
-  return <main className="mobile-dashboard-shell app-screen">{children}</main>;
+  return (
+    <div className="app-frame">
+      <DesktopSidebar />
+      <main className="mobile-dashboard-shell app-screen">{children}</main>
+      <BottomNavigation />
+    </div>
+  );
+}
+
+const navigation = [
+  { href: "/dashboard", label: "Resumo", icon: "◈" },
+  { href: "/slots", label: "Slots", icon: "▦" },
+  { href: "/historico", label: "Historico", icon: "◷" },
+  { href: "/config", label: "Config", icon: "⚙" }
+];
+
+function isCurrent(pathname: string, href: string) {
+  return pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+}
+
+export function BottomNavigation() {
+  const pathname = usePathname();
+  return <nav className="bottom-navigation" aria-label="Navegacao principal">{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span><small>{item.label}</small></Link>)}</nav>;
+}
+
+export function DesktopSidebar() {
+  const pathname = usePathname();
+  return <aside className="desktop-sidebar" aria-label="Navegacao lateral"><Link className="sidebar-brand" href="/dashboard"><b>SG</b><span>SlotGain<small>CONTROL</small></span></Link><nav>{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</nav></aside>;
 }
 
 export function StatCard({ title, value, helper, tone = "neutral" }: { title: string; value: string; helper?: string; tone?: Tone }) {

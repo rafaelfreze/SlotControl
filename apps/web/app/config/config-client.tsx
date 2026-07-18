@@ -25,6 +25,7 @@ type ConfigClientProps = {
 };
 
 export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, notifications, marketState, regimeSettings, assetSettings }: ConfigClientProps) {
+  const [activeSection, setActiveSection] = useState<"strategies" | "automation" | "notifications" | "account" | "system">("strategies");
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const [isSavingAutomation, startAutomationTransition] = useTransition();
   const { mode: automationMode, setMode: setAutomationMode } = useAutomationSetting(initialAutomationMode);
@@ -56,7 +57,11 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
         <StatCard title="Slots" value={String(slots.length)} tone="purple" />
       </div>
 
-      <SectionCard title="Estrategias" subtitle="Operacional" tone="gold">
+      <nav className="config-category-nav" aria-label="Categorias de configuracao">
+        {[['strategies','Estrategias'],['automation','Automacao'],['notifications','Notificacoes'],['account','Conta'],['system','Sistema']].map(([key,label]) => <button key={key} type="button" className={activeSection === key ? "active" : ""} onClick={() => setActiveSection(key as typeof activeSection)}>{label}</button>)}
+      </nav>
+
+      {activeSection === "strategies" ? <><SectionCard title="Estrategias" subtitle="Operacional" tone="gold">
         <div className="strategy-settings-grid">
           {btc ? <StrategySection strategy={btc} tone="gold" /> : null}
           {sol ? <StrategySection strategy={sol} tone="purple" /> : null}
@@ -64,8 +69,9 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
       </SectionCard>
 
       <MarketRegimeSettings marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} editable />
+      </> : null}
 
-      <SectionCard title="Conta" subtitle="Acesso" tone="green">
+      {activeSection === "account" ? <><SectionCard title="Conta" subtitle="Acesso" tone="green">
         <div className="settings-list modern-settings">
           <div><span>Usuario logado</span><strong>{userEmail}</strong></div>
           <div><span>Email</span><strong>{userEmail}</strong></div>
@@ -82,8 +88,9 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           </div>
         </div>
       </SectionCard>
+      </> : null}
 
-      <SectionCard title="Preferencias" subtitle="Interface" tone="purple">
+      {activeSection === "automation" ? <SectionCard title="Automacao" subtitle="Operacao" tone="purple">
         <div className="settings-list modern-settings">
           <div className="settings-action-row automation-mode-row">
             <span>Automacao</span>
@@ -125,10 +132,11 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           <div><span>Backend</span><strong>Vercel Cron ativo</strong></div>
         </div>
       </SectionCard>
+      : null}
 
-      {notifications}
+      {activeSection === "notifications" ? notifications : null}
 
-      <SectionCard title="Sistema" subtitle="Aplicativo" tone="neutral">
+      {activeSection === "system" ? <><SectionCard title="Sistema" subtitle="Aplicativo" tone="neutral">
         <div className="settings-list modern-settings">
           <div><span>Versao</span><strong>SlotGain Control</strong></div>
           <div><span>Ambiente</span><strong>Supabase</strong></div>
@@ -148,6 +156,7 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           <button className="solid-button" type="submit">Criar estrategia</button>
         </form>
       </details>
+      </> : null}
     </MobileScreen>
   );
 }
