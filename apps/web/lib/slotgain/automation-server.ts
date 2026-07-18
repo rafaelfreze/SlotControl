@@ -24,6 +24,8 @@ type SlotAutomationRow = {
   status: SlotStatus;
   gains: number;
   base_value: number | string;
+  reinvested_profit: number | string;
+  operational_slot_value: number | string;
   gain_rate: number | string;
   preco_entrada: number | string | null;
   preco_atual: number | string | null;
@@ -63,8 +65,11 @@ function getAsset(slot: SlotAutomationRow): Asset {
   return normalizeStrategy(slot)?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC";
 }
 
-function currentValue(slot: Pick<SlotAutomationRow, "base_value" | "gain_rate" | "gains">) {
-  return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
+function currentValue(slot: Pick<SlotAutomationRow, "base_value" | "gain_rate" | "gains" | "operational_slot_value">) {
+  const operationalValue = Number(slot.operational_slot_value);
+  return Number.isFinite(operationalValue) && operationalValue >= 0
+    ? operationalValue
+    : Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
 function formatUsdt(value: number) {
@@ -311,8 +316,7 @@ async function executeAutomaticExit({
 
   const gains = Number(slot.gains || 0) + 1;
   const valueBefore = currentValue(slot);
-  const nextSlot = { ...slot, gains };
-  const valueAfter = currentValue(nextSlot);
+  const valueAfter = valueBefore + Number(slot.operational_slot_value || valueBefore) * Number(slot.gain_rate || 0);
 
   const { data: updatedSlot } = await supabase
     .from("slots")
@@ -396,7 +400,7 @@ export async function runSlotAutomationCron(): Promise<AutomationStats> {
 
   const { data: slots, error: slotsError } = await supabase
     .from("slots")
-    .select("id,user_id,strategy_id,slot_number,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo,strategies(key,title,asset,gain_rate)")
+    .select("id,user_id,strategy_id,slot_number,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,strategies(key,title,asset,gain_rate)")
     .in("user_id", userIds)
     .in("status", ["aberto", "hold"])
     .returns<SlotAutomationRow[]>();

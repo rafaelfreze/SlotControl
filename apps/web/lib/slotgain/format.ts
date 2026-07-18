@@ -21,7 +21,13 @@ export function formatDecimal(value: number | string) {
   }).format(Number(value || 0));
 }
 
-export function getCurrentValue(slot: Pick<SlotView, "base_value" | "gain_rate" | "gains">) {
+export function getCurrentValue(slot: Pick<SlotView, "base_value" | "gain_rate" | "gains"> & Partial<Pick<SlotView, "operational_slot_value">>) {
+  const operationalValue = Number(slot.operational_slot_value);
+  if (Number.isFinite(operationalValue) && operationalValue >= 0) {
+    return operationalValue;
+  }
+
+  // Compatibilidade temporaria com registros ainda nao materializados.
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
@@ -30,7 +36,7 @@ export function getDistributedGains(slot: Pick<SlotView, "gains" | "gains_distri
 }
 
 export function getOpenMarketMetrics(
-  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo" | "strategy">,
+  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo" | "strategy"> & Partial<Pick<SlotView, "operational_slot_value">>,
   livePrice?: number
 ) {
   const valorSlot = getCurrentValue(slot);

@@ -331,7 +331,8 @@ function SlotCard({
         <em>{getStatusLabel(slot.status)}</em>
       </div>
       <div className="slot-card-values">
-        <span>Valor atual<strong>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
+        <span>Valor operacional<strong>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
+        <span>Lucro reinvestido<strong>{formatUsdt(Number(slot.reinvested_profit || 0))}</strong></span>
         <span>GAINS NIVELADOS<strong>{getDistributedGains(slot)}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>

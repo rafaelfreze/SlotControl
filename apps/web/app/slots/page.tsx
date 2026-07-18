@@ -47,13 +47,13 @@ export default async function SlotsPage({
     supabase
       .from("slots")
       .select(
-        "id,strategy_id,status,gains,gains_distribuidos,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
+        "id,strategy_id,status,gains,gains_distribuidos,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
     supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>(),
     supabase
       .from("slot_gain_redistributions")
-      .select("id,asset,action_type,target_slot_count,total_gains_before,total_gains_after,status,snapshot_before,snapshot_after,created_at")
+      .select("id,asset,action_type,target_slot_count,total_gains_before,total_gains_after,total_reinvested_before,total_reinvested_after,base_reinvested,remainder_reinvested_units,algorithm_version,status,snapshot_before,snapshot_after,created_at")
       .order("created_at", { ascending: false })
       .limit(30)
   ]);

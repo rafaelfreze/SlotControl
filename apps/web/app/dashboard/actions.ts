@@ -15,6 +15,8 @@ type SlotRecord = {
   status: SlotStatus;
   gains: number;
   base_value: number | string;
+  reinvested_profit: number | string;
+  operational_slot_value: number | string;
   gain_rate: number | string;
   preco_entrada: number | string | null;
   preco_atual: number | string | null;
@@ -85,8 +87,16 @@ function formatUsdt(value: number) {
   }).format(value)} USDT`;
 }
 
-function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains">) {
-  return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
+function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains" | "operational_slot_value">) {
+  const operationalValue = Number(slot.operational_slot_value);
+  return Number.isFinite(operationalValue) && operationalValue >= 0
+    ? operationalValue
+    : Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
+}
+
+function nextOperationalValue(slot: Pick<SlotRecord, "operational_slot_value" | "base_value" | "gain_rate" | "gains">) {
+  const valueBefore = currentValue(slot);
+  return valueBefore + valueBefore * Number(slot.gain_rate || 0);
 }
 
 type HistoryMetadata = {
@@ -606,7 +616,6 @@ export async function registerGain(formData: FormData) {
   }
 
   const gains = Number(slot.gains || 0) + 1;
-  const nextSlot = { ...slot, gains };
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
@@ -614,7 +623,7 @@ export async function registerGain(formData: FormData) {
     .eq("user_id", user.id)
     .single<Pick<StrategyRecord, "key" | "asset">>();
   const valueBefore = currentValue(slot);
-  const valueAfter = currentValue(nextSlot);
+  const valueAfter = nextOperationalValue(slot);
 
   const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
@@ -627,7 +636,7 @@ export async function registerGain(formData: FormData) {
   if (updateError || !updatedSlot) {
     throw new Error("O slot não pôde ser fechado porque foi atualizado por outra operação.");
   }
-  await addHistory("Gain", `Gain registrado. Novo valor: ${formatUsdt(currentValue(nextSlot))}.`, {
+  await addHistory("Gain", `Gain registrado. Novo valor: ${formatUsdt(valueAfter)}.`, {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
@@ -666,7 +675,7 @@ export async function registerAutomaticEntry(payload: { slotId: string; currentP
 
   const { data: slot } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("id", slotId)
     .eq("user_id", user.id)
     .single<SlotRecord>();
@@ -755,7 +764,7 @@ export async function registerAutoGain(payload: { slotId: string; currentPrice: 
 
   const { data: slot } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("id", slotId)
     .eq("user_id", user.id)
     .single<SlotRecord>();
@@ -780,8 +789,7 @@ export async function registerAutoGain(payload: { slotId: string; currentPrice: 
 
   const gains = Number(slot.gains || 0) + 1;
   const valueBefore = currentValue(slot);
-  const nextSlot = { ...slot, gains };
-  const valueAfter = currentValue(nextSlot);
+  const valueAfter = nextOperationalValue(slot);
 
   const { data: updatedSlot } = await supabase
     .from("slots")
@@ -894,6 +902,9 @@ export async function updateSlot(formData: FormData) {
   }
 
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
+  const nextValue = status === "gain" && slot.status === "aberto" && gains === Number(slot.gains || 0) + 1
+    ? nextOperationalValue(slot)
+    : baseValue + Number(slot.reinvested_profit || 0);
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
@@ -931,7 +942,7 @@ export async function updateSlot(formData: FormData) {
       currentPrice: status === "aberto" && currentPrice > 0 ? currentPrice : null,
       targetPrice: keepsPrices && entryPrice > 0 ? entryPrice * (1 + strategyGainRate) : keepsPrices && targetPrice > 0 ? targetPrice : null,
       valueBefore: currentValue(slot),
-      valueAfter: baseValue * Math.pow(1 + Number(slot.gain_rate || 0), status === "zerado" ? 0 : gains),
+      valueAfter: nextValue,
       slotValue: baseValue,
       gains: status === "zerado" ? 0 : gains,
       statusBefore: slot.status,
@@ -966,7 +977,7 @@ export async function applyStrategyMarketPrices(formData: FormData) {
 
   const { data: slots } = await supabase
     .from("slots")
-    .select("id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,slot_number,sort_order,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("user_id", user.id)
     .eq("strategy_id", strategyId)
     .eq("status", "aberto")
@@ -1069,7 +1080,7 @@ async function getSlotFromForm(
 
   const { data } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("id", slotId)
     .eq("user_id", userId)
     .single<SlotRecord>();

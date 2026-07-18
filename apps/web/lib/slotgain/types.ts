@@ -20,6 +20,8 @@ export type SlotView = {
   gains: number;
   gains_distribuidos: number;
   base_value: number | string;
+  reinvested_profit: number | string;
+  operational_slot_value: number | string;
   gain_rate: number | string;
   preco_entrada: number | string | null;
   preco_atual: number | string | null;

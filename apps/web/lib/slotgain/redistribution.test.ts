@@ -17,7 +17,10 @@ function slots(asset: RedistributionAsset, openCount: number, closedCount: numbe
     sortOrder: index + 1,
     status: index < openCount ? (index % 2 === 0 ? "aberto" : "hold") : closedStatus,
     gainsDistribuidos: gains[index] ?? 0,
-    gains: 1000 + index
+    gains: 1000 + index,
+    baseValue: 10,
+    reinvestedProfit: 0,
+    operationalSlotValue: 10
   }));
 }
 
@@ -138,4 +141,38 @@ test("a selecao e deterministica independentemente da ordem de entrada", () => {
   const first = buildGainRedistributionPreview("BTC", source);
   const second = buildGainRedistributionPreview("BTC", [...source].reverse());
   assert.deepEqual(first, second);
+});
+
+test("redistribui o lucro reinvestido dos fechados sem tocar no capital-base ou nos abertos", () => {
+  const source = slots("BTC", 3, 22, [99, 98, 97, ...Array.from({ length: 22 }, (_, index) => index)]);
+  source.forEach((slot, index) => {
+    slot.baseValue = 10 + index;
+    slot.reinvestedProfit = index < 3 ? 7 : (index - 2) / 100;
+    slot.operationalSlotValue = slot.baseValue + slot.reinvestedProfit;
+  });
+
+  const preview = previewOk(buildGainRedistributionPreview("BTC", source));
+  const recipients = preview.closedSlots.filter((slot) => slot.role === "RECIPIENT");
+  const zeroed = preview.closedSlots.filter((slot) => slot.role === "ZEROED");
+  const before = source.slice(3).reduce((sum, slot) => sum + Number(slot.reinvestedProfit), 0);
+  const after = preview.closedSlots.reduce((sum, slot) => sum + slot.reinvestedProfitAfter, 0);
+
+  assert.equal(preview.totalReinvestedBefore, Number(before.toFixed(8)));
+  assert.equal(preview.totalReinvestedAfter, Number(after.toFixed(8)));
+  assert.equal(zeroed.every((slot) => slot.reinvestedProfitAfter === 0), true);
+  assert.equal(recipients.every((slot) => slot.operationalSlotValueAfter === Number(slot.baseValue || 0) + slot.reinvestedProfitAfter), true);
+  assert.deepEqual(source.slice(0, 3).map((slot) => slot.reinvestedProfit), [7, 7, 7]);
+});
+
+test("reparte unidades monetarias residuais de forma deterministica", () => {
+  const source = slots("SOL", 0, 6, [6, 5, 4, 3, 2, 1]);
+  source.forEach((slot) => {
+    slot.baseValue = 10;
+    slot.reinvestedProfit = 0.00000001;
+    slot.operationalSlotValue = 10.00000001;
+  });
+  const preview = previewOk(buildGainRedistributionPreview("SOL", source));
+  assert.equal(preview.baseReinvested, 0.00000001);
+  assert.equal(preview.remainderReinvestedUnits, 0);
+  assert.equal(preview.closedSlots.every((slot) => slot.reinvestedProfitAfter === 0.00000001), true);
 });
