@@ -19,6 +19,20 @@ export type SerializedPushSubscription = {
   auth: string;
 };
 
+export type CurrentPushDeviceDiagnostics = {
+  permission: NotificationPermission | "unsupported";
+  serviceWorkerSupported: boolean;
+  pushManagerSupported: boolean;
+  standalone: boolean;
+  serviceWorkerRegistered: boolean;
+  serviceWorkerControllingPage: boolean;
+  localSubscriptionPresent: boolean;
+  endpointPresent: boolean;
+  p256dhLength: number;
+  authLength: number;
+  error: string | null;
+};
+
 function getBrowserCapability(): PushCapability {
   const platform = getPushPlatform(navigator.userAgent || "");
   const standalone = isStandaloneApp(
@@ -104,6 +118,46 @@ export async function getLocalPushSubscription() {
   if (capability !== "ready") return null;
   const registration = await getPushRegistration();
   return registration.pushManager.getSubscription();
+}
+
+export async function inspectCurrentPushDevice(): Promise<CurrentPushDeviceDiagnostics> {
+  if (typeof window === "undefined") {
+    return { permission: "unsupported", serviceWorkerSupported: false, pushManagerSupported: false, standalone: false, serviceWorkerRegistered: false, serviceWorkerControllingPage: false, localSubscriptionPresent: false, endpointPresent: false, p256dhLength: 0, authLength: 0, error: null };
+  }
+  const serviceWorkerSupported = "serviceWorker" in navigator;
+  const pushManagerSupported = "PushManager" in window;
+  const standalone = isStandaloneApp(window.matchMedia("(display-mode: standalone)").matches, (navigator as Navigator & { standalone?: boolean }).standalone === true);
+  const base = {
+    permission: "Notification" in window ? Notification.permission : "unsupported" as const,
+    serviceWorkerSupported,
+    pushManagerSupported,
+    standalone,
+    serviceWorkerRegistered: false,
+    serviceWorkerControllingPage: serviceWorkerSupported && Boolean(navigator.serviceWorker.controller),
+    localSubscriptionPresent: false,
+    endpointPresent: false,
+    p256dhLength: 0,
+    authLength: 0,
+    error: null as string | null
+  };
+  if (!serviceWorkerSupported || !pushManagerSupported) return base;
+  try {
+    const registration = await getPushRegistration();
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return { ...base, serviceWorkerRegistered: true };
+    const serialized = serializePushSubscription(subscription);
+    return {
+      ...base,
+      serviceWorkerRegistered: true,
+      serviceWorkerControllingPage: Boolean(navigator.serviceWorker.controller),
+      localSubscriptionPresent: true,
+      endpointPresent: Boolean(serialized.endpoint),
+      p256dhLength: serialized.p256dh.length,
+      authLength: serialized.auth.length
+    };
+  } catch (error) {
+    return { ...base, error: getPushClientErrorMessage(error) };
+  }
 }
 
 export async function activatePushNotificationsOnThisDevice(vapidPublicKey: string) {

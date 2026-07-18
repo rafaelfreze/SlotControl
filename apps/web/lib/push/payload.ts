@@ -9,6 +9,13 @@ function asText(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function sanitizePushMessage(value: string) {
+  return value
+    .replace(/https?:\/\/[^\s]+/gi, "[endpoint]")
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 240);
+}
+
 function formatCurrency(value: unknown) {
   const number = asNumber(value);
   if (number === null) {
@@ -146,12 +153,20 @@ export function classifyPushError(error: unknown) {
   const statusCode = typeof error === "object" && error !== null && "statusCode" in error
     ? Number((error as { statusCode?: unknown }).statusCode)
     : null;
-  const message = error instanceof Error ? error.message : "Falha desconhecida no envio push";
+  const message = sanitizePushMessage(error instanceof Error ? error.message : "Falha desconhecida no envio push");
 
   return {
     statusCode: Number.isFinite(statusCode) ? statusCode : null,
-    code: statusCode === 404 || statusCode === 410 ? "subscription_expired" : statusCode && statusCode >= 500 ? "provider_transient" : "push_error",
-    message: message.slice(0, 400),
+    code: statusCode === 404 || statusCode === 410
+      ? "subscription_expired"
+      : statusCode === 401 || statusCode === 403
+        ? "vapid_unauthorized"
+        : statusCode === 400
+          ? "payload_invalid"
+          : statusCode && statusCode >= 500
+            ? "provider_transient"
+            : "push_error",
+    message,
     expired: statusCode === 404 || statusCode === 410,
     transient: statusCode === null || statusCode === 408 || statusCode === 425 || statusCode === 429 || statusCode >= 500
   };

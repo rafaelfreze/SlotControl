@@ -32,5 +32,5 @@ export function shouldCreatePushSubscription(existing: Pick<PushSubscription, "e
 }
 
 export function activePushSubscriptionCount(records: ReadonlyArray<Pick<PushSubscriptionRecord, "endpoint" | "is_active" | "revoked_at">>) {
-  return new Set(records.filter((record) => record.is_active && !record.revoked_at).map((record) => record.endpoint)).size;
+  return new Set(records.filter((record) => record.is_active && !record.revoked_at && record.endpoint.startsWith("https://")).map((record) => record.endpoint)).size;
 }
