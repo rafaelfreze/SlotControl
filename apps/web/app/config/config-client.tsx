@@ -8,6 +8,8 @@ import { LogoutButton } from "@/components/auth/logout-button";
 import { getAutomationModeLabel, useAutomationSetting, type AutomationMode } from "@/lib/slotgain/auto-gain";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
+import { MarketRegimeSettings } from "@/components/slotgain/market-regime-settings";
+import type { AssetMarketStrategySettings, BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 
 type ConfigClientProps = {
   userEmail: string;
@@ -17,9 +19,12 @@ type ConfigClientProps = {
   initialNotice: string | null;
   initialAutomationMode: AutomationMode;
   notifications: ReactNode;
+  marketState: Partial<BtcMarketState> | null;
+  regimeSettings: Partial<MarketRegimeSettingsType> | null;
+  assetSettings: Partial<AssetMarketStrategySettings>[];
 };
 
-export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, notifications }: ConfigClientProps) {
+export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, notifications, marketState, regimeSettings, assetSettings }: ConfigClientProps) {
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const [isSavingAutomation, startAutomationTransition] = useTransition();
   const { mode: automationMode, setMode: setAutomationMode } = useAutomationSetting(initialAutomationMode);
@@ -57,6 +62,8 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
           {sol ? <StrategySection strategy={sol} tone="purple" /> : null}
         </div>
       </SectionCard>
+
+      <MarketRegimeSettings marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} editable />
 
       <SectionCard title="Conta" subtitle="Acesso" tone="green">
         <div className="settings-list modern-settings">

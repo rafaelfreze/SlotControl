@@ -32,7 +32,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, settingsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, settingsResponse, marketStateResponse, regimeSettingsResponse, assetSettingsResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -45,10 +45,13 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
         "id,strategy_id,status,gains,gains_distribuidos,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
-    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>()
+    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>(),
+    supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
+    supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
+    supabase.from("asset_market_strategy_settings").select("*").eq("user_id", user.id)
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || assetSettingsResponse.error;
 
   return (
     <DashboardClient
@@ -58,6 +61,9 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
       initialAutomationMode={getAutomationMode(settingsResponse.data?.settings)}
+      marketState={marketStateResponse.data}
+      regimeSettings={regimeSettingsResponse.data}
+      assetSettings={assetSettingsResponse.data || []}
     />
   );
 }

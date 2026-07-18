@@ -79,6 +79,23 @@ export function buildPushNotification(outbox: PushOutboxRecord, preferences: Pic
     };
   }
 
+  if (outbox.event_type === "market_regime") {
+    const mode = asText(payload.nextMode) || "NORMAL";
+    const label = mode === "TOP" ? "TOPO" : mode === "DEEP" ? "FUNDO FORTE" : "NORMAL";
+    const btcDrop = asNumber(payload.btcDrop);
+    const solDrop = asNumber(payload.solDrop);
+    const body = btcDrop !== null && solDrop !== null
+      ? `BTC mudou para modo ${label}. BTC: novas compras a cada ${btcDrop}%. SOL: novas compras a cada ${solDrop}%.`
+      : `BTC mudou para modo ${label}. Toque para revisar as proximas entradas.`;
+    return {
+      title: "SlotGain Control",
+      body,
+      tag,
+      url: asText(payload.url) || "/config",
+      data: { eventId: outbox.event_id, eventType: outbox.event_type, url: asText(payload.url) || "/config" }
+    };
+  }
+
   if (preferences.privacy_mode) {
     const body = outbox.event_type === "slot_entry"
       ? `Um slot de ${asset} foi aberto. Toque para visualizar.`

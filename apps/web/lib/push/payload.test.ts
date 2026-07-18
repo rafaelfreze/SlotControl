@@ -60,6 +60,19 @@ test("evento de teste ignora filtros de ativo, mas respeita ativação global", 
   assert.equal(isNotificationEnabled(DEFAULT_NOTIFICATION_PREFERENCES, event({ event_type: "test", origin: "test", asset: null })), false);
 });
 
+test("notifica mudanca de regime com percentuais persistidos", () => {
+  const outbox = event({
+    event_type: "market_regime",
+    asset: "BTC",
+    payload: { nextMode: "TOP", btcDrop: 4.5, solDrop: 12.5, url: "/config" }
+  });
+  assert.equal(isNotificationEnabled({ ...DEFAULT_NOTIFICATION_PREFERENCES, global_enabled: true }, outbox), true);
+  const notification = buildPushNotification(outbox, DEFAULT_NOTIFICATION_PREFERENCES);
+  assert.match(notification.body, /TOPO/);
+  assert.match(notification.body, /4\.5%/);
+  assert.match(notification.body, /12\.5%/);
+});
+
 test("classifica subscription expirada e falha transitória", () => {
   assert.deepEqual(classifyPushError({ statusCode: 410, message: "Gone" }).expired, true);
   assert.deepEqual(classifyPushError({ statusCode: 503, message: "Unavailable" }).transient, true);

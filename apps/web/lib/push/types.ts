@@ -1,6 +1,6 @@
 export type PushPlatform = "ios" | "android" | "desktop" | "unknown";
 export type PushOrigin = "manual" | "automatic" | "test";
-export type PushEventType = "slot_entry" | "slot_exit" | "test";
+export type PushEventType = "slot_entry" | "slot_exit" | "test" | "market_regime";
 
 export type NotificationPreferences = {
   global_enabled: boolean;

@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, effectiveMarketRegime, validateMarketRegimeSettings, type AssetMarketStrategySettings, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 
 type SlotStatus = "zerado" | "aberto" | "gain" | "hold";
 
@@ -211,7 +213,19 @@ async function getSuggestedEntryPriceFromLastOpen(
     return 0;
   }
 
-  return lastEntryPrice * (asset === "SOL" ? 0.92 : 0.98);
+  const normalizedAsset = asset === "SOL" ? "SOL" : "BTC";
+  const [{ data: marketState }, { data: regimeSettings }, { data: assetSettings }] = await Promise.all([
+    supabase.from("btc_market_state").select("effective_mode").eq("singleton", true).maybeSingle(),
+    supabase.from("market_regime_settings").select("mode_source,manual_mode,last_effective_mode").eq("user_id", userId).maybeSingle(),
+    supabase.from("asset_market_strategy_settings").select("buy_drop_top_percent,buy_drop_normal_percent,buy_drop_deep_percent").eq("user_id", userId).eq("asset", normalizedAsset).maybeSingle()
+  ]);
+  const automaticMode = asMarketRegime(regimeSettings?.last_effective_mode) || asMarketRegime(marketState?.effective_mode) || "NORMAL";
+  const effectiveMode = effectiveMarketRegime({
+    mode_source: regimeSettings?.mode_source === "MANUAL" ? "MANUAL" : "AUTO",
+    manual_mode: asMarketRegime(regimeSettings?.manual_mode)
+  }, automaticMode);
+  const dropPercent = activeBuyDropPercent(normalizedAsset, effectiveMode, assetSettings || DEFAULT_ASSET_MARKET_SETTINGS[normalizedAsset]);
+  return lastEntryPrice * (1 - dropPercent / 100);
 }
 
 function finish(message: string, path = "/slots"): never {
@@ -440,6 +454,84 @@ export async function updateAutomationMode(mode: AutomationMode) {
   revalidatePath("/config");
 
   return { mode: automationMode };
+}
+
+export type MarketRegimeConfigurationInput = {
+  regime: Pick<MarketRegimeSettings, "top_threshold_percent" | "deep_threshold_percent" | "hysteresis_percent" | "mode_source" | "manual_mode"> & { manual_reason?: string | null };
+  assets: Array<Pick<AssetMarketStrategySettings, "asset" | "buy_drop_top_percent" | "buy_drop_normal_percent" | "buy_drop_deep_percent" | "top_zero_reserve_count" | "normal_zero_reserve_count" | "deep_zero_reserve_count" | "deep_active_slot_limit">>;
+};
+
+export async function saveMarketRegimeConfiguration(input: MarketRegimeConfigurationInput) {
+  const { user } = await getUserClient();
+  const regime = {
+    ...DEFAULT_MARKET_REGIME_SETTINGS,
+    ...input.regime,
+    manual_mode: asMarketRegime(input.regime.manual_mode),
+    manual_reason: String(input.regime.manual_reason || "").trim() || null
+  };
+  const invalid = validateMarketRegimeSettings(regime);
+  if (invalid) throw new Error(invalid);
+  if (!Array.isArray(input.assets) || input.assets.length !== 2) throw new Error("Informe as configuracoes de BTC e SOL.");
+  for (const asset of input.assets) {
+    if ((asset.asset !== "BTC" && asset.asset !== "SOL") || [asset.buy_drop_top_percent, asset.buy_drop_normal_percent, asset.buy_drop_deep_percent].some((value) => !Number.isFinite(value) || value <= 0 || value > 90)) {
+      throw new Error("Os percentuais de nova compra devem ficar entre 0% e 90%.");
+    }
+  }
+
+  const service = createServiceRoleClient();
+  const { data: previousSettings } = await service.from("market_regime_settings").select("last_effective_mode").eq("user_id", user.id).maybeSingle();
+  const { data: marketState } = await service.from("btc_market_state").select("ath_price,current_price,distance_from_ath_percent,effective_mode,source").eq("singleton", true).maybeSingle();
+  const automaticMode = marketState?.source && marketState.source !== "UNAVAILABLE"
+    ? applyMarketRegimeHysteresis(asMarketRegime(previousSettings?.last_effective_mode), Number(marketState.distance_from_ath_percent), regime)
+    : asMarketRegime(marketState?.effective_mode) || "NORMAL";
+  const nextEffectiveMode = effectiveMarketRegime(regime, automaticMode);
+  const now = new Date().toISOString();
+  const { error: regimeError } = await service.from("market_regime_settings").upsert({
+    user_id: user.id,
+    top_threshold_percent: regime.top_threshold_percent,
+    deep_threshold_percent: regime.deep_threshold_percent,
+    hysteresis_percent: regime.hysteresis_percent,
+    classification_timeframe: "DAILY_CLOSE",
+    mode_source: regime.mode_source,
+    manual_mode: regime.mode_source === "MANUAL" ? regime.manual_mode : null,
+    manual_reason: regime.mode_source === "MANUAL" ? regime.manual_reason : null,
+    last_effective_mode: nextEffectiveMode,
+    updated_at: now
+  });
+  if (regimeError) throw new Error("Nao foi possivel salvar o modo de mercado.");
+  const rows = input.assets.map((asset) => ({
+    user_id: user.id,
+    asset: asset.asset,
+    buy_drop_top_percent: asset.buy_drop_top_percent,
+    buy_drop_normal_percent: asset.buy_drop_normal_percent,
+    buy_drop_deep_percent: asset.buy_drop_deep_percent,
+    top_zero_reserve_count: asset.top_zero_reserve_count,
+    normal_zero_reserve_count: asset.normal_zero_reserve_count,
+    deep_zero_reserve_count: asset.deep_zero_reserve_count,
+    deep_active_slot_limit: asset.deep_active_slot_limit,
+    updated_at: now
+  }));
+  const { error: assetsError } = await service.from("asset_market_strategy_settings").upsert(rows, { onConflict: "user_id,asset" });
+  if (assetsError) throw new Error("Nao foi possivel salvar os percentuais de nova compra.");
+
+  const previousMode = asMarketRegime(previousSettings?.last_effective_mode);
+  if (previousMode !== nextEffectiveMode || regime.mode_source === "MANUAL") {
+    await service.from("market_regime_history").insert({
+      user_id: user.id,
+      previous_mode: previousMode,
+      new_mode: nextEffectiveMode,
+      mode_source: regime.mode_source,
+      ath_price: Number(marketState?.ath_price || 0),
+      current_price: Number(marketState?.current_price || 0),
+      distance_percent: Number(marketState?.distance_from_ath_percent || 0),
+      reason: regime.mode_source === "MANUAL" ? regime.manual_reason || "Override manual ativado." : "Configuracao automatica atualizada; novos gatilhos usarao os percentuais salvos."
+    });
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath("/slots");
+  revalidatePath("/config");
+  return { ok: true, effectiveMode: nextEffectiveMode };
 }
 
 export async function createSlots(formData: FormData) {

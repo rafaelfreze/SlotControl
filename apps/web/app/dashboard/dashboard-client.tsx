@@ -20,6 +20,8 @@ import {
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { MarketRegimeSettings } from "@/components/slotgain/market-regime-settings";
+import type { AssetMarketStrategySettings, BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type DashboardClientProps = {
@@ -29,6 +31,9 @@ type DashboardClientProps = {
   setupError: string | null;
   initialNotice: string | null;
   initialAutomationMode: AutomationMode;
+  marketState: Partial<BtcMarketState> | null;
+  regimeSettings: Partial<MarketRegimeSettingsType> | null;
+  assetSettings: Partial<AssetMarketStrategySettings>[];
 };
 
 type StrategySummary = {
@@ -66,7 +71,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode }: DashboardClientProps) {
+export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, marketState, regimeSettings, assetSettings }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
@@ -133,6 +138,8 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
         <MetricCard icon="M" title="Patrimonio" value={formatUsdt(markedEquity)} helper="Total" tone="gold" />
         <MetricCard icon="#" title="Slots" value={String(openSlots)} helper={`de ${slots.length}`} tone="purple" />
       </section>
+
+      <MarketRegimeSettings marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} />
 
       <StrategyCard summary={btc} accent="gold" />
       <StrategyCard summary={sol} accent="purple" />

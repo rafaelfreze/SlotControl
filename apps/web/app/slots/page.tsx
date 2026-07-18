@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
+import type { AssetMarketStrategySettings, BtcMarketState, MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 import { type GainRedistributionHistoryItem } from "@/components/slotgain/gain-redistribution-panel";
 import { SlotsClient } from "./slots-client";
 
@@ -37,7 +38,7 @@ export default async function SlotsPage({
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, settingsResponse, redistributionsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, settingsResponse, redistributionsResponse, marketStateResponse, regimeSettingsResponse, assetSettingsResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -55,10 +56,13 @@ export default async function SlotsPage({
       .from("slot_gain_redistributions")
       .select("id,asset,action_type,target_slot_count,total_gains_before,total_gains_after,total_reinvested_before,total_reinvested_after,base_reinvested,remainder_reinvested_units,algorithm_version,status,snapshot_before,snapshot_after,created_at")
       .order("created_at", { ascending: false })
-      .limit(30)
+      .limit(30),
+    supabase.from("btc_market_state").select("ath_price,current_price,classification_price,distance_from_ath_percent,calculated_mode,effective_mode,source,price_updated_at,ath_updated_at,classified_at,mode_changed_at").eq("singleton", true).maybeSingle(),
+    supabase.from("market_regime_settings").select("top_threshold_percent,deep_threshold_percent,hysteresis_percent,classification_timeframe,mode_source,manual_mode,last_effective_mode,manual_reason").eq("user_id", user.id).maybeSingle(),
+    supabase.from("asset_market_strategy_settings").select("asset,buy_drop_top_percent,buy_drop_normal_percent,buy_drop_deep_percent,top_zero_reserve_count,normal_zero_reserve_count,deep_zero_reserve_count,deep_active_slot_limit").eq("user_id", user.id)
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || redistributionsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || redistributionsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || assetSettingsResponse.error;
 
   return (
     <SlotsClient
@@ -71,6 +75,9 @@ export default async function SlotsPage({
       initialAsset={searchParams?.asset || null}
       initialFlow={searchParams?.flow || null}
       initialAutomationMode={getAutomationMode(settingsResponse.data?.settings)}
+      marketState={marketStateResponse.data as Partial<BtcMarketState> | null}
+      regimeSettings={regimeSettingsResponse.data as Partial<MarketRegimeSettings> | null}
+      assetSettings={(assetSettingsResponse.data || []) as Partial<AssetMarketStrategySettings>[]}
     />
   );
 }

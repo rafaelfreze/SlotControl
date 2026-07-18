@@ -1,4 +1,6 @@
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, asMarketRegime, effectiveMarketRegime, selectOperablePendingSlots, type AssetMarketStrategySettings } from "./market-regime";
+import { refreshBtcMarketRegime } from "./market-regime-server";
 
 type AutomationMode = "off" | "exit_only" | "entry_exit";
 type SlotStatus = "zerado" | "aberto" | "gain" | "hold";
@@ -21,8 +23,10 @@ type SlotAutomationRow = {
   user_id: string;
   strategy_id: string;
   slot_number: number;
+  sort_order: number;
   status: SlotStatus;
   gains: number;
+  gains_distribuidos: number;
   base_value: number | string;
   reinvested_profit: number | string;
   operational_slot_value: number | string;
@@ -41,6 +45,7 @@ type AutomationStats = {
   ignoredSlots: number;
   errors: string[];
   prices: Partial<Record<Asset, number>>;
+  marketRegime: string | null;
 };
 
 const BINANCE_SYMBOLS: Record<Asset, string> = {
@@ -370,8 +375,16 @@ export async function runSlotAutomationCron(): Promise<AutomationStats> {
     gainsExecuted: 0,
     ignoredSlots: 0,
     errors: [],
-    prices: {}
+    prices: {},
+    marketRegime: null
   };
+
+  try {
+    const market = await refreshBtcMarketRegime();
+    stats.marketRegime = market.effective_mode;
+  } catch (error) {
+    stats.errors.push(`Regime BTC indisponivel: ${error instanceof Error ? error.message : "erro desconhecido"}`);
+  }
 
   const { data: settingsRows, error: settingsError } = await supabase
     .from("user_settings")
@@ -395,23 +408,48 @@ export async function runSlotAutomationCron(): Promise<AutomationStats> {
   const modeByUser = new Map(activeSettings.map((row) => [row.userId, row.mode]));
   const userIds = activeSettings.map((row) => row.userId);
 
+  const [{ data: regimeRows }, { data: assetSettingRows }] = await Promise.all([
+    supabase.from("market_regime_settings").select("user_id,mode_source,manual_mode,last_effective_mode").in("user_id", userIds),
+    supabase.from("asset_market_strategy_settings").select("user_id,asset,buy_drop_top_percent,buy_drop_normal_percent,buy_drop_deep_percent,top_zero_reserve_count,normal_zero_reserve_count,deep_zero_reserve_count,deep_active_slot_limit").in("user_id", userIds)
+  ]);
+  const regimeByUser = new Map((regimeRows || []).map((row) => [row.user_id, row]));
+  const assetSettingsByUser = new Map<string, Partial<AssetMarketStrategySettings>>();
+  for (const row of assetSettingRows || []) assetSettingsByUser.set(`${row.user_id}:${row.asset}`, row as Partial<AssetMarketStrategySettings>);
+
   const [btcPrice, solPrice] = await Promise.all([fetchBinancePrice("BTC"), fetchBinancePrice("SOL")]);
   stats.prices = { BTC: btcPrice, SOL: solPrice };
 
   const { data: slots, error: slotsError } = await supabase
     .from("slots")
-    .select("id,user_id,strategy_id,slot_number,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,strategies(key,title,asset,gain_rate)")
+    .select("id,user_id,strategy_id,slot_number,sort_order,status,gains,gains_distribuidos,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,strategies(key,title,asset,gain_rate)")
     .in("user_id", userIds)
-    .in("status", ["aberto", "hold"])
     .returns<SlotAutomationRow[]>();
 
   if (slotsError) {
     throw slotsError;
   }
 
-  stats.checkedSlots = slots?.length || 0;
-
+  const automaticMode = asMarketRegime(stats.marketRegime) || "NORMAL";
+  const allowedHoldIds = new Set<string>();
+  const grouped = new Map<string, SlotAutomationRow[]>();
   for (const slot of slots || []) {
+    const asset = getAsset(slot);
+    const key = `${slot.user_id}:${asset}`;
+    grouped.set(key, [...(grouped.get(key) || []), slot]);
+  }
+  for (const [key, userSlots] of grouped) {
+    const separator = key.lastIndexOf(":");
+    const userId = key.slice(0, separator);
+    const asset = key.slice(separator + 1) as Asset;
+    const userRegime = regimeByUser.get(userId);
+    const regime = effectiveMarketRegime({ ...DEFAULT_MARKET_REGIME_SETTINGS, mode_source: userRegime?.mode_source === "MANUAL" ? "MANUAL" : "AUTO", manual_mode: asMarketRegime(userRegime?.manual_mode) }, asMarketRegime(userRegime?.last_effective_mode) || automaticMode);
+    const assetSettings = assetSettingsByUser.get(`${userId}:${asset}`) || DEFAULT_ASSET_MARKET_SETTINGS[asset];
+    for (const slot of selectOperablePendingSlots(asset, regime, userSlots, assetSettings)) allowedHoldIds.add(slot.id);
+  }
+  const actionableSlots = (slots || []).filter((slot) => slot.status === "aberto" || (slot.status === "hold" && allowedHoldIds.has(slot.id)));
+  stats.checkedSlots = actionableSlots.length;
+
+  for (const slot of actionableSlots) {
     const mode = modeByUser.get(slot.user_id) || "off";
     const asset = getAsset(slot);
     const price = asset === "SOL" ? solPrice : btcPrice;

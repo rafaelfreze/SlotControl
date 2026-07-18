@@ -32,6 +32,7 @@ import {
   getStatusLabel
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { DEFAULT_ASSET_MARKET_SETTINGS, activeBuyDropPercent, asMarketRegime, effectiveMarketRegime, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 import { isClosedSlot } from "@/lib/slotgain/redistribution";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -48,6 +49,9 @@ type SlotsClientProps = {
   initialFlow: string | null;
   initialAutomationMode: AutomationMode;
   redistributionHistory: GainRedistributionHistoryItem[];
+  marketState: Partial<BtcMarketState> | null;
+  regimeSettings: Partial<MarketRegimeSettings> | null;
+  assetSettings: Partial<AssetMarketStrategySettings>[];
 };
 
 function getAssetFromStrategy(slot: SlotView) {
@@ -73,7 +77,7 @@ function sortClosedByDistributedGains(slots: SlotView[]) {
   });
 }
 
-function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], livePrice?: number) {
+function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], dropPercent: number, livePrice?: number) {
   const asset = getAssetFromStrategy(slot);
   const lastOpenSlot = sortByOpenDate(
     slots.filter(
@@ -86,14 +90,13 @@ function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], livePrice?: n
   ).at(-1);
 
   if (lastOpenSlot) {
-    const dropMultiplier = asset === "SOL" ? 0.92 : 0.98;
-    return Number(lastOpenSlot.preco_entrada || 0) * dropMultiplier;
+    return Number(lastOpenSlot.preco_entrada || 0) * (1 - dropPercent / 100);
   }
 
   return livePrice || 0;
 }
 
-export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, initialAutomationMode, redistributionHistory }: SlotsClientProps) {
+export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, initialAutomationMode, redistributionHistory, marketState, regimeSettings, assetSettings }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const liveBtcPrice = livePrices.prices.BTC;
   const liveSolPrice = livePrices.prices.SOL;
@@ -102,6 +105,13 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
+  const automaticRegime = asMarketRegime(regimeSettings?.last_effective_mode) || asMarketRegime(marketState?.effective_mode) || "NORMAL";
+  const effectiveRegime = effectiveMarketRegime({
+    mode_source: regimeSettings?.mode_source === "MANUAL" ? "MANUAL" : "AUTO",
+    manual_mode: asMarketRegime(regimeSettings?.manual_mode)
+  }, automaticRegime);
+  const btcDropPercent = activeBuyDropPercent("BTC", effectiveRegime, assetSettings.find((item) => item.asset === "BTC") || DEFAULT_ASSET_MARKET_SETTINGS.BTC);
+  const solDropPercent = activeBuyDropPercent("SOL", effectiveRegime, assetSettings.find((item) => item.asset === "SOL") || DEFAULT_ASSET_MARKET_SETTINGS.SOL);
 
   const scopedSlots = useMemo(
     () => slots.filter((slot) => selectedAsset === "ALL" || getAssetFromStrategy(slot) === selectedAsset),
@@ -143,10 +153,11 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
   const suggestedEntryById = useMemo(() => {
     return scopedSlots.reduce<Record<string, number>>((suggestions, slot) => {
-      suggestions[slot.id] = getSuggestedEntryPrice(slot, scopedSlots, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice);
+      const asset = getAssetFromStrategy(slot) === "SOL" ? "SOL" : "BTC";
+      suggestions[slot.id] = getSuggestedEntryPrice(slot, scopedSlots, asset === "SOL" ? solDropPercent : btcDropPercent, asset === "SOL" ? liveSolPrice : liveBtcPrice);
       return suggestions;
     }, {});
-  }, [scopedSlots, liveBtcPrice, liveSolPrice]);
+  }, [scopedSlots, liveBtcPrice, liveSolPrice, btcDropPercent, solDropPercent]);
 
   const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
