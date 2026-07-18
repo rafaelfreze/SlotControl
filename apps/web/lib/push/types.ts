@@ -39,6 +39,8 @@ export type PushSubscriptionRecord = {
   is_active: boolean;
   created_at: string;
   last_success_at: string | null;
+  last_seen_at: string | null;
+  revoked_at: string | null;
 };
 
 export type PushOutboxRecord = {

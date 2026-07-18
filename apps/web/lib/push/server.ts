@@ -119,7 +119,7 @@ async function processOutboxItem(outbox: PushOutboxRecord) {
       sent += 1;
       await Promise.all([
         upsertDelivery({ outbox_id: outbox.id, subscription_id: subscription.id, status: "sent", attempted_at: new Date().toISOString(), completed_at: new Date().toISOString(), http_status: result.statusCode, error_code: null, error_message: null }),
-        updateSubscription(subscription.id, { last_success_at: new Date().toISOString(), failure_count: 0, is_active: true })
+        updateSubscription(subscription.id, { last_success_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), failure_count: 0, is_active: true, revoked_at: null })
       ]);
     } catch (error) {
       const classified = classifyPushError(error);
@@ -127,7 +127,7 @@ async function processOutboxItem(outbox: PushOutboxRecord) {
         expired += 1;
         await Promise.all([
           upsertDelivery({ outbox_id: outbox.id, subscription_id: subscription.id, status: "expired", attempted_at: new Date().toISOString(), completed_at: new Date().toISOString(), http_status: classified.statusCode, error_code: classified.code, error_message: classified.message }),
-          updateSubscription(subscription.id, { is_active: false, last_failure_at: new Date().toISOString(), failure_count: subscription.failure_count + 1 })
+          updateSubscription(subscription.id, { is_active: false, revoked_at: new Date().toISOString(), last_failure_at: new Date().toISOString(), failure_count: subscription.failure_count + 1 })
         ]);
       } else {
         transientFailures += Number(classified.transient);

@@ -49,7 +49,7 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
       .order("sort_order", { ascending: true }),
     supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>(),
     supabase.from("notification_preferences").select("global_enabled,btc_entry_enabled,btc_exit_enabled,sol_entry_enabled,sol_exit_enabled,manual_events_enabled,automatic_events_enabled,privacy_mode,quiet_hours_enabled,quiet_hours_start,quiet_hours_end").eq("user_id", user.id).maybeSingle(),
-    supabase.from("push_subscriptions").select("id,endpoint,user_agent,device_name,platform,is_active,created_at,last_success_at").eq("user_id", user.id).order("created_at", { ascending: false })
+    supabase.from("push_subscriptions").select("id,endpoint,user_agent,device_name,platform,is_active,created_at,last_success_at,last_seen_at,revoked_at").eq("user_id", user.id).order("created_at", { ascending: false })
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || preferencesResponse.error || subscriptionsResponse.error;
