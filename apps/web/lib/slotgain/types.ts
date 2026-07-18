@@ -18,6 +18,7 @@ export type SlotView = {
   strategy_id: string;
   status: SlotStatus;
   gains: number;
+  gains_distribuidos: number;
   base_value: number | string;
   gain_rate: number | string;
   preco_entrada: number | string | null;

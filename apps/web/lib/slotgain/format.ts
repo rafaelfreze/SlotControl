@@ -25,6 +25,10 @@ export function getCurrentValue(slot: Pick<SlotView, "base_value" | "gain_rate" 
   return Number(slot.base_value || 0) * Math.pow(1 + Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
+export function getDistributedGains(slot: Pick<SlotView, "gains" | "gains_distribuidos">) {
+  return Number.isInteger(slot.gains_distribuidos) && slot.gains_distribuidos >= 0 ? slot.gains_distribuidos : slot.gains;
+}
+
 export function getOpenMarketMetrics(
   slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo" | "strategy">,
   livePrice?: number

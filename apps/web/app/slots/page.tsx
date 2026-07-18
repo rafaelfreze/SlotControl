@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
+import { type GainRedistributionHistoryItem } from "@/components/slotgain/gain-redistribution-panel";
 import { SlotsClient } from "./slots-client";
 
 export const metadata: Metadata = { title: "Slots" };
@@ -36,7 +37,7 @@ export default async function SlotsPage({
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, settingsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, settingsResponse, redistributionsResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -46,19 +47,25 @@ export default async function SlotsPage({
     supabase
       .from("slots")
       .select(
-        "id,strategy_id,status,gains,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
+        "id,strategy_id,status,gains,gains_distribuidos,base_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
-    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>()
+    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>(),
+    supabase
+      .from("slot_gain_redistributions")
+      .select("id,asset,action_type,target_slot_count,total_gains_before,total_gains_after,status,snapshot_before,snapshot_after,created_at")
+      .order("created_at", { ascending: false })
+      .limit(30)
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || redistributionsResponse.error;
 
   return (
     <SlotsClient
       userEmail={user.email || "Usuario"}
       strategies={(strategiesResponse.data ?? []) as StrategyView[]}
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
+      redistributionHistory={(redistributionsResponse.data ?? []) as GainRedistributionHistoryItem[]}
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
       initialAsset={searchParams?.asset || null}

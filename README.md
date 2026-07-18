@@ -56,6 +56,8 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
+Para ambientes que ja existem, aplique tambem as migrations em `supabase/migrations/` em ordem cronologica. A migration de redistribuicao adiciona `gains_distribuidos` como contador operacional: `slots.gains` continua sendo o contador financeiro/historico usado nos calculos de valor.
+
 ## Supabase Auth
 
 Para desenvolvimento local, configure no painel do Supabase:

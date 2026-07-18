@@ -1048,3 +1048,98 @@ async function getSlotFromForm(
 
   return data;
 }
+
+type RedistributionActionResult = {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  asset?: string;
+  target_slot_count?: number;
+  [key: string]: unknown;
+};
+
+function normalizeRedistributionResult(data: unknown, errorMessage?: string): RedistributionActionResult {
+  if (errorMessage) {
+    return {
+      ok: false,
+      code: "RPC_ERROR",
+      message: "Nao foi possivel processar a redistribuicao agora. Tente novamente."
+    };
+  }
+
+  if (!data || typeof data !== "object") {
+    return {
+      ok: false,
+      code: "INVALID_RESPONSE",
+      message: "A resposta da redistribuicao e invalida."
+    };
+  }
+
+  return data as RedistributionActionResult;
+}
+
+export async function getGainRedistributionPreview(asset: string): Promise<RedistributionActionResult> {
+  const { supabase } = await getUserClient();
+  const normalizedAsset = asset.toUpperCase();
+
+  if (normalizedAsset !== "BTC" && normalizedAsset !== "SOL") {
+    return { ok: false, code: "INVALID_ASSET", message: "Ativo invalido para redistribuicao." };
+  }
+
+  const { data, error } = await supabase.rpc("preview_slot_gain_redistribution", {
+    p_asset: normalizedAsset
+  });
+
+  return normalizeRedistributionResult(data, error?.message);
+}
+
+export async function confirmGainRedistribution(input: {
+  asset: string;
+  snapshotHash: string;
+  idempotencyKey: string;
+}): Promise<RedistributionActionResult> {
+  const { supabase } = await getUserClient();
+  const normalizedAsset = input.asset.toUpperCase();
+
+  if ((normalizedAsset !== "BTC" && normalizedAsset !== "SOL") || !input.snapshotHash || !input.idempotencyKey) {
+    return { ok: false, code: "INVALID_REQUEST", message: "Solicitacao de redistribuicao invalida." };
+  }
+
+  const { data, error } = await supabase.rpc("confirm_slot_gain_redistribution", {
+    p_asset: normalizedAsset,
+    p_snapshot_hash: input.snapshotHash,
+    p_idempotency_key: input.idempotencyKey
+  });
+  const result = normalizeRedistributionResult(data, error?.message);
+
+  if (result.ok) {
+    revalidatePath("/dashboard");
+    revalidatePath("/slots");
+    revalidatePath("/historico");
+  }
+
+  return result;
+}
+
+export async function undoLastGainRedistribution(input: { asset: string; idempotencyKey: string }): Promise<RedistributionActionResult> {
+  const { supabase } = await getUserClient();
+  const normalizedAsset = input.asset.toUpperCase();
+
+  if ((normalizedAsset !== "BTC" && normalizedAsset !== "SOL") || !input.idempotencyKey) {
+    return { ok: false, code: "INVALID_REQUEST", message: "Solicitacao de desfazer invalida." };
+  }
+
+  const { data, error } = await supabase.rpc("undo_last_slot_gain_redistribution", {
+    p_asset: normalizedAsset,
+    p_idempotency_key: input.idempotencyKey
+  });
+  const result = normalizeRedistributionResult(data, error?.message);
+
+  if (result.ok) {
+    revalidatePath("/dashboard");
+    revalidatePath("/slots");
+    revalidatePath("/historico");
+  }
+
+  return result;
+}

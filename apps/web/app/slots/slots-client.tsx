@@ -12,6 +12,7 @@ import {
   resetSlot,
   updateSlot
 } from "@/app/dashboard/actions";
+import { GainRedistributionPanel, type GainRedistributionHistoryItem } from "@/components/slotgain/gain-redistribution-panel";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
   getAutomationModeLabel,
@@ -25,6 +26,7 @@ import {
   formatPrice,
   formatUsdt,
   getCurrentValue,
+  getDistributedGains,
   getMarkedSlotValue,
   getOpenMarketMetrics,
   getStatusLabel
@@ -44,6 +46,7 @@ type SlotsClientProps = {
   initialAsset: string | null;
   initialFlow: string | null;
   initialAutomationMode: AutomationMode;
+  redistributionHistory: GainRedistributionHistoryItem[];
 };
 
 function getAssetFromStrategy(slot: SlotView) {
@@ -82,7 +85,7 @@ function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], livePrice?: n
   return livePrice || 0;
 }
 
-export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, initialAutomationMode }: SlotsClientProps) {
+export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, initialAutomationMode, redistributionHistory }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const liveBtcPrice = livePrices.prices.BTC;
   const liveSolPrice = livePrices.prices.SOL;
@@ -135,7 +138,8 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
   const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
-  const gains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
+  const gains = scopedSlots.reduce((sum, slot) => sum + getDistributedGains(slot), 0);
+  const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
   const tone = selectedAsset === "SOL" ? "purple" : "gold";
   const title = selectedAsset === "ALL" ? "Slots" : `Slots ${selectedAsset}`;
@@ -204,10 +208,19 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
             <StatCard title="Total" value={formatUsdt(total)} tone={tone} />
             <StatCard title="Lucro realizado" value={formatUsdt(total - base)} tone="green" />
             <StatCard title="Abertos" value={String(open)} tone="gold" />
-            <StatCard title="Gains" value={String(gains)} tone="blue" />
+            <StatCard title="Gains nivelados" value={String(gains)} helper={`Reais: ${realGains}`} tone="blue" />
           </div>
         </div>
       </SectionCard>
+
+      {selectedAsset === "BTC" || selectedAsset === "SOL" ? (
+        <GainRedistributionPanel
+          asset={selectedAsset}
+          slots={scopedSlots}
+          history={redistributionHistory}
+          onNotice={announce}
+        />
+      ) : null}
 
       <div className="primary-actions-grid compact-actions">
         <details className="section-card mini-drawer">
@@ -307,7 +320,7 @@ function SlotCard({
       </div>
       <div className="slot-card-values">
         <span>Valor atual<strong>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
-        <span>Gains<strong>{slot.gains}</strong></span>
+        <span>Gains nivelados<strong>{getDistributedGains(slot)}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status === "aberto" || slot.status === "hold" ? (
@@ -319,6 +332,7 @@ function SlotCard({
       <details className="mini-drawer slot-more-drawer">
         <summary>Ver mais</summary>
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
+        <div className="slot-internal-id">Gains reais: {slot.gains}</div>
         <div className="slot-card-actions">
           <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
           <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
