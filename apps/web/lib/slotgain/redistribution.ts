@@ -6,14 +6,16 @@ export type RedistributionSlot = {
   slotNumber: number;
   sortOrder: number;
   status: RedistributionSlotStatus;
-  gains: number;
+  gainsDistribuidos: number;
+  gains?: number;
 };
 
-export type RedistributionSelectionReason = "OPEN_SLOT" | "CLOSED_LOWEST_GAIN";
+export type RedistributionSlotRole = "RECIPIENT" | "ZEROED";
 
 export type RedistributionPreviewSlot = RedistributionSlot & {
+  gainsBefore: number;
   gainsAfter: number;
-  selectionReason: RedistributionSelectionReason;
+  role: RedistributionSlotRole;
 };
 
 export type RedistributionPreview =
@@ -21,17 +23,20 @@ export type RedistributionPreview =
       ok: true;
       asset: RedistributionAsset;
       targetSlotCount: number;
-      openSlotCount: number;
+      recipientSlotCount: number;
       closedSlotCount: number;
+      ignoredOpenSlotCount: number;
+      zeroedSlotCount: number;
       totalGainsBefore: number;
       totalGainsAfter: number;
       baseGain: number;
       remainderGain: number;
-      selectedSlots: RedistributionPreviewSlot[];
+      closedSlots: RedistributionPreviewSlot[];
+      ignoredOpenSlots: RedistributionSlot[];
     }
   | {
       ok: false;
-      code: "INSUFFICIENT_SLOTS" | "INVALID_SLOT";
+      code: "NO_CLOSED_SLOTS" | "INVALID_SLOT";
       message: string;
       targetSlotCount: number;
     };
@@ -41,12 +46,25 @@ export const REDISTRIBUTION_TARGETS: Record<RedistributionAsset, number> = {
   SOL: 6
 };
 
+export const CLOSED_SLOT_STATUSES: readonly RedistributionSlotStatus[] = ["gain", "zerado"];
+export const OPEN_SLOT_STATUSES: readonly RedistributionSlotStatus[] = ["aberto", "hold"];
+
+export function isClosedSlot(slot: Pick<RedistributionSlot, "status"> | RedistributionSlotStatus) {
+  const status = typeof slot === "string" ? slot : slot.status;
+  return CLOSED_SLOT_STATUSES.includes(status);
+}
+
+export function isOpenSlot(slot: Pick<RedistributionSlot, "status"> | RedistributionSlotStatus) {
+  const status = typeof slot === "string" ? slot : slot.status;
+  return OPEN_SLOT_STATUSES.includes(status);
+}
+
 function naturalOrder(first: RedistributionSlot, second: RedistributionSlot) {
   return first.slotNumber - second.slotNumber || first.sortOrder - second.sortOrder || first.id.localeCompare(second.id);
 }
 
-function lowestGainOrder(first: RedistributionSlot, second: RedistributionSlot) {
-  return first.gains - second.gains || naturalOrder(first, second);
+function highestGainOrder(first: RedistributionSlot, second: RedistributionSlot) {
+  return second.gainsDistribuidos - first.gainsDistribuidos || naturalOrder(first, second);
 }
 
 function isValidSlot(slot: RedistributionSlot) {
@@ -56,70 +74,76 @@ function isValidSlot(slot: RedistributionSlot) {
     slot.slotNumber > 0 &&
     Number.isInteger(slot.sortOrder) &&
     slot.sortOrder > 0 &&
-    Number.isInteger(slot.gains) &&
-    slot.gains >= 0
+    Number.isInteger(slot.gainsDistribuidos) &&
+    slot.gainsDistribuidos >= 0 &&
+    (slot.gains === undefined || (Number.isInteger(slot.gains) && slot.gains >= 0))
   );
 }
 
 export function selectSlotsForGainRedistribution(asset: RedistributionAsset, slots: RedistributionSlot[]) {
   const targetSlotCount = REDISTRIBUTION_TARGETS[asset];
-  const openSlots = slots.filter((slot) => slot.status === "aberto");
-  const closedSlots = slots.filter((slot) => slot.status !== "aberto");
-
-  const selectedOpenSlots =
-    openSlots.length > targetSlotCount ? [...openSlots].sort(lowestGainOrder).slice(0, targetSlotCount) : [...openSlots].sort(naturalOrder);
-  const selectedClosedSlots =
-    selectedOpenSlots.length >= targetSlotCount
-      ? []
-      : [...closedSlots].sort(lowestGainOrder).slice(0, targetSlotCount - selectedOpenSlots.length);
-
-  return [
-    ...selectedOpenSlots.map((slot) => ({ slot, selectionReason: "OPEN_SLOT" as const })),
-    ...selectedClosedSlots.map((slot) => ({ slot, selectionReason: "CLOSED_LOWEST_GAIN" as const }))
-  ];
+  return slots.filter(isClosedSlot).sort(highestGainOrder).slice(0, targetSlotCount);
 }
 
 export function buildGainRedistributionPreview(asset: RedistributionAsset, slots: RedistributionSlot[]): RedistributionPreview {
   const targetSlotCount = REDISTRIBUTION_TARGETS[asset];
-  const selected = selectSlotsForGainRedistribution(asset, slots);
+  const closedSlots = slots.filter(isClosedSlot);
+  const ignoredOpenSlots = slots.filter(isOpenSlot).sort(naturalOrder);
 
-  if (selected.some(({ slot }) => !isValidSlot(slot))) {
+  if (closedSlots.some((slot) => !isValidSlot(slot))) {
     return {
       ok: false,
       code: "INVALID_SLOT",
-      message: "Ha dados invalidos nos slots selecionados.",
+      message: "Ha dados invalidos nos slots fechados.",
       targetSlotCount
     };
   }
 
-  if (selected.length !== targetSlotCount) {
+  if (closedSlots.length === 0) {
     return {
       ok: false,
-      code: "INSUFFICIENT_SLOTS",
-      message: "Nao ha slots suficientes para completar a redistribuicao.",
+      code: "NO_CLOSED_SLOTS",
+      message: "Nao ha slots fechados para redistribuir.",
       targetSlotCount
     };
   }
 
-  const totalGainsBefore = selected.reduce((sum, { slot }) => sum + slot.gains, 0);
-  const baseGain = Math.floor(totalGainsBefore / targetSlotCount);
-  const remainderGain = totalGainsBefore % targetSlotCount;
-  const distributionOrder = [...selected].sort((first, second) => lowestGainOrder(first.slot, second.slot));
-  const gainsAfterById = new Map(distributionOrder.map(({ slot }, index) => [slot.id, baseGain + (index < remainderGain ? 1 : 0)]));
-  const selectedSlots = selected
-    .map(({ slot, selectionReason }) => ({ ...slot, selectionReason, gainsAfter: gainsAfterById.get(slot.id) ?? baseGain }))
-    .sort((first, second) => naturalOrder(first, second));
+  const recipients = selectSlotsForGainRedistribution(asset, slots);
+  const recipientSlotCount = recipients.length;
+  const totalGainsBefore = closedSlots.reduce((sum, slot) => sum + slot.gainsDistribuidos, 0);
+  const baseGain = Math.floor(totalGainsBefore / recipientSlotCount);
+  const remainderGain = totalGainsBefore % recipientSlotCount;
+  const recipientIds = new Set(recipients.map((slot) => slot.id));
+  const recipientRank = new Map(recipients.map((slot, index) => [slot.id, index]));
+  const closedPreviewSlots = closedSlots
+    .map((slot): RedistributionPreviewSlot => {
+      const rank = recipientRank.get(slot.id);
+      const role: RedistributionSlotRole = recipientIds.has(slot.id) ? "RECIPIENT" : "ZEROED";
+      return {
+        ...slot,
+        gainsBefore: slot.gainsDistribuidos,
+        gainsAfter: role === "RECIPIENT" ? baseGain + ((rank ?? 0) < remainderGain ? 1 : 0) : 0,
+        role
+      };
+    })
+    .sort((first, second) => {
+      if (first.role !== second.role) return first.role === "RECIPIENT" ? -1 : 1;
+      return first.role === "RECIPIENT" ? highestGainOrder(first, second) : naturalOrder(first, second);
+    });
 
   return {
     ok: true,
     asset,
     targetSlotCount,
-    openSlotCount: selected.filter(({ selectionReason }) => selectionReason === "OPEN_SLOT").length,
-    closedSlotCount: selected.filter(({ selectionReason }) => selectionReason === "CLOSED_LOWEST_GAIN").length,
+    recipientSlotCount,
+    closedSlotCount: closedSlots.length,
+    ignoredOpenSlotCount: ignoredOpenSlots.length,
+    zeroedSlotCount: closedSlots.length - recipientSlotCount,
     totalGainsBefore,
-    totalGainsAfter: selectedSlots.reduce((sum, slot) => sum + slot.gainsAfter, 0),
+    totalGainsAfter: closedPreviewSlots.reduce((sum, slot) => sum + slot.gainsAfter, 0),
     baseGain,
     remainderGain,
-    selectedSlots
+    closedSlots: closedPreviewSlots,
+    ignoredOpenSlots
   };
 }

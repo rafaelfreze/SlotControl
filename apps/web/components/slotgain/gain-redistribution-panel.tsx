@@ -8,12 +8,14 @@ import {
   getGainRedistributionPreview,
   undoLastGainRedistribution
 } from "@/app/dashboard/actions";
+import { isOpenSlot, type RedistributionSlotStatus } from "@/lib/slotgain/redistribution";
 
 type Asset = "BTC" | "SOL";
 
 type SlotSummary = {
   id: string;
   slot_number: number;
+  status: RedistributionSlotStatus;
   gains: number;
   gains_distribuidos: number;
 };
@@ -37,21 +39,24 @@ type PreviewSlot = {
   status: string;
   gains_before?: number;
   gains_after?: number;
-  selection_reason: "OPEN_SLOT" | "CLOSED_LOWEST_GAIN";
+  role?: "RECIPIENT" | "ZEROED";
+  selection_reason?: "CLOSED_HIGHEST_GAIN" | "CLOSED_EXCESS_ZEROED";
 };
 
 type Preview = {
   ok: true;
   asset: Asset;
   target_slot_count: number;
-  open_slot_count: number;
+  recipient_slot_count: number;
   closed_slot_count: number;
+  ignored_open_slot_count: number;
+  zeroed_slot_count: number;
   total_gains_before: number;
   total_gains_after: number;
   base_gain: number;
   remainder_gain: number;
   snapshot_hash: string;
-  selected_slots: PreviewSlot[];
+  closed_slots: PreviewSlot[];
 };
 
 type ActionResult = {
@@ -62,15 +67,15 @@ type ActionResult = {
 };
 
 function isPreview(value: ActionResult): value is Preview {
-  return value.ok && typeof value.snapshot_hash === "string" && Array.isArray(value.selected_slots);
+  return value.ok && typeof value.snapshot_hash === "string" && Array.isArray(value.closed_slots);
 }
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 }
 
-function gainValue(slot: SlotSummary) {
-  return Number.isInteger(slot.gains_distribuidos) ? slot.gains_distribuidos : slot.gains;
+function getRoleLabel(slot: PreviewSlot) {
+  return slot.role === "RECIPIENT" ? "Destinatario" : "Zerado";
 }
 
 export function GainRedistributionPanel({
@@ -93,10 +98,10 @@ export function GainRedistributionPanel({
   const target = asset === "BTC" ? 15 : 6;
   const assetHistory = history.filter((item) => item.asset === asset);
   const undoCandidate = assetHistory.find((item) => item.action_type === "REDISTRIBUTION" && item.status === "COMPLETED") || null;
-  const excludedSlots = useMemo(() => {
-    const selectedIds = new Set(preview?.selected_slots.map((slot) => slot.slot_id) || []);
-    return slots.filter((slot) => !selectedIds.has(slot.id));
-  }, [preview, slots]);
+  const ignoredOpenSlots = useMemo(
+    () => slots.filter((slot) => isOpenSlot(slot.status)).sort((first, second) => first.slot_number - second.slot_number),
+    [slots]
+  );
 
   async function openPreview() {
     setLoadingPreview(true);
@@ -132,7 +137,7 @@ export function GainRedistributionPanel({
     }
 
     setPreview(null);
-    onNotice(result.message || `Gains redistribuidos com sucesso entre ${target} slots de ${asset}.`);
+    onNotice(result.message || `Gains redistribuidos com sucesso em slots fechados de ${asset}.`);
     router.refresh();
   }
 
@@ -159,7 +164,7 @@ export function GainRedistributionPanel({
         <div>
           <p>Contador operacional</p>
           <h2>Redistribuir gains</h2>
-          <small>Equilibra {target} slots de {asset} sem alterar os gains financeiros, valores, precos ou status.</small>
+          <small>Concentra os gains nivelados em ate {target} slots fechados de {asset}. Slots abertos e o historico financeiro permanecem intactos.</small>
         </div>
         <button type="button" className="solid-button" onClick={openPreview} disabled={loadingPreview || confirming}>
           {loadingPreview ? "Gerando previa..." : "Redistribuir gains"}
@@ -172,16 +177,19 @@ export function GainRedistributionPanel({
         <summary>Historico de redistribuicoes ({assetHistory.length})</summary>
         <div className="redistribution-history-list">
           {undoCandidate ? (
-            <button type="button" className="ghost-button compact-action" onClick={undo} disabled={undoing}>
-              {undoing ? "Desfazendo..." : "Desfazer ultima redistribuicao"}
-            </button>
+            <>
+              <p className="redistribution-excluded">Para corrigir uma redistribuicao anterior, desfaça-a primeiro e gere uma nova previa.</p>
+              <button type="button" className="ghost-button compact-action" onClick={undo} disabled={undoing}>
+                {undoing ? "Desfazendo..." : "Desfazer ultima redistribuicao"}
+              </button>
+            </>
           ) : null}
           {assetHistory.map((item) => (
             <details key={item.id} className="redistribution-history-item">
               <summary>
                 {formatDate(item.created_at)} · {item.action_type === "UNDO" ? "Desfazer" : "Redistribuicao"} · {item.total_gains_before} gains · {item.status}
               </summary>
-              <p>Usuario: voce · {item.target_slot_count} slots · total preservado: {item.total_gains_before} → {item.total_gains_after}</p>
+              <p>Usuario: voce · meta: {item.target_slot_count} slots · total preservado: {item.total_gains_before} → {item.total_gains_after}</p>
               <div className="redistribution-history-grid">
                 {(item.snapshot_after || []).map((slot) => {
                   const before = item.snapshot_before.find((candidate) => candidate.slot_id === slot.slot_id);
@@ -200,28 +208,30 @@ export function GainRedistributionPanel({
             <header>
               <div>
                 <p>Previa de redistribuicao</p>
-                <h2>{asset} · {target} slots</h2>
+                <h2>{asset} · meta de {target} slots fechados</h2>
               </div>
               <button type="button" className="ghost-button compact-action" onClick={() => setPreview(null)} disabled={confirming}>Cancelar</button>
             </header>
             <div className="redistribution-metrics">
-              <span>Abertos incluidos<strong>{preview.open_slot_count}</strong></span>
-              <span>Fechados incluidos<strong>{preview.closed_slot_count}</strong></span>
-              <span>Total antes<strong>{preview.total_gains_before}</strong></span>
+              <span>Fechados considerados<strong>{preview.closed_slot_count}</strong></span>
+              <span>Abertos ignorados<strong>{preview.ignored_open_slot_count}</strong></span>
+              <span>Destinatarios<strong>{preview.recipient_slot_count}</strong></span>
+              <span>Ficarao zerados<strong>{preview.zeroed_slot_count}</strong></span>
+              <span>Total operacional antes<strong>{preview.total_gains_before}</strong></span>
               <span>Base por slot<strong>{preview.base_gain}</strong></span>
               <span>Sobra<strong>{preview.remainder_gain}</strong></span>
-              <span>Total depois<strong>{preview.total_gains_after}</strong></span>
+              <span>Total operacional depois<strong>{preview.total_gains_after}</strong></span>
             </div>
-            <p className="redistribution-preservation">A soma dos gains operacionais sera preservada exatamente. Nenhum valor financeiro sera alterado.</p>
+            <p className="redistribution-preservation">A soma de <strong>gains_distribuidos</strong> dos slots fechados sera preservada exatamente. Slots abertos nao serao alterados e <strong>slots.gains</strong> financeiro/historico nao sera alterado.</p>
             <div className="redistribution-table-wrap">
               <table className="redistribution-table">
-                <thead><tr><th>Slot</th><th>Status</th><th>Motivo</th><th>Antes</th><th>Depois</th></tr></thead>
+                <thead><tr><th>Slot</th><th>Status</th><th>Papel</th><th>Antes</th><th>Depois</th></tr></thead>
                 <tbody>
-                  {preview.selected_slots.map((slot) => (
+                  {preview.closed_slots.map((slot) => (
                     <tr key={slot.slot_id}>
                       <td>#{slot.slot_number}</td>
                       <td>{slot.status}</td>
-                      <td>{slot.selection_reason === "OPEN_SLOT" ? "Aberto" : "Fechado com menor gain"}</td>
+                      <td>{getRoleLabel(slot)}</td>
                       <td>{slot.gains_before}</td>
                       <td>{slot.gains_after}</td>
                     </tr>
@@ -230,7 +240,7 @@ export function GainRedistributionPanel({
               </table>
             </div>
             <p className="redistribution-excluded">
-              Fora desta redistribuicao: {excludedSlots.length ? excludedSlots.map((slot) => `#${slot.slot_number} (${gainValue(slot)})`).join(", ") : "nenhum"}.
+              Abertos ignorados: {ignoredOpenSlots.length ? ignoredOpenSlots.map((slot) => `#${slot.slot_number} (${slot.status})`).join(", ") : "nenhum"}.
             </p>
             <footer>
               <button type="button" className="ghost-button" onClick={() => setPreview(null)} disabled={confirming}>Cancelar</button>

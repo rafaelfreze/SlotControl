@@ -32,6 +32,7 @@ import {
   getStatusLabel
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { isClosedSlot } from "@/lib/slotgain/redistribution";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type SlotFilter = "aberto" | "gain" | "closed" | "all";
@@ -62,6 +63,13 @@ function sortByOpenDate(slots: SlotView[]) {
   return [...slots].sort((first, second) => {
     const priceDiff = Number(second.preco_entrada || 0) - Number(first.preco_entrada || 0);
     return priceDiff || getOpenTimestamp(first) - getOpenTimestamp(second) || first.sort_order - second.sort_order;
+  });
+}
+
+function sortClosedByDistributedGains(slots: SlotView[]) {
+  return [...slots].sort((first, second) => {
+    const gainsDiff = getDistributedGains(second) - getDistributedGains(first);
+    return gainsDiff || first.slot_number - second.slot_number || first.sort_order - second.sort_order || first.id.localeCompare(second.id);
   });
 }
 
@@ -102,13 +110,17 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const visibleSlots = useMemo(
     () => {
       const filtered = scopedSlots.filter((slot) => {
-      if (slotFilter === "closed") return slot.status === "gain" || slot.status === "zerado" || slot.status === "hold";
+        if (slotFilter === "closed") return isClosedSlot(slot.status);
         if (slotFilter === "all") return true;
         return slot.status === slotFilter;
       });
 
       if (slotFilter === "aberto") {
         return sortByOpenDate(filtered);
+      }
+
+      if (slotFilter === "closed") {
+        return sortClosedByDistributedGains(filtered);
       }
 
       return filtered;
@@ -248,7 +260,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
         options={[
           { label: "Abertos", value: "aberto", count: scopedSlots.filter((slot) => slot.status === "aberto").length },
           { label: "Gain", value: "gain", count: scopedSlots.filter((slot) => slot.status === "gain").length },
-          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado" || slot.status === "hold").length },
+          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => isClosedSlot(slot.status)).length },
           { label: "Todos", value: "all", count: scopedSlots.length }
         ]}
       />
@@ -320,7 +332,7 @@ function SlotCard({
       </div>
       <div className="slot-card-values">
         <span>Valor atual<strong>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
-        <span>Gains nivelados<strong>{getDistributedGains(slot)}</strong></span>
+        <span>GAINS NIVELADOS<strong>{getDistributedGains(slot)}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status === "aberto" || slot.status === "hold" ? (

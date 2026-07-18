@@ -5435,7 +5435,7 @@ body {
   z-index: 60;
   display: grid;
   place-items: center;
-  padding: 16px;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   overflow: auto;
   background: rgba(7, 11, 20, 0.78);
 }
@@ -5450,6 +5450,23 @@ body {
   background: var(--surface, #111827);
   color: var(--foreground, #f8fafc);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.redistribution-modal header,
+.redistribution-modal footer {
+  position: sticky;
+  z-index: 2;
+  background: var(--surface, #111827);
+}
+
+.redistribution-modal header {
+  top: 0;
+  padding: 6px 0 10px;
+}
+
+.redistribution-modal footer {
+  bottom: 0;
+  padding: 12px 0 2px;
 }
 
 .redistribution-metrics {
