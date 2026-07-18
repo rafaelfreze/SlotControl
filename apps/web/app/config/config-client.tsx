@@ -3,7 +3,7 @@
 import { type ReactNode, useState, useTransition } from "react";
 
 import { createStrategy, deleteStrategy, updateAutomationMode, updateStrategy } from "@/app/dashboard/actions";
-import { AppHeader, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
+import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { getAutomationModeLabel, useAutomationSetting, type AutomationMode } from "@/lib/slotgain/auto-gain";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
@@ -48,14 +48,9 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
 
   return (
     <MobileScreen>
-      <AppHeader title="CONFIG" subtitle={userEmail} backHref="/dashboard" />
+      <AppHeader title="Configuracoes" backHref="/dashboard" />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar configuracoes: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
-
-      <div className="asset-summary-stats">
-        <StatCard title="Estrategias" value={String(strategies.length)} tone="gold" />
-        <StatCard title="Slots" value={String(slots.length)} tone="purple" />
-      </div>
 
       <nav className="config-category-nav" aria-label="Categorias de configuracao">
         {[['strategies','Estrategias'],['automation','Automacao'],['notifications','Notificacoes'],['account','Conta'],['system','Sistema']].map(([key,label]) => <button key={key} type="button" className={activeSection === key ? "active" : ""} onClick={() => setActiveSection(key as typeof activeSection)}>{label}</button>)}

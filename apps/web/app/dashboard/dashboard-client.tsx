@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import { AppHeader, MobileScreen } from "@/components/app/mobile-ui";
+import { MobileScreen } from "@/components/app/mobile-ui";
+import { CompactMarketRegimeBadge } from "@/components/slotgain/compact-market-regime-badge";
 import {
   getAutomationModeLabel,
   isAutomationActive,
@@ -20,12 +21,14 @@ import {
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
-import { MarketRegimeSettings } from "@/components/slotgain/market-regime-settings";
-import type { AssetMarketStrategySettings, BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
+import { formatAccountCreatedDate, getAccountAgeDays } from "@/lib/slotgain/account-age";
+import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
+import type { BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type DashboardClientProps = {
   userEmail: string;
+  accountCreatedAt: string | null;
   strategies: StrategyView[];
   slots: SlotView[];
   setupError: string | null;
@@ -33,7 +36,6 @@ type DashboardClientProps = {
   initialAutomationMode: AutomationMode;
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
-  assetSettings: Partial<AssetMarketStrategySettings>[];
 };
 
 type StrategySummary = {
@@ -71,7 +73,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, marketState, regimeSettings, assetSettings }: DashboardClientProps) {
+export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, initialAutomationMode, marketState, regimeSettings }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
@@ -88,6 +90,9 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
     0
   );
   const openSlots = openSlotsList.length;
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const accountAgeDays = getAccountAgeDays(accountCreatedAt, new Date(), timeZone);
+  const accountCreatedLabel = formatAccountCreatedDate(accountCreatedAt, timeZone);
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
 
@@ -101,8 +106,6 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
 
   return (
     <MobileScreen>
-      <AppHeader title="SLOTGAIN" subtitle="CONTROL" />
-
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados do Supabase: {setupError}</section> : null}
       {notice ? (
         <section className="form-success dashboard-notice" role="status">
@@ -133,30 +136,27 @@ export function DashboardClient({ userEmail, strategies, slots, setupError, init
       </section>
 
       <section className="mobile-metrics" aria-label="Resumo principal">
-        <MetricCard icon="$" title="Lucro" value={formatUsdt(realizedProfit)} helper="Vendido" tone="green" />
-        <MetricCard icon="~" title="Aberto" value={formatSignedUsdt(openResult)} helper="Mercado" tone={openResult < 0 ? "red" : "green"} />
-        <MetricCard icon="M" title="Patrimonio" value={formatUsdt(markedEquity)} helper="Total" tone="gold" />
+        <MetricCard icon="$" title="Lucro" value={formatUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" tone="green" />
+        <MetricCard icon="~" title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" tone={openResult < 0 ? "red" : "green"} />
+        <MetricCard icon="M" title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper="Total" tone="gold" />
         <MetricCard icon="#" title="Slots" value={String(openSlots)} helper={`de ${slots.length}`} tone="purple" />
       </section>
 
-      <MarketRegimeSettings marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} />
+      <CompactMarketRegimeBadge marketState={marketState} regimeSettings={regimeSettings} />
 
       <StrategyCard summary={btc} accent="gold" />
       <StrategyCard summary={sol} accent="purple" />
 
-      <section className="primary-actions-grid" aria-label="Acoes principais">
-        <ActionLink href="/slots?flow=abrir" icon="+" title="Abrir" subtitle="" tone="green" />
-        <ActionLink href="/slots?flow=gain" icon="G" title="Gain" subtitle="" tone="gold" />
-        <ActionLink href="/historico" icon="H" title="Historico" subtitle="" tone="blue" />
+      <section className="compact-action-bar" aria-label="Acoes principais">
+        <Link href="/slots?flow=abrir">+ Abrir</Link>
+        <Link href="/slots?flow=gain">✓ Gain</Link>
+        <Link href="/historico">Historico</Link>
       </section>
 
-      <section className="quick-summary-card" aria-label="Resumo rapido">
-        <h2>Resumo rapido</h2>
-        <div>
-          <SummaryItem icon="+" title="Melhor mes" value="+8,75 USDT" detail="Junho/2025" tone="green" />
-          <SummaryItem icon="-" title="Pior mes" value="-1,23 USDT" detail="Maio/2025" tone="red" />
-          <SummaryItem icon="T" title="Tempo em operacao" value="128 dias" detail="Desde 06/02/2025" tone="blue" />
-        </div>
+      <section className="compact-account-age" aria-label="Tempo em operacao">
+        <span>Conta em operacao</span>
+        <strong>{accountAgeDays} {accountAgeDays === 1 ? "dia" : "dias"}</strong>
+        <small>Desde {accountCreatedLabel}</small>
       </section>
 
       <p className="mobile-session">{userEmail}</p>
@@ -168,12 +168,14 @@ function MetricCard({
   icon,
   title,
   value,
+  numericValue,
   helper,
   tone
 }: {
   icon: string;
   title: string;
   value: string;
+  numericValue?: number;
   helper: string;
   tone: "green" | "gold" | "purple" | "blue" | "red";
 }) {
@@ -183,7 +185,7 @@ function MetricCard({
     <article className="mobile-metric-card">
       <span className={`metric-icon ${tone}`}>{icon}</span>
       <p>{title}</p>
-      <strong>
+      <strong className={numericValue === undefined ? undefined : `financial-${getFinancialValueTone(numericValue)}`}>
         {amount}
         {unit !== undefined ? <small>USDT</small> : null}
       </strong>
@@ -208,13 +210,13 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
 
       <div className="asset-stats">
         <span>
-          Total <strong>{formatUsdt(summary.total)}</strong>
+          Total <strong className={`financial-${getFinancialValueTone(summary.total)}`}>{formatUsdt(summary.total)}</strong>
         </span>
         <span>
-          Lucro <strong>{formatUsdt(summary.realizedProfit)}</strong>
+          Lucro <strong className={`financial-${getFinancialValueTone(summary.realizedProfit)}`}>{formatUsdt(summary.realizedProfit)}</strong>
         </span>
         <span>
-          Aberto <strong className={summary.openResult < 0 ? "negative-value" : ""}>{formatSignedUsdt(summary.openResult)}</strong>
+          Aberto <strong className={`financial-${getFinancialValueTone(summary.openResult)}`}>{formatSignedUsdt(summary.openResult)}</strong>
         </span>
         <span>
           Slots <strong>{summary.openSlots}</strong>
@@ -223,55 +225,5 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
 
       <span className="details-button">Ver detalhes {`\u203A`}</span>
     </Link>
-  );
-}
-
-function ActionLink({
-  href,
-  icon,
-  title,
-  subtitle,
-  tone
-}: {
-  href: string;
-  icon: string;
-  title: string;
-  subtitle: string;
-  tone: "green" | "gold" | "purple" | "blue";
-}) {
-  return (
-    <Link className="dashboard-action-card" href={href}>
-      <span className={`action-orb ${tone}`}>{icon}</span>
-      <span>
-        <strong>{title}</strong>
-        {subtitle ? <em>{subtitle}</em> : null}
-      </span>
-      <b>{`\u203A`}</b>
-    </Link>
-  );
-}
-
-function SummaryItem({
-  icon,
-  title,
-  value,
-  detail,
-  tone
-}: {
-  icon: string;
-  title: string;
-  value: string;
-  detail: string;
-  tone: "green" | "red" | "blue";
-}) {
-  return (
-    <article className={`summary-item ${tone}`}>
-      <span>{icon}</span>
-      <div>
-        <p>{title}</p>
-        <strong>{value}</strong>
-        <em>{detail}</em>
-      </div>
-    </article>
   );
 }

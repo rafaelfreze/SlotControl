@@ -32,6 +32,7 @@ import {
   getStatusLabel
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 import { DEFAULT_ASSET_MARKET_SETTINGS, activeBuyDropPercent, asMarketRegime, effectiveMarketRegime, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 import { isClosedSlot } from "@/lib/slotgain/redistribution";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
@@ -181,7 +182,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
   return (
     <MobileScreen>
-      <AppHeader title={title.toUpperCase()} subtitle={userEmail} backHref="/dashboard" />
+      <AppHeader title={title} backHref="/dashboard" />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
       <section className={`auto-gain-badge ${isAutomationActive(automationMode) ? "active" : ""}`}>
@@ -228,8 +229,8 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
             </div>
           </div>
           <div className="asset-summary-stats">
-            <StatCard title="Total" value={formatUsdt(total)} tone={tone} />
-            <StatCard title="Lucro realizado" value={formatUsdt(total - base)} tone="green" />
+            <StatCard title="Total" value={formatUsdt(total)} financialValue={total} tone={tone} />
+            <StatCard title="Lucro realizado" value={formatUsdt(total - base)} financialValue={total - base} tone="green" />
             <StatCard title="Abertos" value={String(open)} tone="gold" />
             <StatCard title="Gains nivelados" value={String(gains)} helper={`Reais: ${realGains}`} tone="blue" />
           </div>
@@ -342,8 +343,8 @@ function SlotCard({
         <em>{getStatusLabel(slot.status)}</em>
       </div>
       <div className="slot-card-values">
-        <span>Valor operacional<strong>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
-        <span>Lucro reinvestido<strong>{formatUsdt(Number(slot.reinvested_profit || 0))}</strong></span>
+        <span>Valor operacional<strong className={`financial-${getFinancialValueTone(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}`}>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
+        <span>Lucro reinvestido<strong className={`financial-${getFinancialValueTone(Number(slot.reinvested_profit || 0))}`}>{formatUsdt(Number(slot.reinvested_profit || 0))}</strong></span>
         <span>GAINS NIVELADOS<strong>{getDistributedGains(slot)}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>

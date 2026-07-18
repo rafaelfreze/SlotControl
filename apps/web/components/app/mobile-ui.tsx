@@ -3,35 +3,23 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
+import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
 
 export function AppHeader({
-  title = "SLOTGAIN",
-  subtitle = "CONTROL",
-  backHref,
-  rightHref = "/config"
+  title,
+  backHref = "/dashboard"
 }: {
-  title?: string;
-  subtitle?: string;
+  title: string;
   backHref?: string;
-  rightHref?: string;
 }) {
   return (
-    <header className="mobile-app-header sg-header">
-      <Link className="mobile-icon-button sg-back-button" href={backHref || "/slots"} aria-label={backHref ? "Voltar" : "Abrir menu de slots"}>
-        {backHref ? <span className="mobile-icon-glyph">{`\u2039`}</span> : <><span /><span /><span /></>}
+    <header className="minimal-page-header">
+      <Link className="minimal-page-header-back" href={backHref} aria-label="Voltar">
+        {`\u2039`}
       </Link>
-      <div className="mobile-brand">
-        <span className="mobile-brand-mark">SG</span>
-        <div>
-          <strong>{title}</strong>
-          <span>{subtitle}</span>
-        </div>
-      </div>
-      <Link className="mobile-icon-button settings-icon" href={rightHref} aria-label="Configuracoes">
-        <span className="mobile-icon-glyph">{`\u2699`}</span>
-      </Link>
+      <h1>{title}</h1>
     </header>
   );
 }
@@ -67,12 +55,12 @@ export function DesktopSidebar() {
   return <aside className="desktop-sidebar" aria-label="Navegacao lateral"><Link className="sidebar-brand" href="/dashboard"><b>SG</b><span>SlotGain<small>CONTROL</small></span></Link><nav>{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</nav></aside>;
 }
 
-export function StatCard({ title, value, helper, tone = "neutral" }: { title: string; value: string; helper?: string; tone?: Tone }) {
+export function StatCard({ title, value, helper, tone = "neutral", financialValue }: { title: string; value: string; helper?: string; tone?: Tone; financialValue?: number }) {
   return (
     <article className={`mobile-metric-card stat-card ${tone}`}>
       <span className={`metric-icon ${tone}`}>{title.slice(0, 1)}</span>
       <p>{title}</p>
-      <strong>{value}</strong>
+      <strong className={financialValue === undefined ? undefined : `financial-${getFinancialValueTone(financialValue)}`}>{value}</strong>
       {helper ? <em>{helper}</em> : null}
     </article>
   );

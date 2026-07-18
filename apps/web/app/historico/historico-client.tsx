@@ -342,7 +342,7 @@ export function HistoricoClient({ userEmail, history, error }: { userEmail: stri
 
   return (
     <MobileScreen>
-      <AppHeader title="HISTORICO" subtitle={userEmail} backHref="/dashboard" />
+      <AppHeader title="Historico" backHref="/dashboard" />
       {error ? <section className="inline-alert dashboard-alert">Falha ao carregar historico: {error}</section> : null}
       <FilterChips
         value={asset}

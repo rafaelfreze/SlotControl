@@ -4156,6 +4156,207 @@ body {
   }
 }
 
+/* Ajustes finais de densidade: a navegacao inferior e a sidebar sao as unicas navegacoes principais. */
+.minimal-page-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding-top: max(2px, env(safe-area-inset-top));
+}
+
+.minimal-page-header-back {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  color: var(--foreground, #f8fafc);
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.minimal-page-header h1 {
+  margin: 0;
+  color: var(--foreground, #f8fafc);
+  font-size: 0.98rem;
+  font-weight: 750;
+}
+
+.compact-market-regime-badge {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 48px;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  border-radius: 12px;
+  background: rgba(15, 32, 49, 0.7);
+  color: var(--foreground, #f8fafc);
+  text-decoration: none;
+}
+
+.compact-market-regime-badge > span {
+  color: #f7931a;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.compact-market-regime-badge strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #dbeafe;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-market-regime-badge em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sg-muted, #94a3b8);
+  font-size: 0.75rem;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-market-regime-badge small {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: #93c5fd;
+  font-size: 0.66rem;
+}
+
+.compact-action-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.compact-action-bar a {
+  display: grid;
+  min-height: 42px;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.74);
+  color: var(--foreground, #f8fafc);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.compact-action-bar a:first-child { border-color: rgba(74, 222, 128, 0.28); color: #bbf7d0; }
+.compact-action-bar a:nth-child(2) { border-color: rgba(251, 191, 36, 0.28); color: #fde68a; }
+
+.compact-account-age {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.compact-account-age span,
+.compact-account-age small {
+  color: var(--sg-muted, #94a3b8);
+  font-size: 0.7rem;
+}
+
+.compact-account-age strong {
+  color: var(--foreground, #f8fafc);
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+.compact-account-age small { grid-column: 1 / -1; }
+
+.asset-card {
+  min-height: 0;
+  padding: 12px;
+}
+
+.asset-card .asset-heading { margin-bottom: 8px; }
+.asset-card .asset-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; }
+.asset-card .asset-stats span { min-width: 0; font-size: 0.68rem; }
+.asset-card .asset-stats strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; }
+.asset-card .details-button { display: none; }
+
+.financial-negative,
+.negative-value { color: #fb7185 !important; }
+
+.financial-positive { color: #4ade80 !important; }
+
+.financial-neutral { color: var(--foreground, #f8fafc) !important; }
+
+.redistribution-metrics span,
+.settings-list div,
+.market-regime-card .redistribution-metrics strong {
+  min-width: 0;
+}
+
+.market-regime-card .redistribution-metrics strong,
+.market-regime-card .settings-list strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-source-detail {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.78rem;
+}
+
+.market-source-detail details { min-width: 0; }
+
+.market-source-detail summary {
+  overflow: hidden;
+  color: var(--foreground, #f8fafc);
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-source-detail p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1024px) {
+  .minimal-page-header { display: none; }
+
+  .compact-market-regime-badge {
+    max-width: 480px;
+    margin-left: auto;
+  }
+
+  .compact-action-bar {
+    width: min(420px, 100%);
+    grid-template-columns: repeat(3, minmax(112px, 1fr));
+  }
+
+  .asset-card {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.9fr) minmax(0, 2.1fr);
+    align-items: center;
+    gap: 16px;
+  }
+
+  .asset-card .asset-heading { margin: 0; }
+  .asset-card .asset-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
 /* Compact financial workspace — final layer keeps legacy behavior while replacing the visual hierarchy. */
 :root { --space-1:4px; --space-2:6px; --space-3:8px; --space-4:12px; --space-5:16px; --space-6:20px; --radius-card:14px; --radius-item:10px; --panel-flat:#0e1520; --panel-raised:#121b28; }
 body { background:#080d15; font-size:14px; }

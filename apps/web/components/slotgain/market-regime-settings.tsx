@@ -97,7 +97,13 @@ export function MarketRegimeSettings({ marketState, regimeSettings, assetSetting
         <span>Distancia do ATH<strong>{formatPercent(distance / 100)}%</strong></span>
         <span>Modo calculado<strong>{MARKET_REGIME_LABELS[calculated]}</strong></span>
         <span>Modo em uso<strong>{MARKET_REGIME_LABELS[effective]}</strong></span>
-        <span>Fonte<strong>{marketState?.source || "Aguardando cron"}</strong></span>
+        <div className="market-source-detail">
+          <span>Fonte</span>
+          <details>
+            <summary title={marketState?.source || "Aguardando cron"}>{marketState?.source || "Aguardando cron"}</summary>
+            <p>{marketState?.source || "Aguardando cron"}</p>
+          </details>
+        </div>
       </div>
       <div className="settings-list modern-settings">
         <div><span>BTC</span><strong>Reserva: {planBtc.zeroReserveCount} zerados · Nova compra: {activeBuyDropPercent("BTC", effective, btc)}%</strong></div>
