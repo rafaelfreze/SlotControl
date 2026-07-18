@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getPushSubscriptionDiagnostics, processPushOutboxById } from "@/lib/push/server";
-import { emptyPushTestResult } from "@/lib/push/test-result";
+import { emptyPushTestResult, normalizeUrlSafeBase64 } from "@/lib/push/test-result";
 import { type NotificationPreferences } from "@/lib/push/types";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
@@ -36,8 +36,8 @@ async function getActiveSubscriptionCount(userId: string) {
 export async function savePushSubscription(input: SubscriptionInput) {
   const { supabase, user } = await getAuthenticatedClient();
   const endpoint = stringValue(input.endpoint, 2_000);
-  const p256dh = stringValue(input.p256dh, 1_000);
-  const auth = stringValue(input.auth, 1_000);
+  const p256dh = normalizeUrlSafeBase64(stringValue(input.p256dh, 1_000));
+  const auth = normalizeUrlSafeBase64(stringValue(input.auth, 1_000));
   const platform = input.platform === "ios" || input.platform === "android" || input.platform === "desktop" ? input.platform : "unknown";
   if (!endpoint.startsWith("https://") || !p256dh || !auth) throw new Error("A inscrição de notificações retornou dados inválidos.");
 
@@ -136,7 +136,13 @@ export async function sendPushTestNotification(currentEndpointInput?: string | n
   ]);
   if (!subscriptionDiagnostics.activeCount) return emptyPushTestResult({ currentDeviceMatched: subscriptionDiagnostics.currentDeviceMatched });
   if (recentTestResponse.error) throw new Error("Não foi possível validar o limite do teste de notificações.");
-  if (recentTestResponse.count) throw new Error("Aguarde alguns segundos antes de enviar outro teste.");
+  if (recentTestResponse.count) {
+    return emptyPushTestResult({
+      rateLimited: true,
+      subscriptionsFound: subscriptionDiagnostics.activeCount,
+      currentDeviceMatched: subscriptionDiagnostics.currentDeviceMatched
+    });
+  }
 
   const eventId = `test:${crypto.randomUUID()}`;
   const { data: outbox, error } = await serviceSupabase.from("notification_outbox").insert({

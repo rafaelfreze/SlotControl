@@ -3,7 +3,7 @@ import webpush from "web-push";
 
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { buildPushNotification, classifyPushError, isNotificationEnabled } from "./payload";
-import { emptyPushTestResult, isValidPushSubscriptionData, type PushTestDeliveryResult, type PushTestResult } from "./test-result";
+import { emptyPushTestResult, isValidPushSubscriptionData, normalizeUrlSafeBase64, type PushTestDeliveryResult, type PushTestResult } from "./test-result";
 import { DEFAULT_NOTIFICATION_PREFERENCES, type NotificationPreferences, type PushOutboxRecord, type PushSubscriptionRecord } from "./types";
 
 const RETRY_DELAYS_MINUTES = [1, 5, 30];
@@ -18,13 +18,16 @@ function cleanVapidEnvironmentValue(value: string | undefined) {
 }
 
 function getWebPush() {
-  const publicKey = cleanVapidEnvironmentValue(process.env.VAPID_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY);
-  const privateKey = cleanVapidEnvironmentValue(process.env.VAPID_PRIVATE_KEY);
+  const publicKey = normalizeUrlSafeBase64(cleanVapidEnvironmentValue(process.env.VAPID_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY));
+  const privateKey = normalizeUrlSafeBase64(cleanVapidEnvironmentValue(process.env.VAPID_PRIVATE_KEY));
   const subject = cleanVapidEnvironmentValue(process.env.VAPID_SUBJECT);
 
   if (!publicKey) throw new Error("VAPID_PUBLIC_KEY não configurada.");
   if (!privateKey) throw new Error("VAPID_PRIVATE_KEY não configurada.");
   if (!subject) throw new Error("VAPID_SUBJECT não configurada.");
+
+  if (!/^[A-Za-z0-9_-]+$/.test(publicKey)) throw new Error("VAPID public key inválida.");
+  if (!/^[A-Za-z0-9_-]+$/.test(privateKey)) throw new Error("VAPID private key inválida.");
 
   try {
     const parsed = new URL(subject);
@@ -164,7 +167,7 @@ async function processOutboxItem(outbox: PushOutboxRecord): Promise<PushProcessi
     await upsertDelivery({ outbox_id: outbox.id, subscription_id: subscription.id, status: "processing", attempted_at: attemptedAt, completed_at: null, error_code: null, error_message: null, http_status: null });
     try {
       const response = await sender.sendNotification(
-        { endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } },
+        { endpoint: subscription.endpoint, keys: { p256dh: normalizeUrlSafeBase64(subscription.p256dh), auth: normalizeUrlSafeBase64(subscription.auth) } },
         JSON.stringify(content),
         { TTL: 60 * 60, urgency: "high", topic: content.tag.slice(0, 32) }
       );
