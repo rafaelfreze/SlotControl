@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useMemo, useState } from "react";
 
 import { MobileScreen } from "@/components/app/mobile-ui";
@@ -93,6 +94,7 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const accountAgeDays = getAccountAgeDays(accountCreatedAt, new Date(), timeZone);
   const accountCreatedLabel = formatAccountCreatedDate(accountCreatedAt, timeZone);
+  const liveStatusLabel = livePrices.status === "online" ? "Online" : livePrices.isStale ? "Atualizando" : "Offline";
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
 
@@ -112,6 +114,10 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
           {notice}
         </section>
       ) : null}
+      <header className="dashboard-brand-header" aria-label="CoinOps">
+        <Image src="/icon-96x96.png" alt="" width={28} height={28} priority />
+        <span>COINOPS</span>
+      </header>
       <section className={`auto-gain-badge ${isAutomationActive(automationMode) ? "active" : ""}`}>
         Automacao: {getAutomationModeLabel(automationMode)}
       </section>
@@ -126,7 +132,7 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
           <strong>{formatPrice(livePrices.prices.SOL)}</strong>
         </div>
         <div>
-          <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "Preco desatualizado" : "Offline"}</span>
+          <span>{liveStatusLabel}</span>
           <strong>
             {livePrices.lastUpdated
               ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
@@ -136,10 +142,10 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
       </section>
 
       <section className="mobile-metrics" aria-label="Resumo principal">
-        <MetricCard icon="$" title="Lucro" value={formatUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" tone="green" />
-        <MetricCard icon="~" title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" tone={openResult < 0 ? "red" : "green"} />
-        <MetricCard icon="M" title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper="Total" tone="gold" />
-        <MetricCard icon="#" title="Slots" value={String(openSlots)} helper={`de ${slots.length}`} tone="purple" />
+        <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
+        <MetricRow title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" />
+        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper="Total" />
+        <MetricRow title="Slots" value={`${openSlots} de ${slots.length}`} helper="Ativos" />
       </section>
 
       <CompactMarketRegimeBadge marketState={marketState} regimeSettings={regimeSettings} />
@@ -164,32 +170,29 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
   );
 }
 
-function MetricCard({
-  icon,
+function MetricRow({
   title,
   value,
   numericValue,
-  helper,
-  tone
+  helper
 }: {
-  icon: string;
   title: string;
   value: string;
   numericValue?: number;
   helper: string;
-  tone: "green" | "gold" | "purple" | "blue" | "red";
 }) {
   const [amount, unit] = value.split(" USDT");
 
   return (
-    <article className="mobile-metric-card">
-      <span className={`metric-icon ${tone}`}>{icon}</span>
-      <p>{title}</p>
+    <article className="mobile-metric-row">
+      <div>
+        <p>{title}</p>
+        <small>{helper}</small>
+      </div>
       <strong className={numericValue === undefined ? undefined : `financial-${getFinancialValueTone(numericValue)}`}>
-        {amount}
+        <span>{amount}</span>
         {unit !== undefined ? <small>USDT</small> : null}
       </strong>
-      <em>{helper}</em>
     </article>
   );
 }
