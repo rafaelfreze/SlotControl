@@ -1,5 +1,5 @@
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, calculateMarketRegime, distanceFromAthPercent, effectiveMarketRegime, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegimeSettings } from "./market-regime";
+import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, calculateMarketRegime, distanceFromAthPercent, effectiveMarketRegime, selectOperablePendingSlots, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegime, type MarketRegimeSettings } from "./market-regime";
 
 type BinanceKline = [number, string, string, string, string];
 type StateRow = BtcMarketState & { singleton: boolean };
@@ -85,6 +85,38 @@ async function enqueueMarketChange(
   }, { onConflict: "event_id" });
 }
 
+type PendingSlot = { id: string; strategy_id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains_distribuidos: number; preco_entrada: number | string | null; strategies: { asset: string | null; gain_rate: number | string | null } | null };
+
+export async function recalculateFutureEntryTriggers(userId: string, regime: MarketRegime, settingsByAsset: Record<"BTC" | "SOL", Partial<AssetMarketStrategySettings>>) {
+  const supabase = createServiceRoleClient();
+  const { data: rows, error } = await supabase
+    .from("slots")
+    .select("id,strategy_id,slot_number,sort_order,status,gains_distribuidos,preco_entrada,strategies(asset,gain_rate)")
+    .eq("user_id", userId)
+    .in("status", ["aberto", "hold"]);
+  if (error) throw error;
+  let recalculated = 0;
+  for (const asset of ["BTC", "SOL"] as const) {
+    const slots = ((rows || []) as unknown as PendingSlot[]).filter((slot) => (slot.strategies?.asset || "BTC").toUpperCase() === asset);
+    const reference = Math.min(...slots.filter((slot) => slot.status === "aberto").map((slot) => Number(slot.preco_entrada || 0)).filter((value) => value > 0));
+    if (!Number.isFinite(reference)) continue;
+    const pending = selectOperablePendingSlots(asset, regime, slots.map((slot) => ({ id: slot.id, slot_number: slot.slot_number, sort_order: slot.sort_order, status: slot.status, gains_distribuidos: Number(slot.gains_distribuidos || 0) })), settingsByAsset[asset]);
+    const drop = activeBuyDropPercent(asset, regime, settingsByAsset[asset]);
+    for (const [index, candidate] of pending.entries()) {
+      const slot = slots.find((item) => item.id === candidate.id);
+      if (!slot) continue;
+      const entryPrice = reference * Math.pow(1 - drop / 100, index + 1);
+      if (Math.abs(Number(slot.preco_entrada || 0) - entryPrice) < 0.00000001) continue;
+      const gainRate = Number(slots.find((item) => item.id === slot.id)?.strategies?.gain_rate || 0);
+      const { data: updated } = await supabase.from("slots").update({ preco_entrada: entryPrice, preco_alvo: entryPrice * (1 + gainRate) }).eq("id", slot.id).eq("user_id", userId).eq("status", "hold").select("id").maybeSingle();
+      if (!updated) continue;
+      recalculated += 1;
+      await supabase.from("history_events").insert({ user_id: userId, strategy_id: slot.strategy_id, slot_id: slot.id, action: "Gatilho de entrada", detail: JSON.stringify({ schemaVersion: 2, eventType: "gatilho_futuro_recalculado", asset, regime, dropPercent: drop, expectedPrice: entryPrice, note: "Apenas entrada futura recalculada; slot aberto e historico permaneceram inalterados.", eventAt: new Date().toISOString() }), slot_number: slot.slot_number });
+    }
+  }
+  return recalculated;
+}
+
 export async function refreshBtcMarketRegime() {
   const supabase = createServiceRoleClient();
   const { data: previous } = await supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle<StateRow>();
@@ -145,6 +177,11 @@ export async function refreshBtcMarketRegime() {
       distance_percent: distance,
       reason: settings.mode_source === "MANUAL" ? "Override manual mantido." : `Fechamento diario do BTC e histerese aplicados (${calculatedForUser}).`
     });
+    const triggerCount = await recalculateFutureEntryTriggers(row.user_id, nextMode, {
+      BTC: assetSettingsByUser.get(`${row.user_id}:BTC`) || DEFAULT_ASSET_MARKET_SETTINGS.BTC,
+      SOL: assetSettingsByUser.get(`${row.user_id}:SOL`) || DEFAULT_ASSET_MARKET_SETTINGS.SOL
+    });
+    console.log("[market-regime] future_triggers_recalculated", { userId: row.user_id, regime: nextMode, count: triggerCount });
     if (settings.mode_source === "AUTO") {
       await enqueueMarketChange(row.user_id, settings.last_effective_mode, nextMode, state, {
         BTC: assetSettingsByUser.get(`${row.user_id}:BTC`) || DEFAULT_ASSET_MARKET_SETTINGS.BTC,

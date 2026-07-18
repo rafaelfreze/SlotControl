@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, effectiveMarketRegime, validateMarketRegimeSettings, type AssetMarketStrategySettings, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
+import { recalculateFutureEntryTriggers } from "@/lib/slotgain/market-regime-server";
 
 type SlotStatus = "zerado" | "aberto" | "gain" | "hold";
 
@@ -513,6 +514,10 @@ export async function saveMarketRegimeConfiguration(input: MarketRegimeConfigura
   }));
   const { error: assetsError } = await service.from("asset_market_strategy_settings").upsert(rows, { onConflict: "user_id,asset" });
   if (assetsError) throw new Error("Nao foi possivel salvar os percentuais de nova compra.");
+  await recalculateFutureEntryTriggers(user.id, nextEffectiveMode, {
+    BTC: rows.find((row) => row.asset === "BTC") || DEFAULT_ASSET_MARKET_SETTINGS.BTC,
+    SOL: rows.find((row) => row.asset === "SOL") || DEFAULT_ASSET_MARKET_SETTINGS.SOL
+  });
 
   const previousMode = asMarketRegime(previousSettings?.last_effective_mode);
   if (previousMode !== nextEffectiveMode || regime.mode_source === "MANUAL") {
