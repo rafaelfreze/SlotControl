@@ -2,7 +2,8 @@ import type { Metadata, Viewport } from "next";
 
 import "./globals.css";
 
-const appName = process.env.NEXT_PUBLIC_APP_NAME || "SlotGain Control";
+const appName = "CoinOps";
+const description = "Operacoes inteligentes em criptomoedas";
 
 export const metadata: Metadata = {
   applicationName: appName,
@@ -10,7 +11,7 @@ export const metadata: Metadata = {
     default: appName,
     template: `%s | ${appName}`
   },
-  description: "Controle de slots cripto com login, dados por usuario e Supabase.",
+  description,
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
@@ -18,8 +19,24 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent"
   },
   icons: {
-    icon: "/icons/slotgain-icon.svg",
-    apple: "/icons/apple-touch-icon.svg"
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon-192x192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-512x512.png", type: "image/png", sizes: "512x512" }
+    ],
+    shortcut: "/favicon.png",
+    apple: "/apple-touch-icon.png"
+  },
+  openGraph: {
+    title: appName,
+    description,
+    siteName: appName,
+    type: "website"
+  },
+  twitter: {
+    card: "summary",
+    title: appName,
+    description
   }
 };
 
@@ -27,7 +44,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: "#070b12"
+  themeColor: "#050505"
 };
 
 export default function RootLayout({

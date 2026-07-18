@@ -4156,6 +4156,91 @@ body {
   }
 }
 
+/* CoinOps overrides must remain last because the stylesheet preserves legacy layout rules. */
+:root {
+  --background: #050505;
+  --surface: #0b0b0b;
+  --surface-elevated: #121212;
+  --foreground: #ffffff;
+  --muted-foreground: #8a8a8a;
+  --border: #252525;
+  --primary: #d4af37;
+  --primary-bright: #f2c94c;
+  --primary-dark: #9a7418;
+  --primary-gradient: linear-gradient(135deg, #8c6513 0%, #d4af37 45%, #f2c94c 70%, #a97912 100%);
+  --bg: var(--background);
+  --bg-soft: var(--surface);
+  --panel: var(--surface);
+  --panel-strong: var(--surface-elevated);
+  --text: var(--foreground);
+  --muted: var(--muted-foreground);
+  --yellow: var(--primary);
+  --line: var(--border);
+  --sg-bg: var(--background);
+  --sg-panel: rgba(11, 11, 11, 0.94);
+  --sg-panel-soft: rgba(18, 18, 18, 0.88);
+  --sg-border: rgba(212, 175, 55, 0.18);
+  --sg-border-strong: var(--primary);
+  --sg-text: var(--foreground);
+  --sg-muted: var(--muted-foreground);
+  --sg-gold: var(--primary);
+}
+
+html,
+body { background: var(--background); color: var(--foreground); }
+
+body,
+.page-shell,
+.mobile-dashboard-shell,
+.mobile-dashboard-shell.app-screen {
+  background-image: radial-gradient(circle at 80% -10%, rgba(212, 175, 55, 0.08), transparent 28%), linear-gradient(180deg, #050505 0%, #090909 56%, #050505 100%);
+}
+
+.solid-link,
+.solid-button { border-color: transparent; background: var(--primary-gradient); color: #050505; box-shadow: 0 7px 18px rgba(154, 116, 24, 0.18); }
+.solid-link:hover,
+.solid-button:hover { background: linear-gradient(135deg, #a97912, #f2c94c 54%, #d4af37); }
+.ghost-link,
+.ghost-button { border-color: rgba(212, 175, 55, 0.42); background: rgba(5, 5, 5, 0.72); color: var(--primary-bright); }
+.ghost-link:hover,
+.ghost-button:hover { border-color: var(--primary); background: rgba(212, 175, 55, 0.1); }
+
+.auth-card,
+.section-card,
+.mobile-metric-card,
+.asset-card,
+.modern-slot-card,
+.market-regime-card,
+.redistribution-modal,
+.compact-market-regime-badge,
+.live-price-strip,
+.auto-gain-badge { border-color: rgba(212, 175, 55, 0.15); background-color: var(--surface); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22); }
+
+.auth-form input,
+.tool-form input,
+.tool-form select,
+.tool-form textarea { border-color: var(--border); background: #080808; color: var(--foreground); }
+.auth-form input:focus,
+.tool-form input:focus,
+.tool-form select:focus,
+.tool-form textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.14); }
+
+.bottom-navigation,
+.desktop-sidebar { border-color: var(--border); background: rgba(5, 5, 5, 0.96); }
+.bottom-navigation a.active,
+.desktop-sidebar nav a:hover,
+.desktop-sidebar nav a.active { color: var(--primary-bright); }
+.desktop-sidebar nav a:hover,
+.desktop-sidebar nav a.active { background: rgba(212, 175, 55, 0.1); }
+.sidebar-brand > img { border: 1px solid rgba(212, 175, 55, 0.3); border-radius: 9px; background: #050505; }
+.sidebar-brand small,
+.eyebrow,
+.compact-market-regime-badge > span { color: var(--primary); }
+.financial-positive { color: var(--sg-green) !important; }
+.financial-negative,
+.negative-value { color: var(--sg-red) !important; }
+.financial-neutral { color: var(--foreground) !important; }
+
 /* Ajustes finais de densidade: a navegacao inferior e a sidebar sao as unicas navegacoes principais. */
 .minimal-page-header {
   display: flex;
@@ -4331,6 +4416,198 @@ body {
 .market-source-detail p {
   margin: 6px 0 0;
   overflow-wrap: anywhere;
+}
+
+/* CoinOps brand tokens: visual identity only; operational colors remain semantic. */
+:root {
+  --background: #050505;
+  --surface: #0b0b0b;
+  --surface-elevated: #121212;
+  --foreground: #ffffff;
+  --muted-foreground: #8a8a8a;
+  --border: #252525;
+  --primary: #d4af37;
+  --primary-bright: #f2c94c;
+  --primary-dark: #9a7418;
+  --primary-gradient: linear-gradient(135deg, #8c6513 0%, #d4af37 45%, #f2c94c 70%, #a97912 100%);
+  --bg: var(--background);
+  --bg-soft: var(--surface);
+  --panel: var(--surface);
+  --panel-strong: var(--surface-elevated);
+  --text: var(--foreground);
+  --muted: var(--muted-foreground);
+  --yellow: var(--primary);
+  --line: var(--border);
+  --sg-bg: var(--background);
+  --sg-panel: rgba(11, 11, 11, 0.94);
+  --sg-panel-soft: rgba(18, 18, 18, 0.88);
+  --sg-border: rgba(212, 175, 55, 0.18);
+  --sg-border-strong: var(--primary);
+  --sg-text: var(--foreground);
+  --sg-muted: var(--muted-foreground);
+  --sg-gold: var(--primary);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+body,
+.page-shell,
+.mobile-dashboard-shell,
+.mobile-dashboard-shell.app-screen {
+  background-image: radial-gradient(circle at 80% -10%, rgba(212, 175, 55, 0.08), transparent 28%), linear-gradient(180deg, #050505 0%, #090909 56%, #050505 100%);
+}
+
+.coinops-brand {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  color: var(--foreground);
+}
+
+.coinops-brand-symbol {
+  flex: 0 0 auto;
+  border: 1px solid rgba(212, 175, 55, 0.34);
+  border-radius: 12px;
+  background: #050505;
+  box-shadow: 0 0 18px rgba(212, 175, 55, 0.12);
+}
+
+.coinops-brand-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.coinops-brand-copy strong {
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.coinops-brand-copy small {
+  overflow: hidden;
+  color: var(--primary);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.coinops-brand.compact .coinops-brand-symbol {
+  border-radius: 9px;
+}
+
+.brand-link,
+.sidebar-brand,
+.dashboard-brand {
+  color: var(--foreground);
+}
+
+.solid-link,
+.solid-button {
+  border-color: transparent;
+  background: var(--primary-gradient);
+  color: #050505;
+  box-shadow: 0 7px 18px rgba(154, 116, 24, 0.18);
+}
+
+.solid-link:hover,
+.solid-button:hover {
+  background: linear-gradient(135deg, #a97912, #f2c94c 54%, #d4af37);
+}
+
+.ghost-link,
+.ghost-button {
+  border-color: rgba(212, 175, 55, 0.42);
+  background: rgba(5, 5, 5, 0.72);
+  color: var(--primary-bright);
+}
+
+.ghost-link:hover,
+.ghost-button:hover {
+  border-color: var(--primary);
+  background: rgba(212, 175, 55, 0.1);
+}
+
+.auth-card,
+.section-card,
+.mobile-metric-card,
+.asset-card,
+.modern-slot-card,
+.market-regime-card,
+.redistribution-modal,
+.compact-market-regime-badge,
+.live-price-strip,
+.auto-gain-badge {
+  border-color: rgba(212, 175, 55, 0.15);
+  background-color: var(--surface);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+}
+
+.auth-form input,
+.tool-form input,
+.tool-form select,
+.tool-form textarea {
+  border-color: var(--border);
+  background: #080808;
+  color: var(--foreground);
+}
+
+.auth-form input:focus,
+.tool-form input:focus,
+.tool-form select:focus,
+.tool-form textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.14);
+}
+
+.bottom-navigation,
+.desktop-sidebar {
+  border-color: var(--border);
+  background: rgba(5, 5, 5, 0.96);
+}
+
+.bottom-navigation a.active,
+.desktop-sidebar nav a:hover,
+.desktop-sidebar nav a.active {
+  color: var(--primary-bright);
+}
+
+.desktop-sidebar nav a:hover,
+.desktop-sidebar nav a.active {
+  background: rgba(212, 175, 55, 0.1);
+}
+
+.sidebar-brand > img {
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 9px;
+  background: #050505;
+}
+
+.sidebar-brand small,
+.eyebrow,
+.compact-market-regime-badge > span {
+  color: var(--primary);
+}
+
+.financial-positive { color: var(--sg-green) !important; }
+.financial-negative,
+.negative-value { color: var(--sg-red) !important; }
+.financial-neutral { color: var(--foreground) !important; }
+
+@media (max-width: 767px) {
+  .coinops-brand-symbol { border-radius: 10px; }
+  .coinops-brand-copy strong { font-size: 0.96rem; }
+  .coinops-brand-copy small { max-width: 210px; }
+  .auth-brand { margin-bottom: 6px; }
 }
 
 @media (min-width: 1024px) {

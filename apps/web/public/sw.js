@@ -2,13 +2,13 @@ self.addEventListener("push", function (event) {
   var payload = {};
   try { payload = event.data ? event.data.json() : {}; } catch (_) { payload = {}; }
   var data = payload.data || {};
-  event.waitUntil(self.registration.showNotification(payload.title || "Slot Control", {
-    body: payload.body || "Há uma atualização no seu Slot Control.",
-    tag: payload.tag || data.eventId || "slot-control",
+  event.waitUntil(self.registration.showNotification(payload.title || "CoinOps", {
+    body: payload.body || "Há uma atualização no seu CoinOps.",
+    tag: payload.tag || data.eventId || "coinops",
     renotify: false,
     data: data,
-    icon: "/icons/slotgain-icon.svg",
-    badge: "/icons/maskable-icon.svg"
+    icon: "/icon-192x192.png",
+    badge: "/icon-maskable-192x192.png"
   }));
 });
 

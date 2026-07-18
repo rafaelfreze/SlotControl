@@ -71,7 +71,7 @@ export function buildPushNotification(outbox: PushOutboxRecord, preferences: Pic
 
   if (outbox.event_type === "test") {
     return {
-      title: asText(payload.title) || "Teste de notificações do Slot Control",
+      title: asText(payload.title) || "Teste de notificações do CoinOps",
       body: asText(payload.body) || "As notificações deste celular estão configuradas. Toque para abrir o painel.",
       tag,
       url,
@@ -88,7 +88,7 @@ export function buildPushNotification(outbox: PushOutboxRecord, preferences: Pic
       ? `BTC mudou para modo ${label}. BTC: novas compras a cada ${btcDrop}%. SOL: novas compras a cada ${solDrop}%.`
       : `BTC mudou para modo ${label}. Toque para revisar as proximas entradas.`;
     return {
-      title: "SlotGain Control",
+      title: "CoinOps",
       body,
       tag,
       url: asText(payload.url) || "/config",

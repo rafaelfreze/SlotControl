@@ -197,7 +197,7 @@ export async function sendPushTestNotification() {
     origin: "test",
     payload: {
       eventId,
-      title: "SlotGain Control",
+      title: "CoinOps",
       body: "Notificações ativadas com sucesso neste dispositivo.",
       url: "/config"
     }

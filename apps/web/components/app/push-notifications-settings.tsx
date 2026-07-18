@@ -193,7 +193,7 @@ export function PushNotificationsSettings({ initialPreferences, subscriptions, v
         <div><span>Este celular</span><strong>{currentDeviceLabel[currentDevice]}</strong></div>
         <div><span>Dispositivos ativos</span><strong>{activeCount}</strong></div>
       </div>
-      {permission === "requires-pwa" ? <p className="settings-hint">No iPhone/iPad, toque em Compartilhar, escolha “Adicionar à Tela de Início” e abra o Slot Control pelo ícone instalado.</p> : null}
+      {permission === "requires-pwa" ? <p className="settings-hint">No iPhone/iPad, toque em Compartilhar, escolha “Adicionar à Tela de Início” e abra o CoinOps pelo ícone instalado.</p> : null}
       {permission === "denied" ? <p className="settings-hint">A permissão foi bloqueada. Reative-a nas configurações do Safari, Chrome ou do sistema operacional.</p> : null}
       <div className="push-actions">
         {currentDevice === "active" ? <button className="solid-button" type="button" disabled={isPending} onClick={deactivateThisDevice}>Desativar neste celular</button> : <button className="solid-button" type="button" disabled={!canActivate} onClick={activate}>{currentDevice === "needs-sync" ? "Sincronizar notificações neste celular" : "Ativar notificações neste celular"}</button>}

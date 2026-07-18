@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { AuthForm } from "@/components/auth/auth-form";
+import { CoinOpsBrand } from "@/components/app/coinops-brand";
 
 export const metadata: Metadata = {
   title: "Entrar"
@@ -15,13 +16,7 @@ export default function LoginPage({
   return (
     <main className="page-shell auth-shell">
       <Link className="brand-link auth-brand" href="/">
-        <span className="brand-mark" aria-hidden="true">
-          SG
-        </span>
-        <span>
-          <strong>SlotGain Control</strong>
-          <small>Acesso seguro</small>
-        </span>
+        <CoinOpsBrand subtitle="Acesso seguro" />
       </Link>
 
       <section className="auth-card">

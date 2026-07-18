@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { CoinOpsBrand } from "@/components/app/coinops-brand";
 
 async function getSessionEmail() {
   if (!isSupabaseConfigured()) {
@@ -27,13 +28,7 @@ export default async function HomePage() {
     <main className="page-shell landing-shell">
       <nav className="top-nav" aria-label="Principal">
         <Link className="brand-link" href="/">
-          <span className="brand-mark" aria-hidden="true">
-            SG
-          </span>
-          <span>
-            <strong>SlotGain Control</strong>
-            <small>SaaS cripto</small>
-          </span>
+          <CoinOpsBrand subtitle="Operacoes inteligentes em cripto" />
         </Link>
         <div className="nav-actions">
           <Link className="ghost-link" href="/login">
@@ -47,10 +42,10 @@ export default async function HomePage() {
 
       <section className="hero-grid">
         <div className="hero-copy">
-          <p className="eyebrow">Controle por slots com dados privados</p>
-          <h1>Seu painel de slots cripto pronto para virar SaaS.</h1>
+          <p className="eyebrow">Operacoes privadas com dados em tempo real</p>
+          <h1>Operacoes inteligentes em criptomoedas.</h1>
           <p className="hero-text">
-            Controle seus slots com Supabase Auth, dashboard protegido e dados
+            Controle suas operacoes com dashboard protegido e dados
             separados por usuario.
           </p>
           <div className="hero-actions">
@@ -109,7 +104,7 @@ export default async function HomePage() {
         <article>
           <span>03</span>
           <h2>PWA inicial</h2>
-          <p>Manifest, icones e tema cripto ja estao prontos para evoluir no celular.</p>
+          <p>Manifest, icones CoinOps e tema premium prontos para o uso no celular.</p>
         </article>
       </section>
     </main>

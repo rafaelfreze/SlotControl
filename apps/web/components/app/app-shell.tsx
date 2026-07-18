@@ -1,6 +1,7 @@
 import { LogoutButton } from "@/components/auth/logout-button";
 import type { ReactNode } from "react";
 import { AppNav } from "./app-nav";
+import { CoinOpsBrand } from "./coinops-brand";
 
 type AppShellProps = {
   userEmail: string;
@@ -12,12 +13,10 @@ export function AppShell({ userEmail, children }: AppShellProps) {
     <main className="page-shell dashboard-shell">
       <header className="dashboard-header">
         <div className="dashboard-brand">
-          <span className="brand-mark" aria-hidden="true">
-            SG
-          </span>
+          <CoinOpsBrand compact />
           <div>
-            <p className="eyebrow">SlotGain Control</p>
-            <h1>Controle por slots</h1>
+            <p className="eyebrow">CoinOps</p>
+            <h1>Operacoes por slots</h1>
             <p className="muted-text">{userEmail}</p>
           </div>
         </div>

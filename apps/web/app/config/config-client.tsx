@@ -33,12 +33,12 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
   const sol = strategies.find((strategy) => strategy.asset.toUpperCase() === "SOL");
 
   function exportBackup() {
-    const backup = { app: "SlotGain Control", exportedAt: new Date().toISOString(), user: userEmail, strategies, slots };
+    const backup = { app: "CoinOps", exportedAt: new Date().toISOString(), user: userEmail, strategies, slots };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `slotgain-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.download = `coinops-backup-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
@@ -133,7 +133,7 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
 
       {activeSection === "system" ? <><SectionCard title="Sistema" subtitle="Aplicativo" tone="neutral">
         <div className="settings-list modern-settings">
-          <div><span>Versao</span><strong>SlotGain Control</strong></div>
+          <div><span>Versao</span><strong>CoinOps</strong></div>
           <div><span>Ambiente</span><strong>Supabase</strong></div>
         </div>
       </SectionCard>

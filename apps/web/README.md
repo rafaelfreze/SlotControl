@@ -1,6 +1,6 @@
-# SlotGain Control Web
+# CoinOps Web
 
-Aplicacao SaaS atual do SlotGain Control, criada com Next.js, Supabase Auth, Supabase Database e deploy preparado para Vercel.
+Aplicacao CoinOps criada com Next.js, Supabase Auth, Supabase Database e deploy preparado para Vercel.
 
 ## Rodar localmente
 
@@ -22,7 +22,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
-NEXT_PUBLIC_APP_NAME="SlotGain Control"
+NEXT_PUBLIC_APP_NAME="CoinOps"
 ```
 
 No Supabase, execute `../../supabase/schema.sql` antes de testar cadastro e dashboard com dados.
@@ -55,7 +55,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
-NEXT_PUBLIC_APP_NAME="SlotGain Control"
+NEXT_PUBLIC_APP_NAME="CoinOps"
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` sao variaveis exclusivamente server-side. O cron da Vercel usa `GET /api/cron/slot-automation` com o header `Authorization: Bearer CRON_SECRET` para processar entrada e saida automatica sem abrir ordens reais na Binance.

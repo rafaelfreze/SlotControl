@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
@@ -52,7 +53,7 @@ export function BottomNavigation() {
 
 export function DesktopSidebar() {
   const pathname = usePathname();
-  return <aside className="desktop-sidebar" aria-label="Navegacao lateral"><Link className="sidebar-brand" href="/dashboard"><b>SG</b><span>SlotGain<small>CONTROL</small></span></Link><nav>{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</nav></aside>;
+  return <aside className="desktop-sidebar" aria-label="Navegacao lateral"><Link className="sidebar-brand" href="/dashboard"><Image src="/icon-96x96.png" alt="CoinOps" width={34} height={34} priority /><span>CoinOps<small>OPERACOES EM CRIPTO</small></span></Link><nav>{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</nav></aside>;
 }
 
 export function StatCard({ title, value, helper, tone = "neutral", financialValue }: { title: string; value: string; helper?: string; tone?: Tone; financialValue?: number }) {
