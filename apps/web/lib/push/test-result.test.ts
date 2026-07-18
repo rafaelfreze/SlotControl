@@ -7,6 +7,7 @@ import {
   isValidPushSubscriptionData,
   normalizeUrlSafeBase64
 } from "./test-result.ts";
+import { createWebPushTopic } from "./topic.ts";
 
 test("não apresenta sucesso quando não há assinatura válida", () => {
   const result = emptyPushTestResult({ subscriptionsFound: 0 });
@@ -49,6 +50,12 @@ test("conta como válida somente a assinatura completa com endpoint HTTPS", () =
 test("normaliza Base64 comum para o formato URL-safe exigido pelo Web Push", () => {
   assert.equal(normalizeUrlSafeBase64("ab+/cd=="), "ab-_cd");
   assert.equal(isValidPushSubscriptionData({ endpoint: "https://push.example", p256dh: "ab+/cd==", auth: "xy+/==" }), true);
+});
+
+test("topic Web Push não reutiliza a tag visual com caracteres inválidos", () => {
+  const topic = createWebPushTopic("slot-control:test:8f6bc7f8-8c1d-4b12-a0ce-5d02bcd41243");
+  assert.match(topic, /^[A-Za-z0-9_-]{32}$/);
+  assert.equal(topic, createWebPushTopic("slot-control:test:8f6bc7f8-8c1d-4b12-a0ce-5d02bcd41243"));
 });
 
 test("rate limit retorna uma mensagem tratável pela interface", () => {

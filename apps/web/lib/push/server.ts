@@ -4,6 +4,7 @@ import webpush from "web-push";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { buildPushNotification, classifyPushError, isNotificationEnabled } from "./payload";
 import { emptyPushTestResult, isValidPushSubscriptionData, normalizeUrlSafeBase64, type PushTestDeliveryResult, type PushTestResult } from "./test-result";
+import { createWebPushTopic } from "./topic";
 import { DEFAULT_NOTIFICATION_PREFERENCES, type NotificationPreferences, type PushOutboxRecord, type PushSubscriptionRecord } from "./types";
 
 const RETRY_DELAYS_MINUTES = [1, 5, 30];
@@ -169,7 +170,7 @@ async function processOutboxItem(outbox: PushOutboxRecord): Promise<PushProcessi
       const response = await sender.sendNotification(
         { endpoint: subscription.endpoint, keys: { p256dh: normalizeUrlSafeBase64(subscription.p256dh), auth: normalizeUrlSafeBase64(subscription.auth) } },
         JSON.stringify(content),
-        { TTL: 60 * 60, urgency: "high", topic: content.tag.slice(0, 32) }
+        { TTL: 60 * 60, urgency: "high", topic: createWebPushTopic(content.tag) }
       );
       deliveredToProvider += 1;
       results.push({ endpointHost: endpointHost(subscription.endpoint), success: true, statusCode: response.statusCode, errorCode: null, message: null });

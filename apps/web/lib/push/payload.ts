@@ -155,13 +155,15 @@ export function classifyPushError(error: unknown) {
     : null;
   const message = sanitizePushMessage(error instanceof Error ? error.message : "Falha desconhecida no envio push");
 
+  const invalidTopic = /Unsupported characters set use the URL or filename-safe Base64 characters set|maximum of 32 characters/i.test(message);
+
   return {
     statusCode: Number.isFinite(statusCode) ? statusCode : null,
     code: statusCode === 404 || statusCode === 410
       ? "subscription_expired"
       : statusCode === 401 || statusCode === 403
         ? "vapid_unauthorized"
-        : statusCode === 400
+        : statusCode === 400 || invalidTopic
           ? "payload_invalid"
           : statusCode && statusCode >= 500
             ? "provider_transient"
