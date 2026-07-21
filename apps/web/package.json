@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "next lint --no-cache",
     "test": "node --experimental-strip-types --test lib/slotgain/*.test.ts lib/push/*.test.ts",
+    "test:e2e": "playwright test",
     "predeploy": "npm run typecheck && npm run build"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22.10.7",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",

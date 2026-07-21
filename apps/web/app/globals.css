@@ -4156,6 +4156,34 @@ body {
   }
 }
 
+.automation-explanation {
+  display: block !important;
+  min-height: 0 !important;
+  padding: 9px 2px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--sg-muted, var(--muted));
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.automation-diagnostics { display: grid; gap: 8px; margin-top: 10px; }
+.automation-health-grid, .automation-asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.automation-health-grid > div, .automation-asset-card { display: grid; gap: 3px; min-width: 0; padding: 9px; border: 1px solid rgba(120, 151, 177, 0.18); border-radius: 10px; background: rgba(4, 17, 28, 0.42); }
+.automation-health-grid span, .automation-asset-card span { color: var(--sg-muted, var(--muted)); font-size: 0.61rem; font-weight: 800; letter-spacing: 0.04em; }
+.automation-health-grid strong, .automation-asset-card strong { min-width: 0; overflow: hidden; color: var(--foreground); font-size: 0.76rem; text-overflow: ellipsis; white-space: nowrap; }
+.automation-asset-card { min-height: 0; }
+.automation-decision-history { padding: 0; }
+.automation-decision-list { display: grid; gap: 6px; padding: 8px; }
+.automation-decision-list > div { display: grid; gap: 2px; min-width: 0; padding: 7px; border-left: 2px solid var(--sg-gold, var(--yellow)); background: rgba(255, 255, 255, 0.025); }
+.automation-decision-list strong, .automation-decision-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.automation-decision-list span, .automation-error { font-size: 0.72rem; }
+
+@media (min-width: 768px) {
+  .automation-health-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .automation-asset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* CoinOps overrides must remain last because the stylesheet preserves legacy layout rules. */
 :root {
   --background: #050505;

@@ -6,7 +6,7 @@
   "crons": [
     {
       "path": "/api/cron/slot-automation",
-      "schedule": "0 9 * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/cron/process-notifications",

@@ -11,6 +11,8 @@ next-build/
 out/
 dist/
 build/
+playwright-report/
+test-results/
 
 .vercel/
 .turbo/

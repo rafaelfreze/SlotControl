@@ -6,6 +6,7 @@ import { createStrategy, deleteStrategy, updateAutomationMode, updateStrategy } 
 import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { getAutomationModeLabel, useAutomationSetting, type AutomationMode } from "@/lib/slotgain/auto-gain";
+import type { AutomationDiagnostics } from "@/lib/slotgain/automation-server";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 import { MarketRegimeSettings } from "@/components/slotgain/market-regime-settings";
@@ -22,9 +23,10 @@ type ConfigClientProps = {
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
   assetSettings: Partial<AssetMarketStrategySettings>[];
+  automationDiagnostics: AutomationDiagnostics | null;
 };
 
-export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, notifications, marketState, regimeSettings, assetSettings }: ConfigClientProps) {
+export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, initialAutomationMode, notifications, marketState, regimeSettings, assetSettings, automationDiagnostics }: ConfigClientProps) {
   const [activeSection, setActiveSection] = useState<"strategies" | "automation" | "notifications" | "account" | "system">("strategies");
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const [isSavingAutomation, startAutomationTransition] = useTransition();
@@ -122,10 +124,9 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
               </button>
             ))}
           </div>
-          <div><span>Tema</span><strong>Dark premium</strong></div>
-          <div><span>Moedas</span><strong>BTC e SOL</strong></div>
-          <div><span>Backend</span><strong>Vercel Cron ativo</strong></div>
+          <div className="automation-explanation">Entradas usam a minima do candle de 1 minuto; saidas usam a maxima. Nao e necessario o preco bater exatamente no gatilho.</div>
         </div>
+        <AutomationDiagnosticsPanel diagnostics={automationDiagnostics} slots={slots} />
       </SectionCard>
       : null}
 
@@ -153,6 +154,60 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
       </details>
       </> : null}
     </MobileScreen>
+  );
+}
+
+function formatAutomationMoment(value: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "--" : new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", day: "2-digit", month: "2-digit" }).format(date);
+}
+
+function AutomationDiagnosticsPanel({ diagnostics, slots }: { diagnostics: AutomationDiagnostics | null; slots: SlotView[] }) {
+  const worker = diagnostics?.worker;
+  const stats = worker?.stats || {};
+  const status = worker?.status === "COMPLETED" ? "Saudavel" : worker?.status === "DEGRADED" ? "Degradado" : worker?.status === "FAILED" ? "Com falha" : worker?.status === "RUNNING" ? "Em execucao" : "Aguardando primeira execucao";
+  const perAsset = (["BTC", "SOL"] as const).map((asset) => {
+    const scoped = slots.filter((slot) => slot.strategy?.asset?.toUpperCase() === asset);
+    const waiting = scoped.filter((slot) => slot.status === "hold");
+    const open = scoped.filter((slot) => slot.status === "aberto");
+    const nextEntry = waiting.map((slot) => Number(slot.preco_entrada || 0)).filter((value) => value > 0).sort((a, b) => b - a).at(-1);
+    const nextExit = open.map((slot) => Number(slot.preco_alvo || 0)).filter((value) => value > 0).sort((a, b) => a - b).at(0);
+    const cursor = diagnostics?.cursors.find((item) => item.asset === asset);
+    return { asset, waiting: waiting.length, open: open.length, nextEntry, nextExit, cursor };
+  });
+
+  return (
+    <div className="automation-diagnostics" aria-label="Diagnostico da automacao">
+      <div className="automation-health-grid">
+        <div><span>Worker</span><strong>{status}</strong></div>
+        <div><span>Ultima verificacao</span><strong>{formatAutomationMoment(worker?.completedAt || worker?.startedAt || null)}</strong></div>
+        <div><span>Candles processados</span><strong>{String(stats.candlesProcessed ?? 0)}</strong></div>
+        <div><span>Fonte</span><strong title={worker?.source || undefined}>{worker?.source || "Aguardando"}</strong></div>
+      </div>
+      <div className="automation-asset-grid">
+        {perAsset.map((item) => (
+          <article key={item.asset} className="automation-asset-card">
+            <strong>{item.asset}</strong>
+            <span>Aguardando entrada: {item.waiting}</span>
+            <span>Aguardando saida: {item.open}</span>
+            <span>Proxima entrada: {item.nextEntry ? formatDecimal(item.nextEntry) : "--"}</span>
+            <span>Proxima saida: {item.nextExit ? formatDecimal(item.nextExit) : "--"}</span>
+            <span>Janela lida: {formatAutomationMoment(item.cursor?.lastWindowEnd || null)}</span>
+          </article>
+        ))}
+      </div>
+      {diagnostics?.decisions.length ? <details className="mini-drawer automation-decision-history">
+        <summary>Ultimas decisoes ({diagnostics.decisions.length})</summary>
+        <div className="automation-decision-list">
+          {diagnostics.decisions.map((decision) => <div key={decision.id}>
+            <strong>{decision.decision} {decision.asset} {decision.eventType === "ENTRY" ? "entrada" : "saida"}</strong>
+            <span>Slot {decision.slotId.slice(0, 8)} · {decision.reason} · {formatAutomationMoment(decision.windowEnd)}</span>
+          </div>)}
+        </div>
+      </details> : null}
+      {worker?.error ? <div className="inline-alert automation-error">{worker.error}</div> : null}
+    </div>
   );
 }
 

@@ -5,6 +5,7 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { PushNotificationsSettings } from "@/components/app/push-notifications-settings";
 import { DEFAULT_NOTIFICATION_PREFERENCES, type NotificationPreferences, type PushSubscriptionRecord } from "@/lib/push/types";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
+import { getAutomationDiagnostics } from "@/lib/slotgain/automation-server";
 import { ConfigClient } from "./config-client";
 
 export const metadata: Metadata = { title: "Configuracoes" };
@@ -34,7 +35,7 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, settingsResponse, preferencesResponse, subscriptionsResponse, marketStateResponse, regimeSettingsResponse, assetSettingsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, settingsResponse, preferencesResponse, subscriptionsResponse, marketStateResponse, regimeSettingsResponse, assetSettingsResponse, automationDiagnostics] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -52,7 +53,8 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
     supabase.from("push_subscriptions").select("id,endpoint,user_agent,device_name,platform,is_active,created_at,last_success_at,last_seen_at,revoked_at").eq("user_id", user.id).order("created_at", { ascending: false }),
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
     supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
-    supabase.from("asset_market_strategy_settings").select("*").eq("user_id", user.id)
+    supabase.from("asset_market_strategy_settings").select("*").eq("user_id", user.id),
+    getAutomationDiagnostics(user.id).catch(() => null)
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || preferencesResponse.error || subscriptionsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || assetSettingsResponse.error;
@@ -68,6 +70,7 @@ export default async function ConfigPage({ searchParams }: { searchParams?: { no
       marketState={marketStateResponse.data}
       regimeSettings={regimeSettingsResponse.data}
       assetSettings={assetSettingsResponse.data || []}
+      automationDiagnostics={automationDiagnostics}
       notifications={<PushNotificationsSettings initialPreferences={{ ...DEFAULT_NOTIFICATION_PREFERENCES, ...(preferencesResponse.data as Partial<NotificationPreferences> | null) }} subscriptions={(subscriptionsResponse.data || []) as PushSubscriptionRecord[]} vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || null} />}
     />
   );

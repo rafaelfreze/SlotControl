@@ -18,7 +18,6 @@ import {
   getAutomationModeLabel,
   isAutomationActive,
   useAutomationSetting,
-  useAutomationWatcher,
   type AutomationMode
 } from "@/lib/slotgain/auto-gain";
 import {
@@ -171,14 +170,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   function announce(message: string) {
     setNotice(message);
   }
-
-  useAutomationWatcher({
-    mode: automationMode,
-    slots,
-    prices: { BTC: liveBtcPrice, SOL: liveSolPrice },
-    readKey: livePrices.lastUpdated?.getTime() || null,
-    onRegistered: ({ message }) => setNotice(message)
-  });
 
   return (
     <MobileScreen>

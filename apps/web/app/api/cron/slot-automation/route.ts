@@ -26,6 +26,9 @@ export async function GET(request: Request) {
       entriesExecuted: stats.entriesExecuted,
       gainsExecuted: stats.gainsExecuted,
       ignoredSlots: stats.ignoredSlots,
+      candlesProcessed: stats.candlesProcessed,
+      backlogCandles: stats.backlogCandles,
+      sources: stats.sourceByAsset,
       errors: stats.errors.length
     });
 

@@ -10,7 +10,6 @@ import {
   getAutomationModeLabel,
   isAutomationActive,
   useAutomationSetting,
-  useAutomationWatcher,
   type AutomationMode
 } from "@/lib/slotgain/auto-gain";
 import {
@@ -97,14 +96,6 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
   const liveStatusLabel = livePrices.status === "online" ? "Online" : livePrices.isStale ? "Atualizando" : "Offline";
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
-
-  useAutomationWatcher({
-    mode: automationMode,
-    slots,
-    prices: { BTC: livePrices.prices.BTC, SOL: livePrices.prices.SOL },
-    readKey: livePrices.lastUpdated?.getTime() || null,
-    onRegistered: ({ message }) => setNotice(message)
-  });
 
   return (
     <MobileScreen>
