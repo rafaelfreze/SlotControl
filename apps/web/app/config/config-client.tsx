@@ -174,7 +174,8 @@ function AutomationDiagnosticsPanel({ diagnostics, slots }: { diagnostics: Autom
     const nextEntry = waiting.map((slot) => Number(slot.preco_entrada || 0)).filter((value) => value > 0).sort((a, b) => b - a).at(-1);
     const nextExit = open.map((slot) => Number(slot.preco_alvo || 0)).filter((value) => value > 0).sort((a, b) => a - b).at(0);
     const cursor = diagnostics?.cursors.find((item) => item.asset === asset);
-    return { asset, waiting: waiting.length, open: open.length, nextEntry, nextExit, cursor };
+    const latestWindow = diagnostics?.latestWindows.find((item) => item.asset === asset);
+    return { asset, waiting: waiting.length, open: open.length, nextEntry, nextExit, cursor, latestWindow };
   });
 
   return (
@@ -183,6 +184,7 @@ function AutomationDiagnosticsPanel({ diagnostics, slots }: { diagnostics: Autom
         <div><span>Worker</span><strong>{status}</strong></div>
         <div><span>Ultima verificacao</span><strong>{formatAutomationMoment(worker?.completedAt || worker?.startedAt || null)}</strong></div>
         <div><span>Candles processados</span><strong>{String(stats.candlesProcessed ?? 0)}</strong></div>
+        <div><span>Backlog</span><strong>{String(stats.backlogCandles ?? 0)} min</strong></div>
         <div><span>Fonte</span><strong title={worker?.source || undefined}>{worker?.source || "Aguardando"}</strong></div>
       </div>
       <div className="automation-asset-grid">
@@ -194,6 +196,7 @@ function AutomationDiagnosticsPanel({ diagnostics, slots }: { diagnostics: Autom
             <span>Proxima entrada: {item.nextEntry ? formatDecimal(item.nextEntry) : "--"}</span>
             <span>Proxima saida: {item.nextExit ? formatDecimal(item.nextExit) : "--"}</span>
             <span>Janela lida: {formatAutomationMoment(item.cursor?.lastWindowEnd || null)}</span>
+            <span>Low / High: {item.latestWindow ? `${formatDecimal(Number(item.latestWindow.low))} / ${formatDecimal(Number(item.latestWindow.high))}` : "--"}</span>
           </article>
         ))}
       </div>

@@ -43,6 +43,7 @@ export type AutomationStats = {
 export type AutomationDiagnostics = {
   worker: { status: string; startedAt: string | null; completedAt: string | null; source: string | null; error: string | null; stats: Record<string, unknown> } | null;
   cursors: Array<{ asset: string; lastWindowEnd: string | null; lastSource: string | null; lastSuccessAt: string | null; lastError: string | null; lockedUntil: string | null }>;
+  latestWindows: Array<{ asset: string; windowEnd: string; low: number | string; high: number | string; close: number | string; source: string }>;
   decisions: Array<{ id: string; asset: string; slotId: string; eventType: string; decision: string; reason: string; triggerPrice: number | string | null; intervalLow: number | string | null; intervalHigh: number | string | null; windowEnd: string; createdAt: string }>;
 };
 
@@ -339,13 +340,15 @@ export async function runSlotAutomationCron(): Promise<AutomationStats> {
 
 export async function getAutomationDiagnostics(userId: string): Promise<AutomationDiagnostics> {
   const supabase = createServiceRoleClient();
-  const [workerResponse, cursorsResponse, decisionsResponse] = await Promise.all([
+  const [workerResponse, cursorsResponse, latestWindowsResponse, decisionsResponse] = await Promise.all([
     supabase.from("automation_worker_runs").select("status,started_at,completed_at,source,error_message,stats").order("started_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("automation_market_cursors").select("asset,last_window_end,last_source,last_success_at,last_error,locked_until").order("asset"),
+    supabase.from("automation_price_windows").select("asset,window_end,low_price,high_price,close_price,source").order("window_end", { ascending: false }).limit(12),
     supabase.from("automation_decisions").select("id,asset,slot_id,event_type,decision,reason,trigger_price,interval_low,interval_high,window_end,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(8)
   ]);
   if (workerResponse.error) throw workerResponse.error;
   if (cursorsResponse.error) throw cursorsResponse.error;
+  if (latestWindowsResponse.error) throw latestWindowsResponse.error;
   if (decisionsResponse.error) throw decisionsResponse.error;
   const worker = workerResponse.data;
   return {
@@ -365,6 +368,14 @@ export async function getAutomationDiagnostics(userId: string): Promise<Automati
       lastError: cursor.last_error,
       lockedUntil: cursor.locked_until
     })),
+    latestWindows: Array.from(new Map((latestWindowsResponse.data || []).map((window) => [window.asset, {
+      asset: window.asset,
+      windowEnd: window.window_end,
+      low: window.low_price,
+      high: window.high_price,
+      close: window.close_price,
+      source: window.source
+    }])).values()),
     decisions: (decisionsResponse.data || []).map((decision) => ({
       id: decision.id,
       asset: decision.asset,
