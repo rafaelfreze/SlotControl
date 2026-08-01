@@ -6063,6 +6063,12 @@ body {
   .slot-card-meta { gap: 6px; }
 }
 
+/* Mantem o espacamento original quando o dashboard e agrupado para a grade desktop. */
+.dashboard-workspace {
+  display: grid;
+  gap: var(--space-3);
+}
+
 /* Desktop autenticado: usa a area util da tela e mantem o painel mobile intacto. */
 @media (min-width: 1024px) {
   body {
