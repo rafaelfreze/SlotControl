@@ -101,6 +101,7 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
 
   return (
     <MobileScreen>
+      <div className="dashboard-workspace">
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados do Supabase: {setupError}</section> : null}
       {notice ? (
         <section className="form-success dashboard-notice" role="status">
@@ -159,6 +160,7 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
       </section>
 
       <p className="mobile-session">{userEmail}</p>
+      </div>
     </MobileScreen>
   );
 }
