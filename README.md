@@ -115,7 +115,7 @@ npm run build
 - Slots por usuario
 - Filtros por status
 - Historico de acoes
-- Plano de Crescimento Programado com metas acumuladas a cada ciclo completo de 30 dias e fechado líder pelo ranking atual de gains
+- Plano de Crescimento Programado com dias corridos desde o início, metas acumuladas nos marcos de 30/60/90 dias e fechado líder pelo ranking atual de gains
 - Edição de gains adicionados apenas em slots fechados, sem movimentar patrimônio entre slots
 - Gains reais registrados somente pelo fechamento de slot aberto e separados dos gains adicionados
 - Taxa de gain configurável por estratégia, refletida no valor operacional pela fórmula linear `capital × (1 + taxa × gains)` sem modificar o histórico de eventos

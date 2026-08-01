@@ -14,6 +14,7 @@ export type ProgrammedGrowthAssetPlan = {
   monthly_goal: number;
   cumulative_goal: number;
   month_number: number;
+  cycle_days?: number;
   leader_slot_id: string | null;
   leader_slot_number: number | null;
   leader_display_rank: number | null;
@@ -29,6 +30,8 @@ export type ProgrammedGrowthPlanResponse = {
   code?: string;
   started_at?: string;
   month_number?: number;
+  elapsed_days?: number;
+  cycle_days?: number;
   btc_monthly_goal?: number;
   sol_monthly_goal?: number;
   plans?: Partial<Record<GrowthAsset, ProgrammedGrowthAssetPlan>>;
@@ -79,7 +82,7 @@ export function GrowthPlanClient({ plan, history, setupError }: { plan: Programm
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
 
-      <SectionCard title="Crescimento programado" subtitle={`Ciclo atual de 30 dias: ${plan.month_number || 1}`} tone="green">
+      <SectionCard title="Crescimento programado" subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia" : "dias"} em operação · meta atual: ${plan.cycle_days ?? 30} dias`} tone="green">
         <p className="growth-plan-intro">A meta é cumprida ao adicionar gains somente em slots fechados. Gains reais, valores e histórico financeiro permanecem preservados.</p>
         <div className="growth-goal-grid">
           <label>Meta BTC mensal<input value={btcGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setBtcGoal(event.target.value)} /></label>
@@ -114,7 +117,7 @@ function GrowthAssetCard({ asset, plan }: { asset: GrowthAsset; plan?: Programme
   return (
     <SectionCard title={`Plano ${asset}`} subtitle={`Meta acumulada: ${plan?.cumulative_goal ?? "--"} gains`} tone={asset === "BTC" ? "gold" : "purple"}>
       <div className="growth-plan-metrics">
-        <div><span>Ciclo de 30 dias</span><strong>{plan?.month_number ?? "--"}</strong></div>
+        <div><span>Ciclo de meta</span><strong>{plan?.cycle_days ?? "--"} dias</strong></div>
         <div><span>Meta mensal</span><strong>{plan?.monthly_goal ?? "--"} gains</strong></div>
         <div><span>Fechado líder</span><strong>{plan?.leader_display_rank ? `#${plan.leader_display_rank}` : "Nenhum fechado"}</strong></div>
         <div><span>Gains totais</span><strong>{plan?.leader_gains ?? "--"}</strong></div>

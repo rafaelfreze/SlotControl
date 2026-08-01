@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildProgrammedGrowthPlan, getGrowthMonthNumber, selectGrowthLeader, type GrowthPlanSlot } from "./programmed-growth.ts";
+import { buildProgrammedGrowthPlan, getGrowthCycleDays, getGrowthMonthNumber, selectGrowthLeader, type GrowthPlanSlot } from "./programmed-growth.ts";
 
 function slot(overrides: Partial<GrowthPlanSlot>): GrowthPlanSlot {
   return {
@@ -19,8 +19,16 @@ test("a meta acumulada nunca reinicia e segue ciclos completos de 30 dias", () =
   assert.equal(getGrowthMonthNumber(startedAt, new Date("2026-01-31T12:00:00Z")), 1);
   assert.equal(getGrowthMonthNumber(startedAt, new Date("2026-03-02T12:00:00Z")), 2);
   assert.equal(getGrowthMonthNumber(startedAt, new Date("2026-04-01T12:00:00Z")), 3);
+  assert.equal(getGrowthCycleDays(1), 30);
+  assert.equal(getGrowthCycleDays(2), 60);
+  assert.equal(getGrowthCycleDays(3), 90);
+  const fortyFirstDayPlan = buildProgrammedGrowthPlan(7, startedAt, [], new Date("2026-02-11T12:00:00Z"));
+  assert.equal(fortyFirstDayPlan.monthNumber, 2);
+  assert.equal(fortyFirstDayPlan.cycleDays, 60);
+  assert.equal(fortyFirstDayPlan.cumulativeGoal, 14);
   const plan = buildProgrammedGrowthPlan(7, startedAt, [], new Date("2026-04-01T12:00:00Z"));
   assert.equal(plan.monthNumber, 3);
+  assert.equal(plan.cycleDays, 90);
   assert.equal(plan.cumulativeGoal, 21);
 });
 

@@ -14,6 +14,10 @@ export function getGrowthMonthNumber(startedAt: Date, now = new Date()) {
   return Math.max(1, Math.ceil(elapsedDays / 30));
 }
 
+export function getGrowthCycleDays(monthNumber: number) {
+  return Math.max(1, monthNumber) * 30;
+}
+
 export function isClosedGrowthSlot(status: GrowthSlotStatus) {
   return status === "gain" || status === "zerado";
 }
@@ -26,12 +30,14 @@ export function selectGrowthLeader(slots: GrowthPlanSlot[]) {
 
 export function buildProgrammedGrowthPlan(monthlyGoal: number, startedAt: Date, slots: GrowthPlanSlot[], now = new Date()) {
   const monthNumber = getGrowthMonthNumber(startedAt, now);
+  const cycleDays = getGrowthCycleDays(monthNumber);
   const cumulativeGoal = monthNumber * monthlyGoal;
   const leader = selectGrowthLeader(slots);
   const missingGains = leader ? Math.max(cumulativeGoal - leader.gains, 0) : null;
 
   return {
     monthNumber,
+    cycleDays,
     cumulativeGoal,
     leader,
     missingGains
