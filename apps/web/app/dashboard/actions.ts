@@ -785,7 +785,6 @@ export async function updateSlot(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
   const status = formText(formData, "status") as SlotStatus;
-  const gains = Number(slot?.gains || 0);
   const baseValue = Math.max(0, formNumber(formData, "baseValue", 0));
   const entryPriceInput = Math.max(0, formNumber(formData, "entryPrice", 0));
   const entryPrice = entryPriceInput > 0 ? roundEntryPrice(entryPriceInput) : 0;
@@ -808,7 +807,7 @@ export async function updateSlot(formData: FormData) {
     .eq("user_id", user.id)
     .single<Pick<StrategyRecord, "key" | "asset">>();
 
-  await supabase
+  const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
     .update({
       status,
@@ -825,7 +824,13 @@ export async function updateSlot(formData: FormData) {
       notes: status === "zerado" ? "" : notes
     })
     .eq("id", slot.id)
-    .eq("user_id", user.id);
+    .eq("user_id", user.id)
+    .select("id")
+    .maybeSingle();
+
+  if (updateError || !updatedSlot) {
+    throw new Error("Não foi possível editar o slot com as regras atuais de gains.");
+  }
 
   await addHistory("Editar", `Slot editado para ${status}, ${effectiveGains} gains.`, {
     userId: user.id,
