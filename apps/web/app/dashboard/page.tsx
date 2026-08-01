@@ -7,8 +7,8 @@ import { DashboardClient } from "./dashboard-client";
 
 type DashboardGrowthPlan = {
   plans?: {
-    BTC?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_number?: number | null };
-    SOL?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_number?: number | null };
+    BTC?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_id?: string | null; leader_slot_number?: number | null };
+    SOL?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_id?: string | null; leader_slot_number?: number | null };
   };
 };
 

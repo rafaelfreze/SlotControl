@@ -10,7 +10,8 @@ export type GrowthPlanSlot = {
 };
 
 export function getGrowthMonthNumber(startedAt: Date, now = new Date()) {
-  return Math.max(1, (now.getFullYear() - startedAt.getFullYear()) * 12 + now.getMonth() - startedAt.getMonth() + 1);
+  const elapsedDays = Math.max(0, Math.floor((now.getTime() - startedAt.getTime()) / (24 * 60 * 60 * 1000)));
+  return Math.max(1, Math.ceil(elapsedDays / 30));
 }
 
 export function isClosedGrowthSlot(status: GrowthSlotStatus) {

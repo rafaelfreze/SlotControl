@@ -16,6 +16,7 @@ export type ProgrammedGrowthAssetPlan = {
   month_number: number;
   leader_slot_id: string | null;
   leader_slot_number: number | null;
+  leader_display_rank: number | null;
   leader_status: string | null;
   leader_gains: number | null;
   leader_real_gains: number | null;
@@ -78,7 +79,7 @@ export function GrowthPlanClient({ plan, history, setupError }: { plan: Programm
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
 
-      <SectionCard title="Crescimento programado" subtitle={`Mês atual ${plan.month_number || 1}`} tone="green">
+      <SectionCard title="Crescimento programado" subtitle={`Ciclo atual de 30 dias: ${plan.month_number || 1}`} tone="green">
         <p className="growth-plan-intro">A meta é cumprida ao adicionar gains somente em slots fechados. Gains reais, valores e histórico financeiro permanecem preservados.</p>
         <div className="growth-goal-grid">
           <label>Meta BTC mensal<input value={btcGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setBtcGoal(event.target.value)} /></label>
@@ -113,9 +114,9 @@ function GrowthAssetCard({ asset, plan }: { asset: GrowthAsset; plan?: Programme
   return (
     <SectionCard title={`Plano ${asset}`} subtitle={`Meta acumulada: ${plan?.cumulative_goal ?? "--"} gains`} tone={asset === "BTC" ? "gold" : "purple"}>
       <div className="growth-plan-metrics">
-        <div><span>Mês</span><strong>{plan?.month_number ?? "--"}</strong></div>
+        <div><span>Ciclo de 30 dias</span><strong>{plan?.month_number ?? "--"}</strong></div>
         <div><span>Meta mensal</span><strong>{plan?.monthly_goal ?? "--"} gains</strong></div>
-        <div><span>Slot líder</span><strong>{plan?.leader_slot_number ? `#${plan.leader_slot_number}` : "Nenhum fechado"}</strong></div>
+        <div><span>Fechado líder</span><strong>{plan?.leader_display_rank ? `#${plan.leader_display_rank}` : "Nenhum fechado"}</strong></div>
         <div><span>Gains totais</span><strong>{plan?.leader_gains ?? "--"}</strong></div>
         <div><span>Gains reais</span><strong>{plan?.leader_real_gains ?? "--"}</strong></div>
         <div><span>Gains adicionados</span><strong>{plan?.leader_added_gains ?? "--"}</strong></div>
@@ -123,7 +124,7 @@ function GrowthAssetCard({ asset, plan }: { asset: GrowthAsset; plan?: Programme
       </div>
       {!plan?.leader_slot_id ? <p className="settings-hint">Não há slot fechado elegível. Slots abertos e em espera nunca recebem gains adicionados.</p> : null}
       {plan?.leader_slot_id && !plan.missing_gains ? <p className="settings-hint">A meta acumulada já foi atingida.</p> : null}
-      {plan?.leader_slot_id && plan.missing_gains ? <p className="settings-hint">Faltam {plan.missing_gains} gains. Abra o slot #{plan.leader_slot_number} em Slots e edite “Adicionar gains”.</p> : null}
+      {plan?.leader_slot_id && plan.missing_gains ? <p className="settings-hint">Faltam {plan.missing_gains} gains. Abra o Fechado #{plan.leader_display_rank} em Slots e edite “Adicionar gains”.</p> : null}
     </SectionCard>
   );
 }

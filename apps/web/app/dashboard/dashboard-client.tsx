@@ -37,6 +37,7 @@ type DashboardGrowthPlan = {
     monthly_goal?: number;
     cumulative_goal?: number;
     missing_gains?: number | null;
+    leader_slot_id?: string | null;
     leader_slot_number?: number | null;
   }>>;
 };
@@ -170,7 +171,7 @@ function GrowthPlanStrip({ plan }: { plan: DashboardGrowthPlan | null }) {
       {(["BTC", "SOL"] as const).map((asset) => {
         const item = plan?.plans?.[asset];
         const missing = Number(item?.missing_gains || 0);
-        const status = !item?.leader_slot_number
+        const status = !item?.leader_slot_id
           ? "sem fechado"
           : missing > 0
             ? `faltam ${missing}`

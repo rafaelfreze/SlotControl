@@ -14,9 +14,12 @@ function slot(overrides: Partial<GrowthPlanSlot>): GrowthPlanSlot {
   };
 }
 
-test("a meta acumulada nunca reinicia", () => {
-  assert.equal(getGrowthMonthNumber(new Date("2026-01-15T12:00:00Z"), new Date("2026-04-01T12:00:00Z")), 4);
-  const plan = buildProgrammedGrowthPlan(7, new Date("2026-01-15T12:00:00Z"), [], new Date("2026-03-31T12:00:00Z"));
+test("a meta acumulada nunca reinicia e segue ciclos completos de 30 dias", () => {
+  const startedAt = new Date("2026-01-01T12:00:00Z");
+  assert.equal(getGrowthMonthNumber(startedAt, new Date("2026-01-31T12:00:00Z")), 1);
+  assert.equal(getGrowthMonthNumber(startedAt, new Date("2026-03-02T12:00:00Z")), 2);
+  assert.equal(getGrowthMonthNumber(startedAt, new Date("2026-04-01T12:00:00Z")), 3);
+  const plan = buildProgrammedGrowthPlan(7, startedAt, [], new Date("2026-04-01T12:00:00Z"));
   assert.equal(plan.monthNumber, 3);
   assert.equal(plan.cumulativeGoal, 21);
 });
