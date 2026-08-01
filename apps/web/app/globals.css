@@ -6108,6 +6108,194 @@ body {
   gap: var(--space-3);
 }
 
+/* Slots: mantém todos os números visíveis em cartões curtos para uso frequente no celular. */
+.asset-page-summary {
+  padding: 10px;
+}
+
+.asset-page-summary .asset-heading {
+  margin-bottom: 6px;
+}
+
+.asset-summary-stats {
+  gap: 6px;
+}
+
+.asset-summary-stats .mobile-metric-card {
+  min-height: 64px;
+  padding: 7px 8px;
+}
+
+.asset-summary-stats .mobile-metric-card p {
+  margin: 0 0 4px;
+  font-size: 0.56rem;
+  line-height: 1.08;
+}
+
+.asset-summary-stats .mobile-metric-card strong {
+  font-size: 0.88rem;
+  line-height: 1.05;
+}
+
+.asset-summary-stats .mobile-metric-card em {
+  margin-top: 3px;
+  font-size: 0.55rem;
+  line-height: 1.08;
+}
+
+.modern-slot-list {
+  gap: 6px;
+}
+
+.modern-slot-card {
+  gap: 6px;
+  padding: 8px 9px;
+}
+
+.slot-card-top {
+  min-height: 30px;
+  margin: 0;
+}
+
+.slot-card-top span,
+.slot-card-values span {
+  font-size: 0.54rem;
+  line-height: 1.08;
+}
+
+.slot-card-top strong {
+  margin-top: 1px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.slot-card-top em {
+  padding: 4px 7px;
+  font-size: 0.52rem;
+}
+
+.slot-card-values {
+  gap: 5px;
+  padding-top: 6px;
+}
+
+.slot-card-values strong {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  line-height: 1.08;
+}
+
+.slot-card-meta {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 5px;
+  margin: 0;
+}
+
+.slot-gain-breakdown {
+  display: contents;
+}
+
+.slot-card-meta > span,
+.slot-gain-breakdown span,
+.slot-operation {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.025em;
+  line-height: 1.08;
+  text-transform: uppercase;
+}
+
+.slot-card-meta > span strong,
+.slot-gain-breakdown strong,
+.slot-operation strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  line-height: 1.08;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.slot-operation {
+  grid-column: auto;
+  grid-row: auto;
+  text-align: right;
+}
+
+.slot-gain-editor {
+  grid-template-columns: minmax(0, 1fr) 68px;
+  align-items: center;
+  gap: 5px;
+}
+
+.slot-gain-editor label {
+  grid-template-columns: minmax(0, 1fr) 45px;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.54rem;
+}
+
+.slot-gain-editor input,
+.slot-gain-editor button {
+  min-height: 27px;
+  padding: 3px 5px;
+  font-size: 0.68rem;
+}
+
+.modern-slot-card > .slot-more-drawer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.modern-slot-card > .slot-more-drawer > summary {
+  min-height: 27px;
+  padding: 0;
+  border: 1px solid rgba(120, 151, 177, 0.16);
+  border-radius: 7px;
+  background: rgba(4, 17, 28, 0.42);
+  font-size: 0.62rem;
+}
+
+.modern-slot-card > .slot-more-drawer[open] {
+  padding-top: 2px;
+}
+
+@media (max-width: 359px) {
+  .modern-slot-card {
+    padding-inline: 8px;
+  }
+
+  .slot-card-values,
+  .slot-card-meta {
+    gap: 4px;
+  }
+
+  .slot-card-values span,
+  .slot-card-meta > span,
+  .slot-gain-breakdown span,
+  .slot-operation {
+    font-size: 0.49rem;
+  }
+
+  .slot-card-values strong,
+  .slot-card-meta > span strong,
+  .slot-gain-breakdown strong,
+  .slot-operation strong {
+    font-size: 0.65rem;
+  }
+}
+
 /* Desktop autenticado: usa a area util da tela e mantem o painel mobile intacto. */
 @media (min-width: 1024px) {
   body {

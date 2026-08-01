@@ -234,17 +234,15 @@ function SlotCard({
           <span>Gains reais<strong>{slot.real_gains}</strong></span>
           <span>Gains adicionados<strong>{slot.added_gains}</strong></span>
         </div>
-        {slot.status === "aberto" || slot.status === "hold" ? (
-          <span className="slot-gain-readonly">Gains adicionados somente em slots fechados.</span>
-        ) : (
+        <span className="slot-operation">Operação<strong>{formatDate(slot.updated_at)}</strong></span>
+      </div>
+      {slot.status !== "aberto" && slot.status !== "hold" ? (
         <form className="slot-gain-editor" action={updateSlotGains}>
           <input type="hidden" name="slotId" value={slot.id} />
           <label>Adicionar gains<input name="addedGains" type="number" min={slot.added_gains} step="1" defaultValue={slot.added_gains} aria-label={`Gains adicionados do slot ${slot.slot_number}`} /></label>
           <button type="submit">Salvar</button>
         </form>
-        )}
-        <span>Operação<strong>{formatDate(slot.updated_at)}</strong></span>
-      </div>
+      ) : null}
       <details className="mini-drawer slot-more-drawer">
         <summary>Ver mais</summary>
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
