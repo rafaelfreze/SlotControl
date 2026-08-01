@@ -117,6 +117,6 @@ npm run build
 - Historico de acoes
 - Adicionar saldo
 - Plano de Crescimento Programado com metas acumuladas, slot líder fechado e aporte externo auditável
-- Taxa de gain configurável por estratégia, aplicada aos próximos gains e aos alvos ativos sem reescrever lucro histórico
+- Taxa de gain configurável por estratégia, refletida no valor operacional pela fórmula linear `capital × (1 + taxa × gains)` sem modificar o histórico de eventos
 - Preços de entrada e alvo arredondados; rankings separados de slots abertos e fechados por quantidade de gains
 - Layout escuro mobile-first inspirado em ferramentas de trading

@@ -201,7 +201,7 @@ as $$
 begin
   if new.gains > old.gains then
     new.realized_profit := round(
-      old.realized_profit + (old.base_value + old.realized_profit + old.growth_contribution) * (power(1 + new.gain_rate, new.gains - old.gains) - 1),
+      (new.base_value + new.growth_contribution) * new.gain_rate * new.gains,
       8
     );
   end if;

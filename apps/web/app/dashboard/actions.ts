@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { getValueAfterGains } from "@/lib/slotgain/gain-calculation";
+import { getValueForGains } from "@/lib/slotgain/gain-calculation";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, effectiveMarketRegime, validateMarketRegimeSettings, type AssetMarketStrategySettings, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 import { recalculateFutureEntryTriggers } from "@/lib/slotgain/market-regime-server";
 
@@ -97,8 +97,8 @@ function roundEntryPrice(value: number) {
   return Math.round(value);
 }
 
-function nextOperationalValue(slot: Pick<SlotRecord, "operational_slot_value" | "base_value" | "gain_rate" | "gains">, gainRate = Number(slot.gain_rate || 0), gainCount = 1) {
-  return getValueAfterGains(currentValue(slot), gainRate, gainCount);
+function operationalValueForGains(slot: Pick<SlotRecord, "base_value" | "growth_contribution" | "gains">, gainRate: number, gains = Number(slot.gains || 0)) {
+  return getValueForGains(Number(slot.base_value || 0), Number(slot.growth_contribution || 0), gainRate, gains);
 }
 
 type HistoryMetadata = {
@@ -361,7 +361,7 @@ export async function updateStrategy(formData: FormData) {
 
   const { data: affectedSlots } = await supabase
     .from("slots")
-    .select("id,status,preco_entrada")
+    .select("id,status,preco_entrada,base_value,growth_contribution,gains")
     .eq("user_id", user.id)
     .eq("strategy_id", id);
 
@@ -390,6 +390,7 @@ export async function updateStrategy(formData: FormData) {
         .from("slots")
         .update({
           gain_rate: gainRate,
+          realized_profit: operationalValueForGains(slot as SlotRecord, gainRate) - Number(slot.base_value || 0) - Number(slot.growth_contribution || 0),
           preco_alvo: keepsTarget ? roundEntryPrice(entryPrice * (1 + gainRate)) : null
         })
         .eq("id", slot.id)
@@ -689,7 +690,7 @@ export async function registerGain(formData: FormData) {
     .single<Pick<StrategyRecord, "key" | "asset">>();
   const valueBefore = currentValue(slot);
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
-  const valueAfter = nextOperationalValue(slot, strategyGainRate);
+  const valueAfter = operationalValueForGains(slot, strategyGainRate, gains);
 
   const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
@@ -797,10 +798,8 @@ export async function updateSlot(formData: FormData) {
   }
 
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
-  const gainedNow = Math.max(gains - Number(slot.gains || 0), 0);
-  const nextValue = gainedNow > 0
-    ? baseValue + (nextOperationalValue(slot, strategyGainRate, gainedNow) - Number(slot.base_value || 0))
-    : baseValue + Number(slot.realized_profit || 0) + Number(slot.growth_contribution || 0);
+  const effectiveGains = status === "zerado" ? 0 : gains;
+  const nextValue = getValueForGains(baseValue, Number(slot.growth_contribution || 0), strategyGainRate, effectiveGains);
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
@@ -815,6 +814,7 @@ export async function updateSlot(formData: FormData) {
       gains: status === "zerado" ? 0 : gains,
       base_value: baseValue,
       gain_rate: strategyGainRate,
+      realized_profit: nextValue - baseValue - Number(slot.growth_contribution || 0),
       preco_entrada: keepsPrices && entryPrice > 0 ? entryPrice : null,
       preco_atual: status === "aberto" && currentPrice > 0 ? currentPrice : null,
       preco_alvo: keepsPrices && entryPrice > 0 ? roundEntryPrice(entryPrice * (1 + strategyGainRate)) : keepsPrices && targetPrice > 0 ? roundEntryPrice(targetPrice) : null,
@@ -841,7 +841,7 @@ export async function updateSlot(formData: FormData) {
       valueBefore: currentValue(slot),
       valueAfter: nextValue,
       slotValue: baseValue,
-      gains: status === "zerado" ? 0 : gains,
+      gains: effectiveGains,
       statusBefore: slot.status,
       statusAfter: status,
       note: notes || "Slot editado manualmente."
@@ -873,9 +873,8 @@ export async function updateSlotGains(formData: FormData) {
       .single<Pick<StrategyRecord, "key" | "asset">>(),
     getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id)
   ]);
-  const gainsAdded = gains - Number(slot.gains || 0);
   const statusAfter: SlotStatus = "gain";
-  const valueAfter = nextOperationalValue(slot, strategyGainRate, gainsAdded);
+  const valueAfter = operationalValueForGains(slot, strategyGainRate, gains);
   const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
     .update({

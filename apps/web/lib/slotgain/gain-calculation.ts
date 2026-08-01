@@ -1,7 +1,8 @@
-export function getValueAfterGains(currentValue: number, gainRate: number, gainCount = 1) {
-  if (!Number.isFinite(currentValue) || currentValue < 0 || !Number.isFinite(gainRate) || gainRate < 0 || !Number.isInteger(gainCount) || gainCount < 0) {
-    return currentValue;
+export function getValueForGains(baseValue: number, growthContribution: number, gainRate: number, gains: number) {
+  const capital = baseValue + growthContribution;
+  if (!Number.isFinite(capital) || capital < 0 || !Number.isFinite(gainRate) || gainRate < 0 || !Number.isInteger(gains) || gains < 0) {
+    return capital;
   }
 
-  return currentValue * Math.pow(1 + gainRate, gainCount);
+  return Number((capital * (1 + gainRate * gains)).toFixed(8));
 }

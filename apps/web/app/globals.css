@@ -5890,6 +5890,30 @@ body {
   }
 }
 
+/* A navegação fixa nunca pode encobrir o fim de formulários e listas. */
+html,
+body {
+  min-height: 100%;
+  overflow-y: auto;
+}
+
+.app-frame {
+  min-height: 100dvh;
+}
+
+.mobile-dashboard-shell,
+.mobile-dashboard-shell.app-screen,
+.page-shell {
+  min-height: 100dvh;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+}
+
+.bottom-navigation {
+  isolation: isolate;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
 @media (max-width: 560px) {
 }
 .growth-plan-intro { margin: 0 0 12px; color: var(--muted); font-size: 0.82rem; line-height: 1.45; }
