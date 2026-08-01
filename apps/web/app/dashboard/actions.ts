@@ -786,12 +786,7 @@ export async function updateSlot(formData: FormData) {
   const slot = await getSlotFromForm(supabase, user.id, formData);
   const status = formText(formData, "status") as SlotStatus;
   const baseValue = Math.max(0, formNumber(formData, "baseValue", 0));
-  const entryPriceInput = Math.max(0, formNumber(formData, "entryPrice", 0));
-  const entryPrice = entryPriceInput > 0 ? roundEntryPrice(entryPriceInput) : 0;
-  const currentPrice = Math.max(0, formNumber(formData, "currentPrice", 0));
-  const targetPrice = Math.max(0, formNumber(formData, "targetPrice", 0));
   const notes = formText(formData, "notes");
-  const keepsPrices = status === "aberto" || status === "hold";
 
   if (!slot || !["zerado", "aberto", "gain", "hold"].includes(status)) {
     return;
@@ -817,9 +812,6 @@ export async function updateSlot(formData: FormData) {
       base_value: baseValue,
       gain_rate: strategyGainRate,
       realized_profit: nextValue - baseValue - Number(slot.growth_contribution || 0),
-      preco_entrada: keepsPrices && entryPrice > 0 ? entryPrice : null,
-      preco_atual: status === "aberto" && currentPrice > 0 ? currentPrice : null,
-      preco_alvo: keepsPrices && entryPrice > 0 ? roundEntryPrice(entryPrice * (1 + strategyGainRate)) : keepsPrices && targetPrice > 0 ? roundEntryPrice(targetPrice) : null,
       started_once: status !== "zerado",
       notes: status === "zerado" ? "" : notes
     })
@@ -842,10 +834,10 @@ export async function updateSlot(formData: FormData) {
       asset: strategy?.asset || null,
       eventType: "edicao",
       origin: "MANUAL",
-      expectedPrice: keepsPrices && entryPrice > 0 ? entryPrice : null,
-      executedPrice: status === "aberto" && currentPrice > 0 ? currentPrice : null,
-      currentPrice: status === "aberto" && currentPrice > 0 ? currentPrice : null,
-      targetPrice: keepsPrices && entryPrice > 0 ? roundEntryPrice(entryPrice * (1 + strategyGainRate)) : keepsPrices && targetPrice > 0 ? roundEntryPrice(targetPrice) : null,
+      expectedPrice: Number(slot.preco_entrada || 0) || null,
+      executedPrice: Number(slot.preco_atual || 0) || null,
+      currentPrice: Number(slot.preco_atual || 0) || null,
+      targetPrice: Number(slot.preco_alvo || 0) || null,
       valueBefore: currentValue(slot),
       valueAfter: nextValue,
       slotValue: baseValue,

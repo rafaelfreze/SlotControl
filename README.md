@@ -119,5 +119,5 @@ npm run build
 - Edição de gains adicionados apenas em slots fechados, sem movimentar patrimônio entre slots
 - Gains reais registrados somente pelo fechamento de slot aberto e separados dos gains adicionados
 - Taxa de gain configurável por estratégia, refletida no valor operacional pela fórmula linear `capital × (1 + taxa × gains)` sem modificar o histórico de eventos
-- Preços de entrada e alvo arredondados; rankings separados de slots abertos e fechados por quantidade de gains
+- Preço de entrada identificado ao abrir o slot, sem exibição ou edição manual no card; rankings separados de slots abertos e fechados por quantidade de gains
 - Layout escuro mobile-first inspirado em ferramentas de trading
