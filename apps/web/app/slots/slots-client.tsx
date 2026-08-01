@@ -13,7 +13,6 @@ import {
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
-  formatDate,
   formatPrice,
   formatUsdt,
   getCurrentValue,
@@ -234,7 +233,6 @@ function SlotCard({
           <span>Gains reais<strong>{slot.real_gains}</strong></span>
           <span>Gains adicionados<strong>{slot.added_gains}</strong></span>
         </div>
-        <span className="slot-operation">Operação<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status !== "aberto" && slot.status !== "hold" ? (
         <form className="slot-gain-editor" action={updateSlotGains}>

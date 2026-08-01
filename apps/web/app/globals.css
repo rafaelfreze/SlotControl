@@ -6159,7 +6159,7 @@ body {
 
 .slot-card-top span,
 .slot-card-values span {
-  font-size: 0.54rem;
+  font-size: 0.57rem;
   line-height: 1.08;
 }
 
@@ -6181,12 +6181,12 @@ body {
 
 .slot-card-values strong {
   margin-top: 2px;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   line-height: 1.08;
 }
 
 .slot-card-meta {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: end;
   gap: 5px;
   margin: 0;
@@ -6197,13 +6197,12 @@ body {
 }
 
 .slot-card-meta > span,
-.slot-gain-breakdown span,
-.slot-operation {
+.slot-gain-breakdown span {
   display: grid;
   gap: 2px;
   min-width: 0;
   color: var(--muted);
-  font-size: 0.52rem;
+  font-size: 0.61rem;
   font-weight: 800;
   letter-spacing: 0.025em;
   line-height: 1.08;
@@ -6211,23 +6210,16 @@ body {
 }
 
 .slot-card-meta > span strong,
-.slot-gain-breakdown strong,
-.slot-operation strong {
+.slot-gain-breakdown strong {
   overflow: hidden;
   color: var(--foreground);
-  font-size: 0.7rem;
+  font-size: 0.86rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
   line-height: 1.08;
   text-overflow: ellipsis;
   text-transform: none;
   white-space: nowrap;
-}
-
-.slot-operation {
-  grid-column: auto;
-  grid-row: auto;
-  text-align: right;
 }
 
 .slot-gain-editor {
@@ -6283,16 +6275,14 @@ body {
 
   .slot-card-values span,
   .slot-card-meta > span,
-  .slot-gain-breakdown span,
-  .slot-operation {
-    font-size: 0.49rem;
+  .slot-gain-breakdown span {
+    font-size: 0.56rem;
   }
 
   .slot-card-values strong,
   .slot-card-meta > span strong,
-  .slot-gain-breakdown strong,
-  .slot-operation strong {
-    font-size: 0.65rem;
+  .slot-gain-breakdown strong {
+    font-size: 0.78rem;
   }
 }
 
