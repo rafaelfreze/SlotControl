@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildProgrammedGrowthPlan, getGrowthMonthNumber, getRequiredGrowthContribution, selectGrowthLeader, type GrowthPlanSlot } from "./programmed-growth.ts";
+import { buildProgrammedGrowthPlan, getGrowthMonthNumber, selectGrowthLeader, type GrowthPlanSlot } from "./programmed-growth.ts";
 
 function slot(overrides: Partial<GrowthPlanSlot>): GrowthPlanSlot {
   return {
@@ -10,8 +10,6 @@ function slot(overrides: Partial<GrowthPlanSlot>): GrowthPlanSlot {
     sortOrder: 1,
     status: "gain",
     gains: 0,
-    operationalValue: 100,
-    gainRate: 0.01,
     ...overrides
   };
 }
@@ -40,8 +38,8 @@ test("escolhe o slot fechado com mais gains e desempata pelo menor slot", () => 
   assert.equal(leader?.id, "two");
 });
 
-test("aporte representa os gains faltantes sem reduzir o valor operacional", () => {
-  const amount = getRequiredGrowthContribution(100, 0.01, 3);
-  assert.equal(amount, 3.0301);
-  assert.ok(100 + amount > 100);
+test("plano informa os gains faltantes para ajuste manual", () => {
+  const plan = buildProgrammedGrowthPlan(7, new Date("2026-01-15T12:00:00Z"), [slot({ gains: 18 })], new Date("2026-03-31T12:00:00Z"));
+  assert.equal(plan.cumulativeGoal, 21);
+  assert.equal(plan.missingGains, 3);
 });

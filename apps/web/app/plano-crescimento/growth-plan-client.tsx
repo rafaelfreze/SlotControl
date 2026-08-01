@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import { applyProgrammedGrowthContribution, saveGrowthPlanSettings } from "@/app/dashboard/actions";
+import { saveGrowthPlanSettings } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
 
@@ -18,10 +18,9 @@ export type ProgrammedGrowthAssetPlan = {
   leader_slot_number: number | null;
   leader_status: string | null;
   leader_gains: number | null;
-  leader_value: number | string | null;
+  leader_real_gains: number | null;
+  leader_added_gains: number | null;
   missing_gains: number | null;
-  required_contribution: number | string;
-  already_applied: boolean;
 };
 
 export type ProgrammedGrowthPlanResponse = {
@@ -52,25 +51,9 @@ export type GrowthContributionHistoryItem = {
 export function GrowthPlanClient({ plan, history, setupError }: { plan: ProgrammedGrowthPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null }) {
   const router = useRouter();
   const [notice, setNotice] = useState<string | null>(null);
-  const [notes, setNotes] = useState<Record<GrowthAsset, string>>({ BTC: "", SOL: "" });
   const [btcGoal, setBtcGoal] = useState(String(plan.btc_monthly_goal || 7));
   const [solGoal, setSolGoal] = useState(String(plan.sol_monthly_goal || 1));
   const [isPending, startTransition] = useTransition();
-
-  function apply(asset: GrowthAsset) {
-    startTransition(async () => {
-      try {
-        const result = await applyProgrammedGrowthContribution({ asset, note: notes[asset] });
-        setNotice(result.message || (result.ok ? "Aporte programado aplicado com sucesso." : "Não foi possível aplicar o aporte."));
-        if (result.ok) {
-          setNotes((current) => ({ ...current, [asset]: "" }));
-          router.refresh();
-        }
-      } catch (error) {
-        setNotice(error instanceof Error ? error.message : "Não foi possível aplicar o aporte.");
-      }
-    });
-  }
 
   function saveGoals() {
     startTransition(async () => {
@@ -96,7 +79,7 @@ export function GrowthPlanClient({ plan, history, setupError }: { plan: Programm
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
 
       <SectionCard title="Crescimento programado" subtitle={`Mês atual ${plan.month_number || 1}`} tone="green">
-        <p className="growth-plan-intro">Aportes são externos, aplicados somente em slots fechados. Nenhum gain, lucro histórico ou patrimônio de outro slot é movido.</p>
+        <p className="growth-plan-intro">A meta é cumprida ao adicionar gains somente em slots fechados. Gains reais, valores e histórico financeiro permanecem preservados.</p>
         <div className="growth-goal-grid">
           <label>Meta BTC mensal<input value={btcGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setBtcGoal(event.target.value)} /></label>
           <label>Meta SOL mensal<input value={solGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setSolGoal(event.target.value)} /></label>
@@ -104,10 +87,10 @@ export function GrowthPlanClient({ plan, history, setupError }: { plan: Programm
         <button className="ghost-button compact-action" type="button" disabled={isPending} onClick={saveGoals}>Salvar metas</button>
       </SectionCard>
 
-      <GrowthAssetCard asset="BTC" plan={btc} note={notes.BTC} disabled={isPending} onNoteChange={(value) => setNotes((current) => ({ ...current, BTC: value }))} onApply={() => apply("BTC")} />
-      <GrowthAssetCard asset="SOL" plan={sol} note={notes.SOL} disabled={isPending} onNoteChange={(value) => setNotes((current) => ({ ...current, SOL: value }))} onApply={() => apply("SOL")} />
+      <GrowthAssetCard asset="BTC" plan={btc} />
+      <GrowthAssetCard asset="SOL" plan={sol} />
 
-      <SectionCard title="Histórico de aportes" subtitle="Imutável" tone="neutral">
+      <SectionCard title="Histórico financeiro anterior" subtitle="Somente leitura" tone="neutral">
         <div className="growth-history-list">
           {history.map((item) => (
             <article className="growth-history-item" key={item.id}>
@@ -119,32 +102,28 @@ export function GrowthPlanClient({ plan, history, setupError }: { plan: Programm
               {item.note ? <p>{item.note}</p> : null}
             </article>
           ))}
-          {!history.length ? <p className="empty-copy padded-empty">Nenhum aporte programado foi aplicado ainda.</p> : null}
+          {!history.length ? <p className="empty-copy padded-empty">Nenhum aporte financeiro anterior foi registrado.</p> : null}
         </div>
       </SectionCard>
     </MobileScreen>
   );
 }
 
-function GrowthAssetCard({ asset, plan, note, disabled, onNoteChange, onApply }: { asset: GrowthAsset; plan?: ProgrammedGrowthAssetPlan; note: string; disabled: boolean; onNoteChange: (value: string) => void; onApply: () => void }) {
-  const required = Number(plan?.required_contribution || 0);
-  const canApply = Boolean(plan?.leader_slot_id && plan.missing_gains && required > 0 && !plan.already_applied);
-
+function GrowthAssetCard({ asset, plan }: { asset: GrowthAsset; plan?: ProgrammedGrowthAssetPlan }) {
   return (
     <SectionCard title={`Plano ${asset}`} subtitle={`Meta acumulada: ${plan?.cumulative_goal ?? "--"} gains`} tone={asset === "BTC" ? "gold" : "purple"}>
       <div className="growth-plan-metrics">
         <div><span>Mês</span><strong>{plan?.month_number ?? "--"}</strong></div>
         <div><span>Meta mensal</span><strong>{plan?.monthly_goal ?? "--"} gains</strong></div>
         <div><span>Slot líder</span><strong>{plan?.leader_slot_number ? `#${plan.leader_slot_number}` : "Nenhum fechado"}</strong></div>
-        <div><span>Gains atuais</span><strong>{plan?.leader_gains ?? "--"}</strong></div>
+        <div><span>Gains totais</span><strong>{plan?.leader_gains ?? "--"}</strong></div>
+        <div><span>Gains reais</span><strong>{plan?.leader_real_gains ?? "--"}</strong></div>
+        <div><span>Gains adicionados</span><strong>{plan?.leader_added_gains ?? "--"}</strong></div>
         <div><span>Gains faltantes</span><strong>{plan?.missing_gains ?? "--"}</strong></div>
-        <div><span>Aporte necessário</span><strong>{formatUsdt(required)}</strong></div>
       </div>
-      {plan?.already_applied ? <p className="settings-hint">O aporte deste ativo já foi aplicado no mês atual.</p> : null}
-      {!plan?.leader_slot_id ? <p className="settings-hint">Não há slot fechado elegível. Slots abertos e em espera não recebem aporte.</p> : null}
-      {plan?.leader_slot_id && !plan.missing_gains ? <p className="settings-hint">A meta acumulada já foi atingida; nenhum aporte é necessário.</p> : null}
-      <label className="growth-note">Observação opcional<textarea value={note} maxLength={500} disabled={disabled || !canApply} onChange={(event) => onNoteChange(event.target.value)} placeholder="Origem ou observação do aporte" /></label>
-      <button className="solid-button" type="button" disabled={disabled || !canApply} onClick={onApply}>Aplicar aporte</button>
+      {!plan?.leader_slot_id ? <p className="settings-hint">Não há slot fechado elegível. Slots abertos e em espera nunca recebem gains adicionados.</p> : null}
+      {plan?.leader_slot_id && !plan.missing_gains ? <p className="settings-hint">A meta acumulada já foi atingida.</p> : null}
+      {plan?.leader_slot_id && plan.missing_gains ? <p className="settings-hint">Faltam {plan.missing_gains} gains. Abra o slot #{plan.leader_slot_number} em Slots e edite “Adicionar gains”.</p> : null}
     </SectionCard>
   );
 }

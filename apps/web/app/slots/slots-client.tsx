@@ -3,8 +3,6 @@
 import { useMemo, useState } from "react";
 
 import {
-  addBalance,
-  applyStrategyMarketPrices,
   createSlots,
   moveSlot,
   openSlot,
@@ -138,7 +136,8 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const gains = scopedSlots.reduce((sum, slot) => sum + slot.gains, 0);
-  const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
+  const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.real_gains || 0), 0);
+  const addedGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.added_gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
   const tone = selectedAsset === "SOL" ? "purple" : "gold";
   const title = selectedAsset === "ALL" ? "Slots" : `Slots ${selectedAsset}`;
@@ -196,31 +195,10 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
             <StatCard title="Total" value={formatUsdt(total)} financialValue={total} tone={tone} />
             <StatCard title="Lucro realizado" value={formatUsdt(total - base)} financialValue={total - base} tone="green" />
             <StatCard title="Abertos" value={String(open)} tone="gold" />
-            <StatCard title="Gains nivelados" value={String(gains)} helper={`Reais: ${realGains}`} tone="blue" />
+            <StatCard title="Gains totais" value={String(gains)} helper={`Reais: ${realGains} · Adicionados: ${addedGains}`} tone="blue" />
           </div>
         </div>
       </SectionCard>
-
-
-      <div className="primary-actions-grid compact-actions">
-        <details className="section-card mini-drawer">
-          <summary>Marcacao</summary>
-          <form className="tool-form stacked-form" action={applyStrategyMarketPrices}>
-            <label>Moeda<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={selectedAsset} /></label>
-            <label>Entrada primeiro slot<input name="firstEntryPrice" type="number" min="1" step="1" required /></label>
-            <label>Preco atual<input name="currentPrice" type="number" min="0" step="0.00000001" /></label>
-            <button className="solid-button" type="submit">Aplicar</button>
-          </form>
-        </details>
-        <details className="section-card mini-drawer">
-          <summary>Saldo</summary>
-          <form className="tool-form stacked-form" action={addBalance}>
-            <label>Moeda<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={selectedAsset} /></label>
-            <label>USDT por slot<input name="amount" type="number" min="0.01" step="0.01" required /></label>
-            <button className="solid-button" type="submit">Adicionar</button>
-          </form>
-        </details>
-      </div>
 
       <FilterChips
         value={slotFilter}
@@ -308,14 +286,22 @@ function SlotCard({
       <div className="slot-card-values">
         <span>Valor operacional<strong className={`financial-${getFinancialValueTone(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}`}>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
         <span>Lucro realizado<strong className={`financial-${getFinancialValueTone(Number(slot.realized_profit || 0))}`}>{formatUsdt(Number(slot.realized_profit || 0))}</strong></span>
-        <span>Aporte programado<strong className={`financial-${getFinancialValueTone(Number(slot.growth_contribution || 0))}`}>{formatUsdt(Number(slot.growth_contribution || 0))}</strong></span>
+        <span>Gains totais<strong>{slot.gains}</strong></span>
       </div>
       <div className="slot-card-meta">
+        <div className="slot-gain-breakdown">
+          <span>Gains reais<strong>{slot.real_gains}</strong></span>
+          <span>Gains adicionados<strong>{slot.added_gains}</strong></span>
+        </div>
+        {slot.status === "aberto" || slot.status === "hold" ? (
+          <span className="slot-gain-readonly">Gains adicionados somente em slots fechados.</span>
+        ) : (
         <form className="slot-gain-editor" action={updateSlotGains}>
           <input type="hidden" name="slotId" value={slot.id} />
-          <label>Gains atuais<input name="gains" type="number" min={slot.gains} step="1" defaultValue={slot.gains} aria-label={`Gains atuais do slot ${slot.slot_number}`} /></label>
+          <label>Adicionar gains<input name="addedGains" type="number" min={slot.added_gains} step="1" defaultValue={slot.added_gains} aria-label={`Gains adicionados do slot ${slot.slot_number}`} /></label>
           <button type="submit">Salvar</button>
         </form>
+        )}
         <span>Operação<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status === "aberto" || slot.status === "hold" ? (
@@ -327,7 +313,8 @@ function SlotCard({
       <details className="mini-drawer slot-more-drawer">
         <summary>Ver mais</summary>
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
-        <div className="slot-internal-id">Gains reais: {slot.gains}</div>
+        <div className="slot-internal-id">Gains reais: {slot.real_gains}</div>
+        <div className="slot-internal-id">Gains adicionados: {slot.added_gains}</div>
         <div className="slot-card-actions">
           <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
           <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
@@ -355,7 +342,6 @@ function SlotCard({
           <form className="tool-form stacked-form" action={updateSlot}>
             <input type="hidden" name="slotId" value={slot.id} />
             <label>Status<select name="status" defaultValue={slot.status}><option value="zerado">Zerado</option><option value="hold">Aguardando entrada</option><option value="aberto">Aberto</option><option value="gain">Gain</option></select></label>
-            <label>Gains<input name="gains" type="number" min={slot.gains} step="1" defaultValue={slot.gains} /></label>
             <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
             <label>Preco entrada<input name="entryPrice" type="number" min="0" step="1" defaultValue={slot.preco_entrada ? Math.round(Number(slot.preco_entrada)) : ""} /></label>
             <label>Preco atual<input name="currentPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_atual || 0) || ""} /></label>

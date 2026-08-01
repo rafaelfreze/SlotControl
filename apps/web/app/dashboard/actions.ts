@@ -18,6 +18,8 @@ type SlotRecord = {
   sort_order: number;
   status: SlotStatus;
   gains: number;
+  real_gains: number;
+  added_gains: number;
   base_value: number | string;
   realized_profit: number | string;
   growth_contribution: number | string;
@@ -113,6 +115,8 @@ type HistoryMetadata = {
   valueAfter?: number | null;
   slotValue?: number | null;
   gains?: number | null;
+  realGains?: number | null;
+  addedGains?: number | null;
   statusBefore?: string | null;
   statusAfter?: string | null;
   realizedProfit?: number | null;
@@ -682,6 +686,7 @@ export async function registerGain(formData: FormData) {
   }
 
   const gains = Number(slot.gains || 0) + 1;
+  const realGains = Number(slot.real_gains || 0) + 1;
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
@@ -694,7 +699,7 @@ export async function registerGain(formData: FormData) {
 
   const { data: updatedSlot, error: updateError } = await supabase
     .from("slots")
-    .update({ status: "gain", gains, gain_rate: strategyGainRate, started_once: true, preco_entrada: null, preco_atual: null, preco_alvo: null })
+    .update({ status: "gain", gains, real_gains: realGains, added_gains: Number(slot.added_gains || 0), gain_rate: strategyGainRate, started_once: true, preco_entrada: null, preco_atual: null, preco_alvo: null })
     .eq("id", slot.id)
     .eq("user_id", user.id)
     .eq("status", "aberto")
@@ -746,7 +751,7 @@ export async function resetSlot(formData: FormData) {
 
   await supabase
     .from("slots")
-    .update({ status: "zerado", gains: 0, started_once: false, notes: "", preco_entrada: null, preco_atual: null, preco_alvo: null })
+    .update({ status: "zerado", gains: 0, real_gains: 0, added_gains: 0, started_once: false, notes: "", preco_entrada: null, preco_atual: null, preco_alvo: null })
     .eq("id", slot.id)
     .eq("user_id", user.id);
   await addHistory("Zerar", "Slot zerado manualmente.", {
@@ -780,7 +785,7 @@ export async function updateSlot(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
   const status = formText(formData, "status") as SlotStatus;
-  const gains = Math.max(0, formInt(formData, "gains", 0));
+  const gains = Number(slot?.gains || 0);
   const baseValue = Math.max(0, formNumber(formData, "baseValue", 0));
   const entryPriceInput = Math.max(0, formNumber(formData, "entryPrice", 0));
   const entryPrice = entryPriceInput > 0 ? roundEntryPrice(entryPriceInput) : 0;
@@ -793,12 +798,8 @@ export async function updateSlot(formData: FormData) {
     return;
   }
 
-  if (status !== "zerado" && gains < Number(slot.gains || 0)) {
-    throw new Error("Os gains não podem ser reduzidos: o capital e o histórico financeiro permanecem preservados.");
-  }
-
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
-  const effectiveGains = status === "zerado" ? 0 : gains;
+  const effectiveGains = status === "zerado" ? 0 : Number(slot.gains || 0);
   const nextValue = getValueForGains(baseValue, Number(slot.growth_contribution || 0), strategyGainRate, effectiveGains);
   const { data: strategy } = await supabase
     .from("strategies")
@@ -811,7 +812,9 @@ export async function updateSlot(formData: FormData) {
     .from("slots")
     .update({
       status,
-      gains: status === "zerado" ? 0 : gains,
+      gains: effectiveGains,
+      real_gains: status === "zerado" ? 0 : Number(slot.real_gains || 0),
+      added_gains: status === "zerado" ? 0 : Number(slot.added_gains || 0),
       base_value: baseValue,
       gain_rate: strategyGainRate,
       realized_profit: nextValue - baseValue - Number(slot.growth_contribution || 0),
@@ -824,7 +827,7 @@ export async function updateSlot(formData: FormData) {
     .eq("id", slot.id)
     .eq("user_id", user.id);
 
-  await addHistory("Editar", `Slot editado para ${status}, ${status === "zerado" ? 0 : gains} gains.`, {
+  await addHistory("Editar", `Slot editado para ${status}, ${effectiveGains} gains.`, {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
@@ -854,14 +857,19 @@ export async function updateSlot(formData: FormData) {
 export async function updateSlotGains(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
-  const gains = Math.max(0, formInt(formData, "gains", 0));
+  const addedGains = Math.max(0, formInt(formData, "addedGains", 0));
 
   if (!slot) return;
+  if (slot.status === "aberto" || slot.status === "hold") {
+    throw new Error("Gains adicionados so podem ser aplicados em slots fechados.");
+  }
+  const realGains = Number(slot.real_gains || 0);
+  const gains = realGains + addedGains;
   if (gains < Number(slot.gains || 0)) {
-    throw new Error("Os gains não podem ser reduzidos: o capital e o histórico financeiro permanecem preservados.");
+    throw new Error("Os gains adicionados não podem ser reduzidos sem zerar o slot.");
   }
   if (gains === Number(slot.gains || 0)) {
-    finish("A quantidade de gains não foi alterada.");
+    finish("A quantidade de gains adicionados não foi alterada.");
   }
 
   const [{ data: strategy }, strategyGainRate] = await Promise.all([
@@ -880,6 +888,8 @@ export async function updateSlotGains(formData: FormData) {
     .update({
       status: statusAfter,
       gains,
+      real_gains: realGains,
+      added_gains: addedGains,
       gain_rate: strategyGainRate,
       started_once: true,
       preco_entrada: null,
@@ -889,6 +899,7 @@ export async function updateSlotGains(formData: FormData) {
     .eq("id", slot.id)
     .eq("user_id", user.id)
     .eq("gains", Number(slot.gains || 0))
+    .eq("added_gains", Number(slot.added_gains || 0))
     .select("id")
     .maybeSingle();
 
@@ -896,7 +907,7 @@ export async function updateSlotGains(formData: FormData) {
     throw new Error("O slot foi atualizado por outra operação. Atualize a tela antes de editar os gains.");
   }
 
-  await addHistory("Gains", `Gains ajustados de ${slot.gains} para ${gains}.`, {
+  await addHistory("Gains", `Gains adicionados ajustados de ${slot.added_gains} para ${addedGains}.`, {
     userId: user.id,
     strategyId: slot.strategy_id,
     slotId: slot.id,
@@ -910,128 +921,16 @@ export async function updateSlotGains(formData: FormData) {
       valueAfter,
       slotValue: valueAfter,
       gains,
+      realGains,
+      addedGains,
       statusBefore: slot.status,
       statusAfter,
       realizedProfit: valueAfter - currentValue(slot),
-      note: "Gains ajustados manualmente com a taxa atual da estratégia."
+      note: "Gains adicionados manualmente com a taxa atual da estratégia."
     }
   });
 
-  finish("Gains atualizados.");
-}
-
-export async function applyStrategyMarketPrices(formData: FormData) {
-  const { supabase, user } = await getUserClient();
-  const strategyId = formText(formData, "strategyId");
-  const firstEntryPrice = roundEntryPrice(Math.max(0, formNumber(formData, "firstEntryPrice", 0)));
-  const currentPrice = Math.max(0, formNumber(formData, "currentPrice", 0));
-
-  if (!strategyId || firstEntryPrice <= 0) {
-    return;
-  }
-
-  const { data: strategy } = await supabase
-    .from("strategies")
-    .select("id,key,title,asset,base_value,gain_rate,drop_percent")
-    .eq("id", strategyId)
-    .eq("user_id", user.id)
-    .single<StrategyRecord>();
-
-  if (!strategy) {
-    return;
-  }
-
-  const { data: slots } = await supabase
-    .from("slots")
-    .select("id,slot_number,sort_order,status,gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
-    .eq("user_id", user.id)
-    .eq("strategy_id", strategyId)
-    .eq("status", "aberto")
-    .order("sort_order", { ascending: true });
-
-  const fallbackDropPercent = strategy.asset.toUpperCase() === "SOL" ? 8 : 2;
-  const dropRate = Math.max(0, Number(strategy.drop_percent || fallbackDropPercent)) / 100;
-  const gainRate = Number(strategy.gain_rate || 0);
-
-  await Promise.all(
-    (slots || []).map((slot, index) => {
-      const entryPrice = roundEntryPrice(firstEntryPrice * Math.pow(1 - dropRate, index));
-      return supabase
-        .from("slots")
-        .update({
-          preco_entrada: entryPrice,
-          preco_atual: currentPrice > 0 ? currentPrice : null,
-          preco_alvo: roundEntryPrice(entryPrice * (1 + gainRate))
-        })
-        .eq("id", slot.id)
-        .eq("user_id", user.id);
-    })
-  );
-
-  for (const slot of slots || []) {
-    const index = (slots || []).findIndex((item) => item.id === slot.id);
-    const entryPrice = roundEntryPrice(firstEntryPrice * Math.pow(1 - dropRate, index));
-    const targetPrice = roundEntryPrice(entryPrice * (1 + gainRate));
-
-    await addHistory("Marcacao a mercado", `Preco de entrada recalculado em ${strategy.title} - Slot ${slot.slot_number}.`, {
-      userId: user.id,
-      strategyId,
-      slotId: slot.id,
-      strategyKey: strategy.key,
-      slotNumber: slot.slot_number,
-      metadata: {
-        asset: strategy.asset,
-        eventType: "marcacao_mercado",
-        origin: "MANUAL",
-        expectedPrice: entryPrice,
-        executedPrice: null,
-        currentPrice: currentPrice > 0 ? currentPrice : null,
-        targetPrice,
-        valueBefore: currentValue(slot),
-        valueAfter: currentValue(slot),
-        slotValue: currentValue(slot),
-        gains: Number(slot.gains || 0),
-        statusBefore: slot.status,
-        statusAfter: slot.status,
-        note: `Recalculo aplicado somente em slots abertos. Total afetado: ${slots?.length || 0}.`
-      }
-    });
-  }
-
-  finish("Precos de marcacao atualizados.");
-}
-
-export async function addBalance(formData: FormData) {
-  const { supabase, user } = await getUserClient();
-  const strategyId = formText(formData, "strategyId");
-  const amount = Math.max(0, formNumber(formData, "amount", 0));
-
-  if (!strategyId || amount <= 0) {
-    return;
-  }
-
-  const { data: slots } = await supabase
-    .from("slots")
-    .select("id,base_value,slot_number,strategy_id")
-    .eq("user_id", user.id)
-    .eq("strategy_id", strategyId)
-    .in("status", ["zerado", "gain"]);
-
-  const updates = (slots || []).map((slot) =>
-    supabase
-      .from("slots")
-      .update({ base_value: Number(slot.base_value || 0) + amount })
-      .eq("id", slot.id)
-      .eq("user_id", user.id)
-  );
-
-  await Promise.all(updates);
-  await addHistory("Adicionar saldo", `${formatUsdt(amount)} adicionados ao valor base de ${slots?.length || 0} slots fechados.`, {
-    userId: user.id,
-    strategyId
-  });
-
-  finish("Saldo adicionado.");
+  finish("Gains adicionados atualizados.");
 }
 
 async function getSlotFromForm(
@@ -1046,64 +945,12 @@ async function getSlotFromForm(
 
   const { data } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,real_gains,added_gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("id", slotId)
     .eq("user_id", userId)
     .single<SlotRecord>();
 
   return data;
-}
-
-type ProgrammedGrowthActionResult = {
-  ok: boolean;
-  code?: string;
-  message?: string;
-  asset?: string;
-  [key: string]: unknown;
-};
-
-function normalizeProgrammedGrowthResult(data: unknown, errorMessage?: string): ProgrammedGrowthActionResult {
-  if (errorMessage) {
-    return {
-      ok: false,
-      code: "RPC_ERROR",
-      message: "Não foi possível processar o aporte programado agora. Tente novamente."
-    };
-  }
-
-  if (!data || typeof data !== "object") {
-    return {
-      ok: false,
-      code: "INVALID_RESPONSE",
-      message: "A resposta do aporte programado é inválida."
-    };
-  }
-
-  return data as ProgrammedGrowthActionResult;
-}
-
-export async function applyProgrammedGrowthContribution(input: { asset: string; note?: string }): Promise<ProgrammedGrowthActionResult> {
-  const { supabase } = await getUserClient();
-  const normalizedAsset = input.asset.toUpperCase();
-
-  if (normalizedAsset !== "BTC" && normalizedAsset !== "SOL") {
-    return { ok: false, code: "INVALID_ASSET", message: "Ativo inválido para o plano de crescimento." };
-  }
-
-  const { data, error } = await supabase.rpc("apply_programmed_growth_contribution", {
-    p_asset: normalizedAsset,
-    p_note: input.note || null
-  });
-  const result = normalizeProgrammedGrowthResult(data, error?.message);
-
-  if (result.ok) {
-    revalidatePath("/dashboard");
-    revalidatePath("/slots");
-    revalidatePath("/historico");
-    revalidatePath("/plano-crescimento");
-  }
-
-  return result;
 }
 
 export async function saveGrowthPlanSettings(input: { btcMonthlyGoal: number; solMonthlyGoal: number }) {

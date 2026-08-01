@@ -6000,9 +6000,9 @@ body {
 .growth-dashboard-link span { color: var(--sg-green); font-size: 0.62rem; font-weight: 800; }
 
 .slot-card-meta {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-end;
-  justify-content: space-between;
   gap: 10px;
   margin-top: 8px;
 }
@@ -6030,6 +6030,45 @@ body {
   grid-template-columns: minmax(64px, 76px) auto;
   align-items: end;
   gap: 5px;
+}
+
+.slot-gain-breakdown,
+.slot-gain-readonly {
+  grid-column: 1 / -1;
+}
+
+.slot-gain-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.slot-gain-breakdown span,
+.slot-gain-readonly {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 0.61rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.slot-gain-breakdown strong {
+  color: var(--foreground);
+  font-size: 0.78rem;
+  letter-spacing: 0;
+}
+
+.slot-gain-readonly {
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.slot-card-meta > span:last-child {
+  grid-column: 2;
+  grid-row: 2;
+  text-align: right;
 }
 
 .slot-gain-editor input {
@@ -6278,7 +6317,7 @@ body {
   .dashboard-workspace > .compact-action-bar {
     grid-column: 9 / -1;
     grid-row: 4;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-content: start;
     gap: 8px;
     padding-top: 8px;

@@ -36,7 +36,7 @@ export default async function SlotsPage({
     supabase
       .from("slots")
       .select(
-        "id,strategy_id,status,gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
+        "id,strategy_id,status,gains,real_gains,added_gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
     supabase.from("btc_market_state").select("ath_price,current_price,classification_price,distance_from_ath_percent,calculated_mode,effective_mode,source,price_updated_at,ath_updated_at,classified_at,mode_changed_at").eq("singleton", true).maybeSingle(),

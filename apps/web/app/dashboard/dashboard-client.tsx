@@ -150,7 +150,6 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
         <Link href="/slots?flow=abrir">+ Abrir</Link>
         <Link href="/slots?flow=gain">✓ Gain</Link>
         <Link href="/plano-crescimento">Plano</Link>
-        <Link href="/historico">Historico</Link>
       </section>
 
       <section className="compact-account-age" aria-label="Tempo em operacao">

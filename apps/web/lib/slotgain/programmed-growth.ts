@@ -7,8 +7,6 @@ export type GrowthPlanSlot = {
   sortOrder: number;
   status: GrowthSlotStatus;
   gains: number;
-  operationalValue: number;
-  gainRate: number;
 };
 
 export function getGrowthMonthNumber(startedAt: Date, now = new Date()) {
@@ -25,14 +23,6 @@ export function selectGrowthLeader(slots: GrowthPlanSlot[]) {
     .toSorted((first, second) => second.gains - first.gains || first.slotNumber - second.slotNumber || first.sortOrder - second.sortOrder || first.id.localeCompare(second.id))[0] || null;
 }
 
-export function getRequiredGrowthContribution(operationalValue: number, gainRate: number, missingGains: number) {
-  if (!Number.isFinite(operationalValue) || operationalValue < 0 || !Number.isFinite(gainRate) || gainRate <= 0 || !Number.isInteger(missingGains) || missingGains <= 0) {
-    return 0;
-  }
-
-  return Number((operationalValue * (Math.pow(1 + gainRate, missingGains) - 1)).toFixed(8));
-}
-
 export function buildProgrammedGrowthPlan(monthlyGoal: number, startedAt: Date, slots: GrowthPlanSlot[], now = new Date()) {
   const monthNumber = getGrowthMonthNumber(startedAt, now);
   const cumulativeGoal = monthNumber * monthlyGoal;
@@ -43,9 +33,6 @@ export function buildProgrammedGrowthPlan(monthlyGoal: number, startedAt: Date, 
     monthNumber,
     cumulativeGoal,
     leader,
-    missingGains,
-    requiredContribution: leader && missingGains !== null
-      ? getRequiredGrowthContribution(leader.operationalValue, leader.gainRate, missingGains)
-      : 0
+    missingGains
   };
 }

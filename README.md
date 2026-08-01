@@ -56,7 +56,7 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. O Plano de Crescimento Programado mantém os gains e o histórico financeiro intactos; seus aportes externos são registrados separadamente.
+Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. O Plano de Crescimento Programado mantém os valores e o histórico financeiro intactos. Cada slot separa `gains reais` (fechamentos reais) de `gains adicionados` (ajuste manual de meta); ambos formam o total usado no valor operacional.
 
 ## Supabase Auth
 
@@ -115,8 +115,9 @@ npm run build
 - Slots por usuario
 - Filtros por status
 - Historico de acoes
-- Adicionar saldo
-- Plano de Crescimento Programado com metas acumuladas, slot líder fechado e aporte externo auditável
+- Plano de Crescimento Programado com metas acumuladas e slot líder fechado
+- Edição de gains adicionados apenas em slots fechados, sem movimentar patrimônio entre slots
+- Gains reais registrados somente pelo fechamento de slot aberto e separados dos gains adicionados
 - Taxa de gain configurável por estratégia, refletida no valor operacional pela fórmula linear `capital × (1 + taxa × gains)` sem modificar o histórico de eventos
 - Preços de entrada e alvo arredondados; rankings separados de slots abertos e fechados por quantidade de gains
 - Layout escuro mobile-first inspirado em ferramentas de trading
