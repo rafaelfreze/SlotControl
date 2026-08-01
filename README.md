@@ -56,7 +56,7 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-Para ambientes que ja existem, aplique tambem as migrations em `supabase/migrations/` em ordem cronologica. A migration de redistribuicao adiciona `gains_distribuidos` como contador operacional: `slots.gains` continua sendo o contador financeiro/historico usado nos calculos de valor.
+Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. O Plano de Crescimento Programado mantém os gains e o histórico financeiro intactos; seus aportes externos são registrados separadamente.
 
 ## Supabase Auth
 
@@ -96,7 +96,7 @@ NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="SlotGain Control"
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` sao usados somente no backend. Cadastre ambos na Vercel; nunca exponha essas variaveis no frontend. O Vercel Cron chama `GET /api/cron/slot-automation` a cada minuto com `Authorization: Bearer CRON_SECRET`.
+`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` são usados somente no backend. Nunca exponha essas variáveis no frontend. O cron remanescente atualiza somente a referência de mercado para a configuração manual de entradas.
 
 ## Validacao
 
@@ -116,5 +116,5 @@ npm run build
 - Filtros por status
 - Historico de acoes
 - Adicionar saldo
-- Redistribuir gains
+- Plano de Crescimento Programado com metas acumuladas, slot líder fechado e aporte externo auditável
 - Layout escuro mobile-first inspirado em ferramentas de trading

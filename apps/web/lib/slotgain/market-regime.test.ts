@@ -34,6 +34,6 @@ test("planos de reserva respeitam BTC profundo com somente 15 principais", () =>
   assert.deepEqual(operatingPlan("BTC", "NORMAL"), { zeroReserveCount: 3, activeSlotLimit: null });
   assert.deepEqual(operatingPlan("BTC", "DEEP"), { zeroReserveCount: 0, activeSlotLimit: 15 });
   assert.deepEqual(operatingPlan("SOL", "TOP"), { zeroReserveCount: 3, activeSlotLimit: null });
-  const slots = Array.from({ length: 20 }, (_, index) => ({ id: String(index), slot_number: index + 1, sort_order: index + 1, status: "hold" as const, gains_distribuidos: index }));
+  const slots = Array.from({ length: 20 }, (_, index) => ({ id: String(index), slot_number: index + 1, sort_order: index + 1, status: "hold" as const, gains: index }));
   assert.equal(selectOperablePendingSlots("BTC", "DEEP", slots, DEFAULT_ASSET_MARKET_SETTINGS.BTC).length, 15);
 });

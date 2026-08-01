@@ -18,7 +18,8 @@ type SlotRecord = {
   status: SlotStatus;
   gains: number;
   base_value: number | string;
-  reinvested_profit: number | string;
+  realized_profit: number | string;
+  growth_contribution: number | string;
   operational_slot_value: number | string;
   gain_rate: number | string;
   preco_entrada: number | string | null;
@@ -35,12 +36,6 @@ type StrategyRecord = {
   gain_rate: number | string;
   drop_percent?: number | string;
 };
-
-type AutomationMode = "off" | "exit_only" | "entry_exit";
-
-function normalizeAutomationMode(value: string): AutomationMode {
-  return value === "exit_only" || value === "entry_exit" ? value : "off";
-}
 
 async function getUserClient() {
   if (!isSupabaseConfigured()) {
@@ -234,6 +229,7 @@ function finish(message: string, path = "/slots"): never {
   revalidatePath("/slots");
   revalidatePath("/historico");
   revalidatePath("/config");
+  revalidatePath("/plano-crescimento");
   redirect(`${path}?notice=${encodeURIComponent(message)}`);
 }
 
@@ -291,17 +287,6 @@ async function addHistory(
     throw new Error("Falha ao registrar o histórico da operação.");
   }
 
-  if (["Abertura", "Gain", "entrada_automatica", "auto_gain"].includes(action)) {
-    try {
-      const { processPendingPushNotifications } = await import("@/lib/push/server");
-      await processPendingPushNotifications(10);
-    } catch (error) {
-      console.error("[push-worker] immediate_dispatch_failed", {
-        action,
-        message: error instanceof Error ? error.message : "Erro desconhecido"
-      });
-    }
-  }
 }
 
 export async function createStrategy(formData: FormData) {
@@ -413,48 +398,6 @@ export async function deleteStrategy(formData: FormData) {
   });
 
   finish("Estrategia removida.", "/config");
-}
-
-export async function updateAutomationMode(mode: AutomationMode) {
-  const { supabase, user } = await getUserClient();
-  const automationMode = normalizeAutomationMode(mode);
-
-  const { data: currentSettings } = await supabase
-    .from("user_settings")
-    .select("settings")
-    .eq("user_id", user.id)
-    .maybeSingle<{ settings: Record<string, unknown> | null }>();
-
-  const settings = {
-    ...(currentSettings?.settings || {}),
-    automationMode,
-    autoGainEnabled: automationMode !== "off"
-  };
-
-  const { error: upsertError } = await supabase.from("user_settings").upsert({
-    user_id: user.id,
-    settings
-  });
-
-  if (upsertError) {
-    throw new Error("Falha ao salvar configuracao de automacao.");
-  }
-
-  await addHistory("Automacao", `Modo de automacao alterado para ${automationMode}.`, {
-    userId: user.id,
-    metadata: {
-      eventType: "configuracao_automacao",
-      statusBefore: null,
-      statusAfter: automationMode,
-      note: "Configuracao salva para uso pelo app e pelo Vercel Cron."
-    }
-  });
-
-  revalidatePath("/dashboard");
-  revalidatePath("/slots");
-  revalidatePath("/config");
-
-  return { mode: automationMode };
 }
 
 export type MarketRegimeConfigurationInput = {
@@ -825,7 +768,7 @@ export async function updateSlot(formData: FormData) {
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
   const nextValue = status === "gain" && slot.status === "aberto" && gains === Number(slot.gains || 0) + 1
     ? nextOperationalValue(slot)
-    : baseValue + Number(slot.reinvested_profit || 0);
+    : baseValue + Number(slot.realized_profit || 0) + Number(slot.growth_contribution || 0);
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
@@ -898,7 +841,7 @@ export async function applyStrategyMarketPrices(formData: FormData) {
 
   const { data: slots } = await supabase
     .from("slots")
-    .select("id,slot_number,sort_order,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,slot_number,sort_order,status,gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("user_id", user.id)
     .eq("strategy_id", strategyId)
     .eq("status", "aberto")
@@ -1001,7 +944,7 @@ async function getSlotFromForm(
 
   const { data } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo")
     .eq("id", slotId)
     .eq("user_id", userId)
     .single<SlotRecord>();
@@ -1009,21 +952,20 @@ async function getSlotFromForm(
   return data;
 }
 
-type RedistributionActionResult = {
+type ProgrammedGrowthActionResult = {
   ok: boolean;
   code?: string;
   message?: string;
   asset?: string;
-  target_slot_count?: number;
   [key: string]: unknown;
 };
 
-function normalizeRedistributionResult(data: unknown, errorMessage?: string): RedistributionActionResult {
+function normalizeProgrammedGrowthResult(data: unknown, errorMessage?: string): ProgrammedGrowthActionResult {
   if (errorMessage) {
     return {
       ok: false,
       code: "RPC_ERROR",
-      message: "Nao foi possivel processar a redistribuicao agora. Tente novamente."
+      message: "Não foi possível processar o aporte programado agora. Tente novamente."
     };
   }
 
@@ -1031,75 +973,55 @@ function normalizeRedistributionResult(data: unknown, errorMessage?: string): Re
     return {
       ok: false,
       code: "INVALID_RESPONSE",
-      message: "A resposta da redistribuicao e invalida."
+      message: "A resposta do aporte programado é inválida."
     };
   }
 
-  return data as RedistributionActionResult;
+  return data as ProgrammedGrowthActionResult;
 }
 
-export async function getGainRedistributionPreview(asset: string): Promise<RedistributionActionResult> {
+export async function applyProgrammedGrowthContribution(input: { asset: string; note?: string }): Promise<ProgrammedGrowthActionResult> {
   const { supabase } = await getUserClient();
-  const normalizedAsset = asset.toUpperCase();
+  const normalizedAsset = input.asset.toUpperCase();
 
   if (normalizedAsset !== "BTC" && normalizedAsset !== "SOL") {
-    return { ok: false, code: "INVALID_ASSET", message: "Ativo invalido para redistribuicao." };
+    return { ok: false, code: "INVALID_ASSET", message: "Ativo inválido para o plano de crescimento." };
   }
 
-  const { data, error } = await supabase.rpc("preview_slot_gain_redistribution", {
-    p_asset: normalizedAsset
-  });
-
-  return normalizeRedistributionResult(data, error?.message);
-}
-
-export async function confirmGainRedistribution(input: {
-  asset: string;
-  snapshotHash: string;
-  idempotencyKey: string;
-}): Promise<RedistributionActionResult> {
-  const { supabase } = await getUserClient();
-  const normalizedAsset = input.asset.toUpperCase();
-
-  if ((normalizedAsset !== "BTC" && normalizedAsset !== "SOL") || !input.snapshotHash || !input.idempotencyKey) {
-    return { ok: false, code: "INVALID_REQUEST", message: "Solicitacao de redistribuicao invalida." };
-  }
-
-  const { data, error } = await supabase.rpc("confirm_slot_gain_redistribution", {
+  const { data, error } = await supabase.rpc("apply_programmed_growth_contribution", {
     p_asset: normalizedAsset,
-    p_snapshot_hash: input.snapshotHash,
-    p_idempotency_key: input.idempotencyKey
+    p_note: input.note || null
   });
-  const result = normalizeRedistributionResult(data, error?.message);
+  const result = normalizeProgrammedGrowthResult(data, error?.message);
 
   if (result.ok) {
     revalidatePath("/dashboard");
     revalidatePath("/slots");
     revalidatePath("/historico");
+    revalidatePath("/plano-crescimento");
   }
 
   return result;
 }
 
-export async function undoLastGainRedistribution(input: { asset: string; idempotencyKey: string }): Promise<RedistributionActionResult> {
-  const { supabase } = await getUserClient();
-  const normalizedAsset = input.asset.toUpperCase();
+export async function saveGrowthPlanSettings(input: { btcMonthlyGoal: number; solMonthlyGoal: number }) {
+  const { supabase, user } = await getUserClient();
+  const btcMonthlyGoal = Math.trunc(input.btcMonthlyGoal);
+  const solMonthlyGoal = Math.trunc(input.solMonthlyGoal);
 
-  if ((normalizedAsset !== "BTC" && normalizedAsset !== "SOL") || !input.idempotencyKey) {
-    return { ok: false, code: "INVALID_REQUEST", message: "Solicitacao de desfazer invalida." };
+  if (!Number.isFinite(btcMonthlyGoal) || !Number.isFinite(solMonthlyGoal) || btcMonthlyGoal < 1 || solMonthlyGoal < 1 || btcMonthlyGoal > 1000 || solMonthlyGoal > 1000) {
+    throw new Error("As metas mensais devem ser números inteiros entre 1 e 1000.");
   }
 
-  const { data, error } = await supabase.rpc("undo_last_slot_gain_redistribution", {
-    p_asset: normalizedAsset,
-    p_idempotency_key: input.idempotencyKey
+  const { error } = await supabase.from("growth_plan_settings").upsert({
+    user_id: user.id,
+    btc_monthly_goal: btcMonthlyGoal,
+    sol_monthly_goal: solMonthlyGoal
   });
-  const result = normalizeRedistributionResult(data, error?.message);
-
-  if (result.ok) {
-    revalidatePath("/dashboard");
-    revalidatePath("/slots");
-    revalidatePath("/historico");
+  if (error) {
+    throw new Error("Não foi possível salvar as metas do plano.");
   }
 
-  return result;
+  revalidatePath("/plano-crescimento");
+  return { btcMonthlyGoal, solMonthlyGoal };
 }

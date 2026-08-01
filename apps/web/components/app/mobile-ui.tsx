@@ -38,6 +38,7 @@ export function MobileScreen({ children }: { children: ReactNode }) {
 const navigation = [
   { href: "/dashboard", label: "Resumo", icon: "◈" },
   { href: "/slots", label: "Slots", icon: "▦" },
+  { href: "/plano-crescimento", label: "Plano", icon: "↗" },
   { href: "/historico", label: "Historico", icon: "◷" },
   { href: "/config", label: "Config", icon: "⚙" }
 ];

@@ -137,7 +137,7 @@ export function operatingPlan(asset: MarketAsset, regime: MarketRegime, settings
   };
 }
 
-export type OperatingSlot = { id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains_distribuidos: number };
+export type OperatingSlot = { id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains: number };
 
 export function selectOperablePendingSlots(asset: MarketAsset, regime: MarketRegime, slots: OperatingSlot[], settings?: Partial<AssetMarketStrategySettings> | null) {
   const plan = operatingPlan(asset, regime, settings);
@@ -145,7 +145,7 @@ export function selectOperablePendingSlots(asset: MarketAsset, regime: MarketReg
   let universe = [...slots];
   if (asset === "BTC" && regime === "DEEP" && plan.activeSlotLimit) {
     universe = [...slots]
-      .sort((a, b) => b.gains_distribuidos - a.gains_distribuidos || natural(a, b))
+      .sort((a, b) => b.gains - a.gains || natural(a, b))
       .slice(0, plan.activeSlotLimit);
   }
   const reservedZeroIds = new Set(universe.filter((slot) => slot.status === "zerado").sort(natural).slice(0, plan.zeroReserveCount).map((slot) => slot.id));

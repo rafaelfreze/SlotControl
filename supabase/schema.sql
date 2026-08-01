@@ -33,7 +33,6 @@ create table if not exists public.strategies (
   initial_slots integer not null default 0,
   drop_percent numeric(8, 4) not null default 0,
   restart_amount integer not null default 0,
-  redistribution_target integer not null default 0,
   sort_order integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -41,8 +40,7 @@ create table if not exists public.strategies (
   check (base_value >= 0),
   check (gain_rate >= 0),
   check (initial_slots >= 0),
-  check (restart_amount >= 0),
-  check (redistribution_target >= 0)
+  check (restart_amount >= 0)
 );
 
 create table if not exists public.slots (
@@ -55,6 +53,9 @@ create table if not exists public.slots (
   gains integer not null default 0,
   base_value numeric(18, 8) not null,
   gain_rate numeric(12, 8) not null,
+  realized_profit numeric(18, 8) not null default 0,
+  growth_contribution numeric(18, 8) not null default 0,
+  operational_slot_value numeric(18, 8) generated always as (round((base_value + realized_profit + growth_contribution), 8)) stored,
   preco_entrada numeric(18, 8),
   preco_atual numeric(18, 8),
   preco_alvo numeric(18, 8),
@@ -68,7 +69,9 @@ create table if not exists public.slots (
   check (status in ('zerado', 'aberto', 'gain', 'hold')),
   check (gains >= 0),
   check (base_value >= 0),
-  check (gain_rate >= 0)
+  check (gain_rate >= 0),
+  check (realized_profit >= 0),
+  check (growth_contribution >= 0)
 );
 
 create table if not exists public.history_events (
@@ -102,6 +105,34 @@ create table if not exists public.user_exports (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.growth_plan_settings (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  started_at date not null default current_date,
+  btc_monthly_goal integer not null default 7 check (btc_monthly_goal > 0 and btc_monthly_goal <= 1000),
+  sol_monthly_goal integer not null default 1 check (sol_monthly_goal > 0 and sol_monthly_goal <= 1000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.programmed_growth_contributions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  asset text not null check (asset in ('BTC', 'SOL')),
+  month_number integer not null check (month_number > 0),
+  cumulative_goal integer not null check (cumulative_goal >= 0),
+  slot_id uuid not null references public.slots(id) on delete restrict,
+  slot_number integer not null check (slot_number > 0),
+  gains_before integer not null check (gains_before >= 0),
+  gains_after integer not null check (gains_after >= gains_before),
+  value_before numeric(18, 8) not null check (value_before >= 0),
+  value_after numeric(18, 8) not null check (value_after >= value_before),
+  contributed_amount numeric(18, 8) not null check (contributed_amount > 0),
+  note text,
+  applied_by uuid not null references auth.users(id) on delete restrict,
+  created_at timestamptz not null default now(),
+  unique (user_id, asset, month_number)
+);
+
 create index if not exists strategies_user_id_idx on public.strategies (user_id);
 create index if not exists slots_user_id_idx on public.slots (user_id);
 create index if not exists slots_strategy_id_idx on public.slots (strategy_id);
@@ -109,6 +140,7 @@ create index if not exists slots_user_strategy_order_idx on public.slots (user_i
 create index if not exists history_events_user_event_idx on public.history_events (user_id, event_at desc);
 create index if not exists history_events_slot_id_idx on public.history_events (slot_id);
 create index if not exists user_exports_user_created_idx on public.user_exports (user_id, created_at desc);
+create index if not exists programmed_growth_contributions_user_created_idx on public.programmed_growth_contributions (user_id, created_at desc);
 
 alter table public.slots add column if not exists preco_entrada numeric(18, 8);
 alter table public.slots add column if not exists preco_atual numeric(18, 8);
@@ -134,6 +166,52 @@ create trigger user_settings_set_updated_at
 before update on public.user_settings
 for each row execute function public.set_updated_at();
 
+drop trigger if exists growth_plan_settings_set_updated_at on public.growth_plan_settings;
+create trigger growth_plan_settings_set_updated_at
+before update on public.growth_plan_settings
+for each row execute function public.set_updated_at();
+
+create or replace function public.lock_growth_plan_start_date()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.started_at := current_date;
+  elsif new.started_at <> old.started_at then
+    raise exception 'GROWTH_PLAN_START_DATE_IMMUTABLE';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists growth_plan_settings_lock_start_date on public.growth_plan_settings;
+create trigger growth_plan_settings_lock_start_date
+before insert or update on public.growth_plan_settings
+for each row execute function public.lock_growth_plan_start_date();
+
+create or replace function public.apply_realized_profit_on_real_gain()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  if new.gains > old.gains then
+    new.realized_profit := round(
+      old.realized_profit + (old.base_value + old.realized_profit + old.growth_contribution) * new.gain_rate,
+      8
+    );
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists slots_apply_realized_profit_on_real_gain on public.slots;
+create trigger slots_apply_realized_profit_on_real_gain
+before update of gains on public.slots
+for each row execute function public.apply_realized_profit_on_real_gain();
+
 create or replace function public.create_default_strategies_for_user(target_user_id uuid)
 returns void
 language plpgsql
@@ -152,7 +230,6 @@ begin
     initial_slots,
     drop_percent,
     restart_amount,
-    redistribution_target,
     sort_order
   )
   values
@@ -167,7 +244,6 @@ begin
       25,
       2,
       5,
-      50,
       1
     ),
     (
@@ -181,7 +257,6 @@ begin
       10,
       12,
       3,
-      10,
       2
     )
   on conflict (user_id, key) do nothing;
@@ -270,6 +345,10 @@ begin
   values (new.id)
   on conflict (user_id) do nothing;
 
+  insert into public.growth_plan_settings (user_id)
+  values (new.id)
+  on conflict (user_id) do nothing;
+
   perform public.create_default_strategies_for_user(new.id);
   perform public.create_default_slots_for_user(new.id);
 
@@ -292,6 +371,8 @@ alter table public.slots enable row level security;
 alter table public.history_events enable row level security;
 alter table public.user_settings enable row level security;
 alter table public.user_exports enable row level security;
+alter table public.growth_plan_settings enable row level security;
+alter table public.programmed_growth_contributions enable row level security;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 create policy "Users can read own profile"
@@ -338,3 +419,14 @@ create policy "Users can manage own exports"
 on public.user_exports for all
 using (user_id = auth.uid())
 with check (user_id = auth.uid());
+
+drop policy if exists "Users can manage own growth plan settings" on public.growth_plan_settings;
+create policy "Users can manage own growth plan settings"
+on public.growth_plan_settings for all
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
+
+drop policy if exists "Users can read own programmed growth contributions" on public.programmed_growth_contributions;
+create policy "Users can read own programmed growth contributions"
+on public.programmed_growth_contributions for select
+using (user_id = auth.uid());

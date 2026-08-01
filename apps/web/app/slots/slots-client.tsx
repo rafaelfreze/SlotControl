@@ -12,20 +12,12 @@ import {
   resetSlot,
   updateSlot
 } from "@/app/dashboard/actions";
-import { GainRedistributionPanel, type GainRedistributionHistoryItem } from "@/components/slotgain/gain-redistribution-panel";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
-import {
-  getAutomationModeLabel,
-  isAutomationActive,
-  useAutomationSetting,
-  type AutomationMode
-} from "@/lib/slotgain/auto-gain";
 import {
   formatDate,
   formatPrice,
   formatUsdt,
   getCurrentValue,
-  getDistributedGains,
   getMarkedSlotValue,
   getOpenMarketMetrics,
   getStatusLabel
@@ -33,7 +25,6 @@ import {
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 import { DEFAULT_ASSET_MARKET_SETTINGS, activeBuyDropPercent, asMarketRegime, effectiveMarketRegime, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
-import { isClosedSlot } from "@/lib/slotgain/redistribution";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type SlotFilter = "aberto" | "gain" | "closed" | "all";
@@ -47,8 +38,6 @@ type SlotsClientProps = {
   initialNotice: string | null;
   initialAsset: string | null;
   initialFlow: string | null;
-  initialAutomationMode: AutomationMode;
-  redistributionHistory: GainRedistributionHistoryItem[];
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettings> | null;
   assetSettings: Partial<AssetMarketStrategySettings>[];
@@ -72,7 +61,7 @@ function sortByOpenDate(slots: SlotView[]) {
 
 function sortClosedByDistributedGains(slots: SlotView[]) {
   return [...slots].sort((first, second) => {
-    const gainsDiff = getDistributedGains(second) - getDistributedGains(first);
+    const gainsDiff = second.gains - first.gains;
     return gainsDiff || first.slot_number - second.slot_number || first.sort_order - second.sort_order || first.id.localeCompare(second.id);
   });
 }
@@ -96,7 +85,7 @@ function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], dropPercent: 
   return livePrice || 0;
 }
 
-export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, initialAutomationMode, redistributionHistory, marketState, regimeSettings, assetSettings }: SlotsClientProps) {
+export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, marketState, regimeSettings, assetSettings }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const liveBtcPrice = livePrices.prices.BTC;
   const liveSolPrice = livePrices.prices.SOL;
@@ -104,7 +93,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
   const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
   const automaticRegime = asMarketRegime(regimeSettings?.last_effective_mode) || asMarketRegime(marketState?.effective_mode) || "NORMAL";
   const effectiveRegime = effectiveMarketRegime({
     mode_source: regimeSettings?.mode_source === "MANUAL" ? "MANUAL" : "AUTO",
@@ -120,7 +108,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
   const visibleSlots = useMemo(
     () => {
       const filtered = scopedSlots.filter((slot) => {
-        if (slotFilter === "closed") return isClosedSlot(slot.status);
+        if (slotFilter === "closed") return slot.status === "gain" || slot.status === "zerado";
         if (slotFilter === "all") return true;
         return slot.status === slotFilter;
       });
@@ -161,7 +149,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
 
   const total = scopedSlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice), 0);
   const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
-  const gains = scopedSlots.reduce((sum, slot) => sum + getDistributedGains(slot), 0);
+  const gains = scopedSlots.reduce((sum, slot) => sum + slot.gains, 0);
   const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
   const tone = selectedAsset === "SOL" ? "purple" : "gold";
@@ -176,9 +164,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
       <AppHeader title={title} backHref="/dashboard" />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
-      <section className={`auto-gain-badge ${isAutomationActive(automationMode) ? "active" : ""}`}>
-        Automacao: {getAutomationModeLabel(automationMode)}
-      </section>
       <section className={`live-price-strip ${livePrices.status}`}>
         <div>
           <span>BTCUSDT</span>
@@ -228,14 +213,6 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
         </div>
       </SectionCard>
 
-      {selectedAsset === "BTC" || selectedAsset === "SOL" ? (
-        <GainRedistributionPanel
-          asset={selectedAsset}
-          slots={scopedSlots}
-          history={redistributionHistory}
-          onNotice={announce}
-        />
-      ) : null}
 
       <div className="primary-actions-grid compact-actions">
         <details className="section-card mini-drawer">
@@ -263,7 +240,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
         options={[
           { label: "Abertos", value: "aberto", count: scopedSlots.filter((slot) => slot.status === "aberto").length },
           { label: "Gain", value: "gain", count: scopedSlots.filter((slot) => slot.status === "gain").length },
-          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => isClosedSlot(slot.status)).length },
+          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado").length },
           { label: "Todos", value: "all", count: scopedSlots.length }
         ]}
       />
@@ -335,8 +312,8 @@ function SlotCard({
       </div>
       <div className="slot-card-values">
         <span>Valor operacional<strong className={`financial-${getFinancialValueTone(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}`}>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
-        <span>Lucro reinvestido<strong className={`financial-${getFinancialValueTone(Number(slot.reinvested_profit || 0))}`}>{formatUsdt(Number(slot.reinvested_profit || 0))}</strong></span>
-        <span>GAINS NIVELADOS<strong>{getDistributedGains(slot)}</strong></span>
+        <span>Lucro realizado<strong className={`financial-${getFinancialValueTone(Number(slot.realized_profit || 0))}`}>{formatUsdt(Number(slot.realized_profit || 0))}</strong></span>
+        <span>Aporte programado<strong className={`financial-${getFinancialValueTone(Number(slot.growth_contribution || 0))}`}>{formatUsdt(Number(slot.growth_contribution || 0))}</strong></span>
         <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status === "aberto" || slot.status === "hold" ? (

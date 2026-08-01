@@ -53,45 +53,13 @@ function asSettings(value: Record<string, unknown>): MarketRegimeSettings {
   };
 }
 
-async function enqueueMarketChange(
-  userId: string,
-  previousMode: string | null,
-  nextMode: string,
-  state: Pick<BtcMarketState, "ath_price" | "current_price" | "distance_from_ath_percent">,
-  assetSettings: Record<"BTC" | "SOL", Partial<AssetMarketStrategySettings>>
-) {
-  const supabase = createServiceRoleClient();
-  const eventId = `market-regime:${userId}:${nextMode}:${state.ath_price}:${state.current_price}`;
-  await supabase.from("notification_outbox").upsert({
-    event_id: eventId,
-    user_id: userId,
-    event_type: "market_regime",
-    origin: "automatic",
-    asset: "BTC",
-    slot_id: null,
-    operation_id: null,
-    payload: {
-      previousMode,
-      nextMode,
-      athPrice: state.ath_price,
-      currentPrice: state.current_price,
-      distancePercent: state.distance_from_ath_percent,
-      btcDrop: activeBuyDropPercent("BTC", nextMode as "TOP" | "NORMAL" | "DEEP", assetSettings.BTC),
-      solDrop: activeBuyDropPercent("SOL", nextMode as "TOP" | "NORMAL" | "DEEP", assetSettings.SOL),
-      url: "/config"
-    },
-    status: "pending",
-    next_attempt_at: new Date().toISOString()
-  }, { onConflict: "event_id" });
-}
-
-type PendingSlot = { id: string; strategy_id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains_distribuidos: number; preco_entrada: number | string | null; strategies: { asset: string | null; gain_rate: number | string | null } | null };
+type PendingSlot = { id: string; strategy_id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains: number; preco_entrada: number | string | null; strategies: { asset: string | null; gain_rate: number | string | null } | null };
 
 export async function recalculateFutureEntryTriggers(userId: string, regime: MarketRegime, settingsByAsset: Record<"BTC" | "SOL", Partial<AssetMarketStrategySettings>>) {
   const supabase = createServiceRoleClient();
   const { data: rows, error } = await supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains_distribuidos,preco_entrada,strategies(asset,gain_rate)")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,preco_entrada,strategies(asset,gain_rate)")
     .eq("user_id", userId)
     .in("status", ["aberto", "hold"]);
   if (error) throw error;
@@ -100,7 +68,7 @@ export async function recalculateFutureEntryTriggers(userId: string, regime: Mar
     const slots = ((rows || []) as unknown as PendingSlot[]).filter((slot) => (slot.strategies?.asset || "BTC").toUpperCase() === asset);
     const reference = Math.min(...slots.filter((slot) => slot.status === "aberto").map((slot) => Number(slot.preco_entrada || 0)).filter((value) => value > 0));
     if (!Number.isFinite(reference)) continue;
-    const pending = selectOperablePendingSlots(asset, regime, slots.map((slot) => ({ id: slot.id, slot_number: slot.slot_number, sort_order: slot.sort_order, status: slot.status, gains_distribuidos: Number(slot.gains_distribuidos || 0) })), settingsByAsset[asset]);
+    const pending = selectOperablePendingSlots(asset, regime, slots.map((slot) => ({ id: slot.id, slot_number: slot.slot_number, sort_order: slot.sort_order, status: slot.status, gains: Number(slot.gains || 0) })), settingsByAsset[asset]);
     const drop = activeBuyDropPercent(asset, regime, settingsByAsset[asset]);
     for (const [index, candidate] of pending.entries()) {
       const slot = slots.find((item) => item.id === candidate.id);
@@ -182,12 +150,6 @@ export async function refreshBtcMarketRegime() {
       SOL: assetSettingsByUser.get(`${row.user_id}:SOL`) || DEFAULT_ASSET_MARKET_SETTINGS.SOL
     });
     console.log("[market-regime] future_triggers_recalculated", { userId: row.user_id, regime: nextMode, count: triggerCount });
-    if (settings.mode_source === "AUTO") {
-      await enqueueMarketChange(row.user_id, settings.last_effective_mode, nextMode, state, {
-        BTC: assetSettingsByUser.get(`${row.user_id}:BTC`) || DEFAULT_ASSET_MARKET_SETTINGS.BTC,
-        SOL: assetSettingsByUser.get(`${row.user_id}:SOL`) || DEFAULT_ASSET_MARKET_SETTINGS.SOL
-      });
-    }
   }
   return { ...state, changedUsers };
 }

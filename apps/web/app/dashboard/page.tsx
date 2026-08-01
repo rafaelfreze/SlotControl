@@ -7,17 +7,6 @@ import { DashboardClient } from "./dashboard-client";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
-type AutomationMode = "off" | "exit_only" | "entry_exit";
-
-function getAutomationMode(settings: Record<string, unknown> | null | undefined): AutomationMode {
-  const mode = settings?.automationMode;
-  if (mode === "exit_only" || mode === "entry_exit") {
-    return mode;
-  }
-
-  return settings?.autoGainEnabled === true ? "exit_only" : "off";
-}
-
 export default async function DashboardPage({ searchParams }: { searchParams?: { notice?: string } }) {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
@@ -32,7 +21,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, settingsResponse, marketStateResponse, regimeSettingsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -42,15 +31,14 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     supabase
       .from("slots")
       .select(
-        "id,strategy_id,status,gains,gains_distribuidos,base_value,reinvested_profit,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
+        "id,strategy_id,status,gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
-    supabase.from("user_settings").select("settings").eq("user_id", user.id).maybeSingle<{ settings: Record<string, unknown> | null }>(),
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
     supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle()
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || settingsResponse.error || marketStateResponse.error || regimeSettingsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error;
 
   return (
     <DashboardClient
@@ -60,7 +48,6 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
-      initialAutomationMode={getAutomationMode(settingsResponse.data?.settings)}
       marketState={marketStateResponse.data}
       regimeSettings={regimeSettingsResponse.data}
     />

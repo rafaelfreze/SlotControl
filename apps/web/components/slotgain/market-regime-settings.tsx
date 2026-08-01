@@ -83,7 +83,7 @@ export function MarketRegimeSettings({ marketState, regimeSettings, assetSetting
 
   return (
     <section className="section-card market-regime-card">
-      <div className="redistribution-heading">
+      <div className="market-summary-heading">
         <div>
           <p>REGIME DO BTC</p>
           <h2>{MARKET_REGIME_LABELS[effective]}</h2>
@@ -91,7 +91,7 @@ export function MarketRegimeSettings({ marketState, regimeSettings, assetSetting
         </div>
         <strong>{modeSource === "MANUAL" ? "Manual" : "Automatico"}</strong>
       </div>
-      <div className="redistribution-metrics">
+      <div className="market-summary-metrics">
         <span>ATH historico<strong>{formatPrice(Number(marketState?.ath_price || 0))}</strong></span>
         <span>Preco atual<strong>{formatPrice(Number(marketState?.current_price || 0))}</strong></span>
         <span>Distancia do ATH<strong>{formatPercent(distance / 100)}%</strong></span>
@@ -120,7 +120,7 @@ export function MarketRegimeSettings({ marketState, regimeSettings, assetSetting
           <AssetInputs asset="BTC" value={btc} onChange={updateDrop} />
           <AssetInputs asset="SOL" value={sol} onChange={updateDrop} />
           {notice ? <p className="inline-alert">{notice}</p> : null}
-          {preview ? <div className="redistribution-preservation"><strong>Previa:</strong> BTC — TOPO {previewState.BTC.before.buy_drop_top_percent}% → {previewState.BTC.after.buy_drop_top_percent}%; NORMAL {previewState.BTC.before.buy_drop_normal_percent}% → {previewState.BTC.after.buy_drop_normal_percent}%. SOL — TOPO {previewState.SOL.before.buy_drop_top_percent}% → {previewState.SOL.after.buy_drop_top_percent}%. Proximas compras ainda nao executadas usarao os valores novos; slots abertos e alvos existentes nao mudam.</div> : null}
+          {preview ? <div className="market-summary-preview"><strong>Prévia:</strong> BTC — TOPO {previewState.BTC.before.buy_drop_top_percent}% → {previewState.BTC.after.buy_drop_top_percent}%; NORMAL {previewState.BTC.before.buy_drop_normal_percent}% → {previewState.BTC.after.buy_drop_normal_percent}%. SOL — TOPO {previewState.SOL.before.buy_drop_top_percent}% → {previewState.SOL.after.buy_drop_top_percent}%. Próximas compras ainda não executadas usarão os valores novos; slots abertos e alvos existentes não mudam.</div> : null}
           <div className="slot-card-actions"><button type="button" className="ghost-button" onClick={() => setPreview(true)} disabled={saving}>Gerar previa</button>{preview ? <button type="button" className="solid-button" onClick={save} disabled={saving}>{saving ? "Salvando..." : "Confirmar configuracao"}</button> : null}</div>
         </div>
       ) : null}

@@ -58,7 +58,7 @@ NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="CoinOps"
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` sao variaveis exclusivamente server-side. O cron da Vercel usa `GET /api/cron/slot-automation` com o header `Authorization: Bearer CRON_SECRET` para processar entrada e saida automatica sem abrir ordens reais na Binance.
+`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` são variáveis exclusivamente server-side. O cron da Vercel atualiza somente a referência de mercado usada pelas configurações manuais; não existem entradas, saídas ou notificações automáticas.
 
 Depois do primeiro deploy, copie a URL final da Vercel e volte ao Supabase Auth para adicionar:
 

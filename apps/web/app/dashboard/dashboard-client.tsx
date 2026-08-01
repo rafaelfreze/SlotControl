@@ -7,12 +7,6 @@ import { useMemo, useState } from "react";
 import { MobileScreen } from "@/components/app/mobile-ui";
 import { CompactMarketRegimeBadge } from "@/components/slotgain/compact-market-regime-badge";
 import {
-  getAutomationModeLabel,
-  isAutomationActive,
-  useAutomationSetting,
-  type AutomationMode
-} from "@/lib/slotgain/auto-gain";
-import {
   formatPrice,
   formatSignedUsdt,
   formatUsdt,
@@ -33,7 +27,6 @@ type DashboardClientProps = {
   slots: SlotView[];
   setupError: string | null;
   initialNotice: string | null;
-  initialAutomationMode: AutomationMode;
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
 };
@@ -73,10 +66,9 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, initialAutomationMode, marketState, regimeSettings }: DashboardClientProps) {
+export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const { mode: automationMode } = useAutomationSetting(initialAutomationMode);
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
   const realizedProfit = totalUpdated - totalBase;
@@ -109,9 +101,6 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
         <Image src="/icon-96x96.png" alt="" width={28} height={28} priority />
         <span>COINOPS</span>
       </header>
-      <section className={`auto-gain-badge ${isAutomationActive(automationMode) ? "active" : ""}`}>
-        Automacao: {getAutomationModeLabel(automationMode)}
-      </section>
 
       <section className={`live-price-strip ${livePrices.status}`}>
         <div>
@@ -147,6 +136,7 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
       <section className="compact-action-bar" aria-label="Acoes principais">
         <Link href="/slots?flow=abrir">+ Abrir</Link>
         <Link href="/slots?flow=gain">✓ Gain</Link>
+        <Link href="/plano-crescimento">Plano</Link>
         <Link href="/historico">Historico</Link>
       </section>
 
