@@ -236,6 +236,179 @@ p {
   padding: 18px;
 }
 
+/* Desktop autenticado: composição própria para navegador, sem alterar o PWA mobile. */
+@media (min-width: 1024px) {
+  .mobile-dashboard-shell,
+  .mobile-dashboard-shell.app-screen,
+  .page-shell {
+    padding: 32px clamp(28px, 3vw, 56px) 52px;
+  }
+
+  .dashboard-workspace {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    width: min(1520px, 100%);
+    gap: 18px;
+  }
+
+  .dashboard-workspace > .live-price-strip {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    min-height: 78px;
+    padding: 10px 18px;
+  }
+
+  .dashboard-workspace > .growth-dashboard-strip {
+    grid-column: 1 / 5;
+    grid-row: auto;
+    gap: 10px;
+  }
+
+  .dashboard-workspace > .mobile-metrics {
+    grid-column: 5 / -1;
+    grid-row: auto;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    min-height: 82px;
+  }
+
+  .mobile-metric-row {
+    min-height: 82px;
+    padding: 13px 15px;
+  }
+
+  .mobile-metric-row:nth-child(n + 3) { border-top: 0; }
+  .mobile-metric-row:nth-child(even) { border-left: 1px solid rgba(176, 196, 214, 0.11); }
+  .mobile-metric-row:nth-child(3) { border-left: 1px solid rgba(176, 196, 214, 0.11); }
+
+  .dashboard-workspace > .compact-market-regime-badge {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 54px;
+    padding: 12px 18px;
+  }
+
+  .dashboard-workspace > .asset-card {
+    grid-column: span 6;
+    min-height: 224px;
+    padding: 22px;
+  }
+
+  .dashboard-workspace > .compact-action-bar {
+    grid-column: 1 / 7;
+    grid-row: auto;
+    padding-top: 0;
+  }
+
+  .dashboard-workspace > .compact-account-age {
+    grid-column: 7 / -1;
+    grid-row: auto;
+    min-height: 58px;
+    padding: 12px 18px;
+  }
+
+  .dashboard-workspace > .mobile-session {
+    grid-column: 7 / -1;
+    grid-row: auto;
+    margin-top: -10px;
+    text-align: right;
+  }
+
+  .asset-page-summary {
+    gap: 16px;
+    padding: 18px 20px;
+  }
+
+  .asset-summary-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .asset-summary-stats .mobile-metric-card {
+    min-height: 82px;
+    padding: 13px 14px;
+  }
+
+  .asset-summary-stats .mobile-metric-card p { font-size: 0.66rem; }
+  .asset-summary-stats .mobile-metric-card strong { font-size: 1.04rem; }
+
+  .modern-slot-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: 14px;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  .modern-slot-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 11px;
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid rgba(120, 151, 177, 0.22);
+    border-left: 4px solid var(--line);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(16, 36, 52, 0.96), rgba(8, 18, 28, 0.98));
+  }
+
+  .modern-slot-card.gold { border-left-color: var(--yellow); }
+  .modern-slot-card.purple { border-left-color: var(--sg-purple); }
+
+  .modern-slot-card .slot-card-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 0;
+    margin: 0;
+  }
+
+  .modern-slot-card .slot-card-values {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    padding-top: 11px;
+  }
+
+  .modern-slot-card .slot-card-values span {
+    font-size: 0.64rem;
+    white-space: normal;
+  }
+
+  .modern-slot-card .slot-card-values strong {
+    overflow: visible;
+    font-size: 0.92rem;
+    white-space: nowrap;
+  }
+
+  .modern-slot-card .slot-card-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .modern-slot-card .slot-gain-breakdown { display: contents; }
+  .modern-slot-card .slot-gain-breakdown span { font-size: 0.64rem; }
+  .modern-slot-card .slot-gain-breakdown strong { overflow: visible; font-size: 0.95rem; }
+
+  .modern-slot-card > .slot-more-drawer {
+    display: block;
+    margin: 0;
+    padding: 0;
+  }
+
+  .modern-slot-card > .slot-more-drawer > summary {
+    min-height: 34px;
+    padding: 0 11px;
+    font-size: 0.72rem;
+  }
+
+  .modern-slot-card > .slot-more-drawer > summary::after {
+    content: '+';
+    font-size: 1rem;
+  }
+}
+
 .preview-header {
   display: flex;
   align-items: center;
@@ -6524,4 +6697,74 @@ body {
     padding: 0 4px;
     font-size: 0.72rem;
   }
+}
+
+/* Passagem final desktop: o mobile continua usando as regras compactas acima. */
+@media (min-width: 1024px) {
+  .mobile-dashboard-shell,
+  .mobile-dashboard-shell.app-screen,
+  .page-shell { padding: 32px clamp(28px, 3vw, 56px) 52px; }
+
+  .dashboard-workspace { width: min(1520px, 100%); gap: 18px; }
+  .dashboard-workspace > .live-price-strip { grid-column: 1 / -1; grid-row: auto; min-height: 78px; padding: 10px 18px; }
+  .dashboard-workspace > .growth-dashboard-strip { grid-column: 1 / 5; grid-row: auto; gap: 10px; }
+  .dashboard-workspace > .mobile-metrics { grid-column: 5 / -1; grid-row: auto; grid-template-columns: repeat(4, minmax(0, 1fr)); min-height: 82px; }
+  .mobile-metric-row { min-height: 82px; padding: 13px 15px; }
+  .mobile-metric-row:nth-child(n + 3) { border-top: 0; }
+  .mobile-metric-row:nth-child(3) { border-left: 1px solid rgba(176, 196, 214, 0.11); }
+
+  .dashboard-workspace > .compact-market-regime-badge {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 54px;
+    padding: 12px 18px;
+  }
+
+  .dashboard-workspace > .asset-card { grid-column: span 6; min-height: 224px; }
+  .dashboard-workspace > .compact-action-bar { grid-column: 1 / 7; grid-row: auto; padding-top: 0; }
+  .dashboard-workspace > .compact-account-age { grid-column: 7 / -1; grid-row: auto; min-height: 58px; padding: 12px 18px; }
+  .dashboard-workspace > .mobile-session { grid-column: 7 / -1; grid-row: auto; margin-top: -10px; text-align: right; }
+
+  .asset-page-summary { gap: 16px; padding: 18px 20px; }
+  .asset-summary-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .asset-summary-stats .mobile-metric-card { min-height: 82px; padding: 13px 14px; }
+  .asset-summary-stats .mobile-metric-card p { font-size: 0.66rem; }
+  .asset-summary-stats .mobile-metric-card strong { font-size: 1.04rem; }
+
+  .modern-slot-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: 14px;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  .modern-slot-card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 11px;
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid rgba(120, 151, 177, 0.22);
+    border-left: 4px solid var(--line);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(16, 36, 52, 0.96), rgba(8, 18, 28, 0.98));
+  }
+
+  .modern-slot-card.gold { border-left-color: var(--yellow); }
+  .modern-slot-card.purple { border-left-color: var(--sg-purple); }
+  .modern-slot-card .slot-card-top { grid-template-columns: minmax(0, 1fr) auto; min-height: 0; margin: 0; }
+  .modern-slot-card .slot-card-values { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding-top: 11px; }
+  .modern-slot-card .slot-card-values span { font-size: 0.64rem; white-space: normal; }
+  .modern-slot-card .slot-card-values strong { overflow: visible; font-size: 0.92rem; white-space: nowrap; }
+  .modern-slot-card .slot-card-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .modern-slot-card .slot-gain-breakdown { display: contents; }
+  .modern-slot-card .slot-gain-breakdown span { font-size: 0.64rem; }
+  .modern-slot-card .slot-gain-breakdown strong { overflow: visible; font-size: 0.95rem; }
+
+  .modern-slot-card > .slot-more-drawer { display: block; margin: 0; padding: 0; }
+  .modern-slot-card > .slot-more-drawer > summary { min-height: 34px; padding: 0 11px; font-size: 0.72rem; }
+  .modern-slot-card > .slot-more-drawer > summary::after { content: '+'; font-size: 1rem; }
 }
