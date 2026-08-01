@@ -141,6 +141,8 @@ create index if not exists history_events_user_event_idx on public.history_event
 create index if not exists history_events_slot_id_idx on public.history_events (slot_id);
 create index if not exists user_exports_user_created_idx on public.user_exports (user_id, created_at desc);
 create index if not exists programmed_growth_contributions_user_created_idx on public.programmed_growth_contributions (user_id, created_at desc);
+create index if not exists programmed_growth_contributions_slot_id_idx on public.programmed_growth_contributions (slot_id);
+create index if not exists programmed_growth_contributions_applied_by_idx on public.programmed_growth_contributions (applied_by);
 
 alter table public.slots add column if not exists preco_entrada numeric(18, 8);
 alter table public.slots add column if not exists preco_atual numeric(18, 8);
