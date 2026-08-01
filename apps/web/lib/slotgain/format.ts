@@ -86,6 +86,14 @@ export function formatPrice(value: number | null | undefined) {
   }).format(value);
 }
 
+export function formatWholePrice(value: number | null | undefined) {
+  if (!value) return "-";
+
+  return new Intl.NumberFormat("pt-BR", {
+    maximumFractionDigits: 0
+  }).format(Math.round(value));
+}
+
 export function formatSignedUsdt(value: number) {
   const sign = value > 0 ? "+" : "";
   return `${sign}${formatUsdt(value)}`;

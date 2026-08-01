@@ -111,10 +111,11 @@ function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "go
       <summary><strong>{strategy.asset}</strong><span>{strategy.title}</span></summary>
       <form className="tool-form stacked-form" action={updateStrategy}>
         <input type="hidden" name="strategyId" value={strategy.id} />
+        <input type="hidden" name="asset" value={strategy.asset} />
         <label>Nome<input name="title" defaultValue={strategy.title} required /></label>
         <label>Chave<input name="key" defaultValue={strategy.key} required /></label>
         <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={formatDecimal(strategy.base_value)} required /></label>
-        <label>Gain %<input name="gainRate" type="number" min="0" step="0.01" defaultValue={formatPercent(strategy.gain_rate)} required /></label>
+        <label>Gain %<input name="gainRate" type="number" min="0" step="0.01" defaultValue={Number(strategy.gain_rate || 0) * 100} required /></label>
         <label>Queda %<input name="dropPercent" type="number" min="0" step="0.01" defaultValue={formatDecimal(strategy.drop_percent)} /></label>
         <label>Reinício<input name="restartAmount" type="number" min="0" step="1" defaultValue={strategy.restart_amount} /></label>
         <div className="form-actions"><button className="solid-button" type="submit">Salvar estratégia</button><button className="danger-button" type="submit" formAction={deleteStrategy}>Excluir</button></div>

@@ -29,6 +29,16 @@ type DashboardClientProps = {
   initialNotice: string | null;
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
+  growthPlan: DashboardGrowthPlan | null;
+};
+
+type DashboardGrowthPlan = {
+  plans?: Partial<Record<"BTC" | "SOL", {
+    monthly_goal?: number;
+    cumulative_goal?: number;
+    missing_gains?: number | null;
+    leader_slot_number?: number | null;
+  }>>;
 };
 
 type StrategySummary = {
@@ -66,7 +76,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings }: DashboardClientProps) {
+export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings, growthPlan }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
@@ -121,6 +131,8 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
         </div>
       </section>
 
+      <GrowthPlanStrip plan={growthPlan} />
+
       <section className="mobile-metrics" aria-label="Resumo principal">
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
         <MetricRow title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" />
@@ -148,6 +160,29 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
 
       <p className="mobile-session">{userEmail}</p>
     </MobileScreen>
+  );
+}
+
+function GrowthPlanStrip({ plan }: { plan: DashboardGrowthPlan | null }) {
+  return (
+    <section className="growth-dashboard-strip" aria-label="Metas mensais de crescimento">
+      {(["BTC", "SOL"] as const).map((asset) => {
+        const item = plan?.plans?.[asset];
+        const missing = Number(item?.missing_gains || 0);
+        const status = !item?.leader_slot_number
+          ? "sem fechado"
+          : missing > 0
+            ? `faltam ${missing}`
+            : "meta ok";
+
+        return (
+          <Link className={`growth-dashboard-link ${asset.toLowerCase()}`} href="/plano-crescimento" key={asset}>
+            <strong>{asset} <small>{item?.monthly_goal ?? (asset === "BTC" ? 7 : 1)}/mês</small></strong>
+            <span>{status}</span>
+          </Link>
+        );
+      })}
+    </section>
   );
 }
 

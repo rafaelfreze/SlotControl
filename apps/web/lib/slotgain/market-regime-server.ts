@@ -73,10 +73,10 @@ export async function recalculateFutureEntryTriggers(userId: string, regime: Mar
     for (const [index, candidate] of pending.entries()) {
       const slot = slots.find((item) => item.id === candidate.id);
       if (!slot) continue;
-      const entryPrice = reference * Math.pow(1 - drop / 100, index + 1);
-      if (Math.abs(Number(slot.preco_entrada || 0) - entryPrice) < 0.00000001) continue;
+      const entryPrice = Math.round(reference * Math.pow(1 - drop / 100, index + 1));
+      if (Math.abs(Number(slot.preco_entrada || 0) - entryPrice) < 1) continue;
       const gainRate = Number(slots.find((item) => item.id === slot.id)?.strategies?.gain_rate || 0);
-      const { data: updated } = await supabase.from("slots").update({ preco_entrada: entryPrice, preco_alvo: entryPrice * (1 + gainRate) }).eq("id", slot.id).eq("user_id", userId).eq("status", "hold").select("id").maybeSingle();
+      const { data: updated } = await supabase.from("slots").update({ preco_entrada: entryPrice, preco_alvo: Math.round(entryPrice * (1 + gainRate)) }).eq("id", slot.id).eq("user_id", userId).eq("status", "hold").select("id").maybeSingle();
       if (!updated) continue;
       recalculated += 1;
       await supabase.from("history_events").insert({ user_id: userId, strategy_id: slot.strategy_id, slot_id: slot.id, action: "Gatilho de entrada", detail: JSON.stringify({ schemaVersion: 2, eventType: "gatilho_futuro_recalculado", asset, regime, dropPercent: drop, expectedPrice: entryPrice, note: "Apenas entrada futura recalculada; slot aberto e historico permaneceram inalterados.", eventAt: new Date().toISOString() }), slot_number: slot.slot_number });

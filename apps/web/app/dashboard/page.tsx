@@ -5,6 +5,13 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
 import { DashboardClient } from "./dashboard-client";
 
+type DashboardGrowthPlan = {
+  plans?: {
+    BTC?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_number?: number | null };
+    SOL?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_number?: number | null };
+  };
+};
+
 export const metadata: Metadata = { title: "Dashboard" };
 
 export default async function DashboardPage({ searchParams }: { searchParams?: { notice?: string } }) {
@@ -21,7 +28,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse, growthPlanResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -35,7 +42,8 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       )
       .order("sort_order", { ascending: true }),
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
-    supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle()
+    supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
+    supabase.rpc("get_programmed_growth_plan")
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error;
@@ -50,6 +58,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       initialNotice={searchParams?.notice || null}
       marketState={marketStateResponse.data}
       regimeSettings={regimeSettingsResponse.data}
+      growthPlan={(growthPlanResponse.data || null) as DashboardGrowthPlan | null}
     />
   );
 }

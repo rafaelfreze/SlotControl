@@ -10,12 +10,14 @@ import {
   openSlot,
   registerGain,
   resetSlot,
-  updateSlot
+  updateSlot,
+  updateSlotGains
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
   formatDate,
   formatPrice,
+  formatWholePrice,
   formatUsdt,
   getCurrentValue,
   getMarkedSlotValue,
@@ -24,6 +26,7 @@ import {
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
+import { rankSlotIds, sortSlotsByGains } from "@/lib/slotgain/slot-ranking";
 import { DEFAULT_ASSET_MARKET_SETTINGS, activeBuyDropPercent, asMarketRegime, effectiveMarketRegime, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -59,13 +62,6 @@ function sortByOpenDate(slots: SlotView[]) {
   });
 }
 
-function sortClosedByDistributedGains(slots: SlotView[]) {
-  return [...slots].sort((first, second) => {
-    const gainsDiff = second.gains - first.gains;
-    return gainsDiff || first.slot_number - second.slot_number || first.sort_order - second.sort_order || first.id.localeCompare(second.id);
-  });
-}
-
 function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], dropPercent: number, livePrice?: number) {
   const asset = getAssetFromStrategy(slot);
   const lastOpenSlot = sortByOpenDate(
@@ -79,10 +75,10 @@ function getSuggestedEntryPrice(slot: SlotView, slots: SlotView[], dropPercent: 
   ).at(-1);
 
   if (lastOpenSlot) {
-    return Number(lastOpenSlot.preco_entrada || 0) * (1 - dropPercent / 100);
+    return Math.round(Number(lastOpenSlot.preco_entrada || 0) * (1 - dropPercent / 100));
   }
 
-  return livePrice || 0;
+  return livePrice ? Math.round(livePrice) : 0;
 }
 
 export function SlotsClient({ userEmail, strategies, slots, setupError, initialNotice, initialAsset, initialFlow, marketState, regimeSettings, assetSettings }: SlotsClientProps) {
@@ -114,30 +110,22 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
       });
 
       if (slotFilter === "aberto") {
-        return sortByOpenDate(filtered);
+        return sortSlotsByGains(filtered);
       }
 
       if (slotFilter === "closed") {
-        return sortClosedByDistributedGains(filtered);
+        return sortSlotsByGains(filtered);
       }
 
-      return filtered;
+      return [...filtered].sort((first, second) => {
+        const group = (slot: SlotView) => slot.status === "gain" || slot.status === "zerado" ? 0 : slot.status === "aberto" ? 1 : 2;
+        return group(first) - group(second) || Number(second.gains || 0) - Number(first.gains || 0) || first.slot_number - second.slot_number;
+      });
     },
     [scopedSlots, slotFilter]
   );
-  const openOrderById = useMemo(() => {
-    const order: Record<string, number> = {};
-    const assetCounts: Record<string, number> = {};
-    const openSlotsByAsset = sortByOpenDate(scopedSlots.filter((slot) => slot.status === "aberto"));
-
-    openSlotsByAsset.forEach((slot) => {
-      const asset = getAssetFromStrategy(slot);
-      assetCounts[asset] = (assetCounts[asset] || 0) + 1;
-      order[slot.id] = assetCounts[asset];
-    });
-
-    return order;
-  }, [scopedSlots]);
+  const openRankById = useMemo(() => rankSlotIds(scopedSlots.filter((slot) => slot.status === "aberto")), [scopedSlots]);
+  const closedRankById = useMemo(() => rankSlotIds(scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [scopedSlots]);
 
   const suggestedEntryById = useMemo(() => {
     return scopedSlots.reduce<Record<string, number>>((suggestions, slot) => {
@@ -219,7 +207,7 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
           <summary>Marcacao</summary>
           <form className="tool-form stacked-form" action={applyStrategyMarketPrices}>
             <label>Moeda<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={selectedAsset} /></label>
-            <label>Entrada primeiro slot<input name="firstEntryPrice" type="number" min="0.00000001" step="0.00000001" required /></label>
+            <label>Entrada primeiro slot<input name="firstEntryPrice" type="number" min="1" step="1" required /></label>
             <label>Preco atual<input name="currentPrice" type="number" min="0" step="0.00000001" /></label>
             <button className="solid-button" type="submit">Aplicar</button>
           </form>
@@ -252,7 +240,8 @@ export function SlotsClient({ userEmail, strategies, slots, setupError, initialN
             slot={slot}
             livePrice={getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice}
             suggestedEntryPrice={suggestedEntryById[slot.id] || 0}
-            openOrderNumber={openOrderById[slot.id] || null}
+            openRank={openRankById[slot.id] || null}
+            closedRank={closedRankById[slot.id] || null}
             announce={announce}
           />
         ))}
@@ -286,20 +275,26 @@ function SlotCard({
   slot,
   livePrice,
   suggestedEntryPrice,
-  openOrderNumber,
+  openRank,
+  closedRank,
   announce
 }: {
   slot: SlotView;
   livePrice?: number;
   suggestedEntryPrice: number;
-  openOrderNumber: number | null;
+  openRank: number | null;
+  closedRank: number | null;
   announce: (message: string) => void;
 }) {
   const asset = getAssetFromStrategy(slot);
   const tone = asset === "SOL" ? "purple" : "gold";
   const market = getOpenMarketMetrics(slot, livePrice);
   const statusClass = slot.status === "aberto" ? "open" : slot.status === "gain" ? "gain" : "closed";
-  const visualLabel = slot.status === "aberto" && openOrderNumber ? `Aberto #${openOrderNumber}` : getStatusLabel(slot.status);
+  const visualLabel = slot.status === "aberto" && openRank
+    ? `Aberto #${openRank}`
+    : closedRank
+      ? `Fechado #${closedRank}`
+      : getStatusLabel(slot.status);
 
   return (
     <article className={`modern-slot-card ${tone} ${statusClass}`}>
@@ -314,12 +309,19 @@ function SlotCard({
         <span>Valor operacional<strong className={`financial-${getFinancialValueTone(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}`}>{formatUsdt(slot.status === "aberto" ? market.valorMarcado : getCurrentValue(slot))}</strong></span>
         <span>Lucro realizado<strong className={`financial-${getFinancialValueTone(Number(slot.realized_profit || 0))}`}>{formatUsdt(Number(slot.realized_profit || 0))}</strong></span>
         <span>Aporte programado<strong className={`financial-${getFinancialValueTone(Number(slot.growth_contribution || 0))}`}>{formatUsdt(Number(slot.growth_contribution || 0))}</strong></span>
-        <span>Operacao<strong>{formatDate(slot.updated_at)}</strong></span>
+      </div>
+      <div className="slot-card-meta">
+        <form className="slot-gain-editor" action={updateSlotGains}>
+          <input type="hidden" name="slotId" value={slot.id} />
+          <label>Gains atuais<input name="gains" type="number" min={slot.gains} step="1" defaultValue={slot.gains} aria-label={`Gains atuais do slot ${slot.slot_number}`} /></label>
+          <button type="submit">Salvar</button>
+        </form>
+        <span>Operação<strong>{formatDate(slot.updated_at)}</strong></span>
       </div>
       {slot.status === "aberto" || slot.status === "hold" ? (
         <div className="slot-market-strip">
-          <span>Entrada<strong>{slot.status === "hold" ? Number(slot.preco_entrada || 0) || "-" : market.precoEntrada || "-"}</strong></span>
-          <span>Alvo<strong>{slot.status === "hold" ? Number(slot.preco_alvo || 0) || "-" : market.precoAlvo || "-"}</strong></span>
+          <span>Entrada<strong>{formatWholePrice(slot.status === "hold" ? Number(slot.preco_entrada || 0) : market.precoEntrada)}</strong></span>
+          <span>Alvo<strong>{formatWholePrice(slot.status === "hold" ? Number(slot.preco_alvo || 0) : market.precoAlvo)}</strong></span>
         </div>
       ) : null}
       <details className="mini-drawer slot-more-drawer">
@@ -338,7 +340,7 @@ function SlotCard({
               <input type="hidden" name="slotId" value={slot.id} />
               <label>
                 Preco entrada
-                <input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={suggestedEntryPrice || ""} />
+                <input name="entryPrice" type="number" min="0" step="1" defaultValue={suggestedEntryPrice ? Math.round(suggestedEntryPrice) : ""} />
               </label>
               <button className="slot-button" type="submit" onClick={() => announce("Abrindo slot...")}>
                 Abrir
@@ -353,11 +355,11 @@ function SlotCard({
           <form className="tool-form stacked-form" action={updateSlot}>
             <input type="hidden" name="slotId" value={slot.id} />
             <label>Status<select name="status" defaultValue={slot.status}><option value="zerado">Zerado</option><option value="hold">Aguardando entrada</option><option value="aberto">Aberto</option><option value="gain">Gain</option></select></label>
-            <label>Gains<input name="gains" type="number" min="0" step="1" defaultValue={slot.gains} /></label>
+            <label>Gains<input name="gains" type="number" min={slot.gains} step="1" defaultValue={slot.gains} /></label>
             <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
-            <label>Preco entrada<input name="entryPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_entrada || 0) || ""} /></label>
+            <label>Preco entrada<input name="entryPrice" type="number" min="0" step="1" defaultValue={slot.preco_entrada ? Math.round(Number(slot.preco_entrada)) : ""} /></label>
             <label>Preco atual<input name="currentPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_atual || 0) || ""} /></label>
-            <label>Preco alvo<input name="targetPrice" type="number" min="0" step="0.00000001" defaultValue={Number(slot.preco_alvo || 0) || ""} /></label>
+            <label>Preco alvo<input name="targetPrice" type="number" min="0" step="1" defaultValue={slot.preco_alvo ? Math.round(Number(slot.preco_alvo)) : ""} /></label>
             <label>Observacoes<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
             <button className="slot-button edit" type="submit">Salvar</button>
           </form>
