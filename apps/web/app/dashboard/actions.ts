@@ -626,6 +626,7 @@ export async function openSlot(formData: FormData) {
   entryPrice = entryPrice > 0 ? roundEntryPrice(entryPrice) : 0;
   const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
   const targetPrice = entryPrice > 0 ? roundEntryPrice(entryPrice * (1 + strategyGainRate)) : null;
+  const reclassifiedAddedGains = Number(slot.added_gains || 0);
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
@@ -638,6 +639,11 @@ export async function openSlot(formData: FormData) {
     .update({
       status: "aberto",
       started_once: true,
+      // Um slot aberto não pode manter o ajuste manual de uma meta já concluída.
+      // O total e o valor operacional são preservados; apenas a classificação deixa
+      // de ser "adicionada" para o novo ciclo operacional poder iniciar.
+      real_gains: Number(slot.gains || 0),
+      added_gains: 0,
       gain_rate: strategyGainRate,
       preco_entrada: entryPrice > 0 ? entryPrice : null,
       preco_atual: entryPrice > 0 ? entryPrice : null,
@@ -651,29 +657,33 @@ export async function openSlot(formData: FormData) {
   if (updateError || !updatedSlot) {
     throw new Error("O slot não pôde ser aberto porque foi atualizado por outra operação.");
   }
-  await addHistory("Abertura", `Slot aberto com valor calculado de ${formatUsdt(currentValue(slot))}.`, {
-    userId: user.id,
-    strategyId: slot.strategy_id,
-    slotId: slot.id,
-    strategyKey: strategy?.key || null,
-    slotNumber: slot.slot_number,
-    metadata: {
-      asset: strategy?.asset || null,
-      eventType: "entrada_manual",
-      origin: "MANUAL",
-      expectedPrice: entryPrice || null,
-      executedPrice: entryPrice || null,
-      currentPrice: entryPrice || null,
-      targetPrice,
-      valueBefore: currentValue(slot),
-      valueAfter: currentValue(slot),
-      slotValue: currentValue(slot),
-      gains: Number(slot.gains || 0),
-      statusBefore: slot.status,
-      statusAfter: "aberto",
-      note: "Entrada manual registrada pelo usuario."
+  await addHistory(
+    "Abertura",
+    `Slot aberto com valor calculado de ${formatUsdt(currentValue(slot))}.${reclassifiedAddedGains > 0 ? ` ${reclassifiedAddedGains} gains adicionados foram incorporados ao ciclo operacional.` : ""}`,
+    {
+      userId: user.id,
+      strategyId: slot.strategy_id,
+      slotId: slot.id,
+      strategyKey: strategy?.key || null,
+      slotNumber: slot.slot_number,
+      metadata: {
+        asset: strategy?.asset || null,
+        eventType: "entrada_manual",
+        origin: "MANUAL",
+        expectedPrice: entryPrice || null,
+        executedPrice: entryPrice || null,
+        currentPrice: entryPrice || null,
+        targetPrice,
+        valueBefore: currentValue(slot),
+        valueAfter: currentValue(slot),
+        slotValue: currentValue(slot),
+        gains: Number(slot.gains || 0),
+        statusBefore: slot.status,
+        statusAfter: "aberto",
+        note: "Entrada manual registrada pelo usuario."
+      }
     }
-  });
+  );
 
   finish("Slot aberto.");
 }
