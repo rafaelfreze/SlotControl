@@ -22,3 +22,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Dados brutos e estado efemero do simulador local de backtest.
+backtest-data/
+backtest-cache/
+reports/backtests/slot-control-btc-leader/
