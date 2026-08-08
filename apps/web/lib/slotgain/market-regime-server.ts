@@ -1,5 +1,5 @@
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { getSupabaseDataSchema } from "@/lib/supabase/env";
+import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, calculateMarketRegime, distanceFromAthPercent, effectiveMarketRegime, selectOperablePendingSlots, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegime, type MarketRegimeSettings } from "./market-regime";
 
 type BinanceKline = [number, string, string, string, string];
@@ -58,11 +58,14 @@ type PendingSlot = { id: string; strategy_id: string; slot_number: number; sort_
 
 export async function recalculateFutureEntryTriggers(userId: string, regime: MarketRegime, settingsByAsset: Record<"BTC" | "SOL", Partial<AssetMarketStrategySettings>>) {
   const supabase = createServiceRoleClient();
-  const { data: rows, error } = await supabase
+  const tenantId = getCoinOpsServiceTenantId();
+  let slotsQuery = supabase
     .from("slots")
     .select("id,strategy_id,slot_number,sort_order,status,gains,preco_entrada,strategies(asset,gain_rate)")
     .eq("user_id", userId)
     .in("status", ["aberto", "hold"]);
+  if (tenantId) slotsQuery = slotsQuery.eq("tenant_id", tenantId);
+  const { data: rows, error } = await slotsQuery;
   if (error) throw error;
   let recalculated = 0;
   for (const asset of ["BTC", "SOL"] as const) {
@@ -77,7 +80,9 @@ export async function recalculateFutureEntryTriggers(userId: string, regime: Mar
       const entryPrice = Math.round(reference * Math.pow(1 - drop / 100, index + 1));
       if (Math.abs(Number(slot.preco_entrada || 0) - entryPrice) < 1) continue;
       const gainRate = Number(slots.find((item) => item.id === slot.id)?.strategies?.gain_rate || 0);
-      const { data: updated } = await supabase.from("slots").update({ preco_entrada: entryPrice, preco_alvo: Math.round(entryPrice * (1 + gainRate)) }).eq("id", slot.id).eq("user_id", userId).eq("status", "hold").select("id").maybeSingle();
+      let updateQuery = supabase.from("slots").update({ preco_entrada: entryPrice, preco_alvo: Math.round(entryPrice * (1 + gainRate)) }).eq("id", slot.id).eq("user_id", userId).eq("status", "hold");
+      if (tenantId) updateQuery = updateQuery.eq("tenant_id", tenantId);
+      const { data: updated } = await updateQuery.select("id").maybeSingle();
       if (!updated) continue;
       recalculated += 1;
       await supabase.from("history_events").insert({ user_id: userId, strategy_id: slot.strategy_id, slot_id: slot.id, action: "Gatilho de entrada", detail: JSON.stringify({ schemaVersion: 2, eventType: "gatilho_futuro_recalculado", asset, regime, dropPercent: drop, expectedPrice: entryPrice, note: "Apenas entrada futura recalculada; slot aberto e historico permaneceram inalterados.", eventAt: new Date().toISOString() }), slot_number: slot.slot_number });
@@ -88,7 +93,10 @@ export async function recalculateFutureEntryTriggers(userId: string, regime: Mar
 
 export async function refreshBtcMarketRegime() {
   const supabase = createServiceRoleClient();
-  const { data: previous } = await supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle<StateRow>();
+  const tenantId = getCoinOpsServiceTenantId();
+  let previousQuery = supabase.from("btc_market_state").select("*").eq("singleton", true);
+  if (tenantId) previousQuery = previousQuery.eq("tenant_id", tenantId);
+  const { data: previous } = await previousQuery.maybeSingle<StateRow>();
   const prices = await fetchBtcReferencePrices();
   const athPrice = Math.max(Number(previous?.ath_price || 0), prices.monthlyHigh, prices.currentPrice);
   const distance = distanceFromAthPercent(prices.latestClosedDaily, athPrice);
@@ -120,9 +128,15 @@ export async function refreshBtcMarketRegime() {
   const { error: stateError } = await supabase.from("btc_market_state").upsert(state, { onConflict: stateConflictKey });
   if (stateError) throw stateError;
 
+  let settingsQuery = supabase.from("market_regime_settings").select("*");
+  let assetSettingsQuery = supabase.from("asset_market_strategy_settings").select("user_id,asset,buy_drop_top_percent,buy_drop_normal_percent,buy_drop_deep_percent,top_zero_reserve_count,normal_zero_reserve_count,deep_zero_reserve_count,deep_active_slot_limit");
+  if (tenantId) {
+    settingsQuery = settingsQuery.eq("tenant_id", tenantId);
+    assetSettingsQuery = assetSettingsQuery.eq("tenant_id", tenantId);
+  }
   const [{ data: settingsRows, error: settingsError }, { data: assetRows, error: assetError }] = await Promise.all([
-    supabase.from("market_regime_settings").select("*"),
-    supabase.from("asset_market_strategy_settings").select("user_id,asset,buy_drop_top_percent,buy_drop_normal_percent,buy_drop_deep_percent,top_zero_reserve_count,normal_zero_reserve_count,deep_zero_reserve_count,deep_active_slot_limit")
+    settingsQuery,
+    assetSettingsQuery
   ]);
   if (settingsError) throw settingsError;
   if (assetError) throw assetError;
@@ -141,7 +155,9 @@ export async function refreshBtcMarketRegime() {
       : applyMarketRegimeHysteresis(settings.last_effective_mode, distance, settings);
     if (nextMode === settings.last_effective_mode) continue;
     changedUsers += 1;
-    await supabase.from("market_regime_settings").update({ last_effective_mode: nextMode, updated_at: now }).eq("user_id", row.user_id);
+    let settingsUpdate = supabase.from("market_regime_settings").update({ last_effective_mode: nextMode, updated_at: now }).eq("user_id", row.user_id);
+    if (tenantId) settingsUpdate = settingsUpdate.eq("tenant_id", tenantId);
+    await settingsUpdate;
     await supabase.from("market_regime_history").insert({
       user_id: row.user_id,
       previous_mode: settings.last_effective_mode,
@@ -163,7 +179,10 @@ export async function refreshBtcMarketRegime() {
 
 export async function getBtcMarketState() {
   const supabase = createServiceRoleClient();
-  const { data, error } = await supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle<StateRow>();
+  const tenantId = getCoinOpsServiceTenantId();
+  let stateQuery = supabase.from("btc_market_state").select("*").eq("singleton", true);
+  if (tenantId) stateQuery = stateQuery.eq("tenant_id", tenantId);
+  const { data, error } = await stateQuery.maybeSingle<StateRow>();
   if (error) throw error;
   return data;
 }

@@ -1,6 +1,6 @@
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
-import { getSupabaseDataSchema } from "./env";
+import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "./env";
 
 export function createServiceRoleClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -11,7 +11,7 @@ export function createServiceRoleClient() {
   }
 
   const dataSchema = getSupabaseDataSchema();
-  const coinOpsServiceTenantId = process.env.COINOPS_SERVICE_TENANT_ID;
+  const coinOpsServiceTenantId = getCoinOpsServiceTenantId();
 
   return createSupabaseClient(supabaseUrl, serviceRoleKey, {
     db: {
