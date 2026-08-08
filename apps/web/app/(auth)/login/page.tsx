@@ -36,11 +36,18 @@ export default function LoginPage({
           </div>
         ) : null}
 
+        {searchParams?.auth === "password-updated" ? (
+          <div className="form-success">
+            Senha atualizada. Entre com sua nova senha.
+          </div>
+        ) : null}
+
         <AuthForm mode="login" redirectTo={searchParams?.redirectTo || "/dashboard"} />
 
         <p className="auth-switch">
           Ainda nao tem conta? <Link href="/cadastro">Criar conta</Link>
         </p>
+        <p className="auth-switch"><Link href="/recuperar-senha">Esqueci minha senha</Link></p>
       </section>
     </main>
   );

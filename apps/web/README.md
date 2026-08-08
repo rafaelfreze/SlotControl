@@ -20,6 +20,8 @@ Preencha em `apps/web/.env.local`:
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_DATA_SCHEMA=public
+COINOPS_SERVICE_TENANT_ID=
 CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_APP_NAME="CoinOps"
@@ -53,12 +55,14 @@ No painel da Vercel, replique estas variaveis:
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_DATA_SCHEMA=public
+COINOPS_SERVICE_TENANT_ID=
 CRON_SECRET=
 NEXT_PUBLIC_SITE_URL=https://SEU-DOMINIO.vercel.app
 NEXT_PUBLIC_APP_NAME="CoinOps"
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET` são variáveis exclusivamente server-side. O cron da Vercel atualiza somente a referência de mercado usada pelas configurações manuais; não existem entradas, saídas ou notificações automáticas.
+`SUPABASE_SERVICE_ROLE_KEY`, `COINOPS_SERVICE_TENANT_ID` e `CRON_SECRET` são variáveis exclusivamente server-side. `SUPABASE_DATA_SCHEMA` deve permanecer `public` enquanto o app usar o Supabase legado; no cutover para a OnPlay Platform, use `coinops` e o tenant interno migrado, sem expor esse identificador ao browser. O cron da Vercel atualiza somente a referência de mercado usada pelas configurações manuais; não existem entradas, saídas ou notificações automáticas.
 
 Depois do primeiro deploy, copie a URL final da Vercel e volte ao Supabase Auth para adicionar:
 

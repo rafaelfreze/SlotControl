@@ -1,4 +1,5 @@
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { getSupabaseDataSchema } from "@/lib/supabase/env";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, calculateMarketRegime, distanceFromAthPercent, effectiveMarketRegime, selectOperablePendingSlots, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegime, type MarketRegimeSettings } from "./market-regime";
 
 type BinanceKline = [number, string, string, string, string];
@@ -110,7 +111,13 @@ export async function refreshBtcMarketRegime() {
     mode_changed_at: automaticMode !== previous?.effective_mode ? now : previous?.mode_changed_at || now,
     updated_at: now
   };
-  const { error: stateError } = await supabase.from("btc_market_state").upsert(state, { onConflict: "singleton" });
+  // The legacy source has a singleton unique key.  In the shared platform the
+  // same state is scoped by product and tenant; its before-insert scope trigger
+  // provides both values before the composite conflict key is evaluated.
+  const stateConflictKey = getSupabaseDataSchema() === "coinops"
+    ? "product_id,tenant_id"
+    : "singleton";
+  const { error: stateError } = await supabase.from("btc_market_state").upsert(state, { onConflict: stateConflictKey });
   if (stateError) throw stateError;
 
   const [{ data: settingsRows, error: settingsError }, { data: assetRows, error: assetError }] = await Promise.all([

@@ -6,7 +6,7 @@ import { useState, useTransition } from "react";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
 
 type AuthFormProps = {
-  mode: "login" | "signup";
+  mode: "login" | "signup" | "recovery";
   redirectTo: string;
 };
 
@@ -17,6 +17,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
   const [message, setMessage] = useState<string | null>(null);
   const configured = isSupabaseConfigured();
   const isSignup = mode === "signup";
+  const isRecovery = mode === "recovery";
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -35,6 +36,20 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
 
     startTransition(async () => {
       const supabase = createClient();
+
+      if (isRecovery) {
+        const { error: recoveryError } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent("/redefinir-senha")}`
+        });
+
+        if (recoveryError) {
+          setError(recoveryError.message);
+          return;
+        }
+
+        setMessage("Se o email estiver cadastrado, enviaremos as instrucoes para redefinir a senha.");
+        return;
+      }
 
       if (isSignup) {
         const { data, error: signupError } = await supabase.auth.signUp({
@@ -88,23 +103,25 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
         <input name="email" type="email" placeholder="voce@email.com" autoComplete="email" required />
       </label>
 
-      <label>
-        Senha
-        <input
-          name="password"
-          type="password"
-          minLength={6}
-          placeholder="Minimo 6 caracteres"
-          autoComplete={isSignup ? "new-password" : "current-password"}
-          required
-        />
-      </label>
+      {!isRecovery ? (
+        <label>
+          Senha
+          <input
+            name="password"
+            type="password"
+            minLength={6}
+            placeholder="Minimo 6 caracteres"
+            autoComplete={isSignup ? "new-password" : "current-password"}
+            required
+          />
+        </label>
+      ) : null}
 
       {error ? <div className="form-error">{error}</div> : null}
       {message ? <div className="form-success">{message}</div> : null}
 
       <button className="solid-button" type="submit" disabled={isPending || !configured}>
-        {isPending ? "Processando..." : isSignup ? "Criar conta" : "Entrar"}
+        {isPending ? "Processando..." : isRecovery ? "Enviar instrucoes" : isSignup ? "Criar conta" : "Entrar"}
       </button>
     </form>
   );
