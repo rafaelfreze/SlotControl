@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from strategy_slot_leader import StrategyConfig, select_entry_slot, select_leader
+from strategy_slot_leader import StrategyConfig, calculate_compound_topup, priority_key, select_entry_slot, select_leader
 
 EPSILON = 1e-10
 
@@ -59,6 +59,9 @@ class BacktestResult:
     trades: list[dict]
     topups: list[dict]
     monthly: list[dict]
+    topups_forensic: list[dict]
+    monthly_forensic: list[dict]
+    leader_selection_audit: list[dict]
     ambiguous_candles: list[dict]
     ending_price: float
     total_entries: int
@@ -110,6 +113,9 @@ class BacktestEngine:
         self.trades: list[dict] = []
         self.topups: list[dict] = []
         self.monthly: list[dict] = []
+        self.topups_forensic: list[dict] = []
+        self.monthly_forensic: list[dict] = []
+        self.leader_selection_audit: list[dict] = []
         self.ambiguous_candles: list[dict] = []
         self.anchor: float | None = None
         self.next_level = 0
@@ -122,6 +128,12 @@ class BacktestEngine:
         self.month_start_exits = 0
         self.month_start_profit = 0.0
         self.current_month: str | None = None
+        self.month_number = 0
+        self.month_btc_start = 0.0
+        self.month_open_slots_start = 0
+        self.month_cash_start = 0.0
+        self.month_equity_start = 0.0
+        self.topup_months: set[str] = set()
         self.last_candle: Candle | None = None
         self.processed = 0
 
@@ -135,6 +147,13 @@ class BacktestEngine:
         equity = self._equity(price)
         self.peak_equity = max(self.peak_equity, equity)
         self.max_drawdown = max(self.max_drawdown, (self.peak_equity - equity) / self.peak_equity)
+
+    def _begin_month(self, candle: Candle) -> None:
+        self.month_number = len(self.monthly) + 1
+        self.month_btc_start = candle.open
+        self.month_open_slots_start = len(self._open_slots())
+        self.month_cash_start = sum(slot.value for slot in self.slots if slot.position is None)
+        self.month_equity_start = self._equity(candle.open)
 
     def _buy(self, slot: Slot, price: float, when: datetime) -> None:
         if slot.position is not None:
@@ -227,23 +246,43 @@ class BacktestEngine:
             return
         target = (len(self.monthly) + 1) * self.config.monthly_target_gains
         leader = select_leader(self.slots)
+        eligible = sorted((slot for slot in self.slots if slot.position is None), key=priority_key)
+        ranks = {slot.slot_id: index + 1 for index, slot in enumerate(eligible)}
+        equity_before_topup = self._equity(candle.close)
+        cash_before = sum(slot.value for slot in self.slots if slot.position is None)
         topup = 0.0
+        factor = 1.0
         missing: int | str = ""
         leader_before: int | str = ""
         leader_id: int | str = "NO_FREE_SLOT" if leader is None else leader.slot_id
+        leader_real_before: int | str = ""
+        leader_value_before: float | str = ""
+        reason = "NO_FREE_SLOT" if leader is None else "TARGET_ALREADY_MET"
         if self.config.enable_topups and leader is not None:
             leader_before = leader.gains_operational
-            missing = max(0, target - leader.gains_operational)
+            leader_real_before = leader.gains_real
+            leader_value_before = leader.value
+            missing, factor, topup, after = calculate_compound_topup(leader.value, leader.gains_operational, target, self.config.gain_rate)
             if missing:
-                before = leader.value
-                after = before * math.pow(1 + self.config.gain_rate, missing)
-                topup = after - before
+                if leader.position is not None:
+                    raise AssertionError("Slot aberto nao pode receber aporte")
+                if self.current_month in self.topup_months:
+                    raise AssertionError("topups_per_month excedeu 1")
+                self.topup_months.add(self.current_month)
                 leader.value, leader.gains_operational = after, leader.gains_operational + missing
                 leader.total_topup_received += topup
-                self.topups.append({"month": self.current_month, "target_gains": target, "slot_id": leader.slot_id, "slot_gains_before": leader_before, "slot_gains_after": leader.gains_operational, "slot_value_before": before, "slot_value_after": after, "missing_gains": missing, "topup_amount": topup})
+                reason = "APPLIED"
+                topup_row = {"month": self.current_month, "target_gains": target, "slot_id": leader.slot_id, "slot_gains_before": leader_before, "slot_gains_after": leader.gains_operational, "slot_value_before": leader_value_before, "slot_value_after": after, "missing_gains": missing, "topup_amount": topup}
+                self.topups.append(topup_row)
+                self.topups_forensic.append({"timestamp": candle.time.isoformat(), "month": self.current_month, "slot_id": leader.slot_id, "status": "FREE", "month_number": self.month_number, "cumulative_target": target, "real_gains_before": leader_real_before, "operational_gains_before": leader_before, "missing_gains": missing, "slot_value_before": leader_value_before, "compound_factor": factor, "topup_amount": topup, "slot_value_after": after, "reason": reason})
             leader.months_as_leader += 1
         elif self.config.enable_topups:
             self.topups.append({"month": self.current_month, "target_gains": target, "slot_id": "NO_FREE_SLOT", "slot_gains_before": "", "slot_gains_after": "", "slot_value_before": "", "slot_value_after": "", "missing_gains": "", "topup_amount": 0.0})
+        for slot in self.slots:
+            self.leader_selection_audit.append({"month": self.current_month, "slot_id": slot.slot_id, "status": "OPEN" if slot.position else "FREE", "operational_gains": slot.gains_operational if slot is not leader else leader_before, "real_gains": slot.gains_real if slot is not leader else leader_real_before, "slot_value": slot.value if slot is not leader else leader_value_before, "eligible": slot.position is None, "rank": ranks.get(slot.slot_id, ""), "selected": slot is leader})
+        cash_after = sum(slot.value for slot in self.slots if slot.position is None)
+        equity_after_topup = self._equity(candle.close)
+        self.monthly_forensic.append({"month": self.current_month, "btc_start": self.month_btc_start, "btc_end": candle.close, "leader_slot": leader_id, "cumulative_target": target, "leader_real_gains": leader_real_before, "leader_operational_gains_before": leader_before, "missing_gains": missing, "topup_amount": topup, "real_trades_month": self.total_exits - self.month_start_exits, "real_profit_month": self.realized_profit - self.month_start_profit, "open_slots_start": self.month_open_slots_start, "open_slots_end": len(self._open_slots()), "equity_before_topup": equity_before_topup, "equity_after_topup": equity_after_topup, "cash_before": cash_before, "cash_after": cash_after, "reason": reason})
         self.monthly.append({"month": self.current_month, "start_equity": self.month_start_equity, "end_equity": self._equity(candle.close), "realized_gains": self.total_exits - self.month_start_exits, "realized_profit": self.realized_profit - self.month_start_profit, "open_slots_end": len(self._open_slots()), "closed_slots_end": self.config.slot_count - len(self._open_slots()), "leader_slot": leader_id, "target_gains": target, "leader_gains_before": leader_before, "missing_gains": missing, "topup_amount": topup, "total_topups_to_date": sum(float(item["topup_amount"]) for item in self.topups), "end_btc_price": candle.close})
         self.month_start_equity, self.month_start_exits, self.month_start_profit = self._equity(candle.close), self.total_exits, self.realized_profit
 
@@ -253,11 +292,13 @@ class BacktestEngine:
             if first is None:
                 first, self.current_month = candle, candle.time.strftime("%Y-%m")
                 self._start_cycle(candle.close, candle.time)  # close inicial, escolha reproduzivel
+                self._begin_month(candle)
             else:
                 month = candle.time.strftime("%Y-%m")
                 if month != self.current_month:
                     self._close_month(self.last_candle)
                     self.current_month = month
+                    self._begin_month(candle)
                 self._maybe_restart(candle)
                 if self._ambiguous(candle):
                     self.ambiguous_candles.append({"time": candle.time.isoformat(), "open": candle.open, "high": candle.high, "low": candle.low, "close": candle.close})
@@ -267,4 +308,4 @@ class BacktestEngine:
         if first is None or self.last_candle is None:
             raise ValueError("Nenhum candle no periodo solicitado")
         self._close_month(self.last_candle)
-        return BacktestResult(self.config, self.interval, self.intrabar_mode, first.time, self.last_candle.time, self.processed, self.slots, self.trades, self.topups, self.monthly, self.ambiguous_candles, self.last_candle.close, self.total_entries, self.total_exits, self.max_open_slots, self.max_drawdown, self.realized_profit)
+        return BacktestResult(self.config, self.interval, self.intrabar_mode, first.time, self.last_candle.time, self.processed, self.slots, self.trades, self.topups, self.monthly, self.topups_forensic, self.monthly_forensic, self.leader_selection_audit, self.ambiguous_candles, self.last_candle.close, self.total_entries, self.total_exits, self.max_open_slots, self.max_drawdown, self.realized_profit)

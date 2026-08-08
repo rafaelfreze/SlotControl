@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 
 @dataclass(frozen=True)
@@ -36,3 +37,11 @@ def select_entry_slot(slots, policy: str):
     if policy == "slot-number":
         return min(free, key=lambda slot: slot.slot_id)
     raise ValueError(f"Politica de entrada desconhecida: {policy}")
+
+
+def calculate_compound_topup(slot_value: float, operational_gains: int, cumulative_target: int, gain_rate: float) -> tuple[int, float, float, float]:
+    """Retorna faltantes, fator composto, aporte e novo valor sem mutar o slot."""
+    missing = max(0, cumulative_target - operational_gains)
+    factor = math.pow(1 + gain_rate, missing)
+    new_value = slot_value * factor
+    return missing, factor, new_value - slot_value, new_value

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from backtest_engine import BacktestEngine, load_cached_klines
 from download_binance_klines import download_range
-from report_backtest import write_csv, write_result
+from report_backtest import write_before_after_audit, write_csv, write_result
 from strategy_slot_leader import StrategyConfig
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +43,7 @@ def main() -> int:
     parser.add_argument("--entry-priority", choices=("leader", "slot-number"), default="leader")
     parser.add_argument("--scenario-only", action="store_true", help="Gera somente um cenário em --output-name.")
     parser.add_argument("--output-name", default="scenario-personalizado")
+    parser.add_argument("--baseline-summary", type=Path, help="summary.json anterior para a comparacao forense before/after.")
     args = parser.parse_args()
     if args.end < args.start:
         parser.error("--end deve ser posterior a --start")
@@ -52,6 +54,9 @@ def main() -> int:
     report_root.mkdir(parents=True, exist_ok=False)
     scenario_dir = report_root if args.scenario_only else report_root / "scenario-a-1m-heuristic"
     comparisons = [run_scenario(args.cache, scenario_dir, args.start, args.end, "1m", "heuristic", True, args.entry_priority)]
+    if args.baseline_summary:
+        old_summary = json.loads(args.baseline_summary.read_text(encoding="utf-8"))
+        write_before_after_audit(scenario_dir, old_summary, comparisons[0])
     if args.scenario_only:
         print(f"Relatorio principal: {report_root}")
         return 0

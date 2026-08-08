@@ -56,3 +56,12 @@ O campo de ambiguidade deixa explícita a quantidade ainda não resolvida.
 ```powershell
 python -m unittest discover -s tools/backtests/tests -v
 ```
+
+## Auditoria independente de um relatório
+
+```powershell
+python tools/backtests/audit_backtest_artifacts.py --cache backtest-data --report reports/backtests/slot-control-btc-leader/<relatorio>/forensic-rerun-1m
+```
+
+O comando grava `independent_forensic_validation.json` com perfil do cache,
+unicidade mensal dos aportes, recálculo da fórmula e validação do rank do líder.
