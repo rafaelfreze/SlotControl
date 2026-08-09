@@ -56,7 +56,9 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. O Plano de Crescimento Programado mantém os valores e o histórico financeiro intactos. Cada slot separa `gains reais` (fechamentos reais) de `gains adicionados` (ajuste manual de meta); ambos formam o total usado no valor operacional.
+Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática.
+
+A regra financeira oficial está em [`docs/ESCADA_REDISTRIBUICAO_BTC.md`](docs/ESCADA_REDISTRIBUICAO_BTC.md). Backtests e simuladores locais não são fonte de regra para o CoinOps real.
 
 ## Supabase Auth
 
@@ -102,6 +104,7 @@ NEXT_PUBLIC_APP_NAME="SlotGain Control"
 
 ```bash
 cd apps/web
+npm run test
 npm run typecheck
 npm run lint
 npm run build
@@ -115,9 +118,11 @@ npm run build
 - Slots por usuario
 - Filtros por status
 - Historico de acoes
-- Plano de Crescimento Programado com dias corridos desde o início, metas acumuladas nos marcos de 30/60/90 dias e fechado líder pelo ranking atual de gains
-- Edição de gains adicionados apenas em slots fechados, sem movimentar patrimônio entre slots
-- Gains reais registrados somente pelo fechamento de slot aberto e separados dos gains adicionados
-- Taxa de gain configurável por estratégia, refletida no valor operacional pela fórmula linear `capital × (1 + taxa × gains)` sem modificar o histórico de eventos
+- Plano BTC com meta mensal base de 7 gains como velocidade da escada, sem criar dívida acumulada para cada slot
+- Referência assistida e editável, com prévia server-side antes de qualquer redistribuição financeira
+- Ranking BTC por gains operacionais, incluindo slots abertos como doadores ou recebedores sem reescrever a posição executada
+- Gains reais imutáveis, gains operacionais redistribuíveis e gains adicionados anteriores preservados como legado
+- Ledger transacional para redistribuições internas e aportes externos, com conservação patrimonial e idempotência
+- Taxa de gain configurável por estratégia, usada na unidade financeira `round((base + aporte) × taxa, 8)`; saldos de redistribuição permanecem contabilizados separadamente
 - Preço de entrada identificado ao abrir o slot, sem exibição ou edição manual no card; rankings separados de slots abertos e fechados por quantidade de gains
 - Layout escuro mobile-first inspirado em ferramentas de trading

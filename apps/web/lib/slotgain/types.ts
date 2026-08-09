@@ -20,10 +20,16 @@ export type SlotView = {
   gains: number;
   real_gains: number;
   added_gains: number;
+  operational_gains: number | string;
+  redistribution_received_usdt: number | string;
+  redistribution_sent_usdt: number | string;
   base_value: number | string;
   realized_profit: number | string;
   growth_contribution: number | string;
   operational_slot_value: number | string;
+  position_notional_usdt: number | string | null;
+  position_gain_unit_usdt: number | string | null;
+  accounting_version: number;
   gain_rate: number | string;
   preco_entrada: number | string | null;
   preco_atual: number | string | null;
@@ -58,6 +64,12 @@ export function normalizeSlot(slot: SlotRow): SlotView {
 
   return {
     ...slot,
+    operational_gains: slot.operational_gains ?? slot.gains,
+    redistribution_received_usdt: slot.redistribution_received_usdt ?? 0,
+    redistribution_sent_usdt: slot.redistribution_sent_usdt ?? 0,
+    position_notional_usdt: slot.position_notional_usdt ?? null,
+    position_gain_unit_usdt: slot.position_gain_unit_usdt ?? null,
+    accounting_version: slot.accounting_version ?? 0,
     preco_entrada: keepsPrices ? slot.preco_entrada : null,
     preco_atual: slot.status === "aberto" ? slot.preco_atual : null,
     preco_alvo: keepsPrices ? slot.preco_alvo : null,

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import {
@@ -13,6 +14,7 @@ import {
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
+  formatDecimal,
   formatPrice,
   formatUsdt,
   getCurrentValue,
@@ -20,7 +22,6 @@ import {
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
-import { rankSlotIds, sortSlotsByGains } from "@/lib/slotgain/slot-ranking";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type SlotFilter = "aberto" | "gain" | "closed" | "all";
@@ -37,6 +38,28 @@ type SlotsClientProps = {
 
 function getAssetFromStrategy(slot: SlotView) {
   return slot.strategy?.asset?.toUpperCase() || "BTC";
+}
+
+function getRankingGains(slot: SlotView) {
+  if (getAssetFromStrategy(slot) !== "BTC") return Number(slot.gains || 0);
+  const operationalGains = Number(slot.operational_gains);
+  return Number.isFinite(operationalGains) ? operationalGains : Number(slot.gains || 0);
+}
+
+function sortSlotsForRanking(slots: SlotView[]) {
+  return [...slots].sort((first, second) =>
+    getRankingGains(second) - getRankingGains(first)
+    || first.slot_number - second.slot_number
+    || first.sort_order - second.sort_order
+    || first.id.localeCompare(second.id)
+  );
+}
+
+function rankSlots(slots: SlotView[]) {
+  return sortSlotsForRanking(slots).reduce<Record<string, number>>((ranking, slot, index) => {
+    ranking[slot.id] = index + 1;
+    return ranking;
+  }, {});
 }
 
 export function SlotsClient({ strategies, slots, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
@@ -60,26 +83,26 @@ export function SlotsClient({ strategies, slots, setupError, initialNotice, init
       });
 
       if (slotFilter === "aberto") {
-        return sortSlotsByGains(filtered);
+        return sortSlotsForRanking(filtered);
       }
 
       if (slotFilter === "closed") {
-        return sortSlotsByGains(filtered);
+        return sortSlotsForRanking(filtered);
       }
 
       return [...filtered].sort((first, second) => {
         const group = (slot: SlotView) => slot.status === "gain" || slot.status === "zerado" ? 0 : slot.status === "aberto" ? 1 : 2;
-        return group(first) - group(second) || Number(second.gains || 0) - Number(first.gains || 0) || first.slot_number - second.slot_number;
+        return group(first) - group(second) || getRankingGains(second) - getRankingGains(first) || first.slot_number - second.slot_number;
       });
     },
     [scopedSlots, slotFilter]
   );
-  const openRankById = useMemo(() => rankSlotIds(scopedSlots.filter((slot) => slot.status === "aberto")), [scopedSlots]);
-  const closedRankById = useMemo(() => rankSlotIds(scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [scopedSlots]);
+  const openRankById = useMemo(() => rankSlots(scopedSlots.filter((slot) => slot.status === "aberto")), [scopedSlots]);
+  const closedRankById = useMemo(() => rankSlots(scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [scopedSlots]);
 
   const total = scopedSlots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
-  const base = scopedSlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
-  const gains = scopedSlots.reduce((sum, slot) => sum + slot.gains, 0);
+  const realizedProfit = scopedSlots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
+  const gains = scopedSlots.reduce((sum, slot) => sum + getRankingGains(slot), 0);
   const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.real_gains || 0), 0);
   const addedGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.added_gains || 0), 0);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
@@ -137,9 +160,9 @@ export function SlotsClient({ strategies, slots, setupError, initialNotice, init
           </div>
           <div className="asset-summary-stats">
             <StatCard title="Total" value={formatUsdt(total)} financialValue={total} tone={tone} />
-            <StatCard title="Lucro realizado" value={formatUsdt(total - base)} financialValue={total - base} tone="green" />
+            <StatCard title="Lucro realizado" value={formatUsdt(realizedProfit)} financialValue={realizedProfit} tone="green" />
             <StatCard title="Abertos" value={String(open)} tone="gold" />
-            <StatCard title="Gains totais" value={String(gains)} helper={`Reais: ${realGains} · Adicionados: ${addedGains}`} tone="blue" />
+            <StatCard title={selectedAsset === "BTC" ? "Gains operacionais" : "Gains totais"} value={formatDecimal(gains)} helper={`Reais: ${realGains} · Adicionados: ${addedGains}`} tone="blue" />
           </div>
         </div>
       </SectionCard>
@@ -226,15 +249,15 @@ function SlotCard({
       <div className="slot-card-values">
         <span>Valor operacional<strong className={`financial-${getFinancialValueTone(getCurrentValue(slot))}`}>{formatUsdt(getCurrentValue(slot))}</strong></span>
         <span>Lucro realizado<strong className={`financial-${getFinancialValueTone(Number(slot.realized_profit || 0))}`}>{formatUsdt(Number(slot.realized_profit || 0))}</strong></span>
-        <span>Gains totais<strong>{slot.gains}</strong></span>
+        <span>{asset === "BTC" ? "Gains operacionais" : "Gains totais"}<strong>{formatDecimal(getRankingGains(slot))}</strong></span>
       </div>
       <div className="slot-card-meta">
         <div className="slot-gain-breakdown">
           <span>Gains reais<strong>{slot.real_gains}</strong></span>
-          <span>Gains adicionados<strong>{slot.added_gains}</strong></span>
+          <span>{asset === "BTC" ? "Gains adicionados (legado)" : "Gains adicionados"}<strong>{slot.added_gains}</strong></span>
         </div>
       </div>
-      {slot.status !== "aberto" && slot.status !== "hold" ? (
+      {asset !== "BTC" && slot.status !== "aberto" && slot.status !== "hold" ? (
         <form className="slot-gain-editor" action={updateSlotGains}>
           <input type="hidden" name="slotId" value={slot.id} />
           <label>Adicionar gains<input name="addedGains" type="number" min={slot.added_gains} step="1" defaultValue={slot.added_gains} aria-label={`Gains adicionados do slot ${slot.slot_number}`} /></label>
@@ -246,6 +269,11 @@ function SlotCard({
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
         <div className="slot-internal-id">Gains reais: {slot.real_gains}</div>
         <div className="slot-internal-id">Gains adicionados: {slot.added_gains}</div>
+        {asset === "BTC" ? (
+          <div className="slot-internal-id">
+            Redistribuição líquida: {formatUsdt(Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0))}
+          </div>
+        ) : null}
         <div className="slot-card-actions">
           <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
           <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
@@ -264,7 +292,15 @@ function SlotCard({
           <form className="tool-form stacked-form" action={updateSlot}>
             <input type="hidden" name="slotId" value={slot.id} />
             <input type="hidden" name="status" value={slot.status} />
-            <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
+            {asset === "BTC" ? (
+              <>
+                <input type="hidden" name="baseValue" value={Number(slot.base_value)} />
+                <div className="slot-internal-id">Base USDT (somente leitura): {formatUsdt(Number(slot.base_value || 0))}</div>
+                <Link className="slot-button" href="/plano-crescimento">Registrar aporte no Plano</Link>
+              </>
+            ) : (
+              <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
+            )}
             <label>Observacoes<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
             <button className="slot-button edit" type="submit">Salvar</button>
           </form>

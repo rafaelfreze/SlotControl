@@ -3,9 +3,10 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import { saveGrowthPlanSettings } from "@/app/dashboard/actions";
 import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
+import { saveSolMonthlyGoal } from "./actions";
+import { BtcLadderSection, type BtcLadderPlanResponse, type BtcPlanActionKeys } from "./btc-ladder-section";
 
 type GrowthAsset = "BTC" | "SOL";
 
@@ -52,46 +53,46 @@ export type GrowthContributionHistoryItem = {
   created_at: string;
 };
 
-export function GrowthPlanClient({ plan, history, setupError }: { plan: ProgrammedGrowthPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null }) {
+export function GrowthPlanClient({ plan, btcLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys }: { plan: ProgrammedGrowthPlanResponse; btcLadder: BtcLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: BtcPlanActionKeys }) {
   const router = useRouter();
-  const [notice, setNotice] = useState<string | null>(null);
-  const [btcGoal, setBtcGoal] = useState(String(plan.btc_monthly_goal || 7));
+  const [notice, setNotice] = useState<string | null>(initialNotice);
+  const [noticeTone, setNoticeTone] = useState<"success" | "error">(initialNoticeTone);
   const [solGoal, setSolGoal] = useState(String(plan.sol_monthly_goal || 1));
   const [isPending, startTransition] = useTransition();
 
-  function saveGoals() {
+  function saveSolGoal() {
     startTransition(async () => {
       try {
-        const result = await saveGrowthPlanSettings({ btcMonthlyGoal: Number(btcGoal), solMonthlyGoal: Number(solGoal) });
-        setBtcGoal(String(result.btcMonthlyGoal));
+        const result = await saveSolMonthlyGoal({ solMonthlyGoal: Number(solGoal) });
         setSolGoal(String(result.solMonthlyGoal));
-        setNotice("Metas mensais salvas. A meta acumulada segue o mês atual do plano.");
+        setNotice("Meta mensal SOL salva. O plano acumulado de SOL foi preservado.");
+        setNoticeTone("success");
         router.refresh();
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Não foi possível salvar as metas.");
+        setNoticeTone("error");
       }
     });
   }
 
-  const btc = plan.plans?.BTC;
   const sol = plan.plans?.SOL;
 
   return (
     <MobileScreen>
       <AppHeader title="Plano de Crescimento" backHref="/dashboard" />
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
-      {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
+      {notice ? <section className={`${noticeTone === "error" ? "inline-alert" : "form-success"} dashboard-notice`} role="status">{notice}</section> : null}
 
-      <SectionCard title="Crescimento programado" subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia" : "dias"} em operação · meta atual: ${plan.cycle_days ?? 30} dias`} tone="green">
-        <p className="growth-plan-intro">A meta é cumprida ao adicionar gains somente em slots fechados. Gains reais, valores e histórico financeiro permanecem preservados.</p>
+      <BtcLadderSection plan={btcLadder} actionKeys={btcActionKeys} />
+
+      <SectionCard title="Plano acumulado SOL" subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia" : "dias"} em operação · ciclo atual: ${plan.cycle_days ?? 30} dias`} tone="purple">
+        <p className="growth-plan-intro">SOL permanece no fluxo acumulado existente e não participa da escada BTC.</p>
         <div className="growth-goal-grid">
-          <label>Meta BTC mensal<input value={btcGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setBtcGoal(event.target.value)} /></label>
           <label>Meta SOL mensal<input value={solGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setSolGoal(event.target.value)} /></label>
         </div>
-        <button className="ghost-button compact-action" type="button" disabled={isPending} onClick={saveGoals}>Salvar metas</button>
+        <button className="ghost-button compact-action" type="button" disabled={isPending} onClick={saveSolGoal}>Salvar meta SOL</button>
       </SectionCard>
 
-      <GrowthAssetCard asset="BTC" plan={btc} />
       <GrowthAssetCard asset="SOL" plan={sol} />
 
       <SectionCard title="Histórico financeiro anterior" subtitle="Somente leitura" tone="neutral">

@@ -68,9 +68,9 @@ export function StatCard({ title, value, helper, tone = "neutral", financialValu
   );
 }
 
-export function SectionCard({ title, subtitle, children, tone = "neutral" }: { title?: string; subtitle?: string; children: ReactNode; tone?: Tone }) {
+export function SectionCard({ title, subtitle, children, tone = "neutral", className = "" }: { title?: string; subtitle?: string; children: ReactNode; tone?: Tone; className?: string }) {
   return (
-    <section className={`section-card ${tone}`}>
+    <section className={`section-card ${tone} ${className}`.trim()}>
       {title ? (
         <div className="section-card-heading">
           <div>

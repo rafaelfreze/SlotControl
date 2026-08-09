@@ -12,6 +12,13 @@ type DashboardGrowthPlan = {
   };
 };
 
+type DashboardBtcLadderPlan = {
+  monthly_goal?: number;
+  month_reference?: string;
+  real_gains_month?: number | string;
+  real_gains_month_source?: string;
+};
+
 export const metadata: Metadata = { title: "Dashboard" };
 
 export default async function DashboardPage({ searchParams }: { searchParams?: { notice?: string } }) {
@@ -28,7 +35,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse, growthPlanResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse, growthPlanResponse, btcLadderResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -38,15 +45,16 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     supabase
       .from("slots")
       .select(
-        "id,strategy_id,status,gains,real_gains,added_gains,base_value,realized_profit,growth_contribution,operational_slot_value,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
+        "id,strategy_id,status,gains,real_gains,added_gains,operational_gains,redistribution_received_usdt,redistribution_sent_usdt,base_value,realized_profit,growth_contribution,operational_slot_value,position_notional_usdt,position_gain_unit_usdt,accounting_version,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
       .order("sort_order", { ascending: true }),
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
     supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
-    supabase.rpc("get_programmed_growth_plan")
+    supabase.rpc("get_programmed_growth_plan"),
+    supabase.rpc("get_btc_ladder_plan")
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || btcLadderResponse.error;
 
   return (
     <DashboardClient
@@ -59,6 +67,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       marketState={marketStateResponse.data}
       regimeSettings={regimeSettingsResponse.data}
       growthPlan={(growthPlanResponse.data || null) as DashboardGrowthPlan | null}
+      btcLadderPlan={(btcLadderResponse.data || null) as DashboardBtcLadderPlan | null}
     />
   );
 }

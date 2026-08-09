@@ -32,7 +32,7 @@ export function getCurrentValue(slot: Pick<SlotView, "base_value" | "gain_rate" 
 }
 
 export function getOpenMarketMetrics(
-  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo" | "strategy"> & Partial<Pick<SlotView, "operational_slot_value">>,
+  slot: Pick<SlotView, "status" | "base_value" | "gain_rate" | "gains" | "preco_entrada" | "preco_atual" | "preco_alvo" | "strategy"> & Partial<Pick<SlotView, "operational_slot_value" | "position_notional_usdt">>,
   livePrice?: number
 ) {
   const valorSlot = getCurrentValue(slot);
@@ -53,10 +53,18 @@ export function getOpenMarketMetrics(
   const precoEntrada = Number(slot.preco_entrada || 0);
   const precoAtual = Number(livePrice || slot.preco_atual || 0);
   const strategyGainRate = Number(slot.strategy?.gain_rate ?? slot.gain_rate ?? 0);
-  const precoAlvo = Number(precoEntrada > 0 ? precoEntrada * (1 + strategyGainRate) : slot.preco_alvo || 0);
+  const storedTarget = Number(slot.preco_alvo || 0);
+  const precoAlvo = storedTarget > 0
+    ? storedTarget
+    : Number(precoEntrada > 0 ? precoEntrada * (1 + strategyGainRate) : 0);
   const hasPrices = slot.status === "aberto" && precoEntrada > 0 && precoAtual > 0;
-  const valorMarcado = hasPrices ? valorSlot * (precoAtual / precoEntrada) : valorSlot;
-  const resultadoAbertoUsdt = hasPrices ? valorMarcado - valorSlot : 0;
+  const hasStoredPositionNotional = slot.position_notional_usdt !== null && slot.position_notional_usdt !== undefined;
+  const storedPositionNotional = Number(slot.position_notional_usdt);
+  const positionNotional = hasStoredPositionNotional && Number.isFinite(storedPositionNotional) && storedPositionNotional >= 0
+    ? storedPositionNotional
+    : valorSlot;
+  const resultadoAbertoUsdt = hasPrices ? positionNotional * (precoAtual / precoEntrada - 1) : 0;
+  const valorMarcado = valorSlot + resultadoAbertoUsdt;
   const resultadoAbertoPercentual = hasPrices ? (precoAtual / precoEntrada - 1) * 100 : 0;
   const distanciaAteGainPercentual = hasPrices && precoAlvo > 0 ? (precoAlvo / precoAtual - 1) * 100 : 0;
 

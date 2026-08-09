@@ -118,7 +118,10 @@ function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "go
         <label>Gain %<input name="gainRate" type="number" min="0" step="0.01" defaultValue={Number(strategy.gain_rate || 0) * 100} required /></label>
         <label>Queda %<input name="dropPercent" type="number" min="0" step="0.01" defaultValue={formatDecimal(strategy.drop_percent)} /></label>
         <label>Reinício<input name="restartAmount" type="number" min="0" step="1" defaultValue={strategy.restart_amount} /></label>
-        <div className="form-actions"><button className="solid-button" type="submit">Salvar estratégia</button><button className="danger-button" type="submit" formAction={deleteStrategy}>Excluir</button></div>
+        <div className="form-actions">
+          <button className="solid-button" type="submit">Salvar estratégia</button>
+          {strategy.asset.toUpperCase() !== "BTC" ? <button className="danger-button" type="submit" formAction={deleteStrategy}>Excluir</button> : null}
+        </div>
       </form>
     </details>
   );

@@ -10,7 +10,6 @@ import {
   formatPrice,
   formatSignedUsdt,
   formatUsdt,
-  getCurrentValue,
   getMarkedSlotValue,
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
@@ -30,6 +29,7 @@ type DashboardClientProps = {
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
   growthPlan: DashboardGrowthPlan | null;
+  btcLadderPlan: DashboardBtcLadderPlan | null;
 };
 
 type DashboardGrowthPlan = {
@@ -40,6 +40,13 @@ type DashboardGrowthPlan = {
     leader_slot_id?: string | null;
     leader_slot_number?: number | null;
   }>>;
+};
+
+type DashboardBtcLadderPlan = {
+  monthly_goal?: number;
+  month_reference?: string;
+  real_gains_month?: number | string;
+  real_gains_month_source?: string;
 };
 
 type StrategySummary = {
@@ -57,7 +64,6 @@ type StrategySummary = {
 function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset: "BTC" | "SOL", livePrice?: number): StrategySummary {
   const strategy = strategies.find((item) => item.asset.toUpperCase() === asset) || null;
   const strategySlots = strategy ? slots.filter((slot) => slot.strategy_id === strategy.id) : [];
-  const base = strategySlots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
   const total = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrice), 0);
   const markedEquity = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrice), 0);
   const openResult = strategySlots
@@ -69,7 +75,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
     asset,
     name: asset === "BTC" ? "Bitcoin" : "Solana",
     total,
-    realizedProfit: total - base,
+    realizedProfit: strategySlots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0),
     openResult,
     markedEquity,
     openSlots: strategySlots.filter((slot) => slot.status === "aberto").length,
@@ -77,12 +83,10 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings, growthPlan }: DashboardClientProps) {
+export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings, growthPlan, btcLadderPlan }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const totalBase = slots.reduce((sum, slot) => sum + Number(slot.base_value || 0), 0);
-  const totalUpdated = slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
-  const realizedProfit = totalUpdated - totalBase;
+  const realizedProfit = slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
   const openSlotsList = slots.filter((slot) => slot.status === "aberto");
   const openResult = openSlotsList.reduce(
     (sum, slot) => sum + getOpenMarketMetrics(slot, livePrices.prices[slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC"]).resultadoAbertoUsdt,
@@ -133,7 +137,7 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
         </div>
       </section>
 
-      <GrowthPlanStrip plan={growthPlan} />
+      <GrowthPlanStrip plan={growthPlan} btcPlan={btcLadderPlan} />
 
       <section className="mobile-metrics" aria-label="Resumo principal">
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
@@ -165,11 +169,23 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
   );
 }
 
-function GrowthPlanStrip({ plan }: { plan: DashboardGrowthPlan | null }) {
+function GrowthPlanStrip({ plan, btcPlan }: { plan: DashboardGrowthPlan | null; btcPlan: DashboardBtcLadderPlan | null }) {
   return (
     <section className="growth-dashboard-strip" aria-label="Metas mensais de crescimento">
       {(["BTC", "SOL"] as const).map((asset) => {
         const item = plan?.plans?.[asset];
+        if (asset === "BTC") {
+          const monthlyGoal = Number(btcPlan?.monthly_goal || 7);
+          const realGainsMonth = Number(btcPlan?.real_gains_month || 0);
+          const missing = Math.max(monthlyGoal - realGainsMonth, 0);
+          const isExactMonthlyCount = !btcPlan?.real_gains_month_source || btcPlan.real_gains_month_source.toUpperCase() === "LEDGER";
+          return (
+            <Link className="growth-dashboard-link btc" href="/plano-crescimento" key={asset}>
+              <strong>BTC <small>{monthlyGoal}/mês</small></strong>
+              <span>{missing > 0 ? `${realGainsMonth}/${monthlyGoal} ${isExactMonthlyCount ? "reais" : "estimados"}` : `meta mensal ok${isExactMonthlyCount ? "" : " (estimada)"}`}</span>
+            </Link>
+          );
+        }
         const missing = Number(item?.missing_gains || 0);
         const status = !item?.leader_slot_id
           ? "sem fechado"
@@ -178,8 +194,8 @@ function GrowthPlanStrip({ plan }: { plan: DashboardGrowthPlan | null }) {
             : "meta ok";
 
         return (
-          <Link className={`growth-dashboard-link ${asset.toLowerCase()}`} href="/plano-crescimento" key={asset}>
-            <strong>{asset} <small>{item?.monthly_goal ?? (asset === "BTC" ? 7 : 1)}/mês</small></strong>
+          <Link className="growth-dashboard-link sol" href="/plano-crescimento" key={asset}>
+            <strong>SOL <small>{item?.monthly_goal ?? 1}/mês</small></strong>
             <span>{status}</span>
           </Link>
         );
