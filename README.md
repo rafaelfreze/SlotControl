@@ -56,7 +56,7 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática.
+Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática. A data inicial operacional é editável no Plano, independente da criação do usuário no Auth, e serve como fonte única dos ciclos de 30 dias exibidos também no Resumo.
 
 A regra financeira oficial está em [`docs/ESCADA_REDISTRIBUICAO_BTC.md`](docs/ESCADA_REDISTRIBUICAO_BTC.md). Backtests e simuladores locais não são fonte de regra para o CoinOps real.
 

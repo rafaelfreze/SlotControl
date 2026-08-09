@@ -17,6 +17,11 @@ type GrowthGoalRpcResult = {
   sol_monthly_goal?: number | null;
 };
 
+type GrowthStartRpcResult = {
+  started_at?: string | null;
+  stale_preview_count?: number | null;
+};
+
 async function getAuthenticatedClient() {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
@@ -78,7 +83,9 @@ function rpcMessage(code: string | undefined, fallback: string) {
     COINOPS_IDEMPOTENCY_CONFLICT: "Esta intenção financeira já foi usada com dados diferentes.",
     COINOPS_SCOPE_NOT_FOUND: "Não foi possível identificar a conta CoinOps ativa.",
     COINOPS_ACTIVE_INTERNAL_MEMBERSHIP_REQUIRED: "A conta não possui acesso CoinOps ativo.",
-    COINOPS_TENANT_CONTEXT_AMBIGUOUS: "Há mais de um contexto CoinOps ativo; a operação foi bloqueada por segurança."
+    COINOPS_TENANT_CONTEXT_AMBIGUOUS: "Há mais de um contexto CoinOps ativo; a operação foi bloqueada por segurança.",
+    COINOPS_GROWTH_PLAN_START_DATE_INVALID: "Informe uma data inicial válida.",
+    COINOPS_GROWTH_PLAN_START_DATE_FUTURE: "A data inicial da operação não pode estar no futuro."
   };
   if (!code) return fallback;
   const key = Object.keys(messages).find((candidate) => code.includes(candidate));
@@ -192,6 +199,31 @@ export async function saveBtcMonthlyGoal(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/plano-crescimento");
   planRedirect("Meta mensal BTC salva e auditada.");
+}
+
+export async function saveGrowthPlanStartDate(formData: FormData) {
+  const startedAt = formText(formData, "startedAt");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startedAt)) {
+    planRedirect("Informe uma data inicial válida.", { tone: "error" });
+  }
+
+  const { supabase } = await getAuthenticatedClient();
+  const { data, error } = await supabase.rpc("update_growth_plan_started_at", {
+    p_started_at: startedAt
+  });
+  if (error) {
+    planRedirect(rpcMessage(error.message, "Não foi possível salvar a data inicial da operação."), { tone: "error" });
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath("/plano-crescimento");
+
+  const result = data as GrowthStartRpcResult | null;
+  const stalePreviewCount = Number(result?.stale_preview_count || 0);
+  planRedirect(stalePreviewCount > 0
+    ? "Data inicial salva. A prévia BTC anterior foi invalidada; prepare outra com o novo ciclo."
+    : "Data inicial da operação salva. Os ciclos foram recalculados sem alterar gains ou histórico."
+  );
 }
 
 export async function saveSolMonthlyGoal(input: { solMonthlyGoal: number }) {

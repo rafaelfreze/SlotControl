@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 
 import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
-import { saveSolMonthlyGoal } from "./actions";
+import { saveGrowthPlanStartDate, saveSolMonthlyGoal } from "./actions";
 import { BtcLadderSection, type BtcLadderPlanResponse, type BtcPlanActionKeys } from "./btc-ladder-section";
 
 type GrowthAsset = "BTC" | "SOL";
@@ -83,6 +84,23 @@ export function GrowthPlanClient({ plan, btcLadder, history, setupError, initial
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
       {notice ? <section className={`${noticeTone === "error" ? "inline-alert" : "form-success"} dashboard-notice`} role="status">{notice}</section> : null}
 
+      <div id="inicio-operacao">
+        <SectionCard
+          className="growth-start-card"
+          title="Início da operação"
+          subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia contabilizado" : "dias contabilizados"} · base dos ciclos de 30 dias`}
+          tone="neutral"
+        >
+          <form action={saveGrowthPlanStartDate} className="growth-start-form">
+            <label>Data em que começou a operar
+              <input name="startedAt" type="date" defaultValue={plan.started_at?.slice(0, 10) || ""} required />
+            </label>
+            <GrowthStartSubmitButton />
+          </form>
+          <p className="btc-ladder-help">A data recalcula apenas o calendário dos ciclos BTC e SOL. Gains, valores, posições e histórico financeiro não são alterados.</p>
+        </SectionCard>
+      </div>
+
       <BtcLadderSection plan={btcLadder} actionKeys={btcActionKeys} />
 
       <SectionCard title="Plano acumulado SOL" subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia" : "dias"} em operação · ciclo atual: ${plan.cycle_days ?? 30} dias`} tone="purple">
@@ -112,6 +130,11 @@ export function GrowthPlanClient({ plan, btcLadder, history, setupError, initial
       </SectionCard>
     </MobileScreen>
   );
+}
+
+function GrowthStartSubmitButton() {
+  const { pending } = useFormStatus();
+  return <button className="btc-ladder-button neutral" type="submit" disabled={pending}>{pending ? "Salvando..." : "Salvar data"}</button>;
 }
 
 function GrowthAssetCard({ asset, plan }: { asset: GrowthAsset; plan?: ProgrammedGrowthAssetPlan }) {

@@ -16,7 +16,21 @@ A meta mensal BTC começa em **7 gains** e pode ser editada. Sua alteração dev
 
 A meta representa a velocidade desejada de evolução da escada. Ela não cria uma dívida de `7 × meses` para cada slot e não obriga os 25 slots a atingirem o mesmo acumulado.
 
-A tela Plano deve mostrar o ciclo/mês atual, os gains reais obtidos no período e a escada atual. O `month_reference` é resolvido no backend a partir do plano vigente; o frontend não escolhe livremente a competência financeira.
+A tela Plano mostra o ciclo atual de 30 dias, os gains reais obtidos no período e a escada atual. O `month_reference` é resolvido no backend a partir da data inicial operacional; o frontend não escolhe livremente a competência financeira.
+
+### Data inicial operacional
+
+`growth_plan_settings.started_at` é a única fonte de verdade para o tempo em operação e para os ciclos BTC e SOL. Ela é independente de `auth.users.created_at`, pois uma consolidação ou migração de Auth pode recriar o usuário sem reiniciar a operação financeira.
+
+A data pode ser editada na tela Plano por uma RPC autenticada e auditada. A alteração:
+
+- recalcula dias operados, ciclo atual e competência dos próximos cálculos;
+- atualiza o mesmo tempo exibido no Resumo;
+- não altera slots, `real_gains`, `operational_gains`, valores, posições ou histórico financeiro já existente;
+- marca qualquer prévia BTC ainda `PREPARED` como `STALE`, exigindo uma nova prévia na nova competência;
+- registra antes/depois em `coinops.growth_plan_start_audit`.
+
+Os ciclos são contínuos em blocos de 30 dias a partir dessa data: dias 1–30 formam o primeiro ciclo, 31–60 o segundo, 61–90 o terceiro e assim por diante.
 
 ## 3. Contadores e fontes de capital
 
@@ -165,6 +179,7 @@ As estruturas oficiais são:
 - `coinops.slot_capital_ledger`: partidas de abertura, gain real, débito, crédito e aporte externo;
 - `coinops.btc_external_contributions`: aportes externos manuais;
 - `coinops.growth_plan_goal_audit`: alterações da meta mensal BTC.
+- `coinops.growth_plan_start_audit`: alterações da data inicial operacional e quantidade de prévias invalidadas.
 
 A confirmação usa lock transacional e bloqueio das linhas dos slots. A mesma chave de confirmação não cria um segundo efeito. Duas abas não podem aplicar o mesmo patrimônio duas vezes: o primeiro batch válido conclui; o seguinte precisa falhar como conflito ou snapshot obsoleto.
 
@@ -240,7 +255,7 @@ O teste permanente de banco está em `supabase/tests/btc_ladder_redistribution.s
 Pré-requisitos:
 
 - PostgreSQL/Supabase **local** com o scaffold compartilhado do CoinOps;
-- migrations `20260809033335_add_btc_ladder_redistribution.sql` e `20260809033608_index_btc_ladder_product_foreign_keys.sql` já aplicadas nessa base local;
+- migrations `20260809033335_add_btc_ladder_redistribution.sql`, `20260809033608_index_btc_ladder_product_foreign_keys.sql` e `20260809165604_allow_edit_growth_plan_start_date.sql` já aplicadas nessa base local;
 - `psql` disponível;
 - URL apontando explicitamente para a base local, nunca para o projeto vinculado/remoto.
 

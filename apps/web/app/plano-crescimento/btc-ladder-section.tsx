@@ -143,6 +143,13 @@ function formatMonth(value?: string) {
   return new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" }).format(date);
 }
 
+function formatCycleDate(value?: string) {
+  if (!value) return "data indisponível";
+  const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
 function statusLabel(status: string) {
   return status.toLowerCase() === "aberto" ? "OPEN" : "LIVRE";
 }
@@ -177,11 +184,11 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
 
   return (
     <div className="btc-plan-workspace">
-      <SectionCard className="btc-ladder-main" title="Escada BTC" subtitle={`${formatMonth(plan.month_reference)} · meta mensal ${monthlyGoal} gains`} tone="gold">
+      <SectionCard className="btc-ladder-main" title="Escada BTC" subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone="gold">
         {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || "A escada BTC está indisponível."}</p> : null}
         <div className="btc-ladder-summary">
           <Metric
-            label="Gains reais no mês"
+            label="Gains reais no ciclo"
             value={formatGain(plan.real_gains_month)}
             helper={hasExactMonthlyRealGains ? undefined : "estimado (histórico legado)"}
           />
@@ -202,7 +209,17 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
           </form>
         </div>
 
-        <p className="btc-ladder-help">A referência é assistida e editável. A meta de 7 mede a velocidade mensal; ela não cria dívida de 7 gains para cada slot.</p>
+        <p className="btc-ladder-help">A meta de 7 mede a velocidade a cada 30 dias. A referência é o nível operacional que você escolhe para equilibrar a escada; ela não cria dívida de 7 gains para cada slot.</p>
+        <details className="btc-ladder-guide">
+          <summary>Como fazer a redistribuição</summary>
+          <ol>
+            <li>Escolha uma referência operacional, por exemplo 7 ou 14 gains.</li>
+            <li>Toque em Preparar redistribuição. Isso cria somente uma prévia e não altera os slots.</li>
+            <li>Confira doadores, recebedores, USDT transferido e diferença patrimonial zero.</li>
+            <li>Confirme para aplicar tudo em uma única transação; cancele para não alterar nada.</li>
+          </ol>
+          <p>Slots OPEN também podem doar. A posição aberta continua com quantidade, entrada e alvo originais.</p>
+        </details>
         <LadderList slots={ladder} referenceLevel={referenceLevel} />
       </SectionCard>
 

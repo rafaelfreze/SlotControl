@@ -6,6 +6,8 @@ import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/t
 import { DashboardClient } from "./dashboard-client";
 
 type DashboardGrowthPlan = {
+  started_at?: string;
+  elapsed_days?: number;
   plans?: {
     BTC?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_id?: string | null; leader_slot_number?: number | null };
     SOL?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_id?: string | null; leader_slot_number?: number | null };
@@ -54,12 +56,12 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     supabase.rpc("get_btc_ladder_plan")
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || btcLadderResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || growthPlanResponse.error || btcLadderResponse.error;
 
   return (
     <DashboardClient
       userEmail={user.email || "Usuario"}
-      accountCreatedAt={user.created_at || null}
+      operationStartedAt={(growthPlanResponse.data as DashboardGrowthPlan | null)?.started_at || user.created_at || null}
       strategies={(strategiesResponse.data ?? []) as StrategyView[]}
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
       setupError={setupError?.message || null}

@@ -21,7 +21,7 @@ import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type DashboardClientProps = {
   userEmail: string;
-  accountCreatedAt: string | null;
+  operationStartedAt: string | null;
   strategies: StrategyView[];
   slots: SlotView[];
   setupError: string | null;
@@ -33,6 +33,8 @@ type DashboardClientProps = {
 };
 
 type DashboardGrowthPlan = {
+  started_at?: string;
+  elapsed_days?: number;
   plans?: Partial<Record<"BTC" | "SOL", {
     monthly_goal?: number;
     cumulative_goal?: number;
@@ -83,7 +85,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings, growthPlan, btcLadderPlan }: DashboardClientProps) {
+export function DashboardClient({ userEmail, operationStartedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings, growthPlan, btcLadderPlan }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const realizedProfit = slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
@@ -98,8 +100,11 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
   );
   const openSlots = openSlotsList.length;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const accountAgeDays = getAccountAgeDays(accountCreatedAt, new Date(), timeZone);
-  const accountCreatedLabel = formatAccountCreatedDate(accountCreatedAt, timeZone);
+  const planElapsedDays = Number(growthPlan?.elapsed_days);
+  const accountAgeDays = Number.isFinite(planElapsedDays) && planElapsedDays >= 0
+    ? Math.trunc(planElapsedDays)
+    : getAccountAgeDays(operationStartedAt, new Date(), timeZone);
+  const accountCreatedLabel = formatAccountCreatedDate(operationStartedAt, timeZone);
   const liveStatusLabel = livePrices.status === "online" ? "Online" : livePrices.isStale ? "Atualizando" : "Offline";
   const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
@@ -157,11 +162,11 @@ export function DashboardClient({ userEmail, accountCreatedAt, strategies, slots
         <Link href="/plano-crescimento">Plano</Link>
       </section>
 
-      <section className="compact-account-age" aria-label="Tempo em operacao">
+      <Link className="compact-account-age" href="/plano-crescimento#inicio-operacao" aria-label="Tempo em operação; editar data inicial no Plano">
         <span>Conta em operacao</span>
         <strong>{accountAgeDays} {accountAgeDays === 1 ? "dia" : "dias"}</strong>
-        <small>Desde {accountCreatedLabel}</small>
-      </section>
+        <small>Desde {accountCreatedLabel} · editar no Plano</small>
+      </Link>
 
       <p className="mobile-session">{userEmail}</p>
       </div>

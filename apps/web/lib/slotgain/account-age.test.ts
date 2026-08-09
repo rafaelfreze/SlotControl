@@ -19,3 +19,9 @@ test("data invalida ou ausente tem fallback seguro", () => {
   assert.equal(getAccountAgeDays("invalida"), 0);
   assert.equal(formatAccountCreatedDate(null), "Data de criacao indisponivel");
 });
+
+test("data operacional sem horario nao recua um dia no fuso de Cuiaba", () => {
+  const now = new Date("2026-08-09T16:00:00.000Z");
+  assert.equal(getAccountAgeDays("2026-06-21", now, "America/Cuiaba"), 49);
+  assert.equal(formatAccountCreatedDate("2026-06-21", "America/Cuiaba"), "21/06/2026");
+});

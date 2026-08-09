@@ -2,7 +2,8 @@
 --
 -- LOCAL/FIXTURE ONLY. This script must never be pointed at the linked or
 -- production Supabase database. It requires the shared CoinOps scaffold and
--- 20260809033335_add_btc_ladder_redistribution.sql to be applied first.
+-- 20260809033335_add_btc_ladder_redistribution.sql and
+-- 20260809165604_allow_edit_growth_plan_start_date.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -64,7 +65,8 @@ begin
   end if;
   if to_regprocedure('coinops.prepare_btc_ladder_redistribution(numeric,uuid)') is null
     or to_regprocedure('coinops.confirm_btc_ladder_redistribution(uuid,uuid)') is null
-    or to_regprocedure('coinops.apply_btc_external_contribution(uuid,numeric,text,uuid)') is null then
+    or to_regprocedure('coinops.apply_btc_external_contribution(uuid,numeric,text,uuid)') is null
+    or to_regprocedure('coinops.update_growth_plan_started_at(date)') is null then
     raise exception 'TEST_BTC_LADDER_MIGRATION_REQUIRED';
   end if;
 end;
@@ -740,6 +742,102 @@ select pg_temp.assert_true(
         where prepare_idempotency_key = '95000000-0000-0000-0000-000000000002')
   ),
   'the close must append one REAL_GAIN ledger entry based on the frozen gain unit'
+);
+
+-- -------------------------------------------------------------------------
+-- Editing the operational start date changes only the cycle calendar.
+-- A prepared preview becomes stale; slots and financial history stay intact.
+-- -------------------------------------------------------------------------
+
+create temporary table start_date_financial_snapshot on commit drop as
+select pg_catalog.md5(pg_catalog.string_agg(
+  (pg_catalog.to_jsonb(slot) - 'updated_at')::text,
+  '' order by slot.id
+)) as checksum
+from coinops.slots slot
+where slot.user_id = '91000000-0000-0000-0000-000000000002';
+
+insert into coinops.btc_redistribution_batches (
+  id, product_id, tenant_id, user_id, month_reference, cycle_number,
+  monthly_goal, reference_level, status, prepare_idempotency_key,
+  snapshot_hash, ranking_before, ranking_after, equity_before,
+  equity_after, equity_difference, total_transferred_usdt,
+  transfer_count, result, created_by
+)
+select
+  '98000000-0000-0000-0000-000000000001',
+  scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000002', current_date, 1,
+  7, 14, 'PREPARED', '98100000-0000-0000-0000-000000000001',
+  repeat('a', 64), '[]'::jsonb, '[]'::jsonb, 34.3,
+  34.3, 0, 0, 0, '{}'::jsonb,
+  '91000000-0000-0000-0000-000000000002'
+from fixture_scope scope;
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000002', true
+);
+set local role authenticated;
+
+select pg_temp.expect_error(
+  $$update coinops.growth_plan_settings
+    set started_at = current_date - 90
+    where user_id = '91000000-0000-0000-0000-000000000002'$$,
+  null
+);
+select pg_temp.expect_error(
+  $$select coinops.update_growth_plan_started_at(current_date + 1)$$,
+  'COINOPS_GROWTH_PLAN_START_DATE_FUTURE'
+);
+
+do $rpc$
+begin
+  perform coinops.update_growth_plan_started_at(current_date - 90);
+end;
+$rpc$;
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select started_at = current_date - 90
+    from coinops.growth_plan_settings
+    where user_id = '91000000-0000-0000-0000-000000000002'
+  ),
+  'the authenticated RPC must save the user-scoped operational start date'
+);
+select pg_temp.assert_true(
+  (
+    select status = 'STALE'
+      and result ->> 'staleReason' = 'PLAN_START_DATE_CHANGED'
+    from coinops.btc_redistribution_batches
+    where id = '98000000-0000-0000-0000-000000000001'
+  ),
+  'changing the cycle calendar must invalidate an outstanding preview'
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 1
+      and min(previous_started_at) is not null
+      and min(new_started_at) = current_date - 90
+      and min(stale_preview_count) = 1
+    from coinops.growth_plan_start_audit
+    where user_id = '91000000-0000-0000-0000-000000000002'
+  ),
+  'the start-date change must be recorded once in the immutable audit'
+);
+select pg_temp.assert_true(
+  (
+    select snapshot.checksum = pg_catalog.md5(pg_catalog.string_agg(
+      (pg_catalog.to_jsonb(slot) - 'updated_at')::text,
+      '' order by slot.id
+    ))
+    from start_date_financial_snapshot snapshot
+    cross join coinops.slots slot
+    where slot.user_id = '91000000-0000-0000-0000-000000000002'
+    group by snapshot.checksum
+  ),
+  'editing the start date must not change any slot, gain, value, or position'
 );
 
 -- -------------------------------------------------------------------------

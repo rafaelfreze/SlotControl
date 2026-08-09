@@ -536,6 +536,70 @@ p {
   line-height: 1.4;
 }
 
+.growth-start-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 7px;
+}
+
+.growth-start-form label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.growth-start-form input {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(3, 10, 16, 0.72);
+  color: var(--foreground);
+  color-scheme: dark;
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.growth-start-card .btc-ladder-help { margin-bottom: 0; }
+
+.btc-ladder-guide {
+  margin: 0 0 10px;
+  border: 1px solid rgba(212, 175, 55, 0.18);
+  border-radius: 8px;
+  background: rgba(212, 175, 55, 0.05);
+}
+
+.btc-ladder-guide summary {
+  padding: 8px;
+  color: var(--sg-gold);
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.btc-ladder-guide ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0 24px 7px 30px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
+.btc-ladder-guide p {
+  margin: 0;
+  padding: 0 8px 8px;
+  color: var(--foreground);
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
 .btc-ladder-table {
   display: grid;
   gap: 4px;
@@ -4863,6 +4927,8 @@ body,
   align-items: center;
   padding: 10px 12px;
   border-top: 1px solid rgba(148, 163, 184, 0.16);
+  color: inherit;
+  text-decoration: none;
 }
 
 .compact-account-age span,
