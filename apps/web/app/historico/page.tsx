@@ -21,18 +21,48 @@ export default async function HistoricoPage() {
     redirect("/login");
   }
 
-  const { data, error } = await supabase
-    .from("history_events")
-    .select("id,user_id,action,detail,event_at,created_at,strategy_id,slot_id,strategy_key,slot_number,strategies(asset,key)")
-    .order("event_at", { ascending: false })
-    .limit(1000);
+  const [historyResponse, contributionsResponse, slotsResponse] = await Promise.all([
+    supabase
+      .from("history_events")
+      .select("id,user_id,action,detail,event_at,created_at,strategy_id,slot_id,strategy_key,slot_number,strategies(asset,key)")
+      .order("event_at", { ascending: false })
+      .limit(1000),
+    supabase
+      .from("btc_external_contributions")
+      .select("id,asset,slot_id,amount_usdt,gain_equivalent,reason,created_at")
+      .order("created_at", { ascending: false })
+      .limit(500),
+    supabase.from("slots").select("id,slot_number")
+  ]);
 
-  const history = ((data ?? []) as Array<HistoryEvent & { strategies?: HistoryEvent["strategy"] | HistoryEvent["strategy"][] }>).map(
+  const history = ((historyResponse.data ?? []) as Array<HistoryEvent & { strategies?: HistoryEvent["strategy"] | HistoryEvent["strategy"][] }>).map(
     (item) => ({
       ...item,
       strategy: Array.isArray(item.strategies) ? item.strategies[0] || null : item.strategies || null
     })
   );
+  const slotNumberById = new Map((slotsResponse.data ?? []).map((slot) => [slot.id, slot.slot_number]));
+  const contributionEvents: HistoryEvent[] = (contributionsResponse.data ?? []).map((contribution) => ({
+    id: `aporte-${contribution.id}`,
+    action: "Aporte externo",
+    detail: JSON.stringify({
+      asset: contribution.asset,
+      eventType: "aporte_externo",
+      origin: "PLANO",
+      message: contribution.reason,
+      slotValue: Number(contribution.amount_usdt),
+      gains: Number(contribution.gain_equivalent)
+    }),
+    event_at: contribution.created_at,
+    created_at: contribution.created_at,
+    strategy_id: null,
+    slot_id: contribution.slot_id,
+    strategy_key: String(contribution.asset || "").toLowerCase(),
+    slot_number: slotNumberById.get(contribution.slot_id) ?? null,
+    strategy: { asset: contribution.asset, key: String(contribution.asset || "").toLowerCase() }
+  }));
+  const mergedHistory = [...history, ...contributionEvents].sort((first, second) => new Date(second.event_at).getTime() - new Date(first.event_at).getTime());
+  const error = historyResponse.error || contributionsResponse.error || slotsResponse.error;
 
-  return <HistoricoClient userEmail={user.email || "Usuario"} history={history} error={error?.message || null} />;
+  return <HistoricoClient userEmail={user.email || "Usuario"} history={mergedHistory} error={error?.message || null} />;
 }

@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { type ReactNode, useState } from "react";
 
 import { createStrategy, deleteStrategy, updateStrategy } from "@/app/dashboard/actions";
-import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
+import { AppHeader, MobileScreen, SectionHeader } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
@@ -22,7 +23,6 @@ type ConfigClientProps = {
 };
 
 export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, marketState, regimeSettings, assetSettings }: ConfigClientProps) {
-  const [activeSection, setActiveSection] = useState<"strategies" | "account" | "system">("strategies");
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const btc = strategies.find((strategy) => strategy.asset.toUpperCase() === "BTC");
   const sol = strategies.find((strategy) => strategy.asset.toUpperCase() === "SOL");
@@ -47,48 +47,38 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar configurações: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
 
-      <nav className="config-category-nav" aria-label="Categorias de configuração">
-        {[["strategies", "Estratégias"], ["account", "Conta"], ["system", "Sistema"]].map(([key, label]) => <button key={key} type="button" className={activeSection === key ? "active" : ""} onClick={() => setActiveSection(key as typeof activeSection)}>{label}</button>)}
-      </nav>
+      <div className="settings-page">
+        <SettingsGroup title="Conta">
+          <SettingsRow label="E-mail" value={userEmail} />
+        </SettingsGroup>
+        <SettingsGroup title="Aparência">
+          <SettingsRow label="Tema" value="Escuro" />
+        </SettingsGroup>
+        <SettingsGroup title="Preferências">
+          <SettingsRow label="Resumo operacional" value="Compacto" />
+          <SettingsRow label="Plano de crescimento" value="BTC e SOL" href="/plano-crescimento" />
+        </SettingsGroup>
+        <SettingsGroup title="Segurança">
+          <SettingsRow label="Segurança da conta" value="Supabase Auth" />
+        </SettingsGroup>
+        <SettingsGroup title="Dados">
+          <div className="native-settings-row"><span>Exportar dados</span><button type="button" onClick={exportBackup}>Exportar JSON</button></div>
+        </SettingsGroup>
+        <SettingsGroup title="Sessão">
+          <div className="native-settings-row danger"><span>Sair da conta</span><LogoutButton label="Sair" className="settings-logout" /></div>
+        </SettingsGroup>
 
-      {activeSection === "strategies" ? <>
-        <SectionCard title="Estratégias" subtitle="Operacional" tone="gold">
+        <details className="settings-advanced-section">
+          <summary><span>Configurações operacionais</span><small>Estratégias, gains e mercado</small></summary>
           <div className="strategy-settings-grid">
             {btc ? <StrategySection strategy={btc} tone="gold" /> : null}
             {sol ? <StrategySection strategy={sol} tone="purple" /> : null}
           </div>
-        </SectionCard>
-        <MarketRegimeSettings marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} editable />
-      </> : null}
+          <MarketRegimeSettings marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} editable />
+        </details>
 
-      {activeSection === "account" ? <>
-        <SectionCard title="Conta" subtitle="Acesso" tone="green">
-          <div className="settings-list modern-settings">
-            <div><span>Usuário logado</span><strong>{userEmail}</strong></div>
-            <div><span>Plano de crescimento</span><strong>Disponível no menu principal</strong></div>
-          </div>
-        </SectionCard>
-        <SectionCard title="Backup" subtitle="Dados" tone="blue">
-          <div className="settings-list modern-settings account-settings">
-            <div><span>Exportação</span><button className="ghost-button compact-action" type="button" onClick={exportBackup}>Exportar JSON</button></div>
-            <div className="account-actions">
-              <LogoutButton label="Trocar conta" className="ghost-button compact-action" />
-              <LogoutButton label="Sair da conta" className="danger-button compact-action" />
-            </div>
-          </div>
-        </SectionCard>
-      </> : null}
-
-      {activeSection === "system" ? <>
-        <SectionCard title="Sistema" subtitle="Aplicativo" tone="neutral">
-          <div className="settings-list modern-settings">
-            <div><span>Versão</span><strong>CoinOps</strong></div>
-            <div><span>Ambiente</span><strong>Supabase</strong></div>
-            <div><span>Operação</span><strong>Manual</strong></div>
-          </div>
-        </SectionCard>
-        <details className="section-card mini-drawer">
-          <summary>Estratégias avançadas</summary>
+        <details className="settings-advanced-section">
+          <summary><span>Avançado</span><small>Novas estratégias</small></summary>
           <form className="tool-form stacked-form" action={createStrategy}>
             <label>Nome<input name="title" placeholder="ETH 2%" required /></label>
             <label>Chave<input name="key" placeholder="eth" /></label>
@@ -100,9 +90,18 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
             <button className="solid-button" type="submit">Criar estratégia</button>
           </form>
         </details>
-      </> : null}
+      </div>
     </MobileScreen>
   );
+}
+
+function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+  return <section className="native-settings-group"><SectionHeader title={title} /><div>{children}</div></section>;
+}
+
+function SettingsRow({ label, value, href }: { label: string; value: string; href?: string }) {
+  const content = <><span>{label}</span><strong>{value}{href ? <b aria-hidden="true">›</b> : null}</strong></>;
+  return href ? <Link className="native-settings-row" href={href}>{content}</Link> : <div className="native-settings-row">{content}</div>;
 }
 
 function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "gold" | "purple" }) {

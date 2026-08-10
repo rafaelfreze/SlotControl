@@ -10,10 +10,12 @@ type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
 
 export function AppHeader({
   title,
-  backHref = "/dashboard"
+  backHref = "/dashboard",
+  action
 }: {
   title: string;
   backHref?: string;
+  action?: ReactNode;
 }) {
   return (
     <header className="minimal-page-header">
@@ -21,6 +23,7 @@ export function AppHeader({
         {`\u2039`}
       </Link>
       <h1>{title}</h1>
+      <div className="minimal-page-header-action">{action}</div>
     </header>
   );
 }
@@ -39,7 +42,7 @@ const navigation = [
   { href: "/dashboard", label: "Resumo", icon: "◈" },
   { href: "/slots", label: "Slots", icon: "▦" },
   { href: "/plano-crescimento", label: "Plano", icon: "↗" },
-  { href: "/historico", label: "Historico", icon: "◷" },
+  { href: "/historico", label: "Histórico", icon: "◷" },
   { href: "/config", label: "Config", icon: "⚙" }
 ];
 
@@ -144,4 +147,26 @@ export function FilterChips<T extends string>({
       ))}
     </div>
   );
+}
+
+export function SectionHeader({ eyebrow, title, action }: { eyebrow?: string; title: string; action?: ReactNode }) {
+  return (
+    <div className="compact-section-header">
+      <div>{eyebrow ? <span>{eyebrow}</span> : null}<h2>{title}</h2></div>
+      {action ? <div>{action}</div> : null}
+    </div>
+  );
+}
+
+export function StatusBadge({ status }: { status: string }) {
+  const isOpen = status.toLowerCase() === "aberto" || status.toLowerCase() === "open";
+  return <span className={`status-badge ${isOpen ? "open" : "free"}`}>{isOpen ? "OPEN" : "LIVRE"}</span>;
+}
+
+export function PnLValue({ value, children }: { value: number; children: ReactNode }) {
+  return <strong className={`pnl-value financial-${getFinancialValueTone(value)}`}>{children}</strong>;
+}
+
+export function EmptyState({ children }: { children: ReactNode }) {
+  return <div className="compact-empty-state">{children}</div>;
 }

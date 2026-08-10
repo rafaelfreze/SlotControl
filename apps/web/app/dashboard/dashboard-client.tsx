@@ -144,6 +144,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
       <GrowthPlanStrip btcPlan={btcLadderPlan} solPlan={solLadderPlan} />
 
       <section className="mobile-metrics" aria-label="Resumo principal">
+        <div className="portfolio-title">Portfólio</div>
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
         <MetricRow title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" />
         <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper={`Inclui ${formatUsdt(contributedCapital)} em aportes`} />

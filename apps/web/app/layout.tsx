@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 
 import "./globals.css";
+import "./compact-redesign.css";
 
 const appName = "CoinOps";
 const description = "Operacoes inteligentes em criptomoedas";

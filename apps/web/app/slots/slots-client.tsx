@@ -3,24 +3,18 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import { createSlots, moveSlot, openSlot, registerGain, resetSlot, updateSlot } from "@/app/dashboard/actions";
+import { AppHeader, EmptyState, FilterChips, MobileScreen, PnLValue, StatusBadge } from "@/components/app/mobile-ui";
 import {
-  createSlots,
-  moveSlot,
-  openSlot,
-  registerGain,
-  resetSlot,
-  updateSlot
-} from "@/app/dashboard/actions";
-import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
-import {
+  formatDate,
   formatDecimal,
   formatPrice,
+  formatSignedUsdt,
   formatUsdt,
   getCurrentValue,
-  getStatusLabel
+  getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
-import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 import {
   indexCapitalContributionsBySlot,
   summarizeCapitalContributions,
@@ -29,7 +23,7 @@ import {
 } from "@/lib/slotgain/capital-contributions";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
-type SlotFilter = "aberto" | "gain" | "closed" | "all";
+type DisplayFilter = "all" | "BTC" | "SOL" | "aberto" | "closed";
 type AssetFilter = "BTC" | "SOL" | "ALL";
 
 type SlotsClientProps = {
@@ -42,171 +36,112 @@ type SlotsClientProps = {
   initialFlow: string | null;
 };
 
-function getAssetFromStrategy(slot: SlotView) {
-  return slot.strategy?.asset?.toUpperCase() || "BTC";
+function getAsset(slot: SlotView) {
+  return slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC";
 }
 
-function getRankingGains(slot: SlotView) {
-  const operationalGains = Number(slot.operational_gains);
-  return Number.isFinite(operationalGains) ? operationalGains : Number(slot.gains || 0);
+function getOperationalGains(slot: SlotView) {
+  const value = Number(slot.operational_gains);
+  return Number.isFinite(value) ? value : Number(slot.gains || 0);
 }
 
-function sortSlotsForRanking(slots: SlotView[]) {
-  return [...slots].sort((first, second) =>
-    getRankingGains(second) - getRankingGains(first)
-    || first.slot_number - second.slot_number
-    || first.sort_order - second.sort_order
-    || first.id.localeCompare(second.id)
-  );
+function sortSlots(slots: SlotView[]) {
+  return [...slots].sort((first, second) => {
+    const statusOrder = (slot: SlotView) => slot.status === "aberto" ? 0 : 1;
+    return statusOrder(first) - statusOrder(second)
+      || getOperationalGains(second) - getOperationalGains(first)
+      || first.slot_number - second.slot_number
+      || first.id.localeCompare(second.id);
+  });
 }
 
 function rankSlots(slots: SlotView[]) {
-  return sortSlotsForRanking(slots).reduce<Record<string, number>>((ranking, slot, index) => {
-    ranking[slot.id] = index + 1;
-    return ranking;
-  }, {});
+  return [...slots]
+    .sort((a, b) => getOperationalGains(b) - getOperationalGains(a) || a.slot_number - b.slot_number || a.id.localeCompare(b.id))
+    .reduce<Record<string, number>>((ranking, slot, index) => {
+      ranking[slot.id] = index + 1;
+      return ranking;
+    }, {});
 }
 
 export function SlotsClient({ strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
   const livePrices = useLivePrices();
-  const liveBtcPrice = livePrices.prices.BTC;
-  const liveSolPrice = livePrices.prices.SOL;
-  const initialSelectedAsset: AssetFilter = initialAsset?.toUpperCase() === "SOL" ? "SOL" : initialAsset?.toUpperCase() === "BTC" ? "BTC" : "ALL";
-  const [selectedAsset, setSelectedAsset] = useState<AssetFilter>(initialSelectedAsset);
-  const [slotFilter, setSlotFilter] = useState<SlotFilter>(initialFlow === "abrir" ? "closed" : "aberto");
+  const initialFilter: DisplayFilter = initialFlow === "abrir"
+    ? "closed"
+    : initialAsset?.toUpperCase() === "SOL"
+      ? "SOL"
+      : initialAsset?.toUpperCase() === "BTC"
+        ? "BTC"
+        : "all";
+  const [activeFilter, setActiveFilter] = useState<DisplayFilter>(initialFilter);
+  const [expandedSlotId, setExpandedSlotId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(initialNotice);
-  const scopedSlots = useMemo(
-    () => slots.filter((slot) => selectedAsset === "ALL" || getAssetFromStrategy(slot) === selectedAsset),
-    [selectedAsset, slots]
-  );
-  const visibleSlots = useMemo(
-    () => {
-      const filtered = scopedSlots.filter((slot) => {
-        if (slotFilter === "closed") return slot.status === "gain" || slot.status === "zerado";
-        if (slotFilter === "all") return true;
-        return slot.status === slotFilter;
-      });
 
-      if (slotFilter === "aberto") {
-        return sortSlotsForRanking(filtered);
-      }
-
-      if (slotFilter === "closed") {
-        return sortSlotsForRanking(filtered);
-      }
-
-      return [...filtered].sort((first, second) => {
-        const group = (slot: SlotView) => slot.status === "gain" || slot.status === "zerado" ? 0 : slot.status === "aberto" ? 1 : 2;
-        return group(first) - group(second) || getRankingGains(second) - getRankingGains(first) || first.slot_number - second.slot_number;
-      });
-    },
-    [scopedSlots, slotFilter]
-  );
-  const openRankById = useMemo(() => rankSlots(scopedSlots.filter((slot) => slot.status === "aberto")), [scopedSlots]);
-  const closedRankById = useMemo(() => rankSlots(scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [scopedSlots]);
-
-  const total = scopedSlots.reduce((sum, slot) => sum + getCurrentValue(slot), 0);
-  const realizedProfit = scopedSlots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
-  const gains = scopedSlots.reduce((sum, slot) => sum + getRankingGains(slot), 0);
-  const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.real_gains || 0), 0);
-  const addedGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.added_gains || 0), 0);
-  const selectedContributionSummary = useMemo(
-    () => summarizeCapitalContributions(contributions, selectedAsset === "ALL" ? {} : { asset: selectedAsset }),
-    [contributions, selectedAsset]
-  );
+  const visibleSlots = useMemo(() => sortSlots(slots.filter((slot) => {
+    if (activeFilter === "BTC" || activeFilter === "SOL") return getAsset(slot) === activeFilter;
+    if (activeFilter === "aberto") return slot.status === "aberto";
+    if (activeFilter === "closed") return slot.status === "gain" || slot.status === "zerado";
+    return true;
+  })), [activeFilter, slots]);
+  const openRanks = useMemo(() => rankSlots(slots.filter((slot) => slot.status === "aberto")), [slots]);
+  const closedRanks = useMemo(() => rankSlots(slots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [slots]);
   const contributionBySlot = useMemo(() => indexCapitalContributionsBySlot(contributions), [contributions]);
-  const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
-  const tone = selectedAsset === "SOL" ? "purple" : "gold";
-  const title = selectedAsset === "ALL" ? "Slots" : `Slots ${selectedAsset}`;
-
-  function announce(message: string) {
-    setNotice(message);
-  }
+  const contributionSummary = useMemo(() => summarizeCapitalContributions(contributions), [contributions]);
 
   return (
     <MobileScreen>
-      <AppHeader title={title} backHref="/dashboard" />
+      <AppHeader title="Slots" action={<span className="header-count">{slots.length}</span>} />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
-      {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
-      <section className={`live-price-strip ${livePrices.status}`}>
-        <div>
-          <span>BTCUSDT</span>
-          <strong>{formatPrice(liveBtcPrice)}</strong>
-        </div>
-        <div>
-          <span>SOLUSDT</span>
-          <strong>{formatPrice(liveSolPrice)}</strong>
-        </div>
-        <div>
-          <span>{livePrices.status === "online" ? "Online" : livePrices.isStale ? "preço desatualizado" : "Offline"}</span>
-          <strong>
-            {livePrices.lastUpdated
-              ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
-              : "--:--"}
-          </strong>
-        </div>
+      {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
+
+      <section className={`live-price-strip compact-internal-ticker ${livePrices.status}`} aria-label="Cotações">
+        <Ticker label="BTCUSDT" value={formatPrice(livePrices.prices.BTC)} />
+        <Ticker label="SOLUSDT" value={formatPrice(livePrices.prices.SOL)} />
+        <Ticker
+          label={livePrices.status === "online" ? "ONLINE" : livePrices.isStale ? "ATUALIZANDO" : "OFFLINE"}
+          value={livePrices.lastUpdated ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated) : "--:--"}
+        />
       </section>
 
       <FilterChips
-        value={selectedAsset}
-        onChange={setSelectedAsset}
+        value={activeFilter}
+        onChange={(value) => { setActiveFilter(value); setExpandedSlotId(null); }}
         options={[
-          { label: "BTC", value: "BTC", count: slots.filter((slot) => getAssetFromStrategy(slot) === "BTC").length },
-          { label: "SOL", value: "SOL", count: slots.filter((slot) => getAssetFromStrategy(slot) === "SOL").length },
-          { label: "Todos", value: "ALL", count: slots.length }
+          { label: "Todos", value: "all" },
+          { label: "BTC", value: "BTC" },
+          { label: "SOL", value: "SOL" },
+          { label: "Abertos", value: "aberto" },
+          { label: "Fechados", value: "closed" }
         ]}
       />
 
-      <SectionCard tone={tone}>
-        <div className="asset-page-summary">
-          <div className="asset-heading">
-            <div className="asset-title">
-              <span className={`asset-icon ${selectedAsset === "SOL" ? "sol" : "btc"}`}>{selectedAsset === "SOL" ? "S" : "₿"}</span>
-              <div>
-                <strong>{title}</strong>
-                <em>{scopedSlots.length} slots encontrados</em>
-              </div>
-            </div>
-          </div>
-          <div className="asset-summary-stats">
-            <StatCard title="Total" value={formatUsdt(total)} helper={`Aportes: ${formatUsdt(selectedContributionSummary.amountUsdt)}`} financialValue={total} tone={tone} />
-            <StatCard title="Lucro realizado" value={formatUsdt(realizedProfit)} financialValue={realizedProfit} tone="green" />
-            <StatCard title="Abertos" value={String(open)} tone="gold" />
-            <StatCard title="Gains operacionais" value={formatDecimal(gains)} helper={`Reais: ${realGains} · Aportados: ${formatDecimal(selectedContributionSummary.gains)} · Legado: ${addedGains}`} tone="blue" />
-          </div>
-        </div>
-      </SectionCard>
+      <details className="slot-overview-drawer">
+        <summary>Visão geral <span>{formatDecimal(contributionSummary.gains)} gains aportados</span></summary>
+        <div><span>Valor operacional</span><strong>{formatUsdt(slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0))}</strong></div>
+        <div><span>Lucro realizado</span><strong>{formatUsdt(slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0))}</strong></div>
+        <div><span>Aportes</span><strong>{formatUsdt(contributionSummary.amountUsdt)}</strong></div>
+      </details>
 
-      <FilterChips
-        value={slotFilter}
-        onChange={setSlotFilter}
-        options={[
-          { label: "Abertos", value: "aberto", count: scopedSlots.filter((slot) => slot.status === "aberto").length },
-          { label: "Gain", value: "gain", count: scopedSlots.filter((slot) => slot.status === "gain").length },
-          { label: "Fechados", value: "closed", count: scopedSlots.filter((slot) => slot.status === "gain" || slot.status === "zerado").length },
-          { label: "Todos", value: "all", count: scopedSlots.length }
-        ]}
-      />
-
-      <div className="modern-slot-list">
+      <div className="compact-slot-list">
         {visibleSlots.map((slot) => (
-          <SlotCard
+          <CompactSlotRow
             key={slot.id}
             slot={slot}
-            livePrice={getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice}
-            openRank={openRankById[slot.id] || null}
-            closedRank={closedRankById[slot.id] || null}
+            livePrice={getAsset(slot) === "SOL" ? livePrices.prices.SOL : livePrices.prices.BTC}
+            rank={slot.status === "aberto" ? openRanks[slot.id] : closedRanks[slot.id]}
             contribution={contributionBySlot[slot.id] || { amountUsdt: 0, gains: 0 }}
-            announce={announce}
+            expanded={expandedSlotId === slot.id}
+            onToggle={() => setExpandedSlotId((current) => current === slot.id ? null : slot.id)}
+            announce={setNotice}
           />
         ))}
-        {visibleSlots.length === 0 ? <p className="empty-copy padded-empty">Nenhum slot neste filtro.</p> : null}
+        {!visibleSlots.length ? <EmptyState>Nenhum slot neste filtro.</EmptyState> : null}
       </div>
 
-      <details className="section-card mini-drawer">
+      <details className="section-card mini-drawer add-slots-drawer">
         <summary>Adicionar slots</summary>
         <form className="tool-form stacked-form" action={createSlots}>
-          <label>Moeda<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={selectedAsset} /></label>
+          <label>Moeda<SelectStrategy name="strategyId" strategies={strategies} selectedAsset={activeFilter === "BTC" || activeFilter === "SOL" ? activeFilter : "ALL"} /></label>
           <label>Quantidade<input name="quantity" type="number" min="1" max="50" defaultValue="1" required /></label>
           <button className="solid-button" type="submit">Adicionar</button>
         </form>
@@ -215,111 +150,97 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
   );
 }
 
-function SelectStrategy({ name, strategies, selectedAsset }: { name: string; strategies: StrategyView[]; selectedAsset: AssetFilter }) {
-  const filtered = selectedAsset === "ALL" ? strategies : strategies.filter((strategy) => strategy.asset.toUpperCase() === selectedAsset);
-  return (
-    <select name={name} required>
-      {filtered.map((strategy) => (
-        <option key={strategy.id} value={strategy.id}>{strategy.title}</option>
-      ))}
-    </select>
-  );
+function Ticker({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function SlotCard({
-  slot,
-  livePrice,
-  openRank,
-  closedRank,
-  contribution,
-  announce
-}: {
+function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggle, announce }: {
   slot: SlotView;
   livePrice?: number;
-  openRank: number | null;
-  closedRank: number | null;
+  rank?: number;
   contribution: CapitalContributionSummary;
+  expanded: boolean;
+  onToggle: () => void;
   announce: (message: string) => void;
 }) {
-  const asset = getAssetFromStrategy(slot);
-  const tone = asset === "SOL" ? "purple" : "gold";
-  const statusClass = slot.status === "aberto" ? "open" : slot.status === "gain" ? "gain" : "closed";
-  const visualLabel = slot.status === "aberto" && openRank
-    ? `Aberto #${openRank}`
-    : closedRank
-      ? `Fechado #${closedRank}`
-      : getStatusLabel(slot.status);
+  const asset = getAsset(slot);
+  const openMarket = getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt;
+  const pnl = slot.status === "aberto" ? openMarket : Number(slot.realized_profit || 0);
+  const redistributionNet = Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0);
 
   return (
-    <article className={`modern-slot-card ${tone} ${statusClass}`}>
-      <div className="slot-card-top">
-        <div>
-          <span>{visualLabel}</span>
-          <strong>{asset}</strong>
+    <article className={`compact-slot-row ${asset.toLowerCase()} ${expanded ? "expanded" : ""}`}>
+      <button className="compact-slot-trigger" type="button" onClick={onToggle} aria-expanded={expanded} aria-controls={`slot-panel-${slot.id}`}>
+        <span className={`compact-asset-icon ${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : "S"}</span>
+        <span className="compact-slot-identity"><strong>#{slot.slot_number} {asset}</strong><span className="compact-slot-status-line"><StatusBadge status={slot.status} />{rank ? <small>rank {rank}</small> : null}</span></span>
+        <span className="compact-slot-metric"><small>Gains</small><strong>{formatDecimal(getOperationalGains(slot))}</strong></span>
+        <span className="compact-slot-metric value"><small>Valor op.</small><strong>{formatUsdt(getCurrentValue(slot))}</strong></span>
+        <span className="compact-slot-metric pnl"><small>PnL</small><PnLValue value={pnl}>{formatSignedUsdt(pnl)}</PnLValue></span>
+        <span className="compact-slot-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+      </button>
+
+      {expanded ? (
+        <div className="slot-detail-panel" id={`slot-panel-${slot.id}`}>
+          <header><div><span>Slot #{slot.slot_number}</span><h3>{asset}</h3></div><StatusBadge status={slot.status} /></header>
+          <div className="slot-detail-hero">
+            <Metric label="Gains totais" value={formatDecimal(getOperationalGains(slot))} />
+            <Metric label="Valor operacional" value={formatUsdt(getCurrentValue(slot))} />
+            <Metric label="PnL" value={formatSignedUsdt(pnl)} tone={pnl} />
+          </div>
+          <dl className="slot-detail-list">
+            <Detail label="Gains reais" value={formatDecimal(slot.real_gains)} />
+            <Detail label="Gains operacionais" value={formatDecimal(getOperationalGains(slot))} />
+            <Detail label="Gains aportados" value={formatDecimal(contribution.gains)} />
+            <Detail label="Lucro realizado" value={formatUsdt(Number(slot.realized_profit || 0))} />
+            <Detail label="Legado (adicionados)" value={formatDecimal(slot.added_gains)} />
+            <Detail label="Aporte externo" value={formatUsdt(contribution.amountUsdt)} />
+            <Detail label="Redistribuição líquida" value={formatSignedUsdt(redistributionNet)} />
+            <Detail label="Preço médio (entrada)" value={slot.preco_entrada ? formatPrice(Number(slot.preco_entrada)) : "—"} />
+            <Detail label="Alvo" value={slot.preco_alvo ? formatPrice(Number(slot.preco_alvo)) : "—"} />
+            <Detail label="Última atualização" value={slot.updated_at ? formatDate(slot.updated_at) : "—"} />
+          </dl>
+          <div className="slot-detail-actions">
+            {slot.status === "aberto"
+              ? <button className="slot-button" type="button" disabled>Aberto</button>
+              : <SlotAction action={openSlot} slotId={slot.id} label="Abrir" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onClick={() => announce("Abrindo slot...")} />}
+            <SlotAction action={registerGain} slotId={slot.id} label="Adicionar gain" disabled={slot.status === "zerado" || slot.status === "hold"} onClick={() => announce("Registrando gain...")} />
+            <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
+          </div>
+          <details className="slot-advanced-actions">
+            <summary>Editar e organizar</summary>
+            <div className="slot-card-actions">
+              <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
+              <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
+            </div>
+            <form className="tool-form stacked-form" action={updateSlot}>
+              <input type="hidden" name="slotId" value={slot.id} />
+              <input type="hidden" name="status" value={slot.status} />
+              <input type="hidden" name="baseValue" value={Number(slot.base_value)} />
+              <label>Observações<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
+              <button className="slot-button edit" type="submit">Salvar</button>
+            </form>
+            <Link className="slot-plan-link" href="/plano-crescimento">Aportes e redistribuição no Plano</Link>
+          </details>
         </div>
-        <em>{getStatusLabel(slot.status)}</em>
-      </div>
-      <div className="slot-card-values">
-        <span>Valor operacional<strong className={`financial-${getFinancialValueTone(getCurrentValue(slot))}`}>{formatUsdt(getCurrentValue(slot))}</strong></span>
-        <span>Lucro realizado<strong className={`financial-${getFinancialValueTone(Number(slot.realized_profit || 0))}`}>{formatUsdt(Number(slot.realized_profit || 0))}</strong></span>
-        <span>Gains operacionais<strong>{formatDecimal(getRankingGains(slot))}</strong></span>
-      </div>
-      <div className="slot-card-meta">
-        <div className="slot-gain-breakdown">
-          <span>Gains reais<strong>{slot.real_gains}</strong></span>
-          <span>Gains aportados<strong>{formatDecimal(contribution.gains)}</strong></span>
-          <span>Gains adicionados (legado)<strong>{slot.added_gains}</strong></span>
-          <span>Aporte externo<strong>{formatUsdt(contribution.amountUsdt)}</strong></span>
-        </div>
-      </div>
-      <details className="mini-drawer slot-more-drawer">
-        <summary>Ver mais</summary>
-        <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
-        <div className="slot-internal-id">Gains reais: {slot.real_gains}</div>
-        <div className="slot-internal-id">Gains adicionados: {slot.added_gains}</div>
-        <div className="slot-internal-id">Gains aportados: {formatDecimal(contribution.gains)}</div>
-        <div className="slot-internal-id">Aporte externo: {formatUsdt(contribution.amountUsdt)}</div>
-        <div className="slot-internal-id">
-          Redistribuição líquida: {formatUsdt(Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0))}
-        </div>
-        <div className="slot-card-actions">
-          <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
-          <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
-          {slot.status === "aberto" ? (
-            <button className="slot-button" type="button" disabled>
-              Abrir
-            </button>
-          ) : (
-            <SlotAction action={openSlot} slotId={slot.id} label="Abrir" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onClick={() => announce("Abrindo slot...")} />
-          )}
-          <SlotAction action={registerGain} slotId={slot.id} label="+Gain" disabled={slot.status === "zerado" || slot.status === "hold"} onClick={() => announce("Registrando gain...")} />
-          <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
-        </div>
-        <details className="mini-drawer edit-drawer">
-          <summary>Editar dados</summary>
-          <form className="tool-form stacked-form" action={updateSlot}>
-            <input type="hidden" name="slotId" value={slot.id} />
-            <input type="hidden" name="status" value={slot.status} />
-            <input type="hidden" name="baseValue" value={Number(slot.base_value)} />
-            <div className="slot-internal-id">Base USDT (somente leitura): {formatUsdt(Number(slot.base_value || 0))}</div>
-            <Link className="slot-button" href="/plano-crescimento">Registrar aporte no Plano</Link>
-            <label>Observacoes<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
-            <button className="slot-button edit" type="submit">Salvar</button>
-          </form>
-        </details>
-      </details>
+      ) : null}
     </article>
   );
 }
 
-function SlotAction({
-  action,
-  slotId,
-  label,
-  disabled = false,
-  hidden,
-  onClick
-}: {
+function Metric({ label, value, tone }: { label: string; value: string; tone?: number }) {
+  return <span><small>{label}</small>{tone === undefined ? <strong>{value}</strong> : <PnLValue value={tone}>{value}</PnLValue>}</span>;
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return <div><dt>{label}</dt><dd>{value}</dd></div>;
+}
+
+function SelectStrategy({ name, strategies, selectedAsset }: { name: string; strategies: StrategyView[]; selectedAsset: AssetFilter }) {
+  const filtered = selectedAsset === "ALL" ? strategies : strategies.filter((strategy) => strategy.asset.toUpperCase() === selectedAsset);
+  return <select name={name} required>{filtered.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.title}</option>)}</select>;
+}
+
+function SlotAction({ action, slotId, label, disabled = false, hidden, onClick }: {
   action: (formData: FormData) => void | Promise<void>;
   slotId: string;
   label: string;

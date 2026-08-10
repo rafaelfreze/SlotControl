@@ -2,12 +2,11 @@
 
 import { useMemo, useState } from "react";
 
-import { AppHeader, FilterChips, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
-import { formatDate } from "@/lib/slotgain/format";
+import { AppHeader, EmptyState, FilterChips, MobileScreen } from "@/components/app/mobile-ui";
+import { formatDate, formatSignedUsdt } from "@/lib/slotgain/format";
 import type { HistoryEvent } from "@/lib/slotgain/types";
 
-type AssetFilter = "ALL" | "BTC" | "SOL";
-type ActionFilter = "all" | "abertura" | "gain" | "zerar";
+type HistoryFilter = "all" | "BTC" | "SOL" | "gain" | "aporte";
 
 type ParsedHistory = {
   message: string;
@@ -317,53 +316,66 @@ function toSlotSummary(history: HistoryEvent[]) {
   return Array.from(rows.values());
 }
 
-export function HistoricoClient({ userEmail, history, error }: { userEmail: string; history: HistoryEvent[]; error: string | null }) {
-  const [asset, setAsset] = useState<AssetFilter>("ALL");
-  const [action, setAction] = useState<ActionFilter>("all");
+export function HistoricoClient({ history, error }: { userEmail: string; history: HistoryEvent[]; error: string | null }) {
+  const [filter, setFilter] = useState<HistoryFilter>("all");
 
   const filtered = useMemo(
     () =>
       history.filter((item) => {
-        const key = (item.strategy?.asset || item.strategy_key || "").toUpperCase();
-        const actionKey = item.action.toLowerCase();
+        const parsed = parseHistoryDetail(item);
+        const key = (parsed.asset || item.strategy?.asset || item.strategy_key || "").toUpperCase();
+        const actionKey = `${item.action} ${parsed.eventType}`.toLowerCase();
         if (actionKey.includes("redistribu")) {
           return false;
         }
-        const assetOk = asset === "ALL" || key === asset;
-        const actionOk =
-          action === "all" ||
-          (action === "abertura" && (actionKey.includes("abertura") || actionKey.includes("entrada"))) ||
-          (action === "gain" && (actionKey.includes("gain") || actionKey.includes("saida"))) ||
-          (action === "zerar" && actionKey.includes("zerar"));
-        return assetOk && actionOk;
+        if (filter === "BTC" || filter === "SOL") return key === filter;
+        if (filter === "gain") return actionKey.includes("gain") || actionKey.includes("saida");
+        if (filter === "aporte") return actionKey.includes("aporte") || actionKey.includes("contribution");
+        return true;
       }),
-    [asset, action, history]
+    [filter, history]
   );
 
   return (
     <MobileScreen>
-      <AppHeader title="Historico" backHref="/dashboard" />
+      <AppHeader title="Histórico" backHref="/dashboard" />
       {error ? <section className="inline-alert dashboard-alert">Falha ao carregar historico: {error}</section> : null}
       <FilterChips
-        value={asset}
-        onChange={setAsset}
+        value={filter}
+        onChange={setFilter}
         options={[
-          { label: "BTC", value: "BTC", count: history.filter((item) => (item.strategy?.asset || item.strategy_key)?.toUpperCase() === "BTC").length },
-          { label: "SOL", value: "SOL", count: history.filter((item) => (item.strategy?.asset || item.strategy_key)?.toUpperCase() === "SOL").length },
-          { label: "Todos", value: "ALL", count: history.length }
+          { label: "Tudo", value: "all" },
+          { label: "BTC", value: "BTC" },
+          { label: "SOL", value: "SOL" },
+          { label: "Gains", value: "gain" },
+          { label: "Aportes", value: "aporte" }
         ]}
       />
-      <FilterChips
-        value={action}
-        onChange={setAction}
-        options={[
-          { label: "Abertura", value: "abertura" },
-          { label: "Gain", value: "gain" },
-          { label: "Zeragem", value: "zerar" },
-          { label: "Todos", value: "all" }
-        ]}
-      />
-      <SectionCard title="Exportacao" subtitle="CSV e Excel" tone="green">
+
+      <div className="history-compact-list" aria-label={`${filtered.length} eventos`}>
+        {filtered.map((item) => {
+          const parsed = parseHistoryDetail(item);
+          const itemAsset = (parsed.asset || item.strategy?.asset || item.strategy_key || "SG").toUpperCase();
+          const value = parsed.realizedProfit ?? parsed.valueAfter ?? parsed.slotValue;
+          const date = new Date(item.event_at);
+          return (
+            <details key={item.id} className={`history-compact-row ${itemAsset === "SOL" ? "sol" : "btc"}`}>
+              <summary>
+                <time dateTime={item.event_at}><strong>{Number.isNaN(date.getTime()) ? "--/--" : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(date)}</strong><small>{Number.isNaN(date.getTime()) ? "--:--" : new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(date)}</small></time>
+                <span className={`history-asset-icon ${itemAsset === "SOL" ? "sol" : "btc"}`}>{itemAsset === "SOL" ? "S" : "₿"}</span>
+                <span className="history-event-main"><strong>{itemAsset}{item.slot_number ? ` · Slot #${item.slot_number}` : ""}</strong><small>{item.action}</small></span>
+                <strong className="history-event-value">{value === null ? "—" : formatSignedUsdt(value)}</strong>
+                <span aria-hidden="true">⌄</span>
+              </summary>
+              <div><p>{parsed.message}</p><small>{formatDate(item.event_at)} · {parsed.origin}</small></div>
+            </details>
+          );
+        })}
+        {!filtered.length ? <EmptyState>Nenhum evento neste filtro.</EmptyState> : null}
+      </div>
+
+      <details className="history-export-drawer">
+        <summary>Exportar histórico</summary>
         <div className="export-actions-grid">
           <button type="button" className="ghost-button compact-action" onClick={() => downloadCsv("historico-completo.csv", toExportRows(history))}>
             CSV completo
@@ -396,29 +408,7 @@ export function HistoricoClient({ userEmail, history, error }: { userEmail: stri
             Excel CSV slots
           </button>
         </div>
-      </SectionCard>
-      <SectionCard title="Operacoes" subtitle={`${filtered.length} eventos`} tone="blue">
-        <div className="timeline-list">
-          {filtered.map((item) => {
-            const parsed = parseHistoryDetail(item);
-            const itemAsset = (parsed.asset || item.strategy?.asset || item.strategy_key || "SG").toUpperCase();
-            return (
-              <article key={item.id} className={`timeline-item ${itemAsset === "SOL" ? "purple" : "gold"}`}>
-                <span>{itemAsset}</span>
-                <div>
-                  <strong>{item.action}</strong>
-                  <p>{parsed.message}</p>
-                  <small>
-                    {formatDate(item.event_at)}
-                    {item.slot_number ? ` | Slot #${item.slot_number}` : ""}
-                  </small>
-                </div>
-              </article>
-            );
-          })}
-          {filtered.length === 0 ? <p className="empty-copy padded-empty">Nenhum evento neste filtro.</p> : null}
-        </div>
-      </SectionCard>
+      </details>
     </MobileScreen>
   );
 }

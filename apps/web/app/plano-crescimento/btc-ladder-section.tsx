@@ -279,27 +279,33 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
 }
 
 function LadderList({ asset, slots, referenceLevel, contributionBySlot = {} }: { asset: GrowthAsset; slots: AssetLadderSlotItem[]; referenceLevel: number | null; contributionBySlot?: Record<string, { amountUsdt: number; gains: number }> }) {
+  const primarySlots = slots.slice(0, 5);
+  const remainingSlots = slots.slice(5);
   return (
     <div className="btc-ladder-table" role="table" aria-label={`Ranking operacional ${asset}`}>
       <div className="btc-ladder-table-head" role="row">
         <span role="columnheader">Ranking</span><span role="columnheader">Status</span><span role="columnheader">Reais</span><span role="columnheader">Operacionais</span><span role="columnheader">Valor</span><span role="columnheader">Excedente/defasagem</span>
       </div>
-      {slots.map((slot) => {
-        const difference = slot.reference_difference_gains === undefined
-          ? referenceLevel === null ? null : numberValue(slot.operational_gains) - referenceLevel
-          : numberValue(slot.reference_difference_gains);
-        return (
-          <div className="btc-ladder-row" role="row" key={slot.slot_id}>
-            <span role="cell" className="btc-ladder-slot"><small>Ranking</small><strong>#{slot.rank}</strong><em>Slot {slot.slot_number}</em></span>
-            <span role="cell"><small>Status</small><b className={slot.status.toLowerCase() === "aberto" ? "open" : "free"}>{statusLabel(slot.status)}</b></span>
-            <span role="cell"><small>Reais</small><strong>{formatGain(slot.real_gains)}</strong></span>
-            <span role="cell"><small>Operacionais</small><strong>{formatGain(slot.operational_gains)}</strong><em>+{formatGain(contributionBySlot[slot.slot_id]?.gains || 0)} aportados</em></span>
-            <span role="cell"><small>Valor</small><strong>{formatUsdt(numberValue(slot.operational_value_usdt))}</strong></span>
-            <span role="cell"><small>Excedente/defasagem</small><strong className={difference !== null && difference > 0 ? "positive" : difference !== null && difference < 0 ? "negative" : "neutral"}>{difference === null ? "--" : formatSignedGain(difference)}</strong></span>
-          </div>
-        );
-      })}
+      {primarySlots.map((slot) => <LadderRow key={slot.slot_id} slot={slot} referenceLevel={referenceLevel} contribution={contributionBySlot[slot.slot_id]} />)}
+      {remainingSlots.length ? <details className="btc-ladder-more"><summary>Ver todos os {slots.length} slots</summary>{remainingSlots.map((slot) => <LadderRow key={slot.slot_id} slot={slot} referenceLevel={referenceLevel} contribution={contributionBySlot[slot.slot_id]} />)}</details> : null}
       {!slots.length ? <p className="empty-copy padded-empty">Nenhum slot {asset} disponível para montar a escada.</p> : null}
+    </div>
+  );
+}
+
+function LadderRow({ slot, referenceLevel, contribution }: { slot: AssetLadderSlotItem; referenceLevel: number | null; contribution?: { amountUsdt: number; gains: number } }) {
+  const difference = slot.reference_difference_gains === undefined
+    ? referenceLevel === null ? null : numberValue(slot.operational_gains) - referenceLevel
+    : numberValue(slot.reference_difference_gains);
+
+  return (
+    <div className="btc-ladder-row" role="row">
+      <span role="cell" className="btc-ladder-slot"><small>Ranking</small><strong>#{slot.rank}</strong><em>Slot {slot.slot_number}</em></span>
+      <span role="cell"><small>Status</small><b className={slot.status.toLowerCase() === "aberto" ? "open" : "free"}>{statusLabel(slot.status)}</b></span>
+      <span role="cell"><small>Reais</small><strong>{formatGain(slot.real_gains)}</strong></span>
+      <span role="cell"><small>Operacionais</small><strong>{formatGain(slot.operational_gains)}</strong><em>+{formatGain(contribution?.gains || 0)} aportados</em></span>
+      <span role="cell"><small>Valor</small><strong>{formatUsdt(numberValue(slot.operational_value_usdt))}</strong></span>
+      <span role="cell"><small>Diferença</small><strong className={difference !== null && difference > 0 ? "positive" : difference !== null && difference < 0 ? "negative" : "neutral"}>{difference === null ? "--" : formatSignedGain(difference)}</strong></span>
     </div>
   );
 }
