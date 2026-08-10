@@ -18,6 +18,14 @@ A meta representa a velocidade desejada de evolução da escada. Ela não cria u
 
 A tela Plano mostra o ciclo atual de 30 dias, os gains reais obtidos no período e a escada atual. O `month_reference` é resolvido no backend a partir da data inicial operacional; o frontend não escolhe livremente a competência financeira.
 
+Para facilitar o acerto após informar uma data antiga, o Plano também mostra uma **meta orientativa do líder**:
+
+```text
+meta do líder = meta mensal × número do ciclo atual
+```
+
+Exemplo: início em 01/04, quinto ciclo e meta mensal 7 resultam em 35 gains operacionais para o líder. Essa conta orienta somente o slot líder e o ajuste manual; ela não cria dívida de 35 gains para cada um dos 25 slots.
+
 ### Data inicial operacional
 
 `growth_plan_settings.started_at` é a única fonte de verdade para o tempo em operação e para os ciclos BTC e SOL. Ela é independente de `auth.users.created_at`, pois uma consolidação ou migração de Auth pode recriar o usuário sem reiniciar a operação financeira.
@@ -185,9 +193,11 @@ A confirmação usa lock transacional e bloqueio das linhas dos slots. A mesma c
 
 O ledger deve permitir reconstruir cada transferência sem consultar estado futuro dos slots.
 
-## 10. Aporte externo manual
+## 10. Gains operacionais manuais
 
-Após a redistribuição, o usuário pode aportar USDT em um slot escolhido. O aporte registra valor, slot, data, motivo e usuário.
+O Plano permite escolher um slot e informar diretamente quantos gains operacionais inteiros devem ser adicionados. O servidor converte essa quantidade no aporte exato em USDT, registra valor, slot, data, motivo e usuário, e mantém a mesma trilha financeira de aportes externos.
+
+O formulário sugere automaticamente a diferença entre a meta orientativa do líder e seu nível atual. O usuário pode alterar tanto o slot quanto a quantidade antes de confirmar. Nenhum ajuste é automático.
 
 O aporte:
 
@@ -206,9 +216,11 @@ gain_equivalent = amount_usdt / gain_unit_after
 operational_gains_after = operational_gains_before + gain_equivalent
 ```
 
+Quando a entrada é feita em gains, o servidor resolve a operação inversa e encontra o `amount_usdt` de oito casas que reconverte exatamente à quantidade inteira solicitada. Uma prévia de redistribuição ainda `PREPARED` é marcada como `STALE`, pois o ranking mudou.
+
 É incorreto dividir o aporte pela unidade anterior, pois uma unidade menor produziria mais gains equivalentes do que o capital novo realmente suporta depois de incorporado ao slot.
 
-Não existe aporte automático nem obrigação de completar todos os slots.
+Não existe aporte automático nem obrigação de completar todos os slots. Os gains manuais aparecem no histórico como ajuste/aporte e nunca são classificados como gains reais.
 
 ## 11. Backfill e preservação
 

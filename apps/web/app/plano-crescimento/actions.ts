@@ -10,6 +10,11 @@ type RpcResult = {
   status?: string | null;
   transfer_count?: number | null;
   contribution_id?: string | null;
+  slot_number?: number | null;
+  amount_usdt?: number | string | null;
+  gain_equivalent?: number | string | null;
+  operational_after?: number | string | null;
+  stale_preview_count?: number | null;
 };
 
 type GrowthGoalRpcResult = {
@@ -80,6 +85,9 @@ function rpcMessage(code: string | undefined, fallback: string) {
     COINOPS_BTC_CONTRIBUTION_INVALID: "Informe um aporte externo maior que zero e um motivo.",
     COINOPS_CONTRIBUTION_AMOUNT_MUST_BE_POSITIVE: "Informe um valor de aporte externo maior que zero.",
     COINOPS_CONTRIBUTION_REASON_INVALID: "Informe um motivo válido para o aporte externo.",
+    COINOPS_MANUAL_GAINS_MUST_BE_POSITIVE_INTEGER: "Informe uma quantidade inteira de gains maior que zero.",
+    COINOPS_MANUAL_GAINS_TOO_LARGE_FOR_SINGLE_ADJUSTMENT: "A quantidade é muito alta para um único ajuste. Divida os gains em dois lançamentos.",
+    COINOPS_MANUAL_GAINS_EXACT_AMOUNT_NOT_FOUND: "Não foi possível converter os gains em um aporte financeiro exato.",
     COINOPS_IDEMPOTENCY_CONFLICT: "Esta intenção financeira já foi usada com dados diferentes.",
     COINOPS_SCOPE_NOT_FOUND: "Não foi possível identificar a conta CoinOps ativa.",
     COINOPS_ACTIVE_INTERNAL_MEMBERSHIP_REQUIRED: "A conta não possui acesso CoinOps ativo.",
@@ -156,29 +164,38 @@ export async function cancelBtcRedistribution(formData: FormData) {
   planRedirect("Prévia BTC cancelada sem alterar os slots.");
 }
 
-export async function applyBtcExternalContribution(formData: FormData) {
+export async function applyBtcManualOperationalGains(formData: FormData) {
   const slotId = formText(formData, "slotId");
-  const amountUsdt = formNumber(formData, "amountUsdt");
-  const note = formText(formData, "note");
-  if (!slotId || !Number.isFinite(amountUsdt) || amountUsdt <= 0 || !note) {
-    planRedirect("Informe slot, valor positivo e motivo do aporte externo.", { tone: "error" });
+  const operationalGains = formNumber(formData, "operationalGains");
+  const note = formText(formData, "note") || "Completar meta operacional do ciclo";
+  if (!slotId || !Number.isFinite(operationalGains) || operationalGains <= 0 || operationalGains !== Math.trunc(operationalGains) || operationalGains > 1000) {
+    planRedirect("Informe o slot e uma quantidade inteira de gains maior que zero.", { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();
-  const { error } = await supabase.rpc("apply_btc_external_contribution", {
+  const { data, error } = await supabase.rpc("apply_btc_manual_operational_gains", {
     p_slot_id: slotId,
-    p_amount_usdt: amountUsdt,
+    p_operational_gains: operationalGains,
     p_reason: note,
     p_idempotency_key: idempotencyKey(formData)
   });
   if (error) {
-    planRedirect(rpcMessage(error.message, "O aporte externo BTC não pôde ser aplicado."), { tone: "error" });
+    planRedirect(rpcMessage(error.message, "Os gains operacionais não puderam ser adicionados."), { tone: "error" });
   }
 
   revalidatePath("/dashboard");
   revalidatePath("/slots");
   revalidatePath("/plano-crescimento");
-  planRedirect("Aporte externo registrado sem alterar os gains reais.");
+
+  const result = data as RpcResult | null;
+  const gainsAdded = Number(result?.gain_equivalent ?? operationalGains);
+  const amountUsdt = Number(result?.amount_usdt ?? 0);
+  const slotNumber = Number(result?.slot_number ?? 0);
+  const stalePreviewCount = Number(result?.stale_preview_count ?? 0);
+  const gainLabel = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 8 }).format(gainsAdded);
+  const amountLabel = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 8 }).format(amountUsdt);
+  const staleNotice = stalePreviewCount > 0 ? " A prévia anterior foi invalidada; prepare outra." : "";
+  planRedirect(`${gainLabel} gains operacionais adicionados${slotNumber > 0 ? ` ao Slot #${slotNumber}` : ""}. Aporte calculado: ${amountLabel} USDT. Gains reais não foram alterados.${staleNotice}`);
 }
 
 export async function saveBtcMonthlyGoal(formData: FormData) {

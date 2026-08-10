@@ -4,8 +4,9 @@ import { useFormStatus } from "react-dom";
 
 import { SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
+import { getLeaderGrowthTarget } from "@/lib/slotgain/growth-target";
 import {
-  applyBtcExternalContribution,
+  applyBtcManualOperationalGains,
   cancelBtcRedistribution,
   confirmBtcRedistribution,
   prepareBtcRedistribution,
@@ -22,6 +23,7 @@ export type BtcLadderSlotItem = {
   real_gains: Numeric;
   operational_gains: Numeric;
   operational_value_usdt: Numeric;
+  gain_unit_usdt?: Numeric;
   reference_difference_gains?: Numeric;
   excess_gains?: Numeric;
   deficit_gains?: Numeric;
@@ -181,9 +183,33 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
     ? parsedReference
     : null;
   const hasExactMonthlyRealGains = !plan.real_gains_month_source || plan.real_gains_month_source.toUpperCase() === "LEDGER";
+  const cycleNumber = Math.max(1, Math.trunc(Number(plan.cycle_number || 1)));
+  const leader = ladder[0] || null;
+  const leaderGrowthTarget = getLeaderGrowthTarget(monthlyGoal, cycleNumber, leader ? numberValue(leader.operational_gains) : 0);
 
   return (
     <div className="btc-plan-workspace">
+      <SectionCard className="btc-manual-gains-card" title="Adicionar gains manualmente" subtitle="Complete o líder ou ajuste qualquer slot" tone="green">
+        <div className="btc-ladder-summary btc-manual-gains-summary">
+          <Metric label="Meta atual do líder" value={`${formatGain(leaderGrowthTarget.targetGains)} gains`} helper={`${cycleNumber} ciclo(s) × ${monthlyGoal}`} />
+          <Metric label="Líder atual" value={leader ? `Slot #${leader.slot_number} · ${formatGain(leader.operational_gains)}` : "--"} />
+          <Metric label="Faltam no líder" value={leader ? `${formatGain(leaderGrowthTarget.missingGains)} gains` : "--"} />
+        </div>
+        <form action={applyBtcManualOperationalGains} className="btc-contribution-form">
+          <input type="hidden" name="idempotencyKey" value={actionKeys.contribution} />
+          <label>Slot
+            <select name="slotId" required defaultValue={leader?.slot_id || ""}>
+              <option value="" disabled>Escolha o slot</option>
+              {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
+            </select>
+          </label>
+          <label>Gains a adicionar<input name="operationalGains" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={leaderGrowthTarget.suggestedManualGains} required /></label>
+          <label className="btc-contribution-reason">Observação opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: completar meta desde 01/04" /></label>
+          <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar gains</SubmitButton>
+        </form>
+        <p className="btc-ladder-help">Você informa os gains e o servidor calcula o aporte em USDT. Eles aumentam somente os gains operacionais; gains reais e posições abertas permanecem intactos.</p>
+      </SectionCard>
+
       <SectionCard className="btc-ladder-main" title="Escada BTC" subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone="gold">
         {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || "A escada BTC está indisponível."}</p> : null}
         <div className="btc-ladder-summary">
@@ -224,22 +250,6 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
       </SectionCard>
 
       {preview ? <RedistributionPreview preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
-
-      <SectionCard className="btc-contribution-card" title="Aporte externo BTC" subtitle="Manual · separado da redistribuição" tone="green">
-        <form action={applyBtcExternalContribution} className="btc-contribution-form">
-          <input type="hidden" name="idempotencyKey" value={actionKeys.contribution} />
-          <label>Slot
-            <select name="slotId" required defaultValue="">
-              <option value="" disabled>Escolha o slot</option>
-              {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
-            </select>
-          </label>
-          <label>Valor USDT<input name="amountUsdt" type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0,00" required /></label>
-          <label className="btc-contribution-reason">Motivo<input name="note" type="text" minLength={3} maxLength={500} placeholder="Origem ou motivo do aporte" required /></label>
-          <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Registrar aporte</SubmitButton>
-        </form>
-        <p className="btc-ladder-help">O aporte aumenta apenas o capital e o nível operacional. Gains reais permanecem inalterados.</p>
-      </SectionCard>
 
       <BtcLadderHistory batches={history} contributions={plan.contributions || []} />
     </div>
@@ -337,7 +347,7 @@ function BtcLadderHistory({ batches, contributions }: { batches: BtcRedistributi
   ].sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime());
 
   return (
-    <SectionCard className="btc-history-card" title="Histórico mensal BTC" subtitle="Redistribuições e aportes externos" tone="neutral">
+    <SectionCard className="btc-history-card" title="Histórico mensal BTC" subtitle="Redistribuições e ajustes manuais" tone="neutral">
       <div className="btc-ladder-history">
         {events.map((event) => event.kind === "batch" ? (
           <details key={`batch-${event.batch.batch_id}`}>
@@ -361,7 +371,7 @@ function BtcLadderHistory({ batches, contributions }: { batches: BtcRedistributi
         ) : (
           <details key={`contribution-${event.contribution.id}`}>
             <summary>
-              <span><strong>Aporte · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>
+              <span><strong>Ajuste manual · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>
               <b>{formatLedgerUsdt(event.contribution.amount_usdt)}</b>
             </summary>
             <div className="btc-history-details">
@@ -372,7 +382,7 @@ function BtcLadderHistory({ batches, contributions }: { batches: BtcRedistributi
             </div>
           </details>
         ))}
-        {!events.length ? <p className="empty-copy padded-empty">Nenhuma redistribuição ou aporte BTC registrado.</p> : null}
+        {!events.length ? <p className="empty-copy padded-empty">Nenhuma redistribuição ou ajuste manual BTC registrado.</p> : null}
       </div>
     </SectionCard>
   );

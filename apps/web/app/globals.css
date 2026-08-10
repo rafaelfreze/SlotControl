@@ -427,6 +427,10 @@ p {
   margin-bottom: 10px;
 }
 
+.btc-manual-gains-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .btc-ladder-summary > div,
 .btc-preview-summary > div {
   display: grid;
@@ -824,6 +828,7 @@ p {
   }
 
   .btc-ladder-main,
+  .btc-manual-gains-card,
   .btc-preview-card {
     grid-column: 1 / -1;
   }

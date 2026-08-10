@@ -3,7 +3,8 @@
 -- LOCAL/FIXTURE ONLY. This script must never be pointed at the linked or
 -- production Supabase database. It requires the shared CoinOps scaffold and
 -- 20260809033335_add_btc_ladder_redistribution.sql and
--- 20260809165604_allow_edit_growth_plan_start_date.sql to be applied first.
+-- 20260809165604_allow_edit_growth_plan_start_date.sql and
+-- 20260810125830_add_btc_manual_operational_gains.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -66,6 +67,7 @@ begin
   if to_regprocedure('coinops.prepare_btc_ladder_redistribution(numeric,uuid)') is null
     or to_regprocedure('coinops.confirm_btc_ladder_redistribution(uuid,uuid)') is null
     or to_regprocedure('coinops.apply_btc_external_contribution(uuid,numeric,text,uuid)') is null
+    or to_regprocedure('coinops.apply_btc_manual_operational_gains(uuid,numeric,text,uuid)') is null
     or to_regprocedure('coinops.update_growth_plan_started_at(date)') is null then
     raise exception 'TEST_BTC_LADDER_MIGRATION_REQUIRED';
   end if;
@@ -538,6 +540,117 @@ select pg_temp.assert_true(
   'contribution replay must not duplicate capital or ledger entries'
 );
 
+-- Gains-first manual adjustment: the user asks for an exact number of
+-- operational gains, while the server derives and records the matching USDT.
+create temporary table manual_gain_snapshot on commit drop as
+select
+  id, gains, real_gains, added_gains, operational_gains,
+  position_notional_usdt, position_gain_unit_usdt, position_quantity,
+  position_opened_at, preco_entrada, preco_atual, preco_alvo
+from coinops.slots
+where id = '93000000-0000-0000-0000-000000000001';
+
+insert into coinops.btc_redistribution_batches (
+  id, product_id, tenant_id, user_id, month_reference, cycle_number,
+  monthly_goal, reference_level, status, prepare_idempotency_key,
+  snapshot_hash, ranking_before, ranking_after, equity_before,
+  equity_after, equity_difference, total_transferred_usdt,
+  transfer_count, result, created_by
+)
+select
+  '98000000-0000-0000-0000-000000000002',
+  scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000001', current_date + 1, 2,
+  7, 14, 'PREPARED', '98100000-0000-0000-0000-000000000002',
+  repeat('b', 64), '[]'::jsonb, '[]'::jsonb, 0,
+  0, 0, 0, 0, '{}'::jsonb,
+  '91000000-0000-0000-0000-000000000001'
+from fixture_scope scope;
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000001', true
+);
+set local role authenticated;
+
+do $rpc$
+begin
+  perform coinops.apply_btc_manual_operational_gains(
+    '93000000-0000-0000-0000-000000000001',
+    24,
+    'complete leader target',
+    '97000000-0000-0000-0000-000000000003'
+  );
+  perform coinops.apply_btc_manual_operational_gains(
+    '93000000-0000-0000-0000-000000000001',
+    24,
+    'complete leader target',
+    '97000000-0000-0000-0000-000000000003'
+  );
+end;
+$rpc$;
+
+select pg_temp.expect_error(
+  $$select coinops.apply_btc_manual_operational_gains(
+    '93000000-0000-0000-0000-000000000001'::uuid,
+    1.5,
+    'fractional gains are not accepted',
+    '97000000-0000-0000-0000-000000000004'::uuid
+  )$$,
+  'COINOPS_MANUAL_GAINS_MUST_BE_POSITIVE_INTEGER'
+);
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select current_slot.gains = snapshot.gains
+      and current_slot.real_gains = snapshot.real_gains
+      and current_slot.added_gains = snapshot.added_gains
+      and current_slot.operational_gains = snapshot.operational_gains + 24
+      and current_slot.position_notional_usdt is not distinct from snapshot.position_notional_usdt
+      and current_slot.position_gain_unit_usdt is not distinct from snapshot.position_gain_unit_usdt
+      and current_slot.position_quantity is not distinct from snapshot.position_quantity
+      and current_slot.position_opened_at is not distinct from snapshot.position_opened_at
+      and current_slot.preco_entrada is not distinct from snapshot.preco_entrada
+      and current_slot.preco_atual is not distinct from snapshot.preco_atual
+      and current_slot.preco_alvo is not distinct from snapshot.preco_alvo
+    from coinops.slots current_slot
+    join manual_gain_snapshot snapshot on snapshot.id = current_slot.id
+  ),
+  'manual gains must add exactly 24 operational gains without changing real gains or position fields'
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 1
+      and min(gain_equivalent) = 24
+      and min(amount_usdt) > 0
+      and min(operational_after - operational_before) = 24
+    from coinops.btc_external_contributions
+    where idempotency_key = '97000000-0000-0000-0000-000000000003'
+  ) and (
+    select count(*) = 1
+      and min(operational_gain_delta) = 24
+      and min(amount_usdt) > 0
+    from coinops.slot_capital_ledger
+    where external_contribution_id = (
+      select id from coinops.btc_external_contributions
+      where idempotency_key = '97000000-0000-0000-0000-000000000003'
+    )
+      and entry_type = 'EXTERNAL_CONTRIBUTION'
+  ),
+  'manual gains replay must produce one contribution and one authoritative ledger entry'
+);
+select pg_temp.assert_true(
+  (
+    select status = 'STALE'
+      and result ->> 'stale_reason' = 'MANUAL_OPERATIONAL_GAINS_APPLIED'
+      and result ->> 'can_confirm' = 'false'
+    from coinops.btc_redistribution_batches
+    where id = '98000000-0000-0000-0000-000000000002'
+  ),
+  'manual gains must immediately invalidate an outstanding redistribution preview'
+);
+
 -- -------------------------------------------------------------------------
 -- Scenario 2: A20/B10/C12 at reference 14 -> A14/B14/C14.
 -- A is OPEN, remains eligible to donate, and keeps its executed snapshot.
@@ -863,6 +976,15 @@ select pg_temp.expect_error(
     1,
     'cross-owner attempt',
     '97000000-0000-0000-0000-000000000002'::uuid
+  )$$,
+  'COINOPS_BTC_SLOT_NOT_FOUND'
+);
+select pg_temp.expect_error(
+  $$select coinops.apply_btc_manual_operational_gains(
+    '93000000-0000-0000-0000-000000000002'::uuid,
+    1,
+    'cross-owner manual gain attempt',
+    '97000000-0000-0000-0000-000000000005'::uuid
   )$$,
   'COINOPS_BTC_SLOT_NOT_FOUND'
 );

@@ -56,7 +56,7 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática. A data inicial operacional é editável no Plano, independente da criação do usuário no Auth, e serve como fonte única dos ciclos de 30 dias exibidos também no Resumo.
+Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática. A data inicial operacional é editável no Plano, independente da criação do usuário no Auth, e serve como fonte única dos ciclos de 30 dias exibidos também no Resumo. O Plano mostra a meta orientativa acumulada do líder e permite adicionar gains operacionais manualmente; o backend calcula e audita o aporte correspondente sem alterar gains reais.
 
 A regra financeira oficial está em [`docs/ESCADA_REDISTRIBUICAO_BTC.md`](docs/ESCADA_REDISTRIBUICAO_BTC.md). Backtests e simuladores locais não são fonte de regra para o CoinOps real.
 
@@ -122,6 +122,7 @@ npm run build
 - Referência assistida e editável, com prévia server-side antes de qualquer redistribuição financeira
 - Ranking BTC por gains operacionais, incluindo slots abertos como doadores ou recebedores sem reescrever a posição executada
 - Gains reais imutáveis, gains operacionais redistribuíveis e gains adicionados anteriores preservados como legado
+- Ajuste manual por quantidade de gains no Plano, com sugestão para completar o líder e conversão financeira server-side
 - Ledger transacional para redistribuições internas e aportes externos, com conservação patrimonial e idempotência
 - Taxa de gain configurável por estratégia, usada na unidade financeira `round((base + aporte) × taxa, 8)`; saldos de redistribuição permanecem contabilizados separadamente
 - Preço de entrada identificado ao abrir o slot, sem exibição ou edição manual no card; rankings separados de slots abertos e fechados por quantidade de gains
