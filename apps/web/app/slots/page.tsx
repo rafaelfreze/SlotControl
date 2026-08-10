@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import type { CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
 import { SlotsClient } from "./slots-client";
 
@@ -25,7 +26,7 @@ export default async function SlotsPage({
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, contributionsResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -37,15 +38,19 @@ export default async function SlotsPage({
       .select(
         "id,strategy_id,status,gains,real_gains,added_gains,operational_gains,redistribution_received_usdt,redistribution_sent_usdt,base_value,realized_profit,growth_contribution,operational_slot_value,position_notional_usdt,position_gain_unit_usdt,accounting_version,gain_rate,preco_entrada,preco_atual,preco_alvo,slot_number,sort_order,notes,updated_at,strategies(id,key,title,display_name,asset,base_value,gain_rate,drop_percent,restart_amount,sort_order)"
       )
-      .order("sort_order", { ascending: true })
+      .order("sort_order", { ascending: true }),
+    supabase
+      .from("btc_external_contributions")
+      .select("asset,slot_id,amount_usdt,gain_equivalent")
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || contributionsResponse.error;
 
   return (
     <SlotsClient
       strategies={(strategiesResponse.data ?? []) as StrategyView[]}
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
+      contributions={(contributionsResponse.data ?? []) as CapitalContributionView[]}
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
       initialAsset={searchParams?.asset || null}

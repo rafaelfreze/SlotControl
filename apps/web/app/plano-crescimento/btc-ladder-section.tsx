@@ -4,6 +4,7 @@ import { useFormStatus } from "react-dom";
 
 import { SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
+import { indexCapitalContributionsBySlot, summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { getLeaderGrowthTarget } from "@/lib/slotgain/growth-target";
 import {
   applyAssetManualOperationalGains,
@@ -191,6 +192,14 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
   const cycleNumber = Math.max(1, Math.trunc(Number(plan.cycle_number || 1)));
   const leader = ladder[0] || null;
   const leaderGrowthTarget = getLeaderGrowthTarget(monthlyGoal, cycleNumber, leader ? numberValue(leader.operational_gains) : 0);
+  const contributionRows: CapitalContributionView[] = (plan.contributions || []).map((contribution) => ({
+    asset,
+    slot_id: contribution.slot_id || "",
+    amount_usdt: contribution.amount_usdt,
+    gain_equivalent: contribution.gain_equivalent
+  }));
+  const contributionBySlot = indexCapitalContributionsBySlot(contributionRows);
+  const leaderContribution = leader ? summarizeCapitalContributions(contributionRows, { slotId: leader.slot_id }) : { amountUsdt: 0, gains: 0 };
 
   return (
     <div className="btc-plan-workspace">
@@ -199,6 +208,7 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <Metric label="Meta atual do líder" value={`${formatGain(leaderGrowthTarget.targetGains)} gains`} helper={`${cycleNumber} ciclo(s) × ${monthlyGoal}`} />
           <Metric label="Líder atual" value={leader ? `Slot #${leader.slot_number} · ${formatGain(leader.operational_gains)}` : "--"} />
           <Metric label="Faltam no líder" value={leader ? `${formatGain(leaderGrowthTarget.missingGains)} gains` : "--"} />
+          <Metric label="Aportes no líder" value={leader ? `+${formatGain(leaderContribution.gains)} gains` : "--"} helper={leader ? `+${formatLedgerUsdt(leaderContribution.amountUsdt)}` : undefined} />
         </div>
         <form action={applyAssetManualOperationalGains} className="btc-contribution-form">
           <input type="hidden" name="asset" value={asset} />
@@ -254,7 +264,7 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           </ol>
           <p>Slots OPEN também podem doar. A posição aberta continua com quantidade, entrada e alvo originais.</p>
         </details>
-        <LadderList asset={asset} slots={ladder} referenceLevel={referenceLevel} />
+        <LadderList asset={asset} slots={ladder} referenceLevel={referenceLevel} contributionBySlot={contributionBySlot} />
       </SectionCard>
 
       {preview ? <RedistributionPreview asset={asset} preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
@@ -268,7 +278,7 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
   return <div><span>{label}</span><strong>{value}</strong>{helper ? <small>{helper}</small> : null}</div>;
 }
 
-function LadderList({ asset, slots, referenceLevel }: { asset: GrowthAsset; slots: AssetLadderSlotItem[]; referenceLevel: number | null }) {
+function LadderList({ asset, slots, referenceLevel, contributionBySlot = {} }: { asset: GrowthAsset; slots: AssetLadderSlotItem[]; referenceLevel: number | null; contributionBySlot?: Record<string, { amountUsdt: number; gains: number }> }) {
   return (
     <div className="btc-ladder-table" role="table" aria-label={`Ranking operacional ${asset}`}>
       <div className="btc-ladder-table-head" role="row">
@@ -283,7 +293,7 @@ function LadderList({ asset, slots, referenceLevel }: { asset: GrowthAsset; slot
             <span role="cell" className="btc-ladder-slot"><small>Ranking</small><strong>#{slot.rank}</strong><em>Slot {slot.slot_number}</em></span>
             <span role="cell"><small>Status</small><b className={slot.status.toLowerCase() === "aberto" ? "open" : "free"}>{statusLabel(slot.status)}</b></span>
             <span role="cell"><small>Reais</small><strong>{formatGain(slot.real_gains)}</strong></span>
-            <span role="cell"><small>Operacionais</small><strong>{formatGain(slot.operational_gains)}</strong></span>
+            <span role="cell"><small>Operacionais</small><strong>{formatGain(slot.operational_gains)}</strong><em>+{formatGain(contributionBySlot[slot.slot_id]?.gains || 0)} aportados</em></span>
             <span role="cell"><small>Valor</small><strong>{formatUsdt(numberValue(slot.operational_value_usdt))}</strong></span>
             <span role="cell"><small>Excedente/defasagem</small><strong className={difference !== null && difference > 0 ? "positive" : difference !== null && difference < 0 ? "negative" : "neutral"}>{difference === null ? "--" : formatSignedGain(difference)}</strong></span>
           </div>

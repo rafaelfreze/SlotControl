@@ -6632,6 +6632,36 @@ body {
 .growth-dashboard-link span { overflow: hidden; color: var(--sg-green); font-size: 0.68rem; font-weight: 850; text-overflow: ellipsis; }
 .growth-dashboard-link.missing span { color: var(--sg-gold); }
 
+.asset-contribution-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(16, 217, 132, 0.2);
+  border-radius: 8px;
+  background: rgba(16, 217, 132, 0.07);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 750;
+}
+
+.asset-contribution-line strong {
+  color: var(--sg-green);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.btc-ladder-row > span > em {
+  color: var(--sg-green);
+  font-size: 0.58rem;
+  font-style: normal;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .slot-card-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

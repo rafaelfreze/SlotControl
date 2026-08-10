@@ -7,6 +7,7 @@ import { useMemo } from "react";
 import { MobileScreen } from "@/components/app/mobile-ui";
 import { CompactMarketRegimeBadge } from "@/components/slotgain/compact-market-regime-badge";
 import {
+  formatDecimal,
   formatPrice,
   formatSignedUsdt,
   formatUsdt,
@@ -17,6 +18,7 @@ import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { formatAccountCreatedDate, getAccountAgeDays } from "@/lib/slotgain/account-age";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 import { getMonthlyGrowthStatus } from "@/lib/slotgain/growth-status";
+import { summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import type { BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
@@ -26,6 +28,7 @@ type DashboardClientProps = {
   operationElapsedDays: number | null;
   strategies: StrategyView[];
   slots: SlotView[];
+  contributions: CapitalContributionView[];
   setupError: string | null;
   initialNotice: string | null;
   marketState: Partial<BtcMarketState> | null;
@@ -51,9 +54,11 @@ type StrategySummary = {
   markedEquity: number;
   openSlots: number;
   totalSlots: number;
+  contributionAmount: number;
+  contributionGains: number;
 };
 
-function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset: "BTC" | "SOL", livePrice?: number): StrategySummary {
+function getStrategySummary(strategies: StrategyView[], slots: SlotView[], contributions: CapitalContributionView[], asset: "BTC" | "SOL", livePrice?: number): StrategySummary {
   const strategy = strategies.find((item) => item.asset.toUpperCase() === asset) || null;
   const strategySlots = strategy ? slots.filter((slot) => slot.strategy_id === strategy.id) : [];
   const total = strategySlots.reduce((sum, slot) => sum + getMarkedSlotValue(slot, livePrice), 0);
@@ -61,6 +66,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   const openResult = strategySlots
     .filter((slot) => slot.status === "aberto")
     .reduce((sum, slot) => sum + getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt, 0);
+  const contributionSummary = summarizeCapitalContributions(contributions, { asset });
 
   return {
     strategy,
@@ -71,11 +77,13 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
     openResult,
     markedEquity,
     openSlots: strategySlots.filter((slot) => slot.status === "aberto").length,
-    totalSlots: strategySlots.length
+    totalSlots: strategySlots.length,
+    contributionAmount: contributionSummary.amountUsdt,
+    contributionGains: contributionSummary.gains
   };
 }
 
-export function DashboardClient({ userEmail, operationStartedAt, operationElapsedDays, strategies, slots, setupError, initialNotice, marketState, regimeSettings, btcLadderPlan, solLadderPlan }: DashboardClientProps) {
+export function DashboardClient({ userEmail, operationStartedAt, operationElapsedDays, strategies, slots, contributions, setupError, initialNotice, marketState, regimeSettings, btcLadderPlan, solLadderPlan }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const notice = initialNotice;
   const realizedProfit = slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
@@ -96,8 +104,9 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
     : getAccountAgeDays(operationStartedAt, new Date(), timeZone);
   const accountCreatedLabel = formatAccountCreatedDate(operationStartedAt, timeZone);
   const liveStatusLabel = livePrices.status === "online" ? "Online" : livePrices.isStale ? "Atualizando" : "Offline";
-  const btc = useMemo(() => getStrategySummary(strategies, slots, "BTC", livePrices.prices.BTC), [strategies, slots, livePrices.prices.BTC]);
-  const sol = useMemo(() => getStrategySummary(strategies, slots, "SOL", livePrices.prices.SOL), [strategies, slots, livePrices.prices.SOL]);
+  const contributedCapital = slots.reduce((sum, slot) => sum + Number(slot.growth_contribution || 0), 0);
+  const btc = useMemo(() => getStrategySummary(strategies, slots, contributions, "BTC", livePrices.prices.BTC), [strategies, slots, contributions, livePrices.prices.BTC]);
+  const sol = useMemo(() => getStrategySummary(strategies, slots, contributions, "SOL", livePrices.prices.SOL), [strategies, slots, contributions, livePrices.prices.SOL]);
 
   return (
     <MobileScreen>
@@ -137,7 +146,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
       <section className="mobile-metrics" aria-label="Resumo principal">
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
         <MetricRow title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" />
-        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper="Total" />
+        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper={`Inclui ${formatUsdt(contributedCapital)} em aportes`} />
         <MetricRow title="Slots" value={`${openSlots} de ${slots.length}`} helper="Ativos" />
       </section>
 
@@ -238,6 +247,11 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
         <span>
           Slots <strong>{summary.openSlots}</strong>
         </span>
+      </div>
+
+      <div className="asset-contribution-line">
+        <span>Aportes adicionados</span>
+        <strong>+{formatDecimal(summary.contributionGains)} gains · +{formatUsdt(summary.contributionAmount)}</strong>
       </div>
 
       <span className="details-button">Ver detalhes {`\u203A`}</span>

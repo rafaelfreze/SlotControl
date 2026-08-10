@@ -21,6 +21,12 @@ import {
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
+import {
+  indexCapitalContributionsBySlot,
+  summarizeCapitalContributions,
+  type CapitalContributionSummary,
+  type CapitalContributionView
+} from "@/lib/slotgain/capital-contributions";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type SlotFilter = "aberto" | "gain" | "closed" | "all";
@@ -29,6 +35,7 @@ type AssetFilter = "BTC" | "SOL" | "ALL";
 type SlotsClientProps = {
   strategies: StrategyView[];
   slots: SlotView[];
+  contributions: CapitalContributionView[];
   setupError: string | null;
   initialNotice: string | null;
   initialAsset: string | null;
@@ -40,7 +47,6 @@ function getAssetFromStrategy(slot: SlotView) {
 }
 
 function getRankingGains(slot: SlotView) {
-  if (getAssetFromStrategy(slot) !== "BTC") return Number(slot.gains || 0);
   const operationalGains = Number(slot.operational_gains);
   return Number.isFinite(operationalGains) ? operationalGains : Number(slot.gains || 0);
 }
@@ -61,7 +67,7 @@ function rankSlots(slots: SlotView[]) {
   }, {});
 }
 
-export function SlotsClient({ strategies, slots, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
+export function SlotsClient({ strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const liveBtcPrice = livePrices.prices.BTC;
   const liveSolPrice = livePrices.prices.SOL;
@@ -104,6 +110,11 @@ export function SlotsClient({ strategies, slots, setupError, initialNotice, init
   const gains = scopedSlots.reduce((sum, slot) => sum + getRankingGains(slot), 0);
   const realGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.real_gains || 0), 0);
   const addedGains = scopedSlots.reduce((sum, slot) => sum + Number(slot.added_gains || 0), 0);
+  const selectedContributionSummary = useMemo(
+    () => summarizeCapitalContributions(contributions, selectedAsset === "ALL" ? {} : { asset: selectedAsset }),
+    [contributions, selectedAsset]
+  );
+  const contributionBySlot = useMemo(() => indexCapitalContributionsBySlot(contributions), [contributions]);
   const open = scopedSlots.filter((slot) => slot.status === "aberto").length;
   const tone = selectedAsset === "SOL" ? "purple" : "gold";
   const title = selectedAsset === "ALL" ? "Slots" : `Slots ${selectedAsset}`;
@@ -158,10 +169,10 @@ export function SlotsClient({ strategies, slots, setupError, initialNotice, init
             </div>
           </div>
           <div className="asset-summary-stats">
-            <StatCard title="Total" value={formatUsdt(total)} financialValue={total} tone={tone} />
+            <StatCard title="Total" value={formatUsdt(total)} helper={`Aportes: ${formatUsdt(selectedContributionSummary.amountUsdt)}`} financialValue={total} tone={tone} />
             <StatCard title="Lucro realizado" value={formatUsdt(realizedProfit)} financialValue={realizedProfit} tone="green" />
             <StatCard title="Abertos" value={String(open)} tone="gold" />
-            <StatCard title="Gains operacionais" value={formatDecimal(gains)} helper={`Reais: ${realGains} · Legado: ${addedGains}`} tone="blue" />
+            <StatCard title="Gains operacionais" value={formatDecimal(gains)} helper={`Reais: ${realGains} · Aportados: ${formatDecimal(selectedContributionSummary.gains)} · Legado: ${addedGains}`} tone="blue" />
           </div>
         </div>
       </SectionCard>
@@ -185,6 +196,7 @@ export function SlotsClient({ strategies, slots, setupError, initialNotice, init
             livePrice={getAssetFromStrategy(slot) === "SOL" ? liveSolPrice : liveBtcPrice}
             openRank={openRankById[slot.id] || null}
             closedRank={closedRankById[slot.id] || null}
+            contribution={contributionBySlot[slot.id] || { amountUsdt: 0, gains: 0 }}
             announce={announce}
           />
         ))}
@@ -219,12 +231,14 @@ function SlotCard({
   livePrice,
   openRank,
   closedRank,
+  contribution,
   announce
 }: {
   slot: SlotView;
   livePrice?: number;
   openRank: number | null;
   closedRank: number | null;
+  contribution: CapitalContributionSummary;
   announce: (message: string) => void;
 }) {
   const asset = getAssetFromStrategy(slot);
@@ -253,7 +267,9 @@ function SlotCard({
       <div className="slot-card-meta">
         <div className="slot-gain-breakdown">
           <span>Gains reais<strong>{slot.real_gains}</strong></span>
+          <span>Gains aportados<strong>{formatDecimal(contribution.gains)}</strong></span>
           <span>Gains adicionados (legado)<strong>{slot.added_gains}</strong></span>
+          <span>Aporte externo<strong>{formatUsdt(contribution.amountUsdt)}</strong></span>
         </div>
       </div>
       <details className="mini-drawer slot-more-drawer">
@@ -261,6 +277,8 @@ function SlotCard({
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
         <div className="slot-internal-id">Gains reais: {slot.real_gains}</div>
         <div className="slot-internal-id">Gains adicionados: {slot.added_gains}</div>
+        <div className="slot-internal-id">Gains aportados: {formatDecimal(contribution.gains)}</div>
+        <div className="slot-internal-id">Aporte externo: {formatUsdt(contribution.amountUsdt)}</div>
         <div className="slot-internal-id">
           Redistribuição líquida: {formatUsdt(Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0))}
         </div>
@@ -282,15 +300,9 @@ function SlotCard({
           <form className="tool-form stacked-form" action={updateSlot}>
             <input type="hidden" name="slotId" value={slot.id} />
             <input type="hidden" name="status" value={slot.status} />
-            {asset === "BTC" ? (
-              <>
-                <input type="hidden" name="baseValue" value={Number(slot.base_value)} />
-                <div className="slot-internal-id">Base USDT (somente leitura): {formatUsdt(Number(slot.base_value || 0))}</div>
-                <Link className="slot-button" href="/plano-crescimento">Registrar aporte no Plano</Link>
-              </>
-            ) : (
-              <label>Base USDT<input name="baseValue" type="number" min="0" step="0.01" defaultValue={Number(slot.base_value)} /></label>
-            )}
+            <input type="hidden" name="baseValue" value={Number(slot.base_value)} />
+            <div className="slot-internal-id">Base USDT (somente leitura): {formatUsdt(Number(slot.base_value || 0))}</div>
+            <Link className="slot-button" href="/plano-crescimento">Registrar aporte no Plano</Link>
             <label>Observacoes<input name="notes" type="text" defaultValue={slot.notes || ""} /></label>
             <button className="slot-button edit" type="submit">Salvar</button>
           </form>
