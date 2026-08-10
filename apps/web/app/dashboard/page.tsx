@@ -5,17 +5,10 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
 import { DashboardClient } from "./dashboard-client";
 
-type DashboardGrowthPlan = {
+type DashboardAssetLadderPlan = {
+  monthly_goal?: number;
   started_at?: string;
   elapsed_days?: number;
-  plans?: {
-    BTC?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_id?: string | null; leader_slot_number?: number | null };
-    SOL?: { monthly_goal?: number; cumulative_goal?: number; missing_gains?: number | null; leader_slot_id?: string | null; leader_slot_number?: number | null };
-  };
-};
-
-type DashboardBtcLadderPlan = {
-  monthly_goal?: number;
   month_reference?: string;
   real_gains_month?: number | string;
   real_gains_month_source?: string;
@@ -37,7 +30,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse, growthPlanResponse, btcLadderResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, marketStateResponse, regimeSettingsResponse, btcLadderResponse, solLadderResponse] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -52,24 +45,26 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       .order("sort_order", { ascending: true }),
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
     supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
-    supabase.rpc("get_programmed_growth_plan"),
-    supabase.rpc("get_btc_ladder_plan")
+    supabase.rpc("get_asset_ladder_plan", { p_asset: "BTC" }),
+    supabase.rpc("get_asset_ladder_plan", { p_asset: "SOL" })
   ]);
 
-  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || growthPlanResponse.error || btcLadderResponse.error;
+  const setupError = strategiesResponse.error || slotsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || btcLadderResponse.error || solLadderResponse.error;
+  const btcPlan = (btcLadderResponse.data || null) as DashboardAssetLadderPlan | null;
 
   return (
     <DashboardClient
       userEmail={user.email || "Usuario"}
-      operationStartedAt={(growthPlanResponse.data as DashboardGrowthPlan | null)?.started_at || user.created_at || null}
+      operationStartedAt={btcPlan?.started_at || user.created_at || null}
+      operationElapsedDays={btcPlan?.elapsed_days ?? null}
       strategies={(strategiesResponse.data ?? []) as StrategyView[]}
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
       setupError={setupError?.message || null}
       initialNotice={searchParams?.notice || null}
       marketState={marketStateResponse.data}
       regimeSettings={regimeSettingsResponse.data}
-      growthPlan={(growthPlanResponse.data || null) as DashboardGrowthPlan | null}
-      btcLadderPlan={(btcLadderResponse.data || null) as DashboardBtcLadderPlan | null}
+      btcLadderPlan={btcPlan}
+      solLadderPlan={(solLadderResponse.data || null) as DashboardAssetLadderPlan | null}
     />
   );
 }

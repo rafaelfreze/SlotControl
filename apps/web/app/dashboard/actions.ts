@@ -379,8 +379,8 @@ export async function updateStrategy(formData: FormData) {
   }
   const asset = existingStrategy.asset.toUpperCase();
 
-  if (asset === "BTC") {
-    const { error } = await supabase.rpc("update_btc_strategy", {
+  if (asset === "BTC" || asset === "SOL") {
+    const { error } = await supabase.rpc("update_asset_strategy", {
       p_strategy_id: id,
       p_title: title,
       p_base_value: baseValue,
@@ -389,7 +389,7 @@ export async function updateStrategy(formData: FormData) {
       p_restart_amount: restartAmount
     });
     if (error) {
-      throw new Error("A estratégia BTC não pôde ser atualizada de forma atômica.");
+      throw new Error(`A estratégia ${asset} não pôde ser atualizada de forma atômica.`);
     }
     finish("Estrategia atualizada.", "/config");
   }
@@ -466,8 +466,8 @@ export async function deleteStrategy(formData: FormData) {
   if (strategyError || !strategy) {
     throw new Error("A estratégia não foi encontrada no escopo da conta.");
   }
-  if (strategy.asset.toUpperCase() === "BTC") {
-    throw new Error("A estratégia BTC possui histórico financeiro e não pode ser excluída.");
+  if (["BTC", "SOL"].includes(strategy.asset.toUpperCase())) {
+    throw new Error(`A estratégia ${strategy.asset.toUpperCase()} possui histórico financeiro e não pode ser excluída.`);
   }
 
   const { error: deleteError } = await supabase.from("strategies").delete().eq("id", id).eq("user_id", user.id);
@@ -816,26 +816,14 @@ export async function resetSlot(formData: FormData) {
     .eq("user_id", user.id)
     .single<Pick<StrategyRecord, "key" | "asset">>();
 
-  const resetUpdate = strategy?.asset?.toUpperCase() === "BTC"
-    ? {
-        status: "zerado" as const,
-        started_once: false,
-        notes: "",
-        preco_entrada: null,
-        preco_atual: null,
-        preco_alvo: null
-      }
-    : {
-        status: "zerado" as const,
-        gains: 0,
-        real_gains: 0,
-        added_gains: 0,
-        started_once: false,
-        notes: "",
-        preco_entrada: null,
-        preco_atual: null,
-        preco_alvo: null
-      };
+  const resetUpdate = {
+    status: "zerado" as const,
+    started_once: false,
+    notes: "",
+    preco_entrada: null,
+    preco_atual: null,
+    preco_alvo: null
+  };
   const { error: resetError } = await supabase
     .from("slots")
     .update(resetUpdate)
@@ -889,21 +877,21 @@ export async function updateSlot(formData: FormData) {
     .eq("id", slot.strategy_id)
     .eq("user_id", user.id)
     .single<Pick<StrategyRecord, "key" | "asset">>();
-  const isBtc = strategy?.asset?.toUpperCase() === "BTC";
-  if (isBtc && Math.abs(baseValue - Number(slot.base_value || 0)) > 0.00000001) {
-    throw new Error("O capital BTC não pode ser editado diretamente. Use Aporte externo no Plano.");
+  const isGrowthAsset = ["BTC", "SOL"].includes(strategy?.asset?.toUpperCase() || "");
+  if (isGrowthAsset && Math.abs(baseValue - Number(slot.base_value || 0)) > 0.00000001) {
+    throw new Error(`O capital ${strategy?.asset?.toUpperCase()} não pode ser editado diretamente. Use o Plano.`);
   }
-  if (isBtc && status !== slot.status) {
-    throw new Error("O estado do slot BTC só pode mudar pelas ações Abrir, +Gain ou Zerar.");
+  if (isGrowthAsset && status !== slot.status) {
+    throw new Error(`O estado do slot ${strategy?.asset?.toUpperCase()} só pode mudar pelas ações Abrir, +Gain ou Zerar.`);
   }
 
-  const effectiveGains = isBtc
+  const effectiveGains = isGrowthAsset
     ? Number(slot.gains || 0)
     : status === "zerado" ? 0 : Number(slot.gains || 0);
-  const nextValue = isBtc
+  const nextValue = isGrowthAsset
     ? currentValue(slot)
     : getValueForGains(baseValue, Number(slot.growth_contribution || 0), strategyGainRate, effectiveGains);
-  const slotUpdate = isBtc
+  const slotUpdate = isGrowthAsset
     ? {
         status,
         started_once: status !== "zerado",
@@ -958,86 +946,6 @@ export async function updateSlot(formData: FormData) {
   });
 
   finish("Slot editado.");
-}
-
-export async function updateSlotGains(formData: FormData) {
-  const { supabase, user } = await getUserClient();
-  const slot = await getSlotFromForm(supabase, user.id, formData);
-  const addedGains = Math.max(0, formInt(formData, "addedGains", 0));
-
-  if (!slot) return;
-  const { data: strategy } = await supabase
-    .from("strategies")
-    .select("key,asset")
-    .eq("id", slot.strategy_id)
-    .eq("user_id", user.id)
-    .single<Pick<StrategyRecord, "key" | "asset">>();
-  if (strategy?.asset?.toUpperCase() === "BTC") {
-    throw new Error("Os gains adicionados BTC são históricos e somente leitura. Use Aporte externo no Plano.");
-  }
-  if (slot.status === "aberto" || slot.status === "hold") {
-    throw new Error("Gains adicionados so podem ser aplicados em slots fechados.");
-  }
-  const realGains = Number(slot.real_gains || 0);
-  const gains = realGains + addedGains;
-  if (gains < Number(slot.gains || 0)) {
-    throw new Error("Os gains adicionados não podem ser reduzidos sem zerar o slot.");
-  }
-  if (gains === Number(slot.gains || 0)) {
-    finish("A quantidade de gains adicionados não foi alterada.");
-  }
-
-  const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
-  const statusAfter: SlotStatus = "gain";
-  const valueAfter = operationalValueForGains(slot, strategyGainRate, gains);
-  const { data: updatedSlot, error: updateError } = await supabase
-    .from("slots")
-    .update({
-      status: statusAfter,
-      gains,
-      real_gains: realGains,
-      added_gains: addedGains,
-      gain_rate: strategyGainRate,
-      started_once: true,
-      preco_entrada: null,
-      preco_atual: null,
-      preco_alvo: null
-    })
-    .eq("id", slot.id)
-    .eq("user_id", user.id)
-    .eq("gains", Number(slot.gains || 0))
-    .eq("added_gains", Number(slot.added_gains || 0))
-    .select("id")
-    .maybeSingle();
-
-  if (updateError || !updatedSlot) {
-    throw new Error("O slot foi atualizado por outra operação. Atualize a tela antes de editar os gains.");
-  }
-
-  await addHistory("Gains", `Gains adicionados ajustados de ${slot.added_gains} para ${addedGains}.`, {
-    userId: user.id,
-    strategyId: slot.strategy_id,
-    slotId: slot.id,
-    strategyKey: strategy?.key || null,
-    slotNumber: slot.slot_number,
-    metadata: {
-      asset: strategy?.asset || null,
-      eventType: "gains_editados",
-      origin: "MANUAL",
-      valueBefore: currentValue(slot),
-      valueAfter,
-      slotValue: valueAfter,
-      gains,
-      realGains,
-      addedGains,
-      statusBefore: slot.status,
-      statusAfter,
-      realizedProfit: valueAfter - currentValue(slot),
-      note: "Gains adicionados manualmente com a taxa atual da estratégia."
-    }
-  });
-
-  finish("Gains adicionados atualizados.");
 }
 
 async function getSlotFromForm(

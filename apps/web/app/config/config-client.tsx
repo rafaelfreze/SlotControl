@@ -120,7 +120,7 @@ function StrategySection({ strategy, tone }: { strategy: StrategyView; tone: "go
         <label>Reinício<input name="restartAmount" type="number" min="0" step="1" defaultValue={strategy.restart_amount} /></label>
         <div className="form-actions">
           <button className="solid-button" type="submit">Salvar estratégia</button>
-          {strategy.asset.toUpperCase() !== "BTC" ? <button className="danger-button" type="submit" formAction={deleteStrategy}>Excluir</button> : null}
+          {!(["BTC", "SOL"].includes(strategy.asset.toUpperCase())) ? <button className="danger-button" type="submit" formAction={deleteStrategy}>Excluir</button> : null}
         </div>
       </form>
     </details>

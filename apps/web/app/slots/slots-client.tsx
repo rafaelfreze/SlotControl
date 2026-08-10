@@ -9,8 +9,7 @@ import {
   openSlot,
   registerGain,
   resetSlot,
-  updateSlot,
-  updateSlotGains
+  updateSlot
 } from "@/app/dashboard/actions";
 import { AppHeader, FilterChips, MobileScreen, SectionCard, StatCard } from "@/components/app/mobile-ui";
 import {
@@ -162,7 +161,7 @@ export function SlotsClient({ strategies, slots, setupError, initialNotice, init
             <StatCard title="Total" value={formatUsdt(total)} financialValue={total} tone={tone} />
             <StatCard title="Lucro realizado" value={formatUsdt(realizedProfit)} financialValue={realizedProfit} tone="green" />
             <StatCard title="Abertos" value={String(open)} tone="gold" />
-            <StatCard title={selectedAsset === "BTC" ? "Gains operacionais" : "Gains totais"} value={formatDecimal(gains)} helper={`Reais: ${realGains} · Adicionados: ${addedGains}`} tone="blue" />
+            <StatCard title="Gains operacionais" value={formatDecimal(gains)} helper={`Reais: ${realGains} · Legado: ${addedGains}`} tone="blue" />
           </div>
         </div>
       </SectionCard>
@@ -249,31 +248,22 @@ function SlotCard({
       <div className="slot-card-values">
         <span>Valor operacional<strong className={`financial-${getFinancialValueTone(getCurrentValue(slot))}`}>{formatUsdt(getCurrentValue(slot))}</strong></span>
         <span>Lucro realizado<strong className={`financial-${getFinancialValueTone(Number(slot.realized_profit || 0))}`}>{formatUsdt(Number(slot.realized_profit || 0))}</strong></span>
-        <span>{asset === "BTC" ? "Gains operacionais" : "Gains totais"}<strong>{formatDecimal(getRankingGains(slot))}</strong></span>
+        <span>Gains operacionais<strong>{formatDecimal(getRankingGains(slot))}</strong></span>
       </div>
       <div className="slot-card-meta">
         <div className="slot-gain-breakdown">
           <span>Gains reais<strong>{slot.real_gains}</strong></span>
-          <span>{asset === "BTC" ? "Gains adicionados (legado)" : "Gains adicionados"}<strong>{slot.added_gains}</strong></span>
+          <span>Gains adicionados (legado)<strong>{slot.added_gains}</strong></span>
         </div>
       </div>
-      {asset !== "BTC" && slot.status !== "aberto" && slot.status !== "hold" ? (
-        <form className="slot-gain-editor" action={updateSlotGains}>
-          <input type="hidden" name="slotId" value={slot.id} />
-          <label>Adicionar gains<input name="addedGains" type="number" min={slot.added_gains} step="1" defaultValue={slot.added_gains} aria-label={`Gains adicionados do slot ${slot.slot_number}`} /></label>
-          <button type="submit">Salvar</button>
-        </form>
-      ) : null}
       <details className="mini-drawer slot-more-drawer">
         <summary>Ver mais</summary>
         <div className="slot-internal-id">ID interno: {slot.slot_number}</div>
         <div className="slot-internal-id">Gains reais: {slot.real_gains}</div>
         <div className="slot-internal-id">Gains adicionados: {slot.added_gains}</div>
-        {asset === "BTC" ? (
-          <div className="slot-internal-id">
-            Redistribuição líquida: {formatUsdt(Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0))}
-          </div>
-        ) : null}
+        <div className="slot-internal-id">
+          Redistribuição líquida: {formatUsdt(Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0))}
+        </div>
         <div className="slot-card-actions">
           <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
           <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />

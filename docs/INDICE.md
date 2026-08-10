@@ -2,7 +2,7 @@
 
 ## Regras oficiais do CoinOps
 
-- [Escada de Redistribuição BTC](./ESCADA_REDISTRIBUICAO_BTC.md) — fonte oficial da meta mensal 7, referência assistida, separação entre gains reais e operacionais, conversão financeira, ledger, idempotência e proteção de posições abertas.
+- [Escada de Redistribuição BTC e SOL](./ESCADA_REDISTRIBUICAO_BTC.md) — fonte oficial das metas mensais configuráveis, referência assistida, igualdade funcional entre os ativos, separação entre gains reais e operacionais, conversão financeira, ledger, idempotência e proteção de posições abertas.
 
 ## Visão geral
 

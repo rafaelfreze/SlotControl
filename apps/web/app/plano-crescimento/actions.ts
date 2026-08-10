@@ -17,10 +17,7 @@ type RpcResult = {
   stale_preview_count?: number | null;
 };
 
-type GrowthGoalRpcResult = {
-  btc_monthly_goal?: number | null;
-  sol_monthly_goal?: number | null;
-};
+export type GrowthAsset = "BTC" | "SOL";
 
 type GrowthStartRpcResult = {
   started_at?: string | null;
@@ -49,6 +46,14 @@ function formNumber(formData: FormData, name: string) {
   return Number.parseFloat(formText(formData, name).replace(",", "."));
 }
 
+function formAsset(formData: FormData): GrowthAsset {
+  const asset = formText(formData, "asset").toUpperCase();
+  if (asset !== "BTC" && asset !== "SOL") {
+    planRedirect("Ativo inválido. Recarregue o Plano e tente novamente.", { tone: "error" });
+  }
+  return asset;
+}
+
 function idempotencyKey(formData: FormData) {
   const provided = formText(formData, "idempotencyKey");
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(provided)) {
@@ -70,6 +75,14 @@ function planRedirect(message: string, options?: { batchId?: string | null; tone
 
 function rpcMessage(code: string | undefined, fallback: string) {
   const messages: Record<string, string> = {
+    COINOPS_GROWTH_REFERENCE_MUST_BE_POSITIVE: "Informe uma referência operacional maior que zero.",
+    COINOPS_GROWTH_BATCH_STALE: "A escada mudou depois da prévia. Prepare uma nova redistribuição.",
+    COINOPS_GROWTH_PREVIEW_EQUITY_MISMATCH: "A prévia não conservou o patrimônio e foi bloqueada.",
+    COINOPS_GROWTH_CONFIRM_EQUITY_MISMATCH: "A confirmação não conservou o patrimônio e foi revertida.",
+    COINOPS_GROWTH_BATCH_NOT_PREPARED: "Esta prévia não está mais disponível para confirmação.",
+    COINOPS_GROWTH_BATCH_NOT_FOUND: "A prévia não existe mais ou pertence a outro escopo.",
+    COINOPS_GROWTH_BATCH_EXPIRED: "A prévia expirou. Prepare uma nova redistribuição.",
+    COINOPS_GROWTH_MONTH_ALREADY_COMPLETED: "Já existe uma redistribuição confirmada neste ciclo.",
     COINOPS_BTC_REFERENCE_INVALID: "Informe uma referência operacional BTC maior que zero.",
     COINOPS_BTC_REFERENCE_MUST_BE_POSITIVE: "Informe uma referência operacional BTC maior que zero.",
     COINOPS_BTC_NO_TRANSFERS: "A escada já está equilibrada nessa referência; não há transferência a preparar.",
@@ -100,19 +113,21 @@ function rpcMessage(code: string | undefined, fallback: string) {
   return key ? messages[key] : fallback;
 }
 
-export async function prepareBtcRedistribution(formData: FormData) {
+export async function prepareAssetRedistribution(formData: FormData) {
+  const asset = formAsset(formData);
   const referenceLevel = formNumber(formData, "referenceLevel");
   if (!Number.isFinite(referenceLevel) || referenceLevel <= 0) {
-    planRedirect("Informe uma referência operacional BTC maior que zero.", { tone: "error" });
+    planRedirect(`Informe uma referência operacional ${asset} maior que zero.`, { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();
-  const { data, error } = await supabase.rpc("prepare_btc_ladder_redistribution", {
+  const { data, error } = await supabase.rpc("prepare_asset_ladder_redistribution", {
+    p_asset: asset,
     p_reference_level: referenceLevel,
     p_idempotency_key: idempotencyKey(formData)
   });
   if (error) {
-    planRedirect(rpcMessage(error.message, "Não foi possível preparar a redistribuição BTC."), { tone: "error" });
+    planRedirect(rpcMessage(error.message, `Não foi possível preparar a redistribuição ${asset}.`), { tone: "error" });
   }
 
   const result = data as RpcResult | null;
@@ -124,47 +139,52 @@ export async function prepareBtcRedistribution(formData: FormData) {
   planRedirect(`Prévia pronta com ${Number(result.transfer_count || 0)} transferência(s).`, { batchId: result.batch_id });
 }
 
-export async function confirmBtcRedistribution(formData: FormData) {
+export async function confirmAssetRedistribution(formData: FormData) {
+  const asset = formAsset(formData);
   const batchId = formText(formData, "batchId");
   if (!batchId) {
-    planRedirect("Prévia BTC inválida.", { tone: "error" });
+    planRedirect(`Prévia ${asset} inválida.`, { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();
-  const { data, error } = await supabase.rpc("confirm_btc_ladder_redistribution", {
+  const { data, error } = await supabase.rpc("confirm_asset_ladder_redistribution", {
+    p_asset: asset,
     p_batch_id: batchId,
     p_idempotency_key: idempotencyKey(formData)
   });
   if (error) {
-    planRedirect(rpcMessage(error.message, "A redistribuição BTC não foi confirmada."), { batchId, tone: "error" });
+    planRedirect(rpcMessage(error.message, `A redistribuição ${asset} não foi confirmada.`), { batchId, tone: "error" });
   }
 
   const result = data as RpcResult | null;
   revalidatePath("/dashboard");
   revalidatePath("/slots");
   revalidatePath("/plano-crescimento");
-  planRedirect(result?.status === "COMPLETED" ? "Redistribuição BTC confirmada e patrimônio conservado." : "Redistribuição BTC já estava confirmada.");
+  planRedirect(result?.status === "COMPLETED" ? `Redistribuição ${asset} confirmada e patrimônio conservado.` : `Redistribuição ${asset} já estava confirmada.`);
 }
 
-export async function cancelBtcRedistribution(formData: FormData) {
+export async function cancelAssetRedistribution(formData: FormData) {
+  const asset = formAsset(formData);
   const batchId = formText(formData, "batchId");
   if (!batchId) {
-    planRedirect("Prévia BTC inválida.", { tone: "error" });
+    planRedirect(`Prévia ${asset} inválida.`, { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();
-  const { error } = await supabase.rpc("cancel_btc_ladder_redistribution", {
+  const { error } = await supabase.rpc("cancel_asset_ladder_redistribution", {
+    p_asset: asset,
     p_batch_id: batchId
   });
   if (error) {
-    planRedirect(rpcMessage(error.message, "A prévia BTC não pôde ser cancelada."), { batchId, tone: "error" });
+    planRedirect(rpcMessage(error.message, `A prévia ${asset} não pôde ser cancelada.`), { batchId, tone: "error" });
   }
 
   revalidatePath("/plano-crescimento");
-  planRedirect("Prévia BTC cancelada sem alterar os slots.");
+  planRedirect(`Prévia ${asset} cancelada sem alterar os slots.`);
 }
 
-export async function applyBtcManualOperationalGains(formData: FormData) {
+export async function applyAssetManualOperationalGains(formData: FormData) {
+  const asset = formAsset(formData);
   const slotId = formText(formData, "slotId");
   const operationalGains = formNumber(formData, "operationalGains");
   const note = formText(formData, "note") || "Completar meta operacional do ciclo";
@@ -173,7 +193,8 @@ export async function applyBtcManualOperationalGains(formData: FormData) {
   }
 
   const { supabase } = await getAuthenticatedClient();
-  const { data, error } = await supabase.rpc("apply_btc_manual_operational_gains", {
+  const { data, error } = await supabase.rpc("apply_asset_manual_operational_gains", {
+    p_asset: asset,
     p_slot_id: slotId,
     p_operational_gains: operationalGains,
     p_reason: note,
@@ -198,24 +219,25 @@ export async function applyBtcManualOperationalGains(formData: FormData) {
   planRedirect(`${gainLabel} gains operacionais adicionados${slotNumber > 0 ? ` ao Slot #${slotNumber}` : ""}. Aporte calculado: ${amountLabel} USDT. Gains reais não foram alterados.${staleNotice}`);
 }
 
-export async function saveBtcMonthlyGoal(formData: FormData) {
-  const monthlyGoal = Math.trunc(formNumber(formData, "btcMonthlyGoal"));
+export async function saveAssetMonthlyGoal(formData: FormData) {
+  const asset = formAsset(formData);
+  const monthlyGoal = Math.trunc(formNumber(formData, "monthlyGoal"));
   if (!Number.isFinite(monthlyGoal) || monthlyGoal < 1 || monthlyGoal > 1000) {
-    planRedirect("A meta mensal BTC deve ser um inteiro entre 1 e 1000.", { tone: "error" });
+    planRedirect(`A meta mensal ${asset} deve ser um inteiro entre 1 e 1000.`, { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();
   const { error } = await supabase.rpc("update_growth_plan_goal", {
-    p_asset: "BTC",
+    p_asset: asset,
     p_monthly_goal: monthlyGoal
   });
   if (error) {
-    planRedirect(rpcMessage(error.message, "Não foi possível salvar a meta mensal BTC."), { tone: "error" });
+    planRedirect(rpcMessage(error.message, `Não foi possível salvar a meta mensal ${asset}.`), { tone: "error" });
   }
 
   revalidatePath("/dashboard");
   revalidatePath("/plano-crescimento");
-  planRedirect("Meta mensal BTC salva e auditada.");
+  planRedirect(`Meta mensal ${asset} salva e auditada.`);
 }
 
 export async function saveGrowthPlanStartDate(formData: FormData) {
@@ -238,28 +260,7 @@ export async function saveGrowthPlanStartDate(formData: FormData) {
   const result = data as GrowthStartRpcResult | null;
   const stalePreviewCount = Number(result?.stale_preview_count || 0);
   planRedirect(stalePreviewCount > 0
-    ? "Data inicial salva. A prévia BTC anterior foi invalidada; prepare outra com o novo ciclo."
+    ? "Data inicial salva. As prévias anteriores foram invalidadas; prepare outras com o novo ciclo."
     : "Data inicial da operação salva. Os ciclos foram recalculados sem alterar gains ou histórico."
   );
-}
-
-export async function saveSolMonthlyGoal(input: { solMonthlyGoal: number }) {
-  const solMonthlyGoal = Math.trunc(input.solMonthlyGoal);
-  if (!Number.isFinite(solMonthlyGoal) || solMonthlyGoal < 1 || solMonthlyGoal > 1000) {
-    throw new Error("A meta mensal SOL deve ser um inteiro entre 1 e 1000.");
-  }
-
-  const { supabase } = await getAuthenticatedClient();
-  const { data, error } = await supabase.rpc("update_growth_plan_goal", {
-    p_asset: "SOL",
-    p_monthly_goal: solMonthlyGoal
-  });
-  if (error) {
-    throw new Error("Não foi possível salvar a meta mensal SOL.");
-  }
-
-  revalidatePath("/dashboard");
-  revalidatePath("/plano-crescimento");
-  const result = data as GrowthGoalRpcResult | null;
-  return { solMonthlyGoal: Number(result?.sol_monthly_goal || solMonthlyGoal) };
 }

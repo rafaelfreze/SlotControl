@@ -6,16 +6,17 @@ import { SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
 import { getLeaderGrowthTarget } from "@/lib/slotgain/growth-target";
 import {
-  applyBtcManualOperationalGains,
-  cancelBtcRedistribution,
-  confirmBtcRedistribution,
-  prepareBtcRedistribution,
-  saveBtcMonthlyGoal
+  applyAssetManualOperationalGains,
+  cancelAssetRedistribution,
+  confirmAssetRedistribution,
+  prepareAssetRedistribution,
+  saveAssetMonthlyGoal,
+  type GrowthAsset
 } from "./actions";
 
 type Numeric = number | string;
 
-export type BtcLadderSlotItem = {
+export type AssetLadderSlotItem = {
   rank: number;
   slot_id: string;
   slot_number: number;
@@ -29,7 +30,7 @@ export type BtcLadderSlotItem = {
   deficit_gains?: Numeric;
 };
 
-export type BtcRedistributionTransferItem = {
+export type AssetRedistributionTransferItem = {
   id?: string;
   sequence_number?: number;
   donor_slot_id?: string;
@@ -47,7 +48,7 @@ export type BtcRedistributionTransferItem = {
   receiver_operational_after?: Numeric;
 };
 
-export type BtcRedistributionPreview = {
+export type AssetRedistributionPreview = {
   batch_id: string;
   status: string;
   snapshot_hash?: string;
@@ -57,12 +58,12 @@ export type BtcRedistributionPreview = {
   equity_difference_usdt: Numeric;
   total_transferred_usdt: Numeric;
   transfer_count?: number;
-  ranking_before: BtcLadderSlotItem[];
-  ranking_after: BtcLadderSlotItem[];
-  transfers: BtcRedistributionTransferItem[];
+  ranking_before: AssetLadderSlotItem[];
+  ranking_after: AssetLadderSlotItem[];
+  transfers: AssetRedistributionTransferItem[];
 };
 
-export type BtcRedistributionBatchHistory = {
+export type AssetRedistributionBatchHistory = {
   batch_id: string;
   status: string;
   month_reference: string;
@@ -73,10 +74,10 @@ export type BtcRedistributionBatchHistory = {
   created_by?: string | null;
   confirmed_by?: string | null;
   completed_at?: string | null;
-  transfers?: BtcRedistributionTransferItem[];
+  transfers?: AssetRedistributionTransferItem[];
 };
 
-export type BtcExternalContributionHistory = {
+export type AssetExternalContributionHistory = {
   id: string;
   slot_id?: string;
   slot_number: number;
@@ -89,11 +90,15 @@ export type BtcExternalContributionHistory = {
   created_at: string;
 };
 
-export type BtcLadderPlanResponse = {
+export type AssetLadderPlanResponse = {
   ok: boolean;
+  asset?: GrowthAsset;
   code?: string;
   message?: string;
   monthly_goal?: number;
+  started_at?: string;
+  elapsed_days?: number;
+  cycle_days?: number;
   month_reference?: string;
   cycle_number?: number;
   real_gains_month?: Numeric;
@@ -102,16 +107,16 @@ export type BtcLadderPlanResponse = {
   suggested_reference_level?: Numeric | null;
   available_excess_gains?: Numeric;
   available_excess_usdt?: Numeric;
-  ladder?: BtcLadderSlotItem[];
-  ranking?: BtcLadderSlotItem[];
-  preview?: BtcRedistributionPreview | null;
-  active_preview?: BtcRedistributionPreview | null;
-  history?: BtcRedistributionBatchHistory[];
-  batches?: BtcRedistributionBatchHistory[];
-  contributions?: BtcExternalContributionHistory[];
+  ladder?: AssetLadderSlotItem[];
+  ranking?: AssetLadderSlotItem[];
+  preview?: AssetRedistributionPreview | null;
+  active_preview?: AssetRedistributionPreview | null;
+  history?: AssetRedistributionBatchHistory[];
+  batches?: AssetRedistributionBatchHistory[];
+  contributions?: AssetExternalContributionHistory[];
 };
 
-export type BtcPlanActionKeys = {
+export type AssetPlanActionKeys = {
   prepare: string;
   confirm: string;
   contribution: string;
@@ -172,11 +177,11 @@ function SubmitButton({ children, disabled = false, tone = "gold" }: { children:
   return <button className={`btc-ladder-button ${tone}`} type="submit" disabled={disabled || pending}>{pending ? "Processando..." : children}</button>;
 }
 
-export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResponse; actionKeys: BtcPlanActionKeys }) {
+export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys }) {
   const ladder = plan.ladder || plan.ranking || [];
   const preview = plan.preview || plan.active_preview || null;
   const history = plan.history || plan.batches || [];
-  const monthlyGoal = Number(plan.monthly_goal || 7);
+  const monthlyGoal = Number(plan.monthly_goal || (asset === "BTC" ? 7 : 1));
   const referenceCandidate = plan.reference_level ?? plan.suggested_reference_level;
   const parsedReference = numberValue(referenceCandidate);
   const referenceLevel = referenceCandidate !== null && referenceCandidate !== undefined && parsedReference > 0
@@ -189,13 +194,14 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
 
   return (
     <div className="btc-plan-workspace">
-      <SectionCard className="btc-manual-gains-card" title="Adicionar gains manualmente" subtitle="Complete o líder ou ajuste qualquer slot" tone="green">
+      <SectionCard className="btc-manual-gains-card" title={`Adicionar gains ${asset}`} subtitle="Complete o líder ou ajuste qualquer slot" tone="green">
         <div className="btc-ladder-summary btc-manual-gains-summary">
           <Metric label="Meta atual do líder" value={`${formatGain(leaderGrowthTarget.targetGains)} gains`} helper={`${cycleNumber} ciclo(s) × ${monthlyGoal}`} />
           <Metric label="Líder atual" value={leader ? `Slot #${leader.slot_number} · ${formatGain(leader.operational_gains)}` : "--"} />
           <Metric label="Faltam no líder" value={leader ? `${formatGain(leaderGrowthTarget.missingGains)} gains` : "--"} />
         </div>
-        <form action={applyBtcManualOperationalGains} className="btc-contribution-form">
+        <form action={applyAssetManualOperationalGains} className="btc-contribution-form">
+          <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="idempotencyKey" value={actionKeys.contribution} />
           <label>Slot
             <select name="slotId" required defaultValue={leader?.slot_id || ""}>
@@ -210,8 +216,8 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
         <p className="btc-ladder-help">Você informa os gains e o servidor calcula o aporte em USDT. Eles aumentam somente os gains operacionais; gains reais e posições abertas permanecem intactos.</p>
       </SectionCard>
 
-      <SectionCard className="btc-ladder-main" title="Escada BTC" subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone="gold">
-        {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || "A escada BTC está indisponível."}</p> : null}
+      <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone={asset === "BTC" ? "gold" : "purple"}>
+        {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || `A escada ${asset} está indisponível.`}</p> : null}
         <div className="btc-ladder-summary">
           <Metric
             label="Gains reais no ciclo"
@@ -224,18 +230,20 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
         </div>
 
         <div className="btc-ladder-controls">
-          <form action={saveBtcMonthlyGoal} className="btc-ladder-compact-form">
-            <label>Meta mensal BTC<input name="btcMonthlyGoal" type="number" min="1" max="1000" step="1" defaultValue={monthlyGoal} required /></label>
+          <form action={saveAssetMonthlyGoal} className="btc-ladder-compact-form">
+            <input type="hidden" name="asset" value={asset} />
+            <label>Meta mensal {asset}<input name="monthlyGoal" type="number" min="1" max="1000" step="1" defaultValue={monthlyGoal} required /></label>
             <SubmitButton>Salvar meta</SubmitButton>
           </form>
-          <form action={prepareBtcRedistribution} className="btc-ladder-compact-form">
+          <form action={prepareAssetRedistribution} className="btc-ladder-compact-form">
+            <input type="hidden" name="asset" value={asset} />
             <input type="hidden" name="idempotencyKey" value={actionKeys.prepare} />
             <label>Referência da escada<input name="referenceLevel" type="number" min="0.00000001" step="0.00000001" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
             <SubmitButton disabled={!plan.ok || ladder.length < 2}>Preparar redistribuição</SubmitButton>
           </form>
         </div>
 
-        <p className="btc-ladder-help">A meta de 7 mede a velocidade a cada 30 dias. A referência é o nível operacional que você escolhe para equilibrar a escada; ela não cria dívida de 7 gains para cada slot.</p>
+        <p className="btc-ladder-help">A meta de {monthlyGoal} mede a velocidade a cada 30 dias. A referência é o nível operacional que você escolhe para equilibrar a escada; ela não cria dívida automática para cada slot.</p>
         <details className="btc-ladder-guide">
           <summary>Como fazer a redistribuição</summary>
           <ol>
@@ -246,12 +254,12 @@ export function BtcLadderSection({ plan, actionKeys }: { plan: BtcLadderPlanResp
           </ol>
           <p>Slots OPEN também podem doar. A posição aberta continua com quantidade, entrada e alvo originais.</p>
         </details>
-        <LadderList slots={ladder} referenceLevel={referenceLevel} />
+        <LadderList asset={asset} slots={ladder} referenceLevel={referenceLevel} />
       </SectionCard>
 
-      {preview ? <RedistributionPreview preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
+      {preview ? <RedistributionPreview asset={asset} preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
 
-      <BtcLadderHistory batches={history} contributions={plan.contributions || []} />
+      <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} />
     </div>
   );
 }
@@ -260,9 +268,9 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
   return <div><span>{label}</span><strong>{value}</strong>{helper ? <small>{helper}</small> : null}</div>;
 }
 
-function LadderList({ slots, referenceLevel }: { slots: BtcLadderSlotItem[]; referenceLevel: number | null }) {
+function LadderList({ asset, slots, referenceLevel }: { asset: GrowthAsset; slots: AssetLadderSlotItem[]; referenceLevel: number | null }) {
   return (
-    <div className="btc-ladder-table" role="table" aria-label="Ranking operacional BTC">
+    <div className="btc-ladder-table" role="table" aria-label={`Ranking operacional ${asset}`}>
       <div className="btc-ladder-table-head" role="row">
         <span role="columnheader">Ranking</span><span role="columnheader">Status</span><span role="columnheader">Reais</span><span role="columnheader">Operacionais</span><span role="columnheader">Valor</span><span role="columnheader">Excedente/defasagem</span>
       </div>
@@ -281,12 +289,12 @@ function LadderList({ slots, referenceLevel }: { slots: BtcLadderSlotItem[]; ref
           </div>
         );
       })}
-      {!slots.length ? <p className="empty-copy padded-empty">Nenhum slot BTC disponível para montar a escada.</p> : null}
+      {!slots.length ? <p className="empty-copy padded-empty">Nenhum slot {asset} disponível para montar a escada.</p> : null}
     </div>
   );
 }
 
-function RedistributionPreview({ preview, confirmIdempotencyKey }: { preview: BtcRedistributionPreview; confirmIdempotencyKey: string }) {
+function RedistributionPreview({ asset, preview, confirmIdempotencyKey }: { asset: GrowthAsset; preview: AssetRedistributionPreview; confirmIdempotencyKey: string }) {
   const parsedDifference = Number(preview.equity_difference_usdt);
   const hasValidDifference = preview.equity_difference_usdt !== null
     && preview.equity_difference_usdt !== undefined
@@ -320,16 +328,18 @@ function RedistributionPreview({ preview, confirmIdempotencyKey }: { preview: Bt
       </div>
 
       <div className="btc-preview-rankings">
-        <details><summary>Ranking antes</summary><LadderList slots={preview.ranking_before || []} referenceLevel={numberValue(preview.reference_level)} /></details>
-        <details><summary>Ranking depois</summary><LadderList slots={preview.ranking_after || []} referenceLevel={numberValue(preview.reference_level)} /></details>
+        <details><summary>Ranking antes</summary><LadderList asset={asset} slots={preview.ranking_before || []} referenceLevel={numberValue(preview.reference_level)} /></details>
+        <details><summary>Ranking depois</summary><LadderList asset={asset} slots={preview.ranking_after || []} referenceLevel={numberValue(preview.reference_level)} /></details>
       </div>
 
       <div className="btc-preview-actions">
-        <form action={cancelBtcRedistribution}>
+        <form action={cancelAssetRedistribution}>
+          <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="batchId" value={preview.batch_id} />
           <SubmitButton tone="neutral" disabled={!prepared}>Cancelar</SubmitButton>
         </form>
-        <form action={confirmBtcRedistribution}>
+        <form action={confirmAssetRedistribution}>
+          <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="batchId" value={preview.batch_id} />
           <input type="hidden" name="idempotencyKey" value={confirmIdempotencyKey} />
           {preview.snapshot_hash ? <input type="hidden" name="snapshotHash" value={preview.snapshot_hash} /> : null}
@@ -340,14 +350,14 @@ function RedistributionPreview({ preview, confirmIdempotencyKey }: { preview: Bt
   );
 }
 
-function BtcLadderHistory({ batches, contributions }: { batches: BtcRedistributionBatchHistory[]; contributions: BtcExternalContributionHistory[] }) {
+function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAsset; batches: AssetRedistributionBatchHistory[]; contributions: AssetExternalContributionHistory[] }) {
   const events = [
     ...batches.map((batch) => ({ kind: "batch" as const, createdAt: batch.created_at, batch })),
     ...contributions.map((contribution) => ({ kind: "contribution" as const, createdAt: contribution.created_at, contribution }))
   ].sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime());
 
   return (
-    <SectionCard className="btc-history-card" title="Histórico mensal BTC" subtitle="Redistribuições e ajustes manuais" tone="neutral">
+    <SectionCard className="btc-history-card" title={`Histórico mensal ${asset}`} subtitle="Redistribuições e ajustes manuais" tone="neutral">
       <div className="btc-ladder-history">
         {events.map((event) => event.kind === "batch" ? (
           <details key={`batch-${event.batch.batch_id}`}>
@@ -382,7 +392,7 @@ function BtcLadderHistory({ batches, contributions }: { batches: BtcRedistributi
             </div>
           </details>
         ))}
-        {!events.length ? <p className="empty-copy padded-empty">Nenhuma redistribuição ou ajuste manual BTC registrado.</p> : null}
+        {!events.length ? <p className="empty-copy padded-empty">Nenhuma redistribuição ou ajuste manual {asset} registrado.</p> : null}
       </div>
     </SectionCard>
   );

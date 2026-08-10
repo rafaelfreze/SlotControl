@@ -1,13 +1,11 @@
 "use client";
 
-import { useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
-import { useRouter } from "next/navigation";
 
 import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
-import { saveGrowthPlanStartDate, saveSolMonthlyGoal } from "./actions";
-import { BtcLadderSection, type BtcLadderPlanResponse, type BtcPlanActionKeys } from "./btc-ladder-section";
+import { saveGrowthPlanStartDate } from "./actions";
+import { AssetLadderSection, type AssetLadderPlanResponse, type AssetPlanActionKeys } from "./btc-ladder-section";
 
 type GrowthAsset = "BTC" | "SOL";
 
@@ -54,29 +52,9 @@ export type GrowthContributionHistoryItem = {
   created_at: string;
 };
 
-export function GrowthPlanClient({ plan, btcLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys }: { plan: ProgrammedGrowthPlanResponse; btcLadder: BtcLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: BtcPlanActionKeys }) {
-  const router = useRouter();
-  const [notice, setNotice] = useState<string | null>(initialNotice);
-  const [noticeTone, setNoticeTone] = useState<"success" | "error">(initialNoticeTone);
-  const [solGoal, setSolGoal] = useState(String(plan.sol_monthly_goal || 1));
-  const [isPending, startTransition] = useTransition();
-
-  function saveSolGoal() {
-    startTransition(async () => {
-      try {
-        const result = await saveSolMonthlyGoal({ solMonthlyGoal: Number(solGoal) });
-        setSolGoal(String(result.solMonthlyGoal));
-        setNotice("Meta mensal SOL salva. O plano acumulado de SOL foi preservado.");
-        setNoticeTone("success");
-        router.refresh();
-      } catch (error) {
-        setNotice(error instanceof Error ? error.message : "Não foi possível salvar as metas.");
-        setNoticeTone("error");
-      }
-    });
-  }
-
-  const sol = plan.plans?.SOL;
+export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys }: { plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys }) {
+  const notice = initialNotice;
+  const noticeTone = initialNoticeTone;
 
   return (
     <MobileScreen>
@@ -101,17 +79,8 @@ export function GrowthPlanClient({ plan, btcLadder, history, setupError, initial
         </SectionCard>
       </div>
 
-      <BtcLadderSection plan={btcLadder} actionKeys={btcActionKeys} />
-
-      <SectionCard title="Plano acumulado SOL" subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia" : "dias"} em operação · ciclo atual: ${plan.cycle_days ?? 30} dias`} tone="purple">
-        <p className="growth-plan-intro">SOL permanece no fluxo acumulado existente e não participa da escada BTC.</p>
-        <div className="growth-goal-grid">
-          <label>Meta SOL mensal<input value={solGoal} min="1" max="1000" step="1" inputMode="numeric" type="number" disabled={isPending} onChange={(event) => setSolGoal(event.target.value)} /></label>
-        </div>
-        <button className="ghost-button compact-action" type="button" disabled={isPending} onClick={saveSolGoal}>Salvar meta SOL</button>
-      </SectionCard>
-
-      <GrowthAssetCard asset="SOL" plan={sol} />
+      <AssetLadderSection asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} />
+      <AssetLadderSection asset="SOL" plan={solLadder} actionKeys={solActionKeys} />
 
       <SectionCard title="Histórico financeiro anterior" subtitle="Somente leitura" tone="neutral">
         <div className="growth-history-list">
@@ -135,23 +104,4 @@ export function GrowthPlanClient({ plan, btcLadder, history, setupError, initial
 function GrowthStartSubmitButton() {
   const { pending } = useFormStatus();
   return <button className="btc-ladder-button neutral" type="submit" disabled={pending}>{pending ? "Salvando..." : "Salvar data"}</button>;
-}
-
-function GrowthAssetCard({ asset, plan }: { asset: GrowthAsset; plan?: ProgrammedGrowthAssetPlan }) {
-  return (
-    <SectionCard title={`Plano ${asset}`} subtitle={`Meta acumulada: ${plan?.cumulative_goal ?? "--"} gains`} tone={asset === "BTC" ? "gold" : "purple"}>
-      <div className="growth-plan-metrics">
-        <div><span>Ciclo de meta</span><strong>{plan?.cycle_days ?? "--"} dias</strong></div>
-        <div><span>Meta mensal</span><strong>{plan?.monthly_goal ?? "--"} gains</strong></div>
-        <div><span>Fechado líder</span><strong>{plan?.leader_display_rank ? `#${plan.leader_display_rank}` : "Nenhum fechado"}</strong></div>
-        <div><span>Gains totais</span><strong>{plan?.leader_gains ?? "--"}</strong></div>
-        <div><span>Gains reais</span><strong>{plan?.leader_real_gains ?? "--"}</strong></div>
-        <div><span>Gains adicionados</span><strong>{plan?.leader_added_gains ?? "--"}</strong></div>
-        <div><span>Gains faltantes</span><strong>{plan?.missing_gains ?? "--"}</strong></div>
-      </div>
-      {!plan?.leader_slot_id ? <p className="settings-hint">Não há slot fechado elegível. Slots abertos e em espera nunca recebem gains adicionados.</p> : null}
-      {plan?.leader_slot_id && !plan.missing_gains ? <p className="settings-hint">A meta acumulada já foi atingida.</p> : null}
-      {plan?.leader_slot_id && plan.missing_gains ? <p className="settings-hint">Faltam {plan.missing_gains} gains. Abra o Fechado #{plan.leader_display_rank} em Slots e edite “Adicionar gains”.</p> : null}
-    </SectionCard>
-  );
 }

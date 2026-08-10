@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { MobileScreen } from "@/components/app/mobile-ui";
 import { CompactMarketRegimeBadge } from "@/components/slotgain/compact-market-regime-badge";
@@ -16,35 +16,25 @@ import {
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { formatAccountCreatedDate, getAccountAgeDays } from "@/lib/slotgain/account-age";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
+import { getMonthlyGrowthStatus } from "@/lib/slotgain/growth-status";
 import type { BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type DashboardClientProps = {
   userEmail: string;
   operationStartedAt: string | null;
+  operationElapsedDays: number | null;
   strategies: StrategyView[];
   slots: SlotView[];
   setupError: string | null;
   initialNotice: string | null;
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
-  growthPlan: DashboardGrowthPlan | null;
-  btcLadderPlan: DashboardBtcLadderPlan | null;
+  btcLadderPlan: DashboardAssetLadderPlan | null;
+  solLadderPlan: DashboardAssetLadderPlan | null;
 };
 
-type DashboardGrowthPlan = {
-  started_at?: string;
-  elapsed_days?: number;
-  plans?: Partial<Record<"BTC" | "SOL", {
-    monthly_goal?: number;
-    cumulative_goal?: number;
-    missing_gains?: number | null;
-    leader_slot_id?: string | null;
-    leader_slot_number?: number | null;
-  }>>;
-};
-
-type DashboardBtcLadderPlan = {
+type DashboardAssetLadderPlan = {
   monthly_goal?: number;
   month_reference?: string;
   real_gains_month?: number | string;
@@ -85,9 +75,9 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], asset
   };
 }
 
-export function DashboardClient({ userEmail, operationStartedAt, strategies, slots, setupError, initialNotice, marketState, regimeSettings, growthPlan, btcLadderPlan }: DashboardClientProps) {
+export function DashboardClient({ userEmail, operationStartedAt, operationElapsedDays, strategies, slots, setupError, initialNotice, marketState, regimeSettings, btcLadderPlan, solLadderPlan }: DashboardClientProps) {
   const livePrices = useLivePrices();
-  const [notice, setNotice] = useState<string | null>(initialNotice);
+  const notice = initialNotice;
   const realizedProfit = slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
   const openSlotsList = slots.filter((slot) => slot.status === "aberto");
   const openResult = openSlotsList.reduce(
@@ -100,8 +90,8 @@ export function DashboardClient({ userEmail, operationStartedAt, strategies, slo
   );
   const openSlots = openSlotsList.length;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const planElapsedDays = Number(growthPlan?.elapsed_days);
-  const accountAgeDays = Number.isFinite(planElapsedDays) && planElapsedDays >= 0
+  const planElapsedDays = Number(operationElapsedDays);
+  const accountAgeDays = operationElapsedDays !== null && Number.isFinite(planElapsedDays) && planElapsedDays >= 0
     ? Math.trunc(planElapsedDays)
     : getAccountAgeDays(operationStartedAt, new Date(), timeZone);
   const accountCreatedLabel = formatAccountCreatedDate(operationStartedAt, timeZone);
@@ -142,7 +132,7 @@ export function DashboardClient({ userEmail, operationStartedAt, strategies, slo
         </div>
       </section>
 
-      <GrowthPlanStrip plan={growthPlan} btcPlan={btcLadderPlan} />
+      <GrowthPlanStrip btcPlan={btcLadderPlan} solPlan={solLadderPlan} />
 
       <section className="mobile-metrics" aria-label="Resumo principal">
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
@@ -174,34 +164,19 @@ export function DashboardClient({ userEmail, operationStartedAt, strategies, slo
   );
 }
 
-function GrowthPlanStrip({ plan, btcPlan }: { plan: DashboardGrowthPlan | null; btcPlan: DashboardBtcLadderPlan | null }) {
+function GrowthPlanStrip({ btcPlan, solPlan }: { btcPlan: DashboardAssetLadderPlan | null; solPlan: DashboardAssetLadderPlan | null }) {
   return (
     <section className="growth-dashboard-strip" aria-label="Metas mensais de crescimento">
       {(["BTC", "SOL"] as const).map((asset) => {
-        const item = plan?.plans?.[asset];
-        if (asset === "BTC") {
-          const monthlyGoal = Number(btcPlan?.monthly_goal || 7);
-          const realGainsMonth = Number(btcPlan?.real_gains_month || 0);
-          const missing = Math.max(monthlyGoal - realGainsMonth, 0);
-          const isExactMonthlyCount = !btcPlan?.real_gains_month_source || btcPlan.real_gains_month_source.toUpperCase() === "LEDGER";
-          return (
-            <Link className="growth-dashboard-link btc" href="/plano-crescimento" key={asset}>
-              <strong>BTC <small>{monthlyGoal}/mês</small></strong>
-              <span>{missing > 0 ? `${realGainsMonth}/${monthlyGoal} ${isExactMonthlyCount ? "reais" : "estimados"}` : `meta mensal ok${isExactMonthlyCount ? "" : " (estimada)"}`}</span>
-            </Link>
-          );
-        }
-        const missing = Number(item?.missing_gains || 0);
-        const status = !item?.leader_slot_id
-          ? "sem fechado"
-          : missing > 0
-            ? `faltam ${missing}`
-            : "meta ok";
+        const ladderPlan = asset === "BTC" ? btcPlan : solPlan;
+        const monthlyGoal = Number(ladderPlan?.monthly_goal || (asset === "BTC" ? 7 : 1));
+        const realGainsMonth = Number(ladderPlan?.real_gains_month || 0);
+        const status = getMonthlyGrowthStatus(monthlyGoal, realGainsMonth);
 
         return (
-          <Link className="growth-dashboard-link sol" href="/plano-crescimento" key={asset}>
-            <strong>SOL <small>{item?.monthly_goal ?? 1}/mês</small></strong>
-            <span>{status}</span>
+          <Link className={`growth-dashboard-link ${asset.toLowerCase()} ${status.missing > 0 ? "missing" : "ok"}`} href="/plano-crescimento" key={asset}>
+            <strong>{asset}</strong>
+            <span>{status.label}</span>
           </Link>
         );
       })}

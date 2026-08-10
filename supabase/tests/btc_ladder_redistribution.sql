@@ -71,6 +71,13 @@ begin
     or to_regprocedure('coinops.update_growth_plan_started_at(date)') is null then
     raise exception 'TEST_BTC_LADDER_MIGRATION_REQUIRED';
   end if;
+  if to_regprocedure('coinops.get_asset_ladder_plan(text)') is null
+    or to_regprocedure('coinops.prepare_asset_ladder_redistribution(text,numeric,uuid)') is null
+    or to_regprocedure('coinops.confirm_asset_ladder_redistribution(text,uuid,uuid)') is null
+    or to_regprocedure('coinops.apply_asset_manual_operational_gains(text,uuid,numeric,text,uuid)') is null
+    or to_regprocedure('coinops.update_asset_strategy(uuid,text,numeric,numeric,numeric,integer)') is null then
+    raise exception 'TEST_UNIFIED_GROWTH_LADDER_MIGRATION_REQUIRED';
+  end if;
 end;
 $preflight$;
 
@@ -951,6 +958,200 @@ select pg_temp.assert_true(
     group by snapshot.checksum
   ),
   'editing the start date must not change any slot, gain, value, or position'
+);
+
+-- -------------------------------------------------------------------------
+-- Unified SOL scenario: same ladder, ledger, OPEN donor and manual gains.
+-- -------------------------------------------------------------------------
+
+insert into coinops.strategies (
+  id, product_id, tenant_id, user_id, key, title, display_name, asset,
+  base_value, gain_rate, initial_slots, drop_percent, restart_amount, sort_order
+)
+select
+  '92000000-0000-0000-0000-000000000020', scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000002', 'sol', 'SOL fixture', 'SOL fixture',
+  'SOL', 25, 0.05, 3, 0, 0, 2
+from fixture_scope scope;
+
+insert into coinops.slots (
+  id, product_id, tenant_id, user_id, strategy_id,
+  slot_number, sort_order, status, gains, real_gains, added_gains,
+  operational_gains, base_value, gain_rate, realized_profit,
+  growth_contribution, started_once, notes,
+  preco_entrada, preco_atual, preco_alvo,
+  position_notional_usdt, position_gain_unit_usdt, position_quantity,
+  position_opened_at
+)
+select
+  fixture.slot_id, scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000002',
+  '92000000-0000-0000-0000-000000000020',
+  fixture.slot_number, fixture.slot_number, fixture.status,
+  fixture.real_gains, fixture.real_gains, 0, fixture.operational_gains,
+  25, 0.05, fixture.real_gains * 1.25, 0, true, '',
+  fixture.entry_price, fixture.entry_price, fixture.target_price,
+  fixture.position_notional, fixture.position_gain_unit, fixture.position_quantity,
+  fixture.position_opened_at
+from fixture_scope scope
+cross join (values
+  ('93000000-0000-0000-0000-000000000020'::uuid, 1, 'aberto'::text, 20, 20::numeric, 100::numeric, 105::numeric, 50::numeric, 1.25::numeric, 0.5::numeric, timezone('utc', now())),
+  ('93000000-0000-0000-0000-000000000021'::uuid, 2, 'gain'::text, 10, 10::numeric, null::numeric, null::numeric, null::numeric, null::numeric, null::numeric, null::timestamptz),
+  ('93000000-0000-0000-0000-000000000022'::uuid, 3, 'gain'::text, 12, 12::numeric, null::numeric, null::numeric, null::numeric, null::numeric, null::numeric, null::timestamptz)
+) fixture(
+  slot_id, slot_number, status, real_gains, operational_gains,
+  entry_price, target_price, position_notional, position_gain_unit,
+  position_quantity, position_opened_at
+);
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000002', true
+);
+set local role authenticated;
+
+do $sol_prepare$
+begin
+  perform coinops.prepare_asset_ladder_redistribution(
+    'SOL', 14, '95000000-0000-0000-0000-000000000020'
+  );
+  perform coinops.prepare_asset_ladder_redistribution(
+    'SOL', 14, '95000000-0000-0000-0000-000000000020'
+  );
+end;
+$sol_prepare$;
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select asset = 'SOL'
+      and transfer_count = 2
+      and total_transferred_usdt = 7.5
+      and equity_difference = 0
+    from coinops.btc_redistribution_batches
+    where prepare_idempotency_key = '95000000-0000-0000-0000-000000000020'
+  ),
+  'SOL must prepare the same conserved cascade with two transfers'
+);
+select pg_temp.assert_true(
+  (
+    select array_agg(receiver_slot_number order by sequence_number) = array[3, 2]
+    from coinops.btc_redistribution_transfers
+    where batch_id = (
+      select id from coinops.btc_redistribution_batches
+      where prepare_idempotency_key = '95000000-0000-0000-0000-000000000020'
+    )
+  ),
+  'SOL must fill the closest receiver first and then continue down the ladder'
+);
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000002', true
+);
+set local role authenticated;
+
+do $sol_confirm$
+begin
+  perform coinops.confirm_asset_ladder_redistribution(
+    'SOL',
+    (select id from coinops.btc_redistribution_batches where prepare_idempotency_key = '95000000-0000-0000-0000-000000000020'),
+    '96000000-0000-0000-0000-000000000020'
+  );
+  perform coinops.confirm_asset_ladder_redistribution(
+    'SOL',
+    (select id from coinops.btc_redistribution_batches where prepare_idempotency_key = '95000000-0000-0000-0000-000000000020'),
+    '96000000-0000-0000-0000-000000000021'
+  );
+end;
+$sol_confirm$;
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select operational_gains = 14 and real_gains = 20 and status = 'aberto'
+      and position_notional_usdt = 50 and position_gain_unit_usdt = 1.25
+      and position_quantity = 0.5 and preco_entrada = 100 and preco_alvo = 105
+    from coinops.slots where id = '93000000-0000-0000-0000-000000000020'
+  ) and (
+    select operational_gains = 14 and real_gains = 10
+    from coinops.slots where id = '93000000-0000-0000-0000-000000000021'
+  ) and (
+    select operational_gains = 14 and real_gains = 12
+    from coinops.slots where id = '93000000-0000-0000-0000-000000000022'
+  ),
+  'SOL A20/B10/C12 must become operational 14/14/14 without changing real gains or OPEN snapshot'
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 4 and round(sum(amount_usdt), 8) = 0
+    from coinops.slot_capital_ledger
+    where batch_id = (
+      select id from coinops.btc_redistribution_batches
+      where prepare_idempotency_key = '95000000-0000-0000-0000-000000000020'
+    )
+  ),
+  'SOL double confirmation must create one balanced pair per transfer only once'
+);
+
+update coinops.slots
+set status = 'gain', gains = 21, real_gains = 21,
+  preco_entrada = null, preco_atual = null, preco_alvo = null
+where id = '93000000-0000-0000-0000-000000000020';
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000002', true
+);
+set local role authenticated;
+
+do $sol_manual$
+begin
+  perform coinops.apply_asset_manual_operational_gains(
+    'SOL', '93000000-0000-0000-0000-000000000021', 1,
+    'fixture SOL manual gain', '97000000-0000-0000-0000-000000000020'
+  );
+  perform coinops.apply_asset_manual_operational_gains(
+    'SOL', '93000000-0000-0000-0000-000000000021', 1,
+    'fixture SOL manual gain', '97000000-0000-0000-0000-000000000020'
+  );
+  perform coinops.update_growth_plan_goal('SOL', 2);
+end;
+$sol_manual$;
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select operational_gains = 15 and real_gains = 21
+      and redistribution_sent_usdt = 7.5 and realized_profit = 26.25
+      and operational_slot_value = 43.75
+    from coinops.slots where id = '93000000-0000-0000-0000-000000000020'
+  ),
+  'closing the redistributed SOL OPEN donor must add one real gain without restoring the sent capital'
+);
+select pg_temp.assert_true(
+  (
+    select operational_gains = 15 and real_gains = 10 and added_gains = 0
+    from coinops.slots where id = '93000000-0000-0000-0000-000000000021'
+  ) and (
+    select count(*) = 1 and min(asset) = 'SOL'
+    from coinops.btc_external_contributions
+    where idempotency_key = '97000000-0000-0000-0000-000000000020'
+  ),
+  'SOL manual gain must be idempotent and must not increase real or legacy-added gains'
+);
+select pg_temp.assert_true(
+  (
+    select sol_monthly_goal = 2
+    from coinops.growth_plan_settings
+    where user_id = '91000000-0000-0000-0000-000000000002'
+  ) and (
+    select count(*) >= 1
+    from coinops.growth_plan_goal_audit
+    where user_id = '91000000-0000-0000-0000-000000000002'
+      and asset = 'SOL' and new_goal = 2
+  ),
+  'SOL monthly goal must be scoped and audited exactly like BTC'
 );
 
 -- -------------------------------------------------------------------------

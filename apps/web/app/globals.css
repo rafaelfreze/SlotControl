@@ -6625,13 +6625,12 @@ body {
 .growth-dashboard-link strong,
 .growth-dashboard-link span {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.growth-dashboard-link strong { font-size: 0.73rem; }
+.growth-dashboard-link strong { flex: 0 0 auto; font-size: 0.73rem; }
 .growth-dashboard-link strong small { color: var(--muted); font-size: 0.62rem; font-weight: 700; }
-.growth-dashboard-link span { color: var(--sg-green); font-size: 0.62rem; font-weight: 800; }
+.growth-dashboard-link span { overflow: hidden; color: var(--sg-green); font-size: 0.68rem; font-weight: 850; text-overflow: ellipsis; }
+.growth-dashboard-link.missing span { color: var(--sg-gold); }
 
 .slot-card-meta {
   display: grid;

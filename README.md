@@ -56,7 +56,7 @@ supabase/schema.sql
 
 Ele cria as tabelas, triggers, dados iniciais por usuario e policies de RLS. Cada usuario autenticado acessa apenas seus proprios dados.
 
-Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática. A data inicial operacional é editável no Plano, independente da criação do usuário no Auth, e serve como fonte única dos ciclos de 30 dias exibidos também no Resumo. O Plano mostra a meta orientativa acumulada do líder e permite adicionar gains operacionais manualmente; o backend calcula e audita o aporte correspondente sem alterar gains reais.
+Para ambientes existentes, aplique as migrations em `supabase/migrations/` na ordem cronológica. A Escada de Redistribuição BTC/SOL preserva valores, posições e histórico financeiro, separando permanentemente `real_gains`, `operational_gains`, aportes externos e redistribuições internas. Gains adicionados anteriores permanecem classificados como legado, sem reclassificação automática. A data inicial operacional é editável no Plano, independente da criação do usuário no Auth, e serve como fonte única dos ciclos de 30 dias exibidos também no Resumo. O Plano oferece a mesma adição manual auditada, ranking, prévia e redistribuição para BTC e SOL; o backend calcula e audita o aporte correspondente sem alterar gains reais.
 
 A regra financeira oficial está em [`docs/ESCADA_REDISTRIBUICAO_BTC.md`](docs/ESCADA_REDISTRIBUICAO_BTC.md). Backtests e simuladores locais não são fonte de regra para o CoinOps real.
 
@@ -118,9 +118,9 @@ npm run build
 - Slots por usuario
 - Filtros por status
 - Historico de acoes
-- Plano BTC com meta mensal base de 7 gains como velocidade da escada, sem criar dívida acumulada para cada slot
+- Planos BTC e SOL com metas mensais configuráveis (padrões 7 e 1), sem criar dívida acumulada para cada slot
 - Referência assistida e editável, com prévia server-side antes de qualquer redistribuição financeira
-- Ranking BTC por gains operacionais, incluindo slots abertos como doadores ou recebedores sem reescrever a posição executada
+- Ranking por ativo e gains operacionais, incluindo slots abertos como doadores ou recebedores sem reescrever a posição executada
 - Gains reais imutáveis, gains operacionais redistribuíveis e gains adicionados anteriores preservados como legado
 - Ajuste manual por quantidade de gains no Plano, com sugestão para completar o líder e conversão financeira server-side
 - Ledger transacional para redistribuições internas e aportes externos, com conservação patrimonial e idempotência

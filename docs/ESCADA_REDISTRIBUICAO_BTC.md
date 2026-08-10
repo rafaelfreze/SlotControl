@@ -1,10 +1,10 @@
-# Escada de Redistribuição BTC
+# Escada de Redistribuição BTC e SOL
 
 ## 1. Autoridade e escopo
 
-Este documento é a fonte oficial da gestão mensal dos slots BTC no CoinOps real.
+Este documento é a fonte oficial da gestão mensal dos slots BTC e SOL no CoinOps real. Os dois ativos seguem o mesmo fluxo seguro; somente a meta configurada, a taxa da estratégia e a composição financeira de cada slot são diferentes.
 
-A implementação inicial cobre somente BTC. SOL, entrada e saída de operações, ATH, autenticação e módulos não relacionados permanecem fora do escopo.
+Entrada e saída de operações, ATH, autenticação e módulos não relacionados permanecem fora do escopo desta regra.
 
 No ambiente integrado, tabelas, funções e ledgers deste domínio permanecem isolados no schema `coinops` e continuam vinculados ao produto, tenant e usuário autenticado.
 
@@ -12,7 +12,7 @@ Backtests e simuladores locais não definem esta regra. Eles podem validar hipó
 
 ## 2. Objetivo da meta mensal
 
-A meta mensal BTC começa em **7 gains** e pode ser editada. Sua alteração deve ser persistida e auditada.
+As metas mensais começam em **7 gains para BTC** e **1 gain para SOL** e podem ser editadas. Toda alteração é persistida e auditada.
 
 A meta representa a velocidade desejada de evolução da escada. Ela não cria uma dívida de `7 × meses` para cada slot e não obriga os 25 slots a atingirem o mesmo acumulado.
 
@@ -35,7 +35,7 @@ A data pode ser editada na tela Plano por uma RPC autenticada e auditada. A alte
 - recalcula dias operados, ciclo atual e competência dos próximos cálculos;
 - atualiza o mesmo tempo exibido no Resumo;
 - não altera slots, `real_gains`, `operational_gains`, valores, posições ou histórico financeiro já existente;
-- marca qualquer prévia BTC ainda `PREPARED` como `STALE`, exigindo uma nova prévia na nova competência;
+- marca qualquer prévia BTC ou SOL ainda `PREPARED` como `STALE`, exigindo uma nova prévia na nova competência;
 - registra antes/depois em `coinops.growth_plan_start_audit`.
 
 Os ciclos são contínuos em blocos de 30 dias a partir dessa data: dias 1–30 formam o primeiro ciclo, 31–60 o segundo, 61–90 o terceiro e assim por diante.
@@ -65,7 +65,7 @@ Sem referência válida não existe redistribuição automática nem movimentaç
 
 ## 5. Ranking e algoritmo determinístico
 
-O ranking BTC usa `operational_gains DESC`, com desempate por:
+O ranking de cada ativo usa `operational_gains DESC`, com desempate por:
 
 1. `slot_number ASC`;
 2. `sort_order ASC`;
@@ -165,7 +165,7 @@ Redistribuição nunca é executada silenciosamente.
 
 O fluxo oficial é:
 
-1. carregar a escada BTC;
+1. carregar a escada do ativo escolhido;
 2. informar ou ajustar a referência assistida;
 3. solicitar uma prévia server-side;
 4. revisar ranking anterior, doadores, recebedores, equivalentes, USDT, ranking posterior e conservação;
@@ -182,11 +182,11 @@ O fechamento mensal é um batch transacional: tudo aplica ou nada aplica.
 
 As estruturas oficiais são:
 
-- `coinops.btc_redistribution_batches`: competência, referência, algoritmo, snapshot, rankings, totais, conservação, idempotência e status;
-- `coinops.btc_redistribution_transfers`: uma linha imutável por transferência, com doador, recebedor, statuses e valores antes/depois;
+- `coinops.btc_redistribution_batches`: competência, ativo, referência, algoritmo, snapshot, rankings, totais, conservação, idempotência e status; o nome físico legado foi preservado por compatibilidade;
+- `coinops.btc_redistribution_transfers`: uma linha imutável por transferência BTC ou SOL, com doador, recebedor, statuses e valores antes/depois;
 - `coinops.slot_capital_ledger`: partidas de abertura, gain real, débito, crédito e aporte externo;
-- `coinops.btc_external_contributions`: aportes externos manuais;
-- `coinops.growth_plan_goal_audit`: alterações da meta mensal BTC.
+- `coinops.btc_external_contributions`: aportes externos manuais BTC ou SOL, com nome físico legado preservado;
+- `coinops.growth_plan_goal_audit`: alterações das metas mensais BTC e SOL;
 - `coinops.growth_plan_start_audit`: alterações da data inicial operacional e quantidade de prévias invalidadas.
 
 A confirmação usa lock transacional e bloqueio das linhas dos slots. A mesma chave de confirmação não cria um segundo efeito. Duas abas não podem aplicar o mesmo patrimônio duas vezes: o primeiro batch válido conclui; o seguinte precisa falhar como conflito ou snapshot obsoleto.
@@ -228,10 +228,9 @@ A migration inicial deve ser aditiva e preservar integralmente o estado anterior
 
 - `operational_gains` recebe o valor corrente de `gains`;
 - saldos enviados e recebidos começam em zero;
-- cada slot BTC recebe um `OPENING_BALANCE` append-only;
+- cada slot BTC e SOL recebe um `OPENING_BALANCE` append-only na entrada de sua escada;
 - `real_gains`, `added_gains`, `gains`, valores, status, preços e históricos existentes não são zerados nem reclassificados;
-- posições BTC abertas recebem snapshots sem alterar os campos já executados;
-- SOL não sofre mudança de regra.
+- posições BTC e SOL abertas recebem snapshots sem alterar os campos já executados.
 
 Gains adicionados anteriores são registrados como legado de origem não verificada. Eles não são transformados automaticamente em gain real nem em novo aporte externo.
 
@@ -239,9 +238,25 @@ Gains adicionados anteriores são registrados como legado de origem não verific
 
 As tabelas financeiras têm RLS forçada e leitura limitada ao escopo autenticado do CoinOps. Usuários autenticados não recebem permissão de escrita direta nessas tabelas.
 
-As mutações são server-side, validam produto, tenant, usuário, ativo BTC, vínculo, ownership dos slots, snapshot e chave idempotente. `service_role` nunca é exposta no frontend.
+As mutações são server-side, validam produto, tenant, usuário, ativo BTC/SOL, vínculo, ownership dos slots, snapshot e chave idempotente. `service_role` nunca é exposta no frontend.
 
-## 13. Critérios de validação
+## 13. Igualdade funcional BTC/SOL
+
+No menu Slots, gains reais e gains adicionados legados são somente leitura para os dois ativos. Adições manuais acontecem exclusivamente no Plano e entram como capital externo auditado, nunca como gain real.
+
+No menu Plano, BTC e SOL possuem exatamente o mesmo conjunto de ações:
+
+- editar a meta mensal do próprio ativo;
+- consultar gains reais do ciclo e o ranking operacional;
+- adicionar gains operacionais manualmente em qualquer slot;
+- escolher uma referência e preparar a redistribuição;
+- revisar conservação, doadores e recebedores;
+- cancelar ou confirmar;
+- consultar histórico detalhado.
+
+O fechamento do ciclo não movimenta capital automaticamente. A redistribuição somente acontece quando o usuário prepara e confirma a prévia do ativo. Slots OPEN continuam elegíveis e a sobra do líder segue para os próximos slots pela mesma regra determinística.
+
+## 14. Critérios de validação
 
 | # | Critério | Camada mínima |
 |---|---|---|
