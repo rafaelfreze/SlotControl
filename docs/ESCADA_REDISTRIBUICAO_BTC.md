@@ -75,6 +75,9 @@ Doadores são slots acima de `L`, na ordem do ranking. Recebedores são slots ab
 
 Status não bloqueia participação. Slots `OPEN`, em espera ou livres podem doar e receber.
 
+Tanto a referência quanto `operational_gains` são níveis inteiros. A escada
+nunca cria `14,66`, `3,25` ou qualquer outro gain operacional fracionado.
+
 Para cada par elegível:
 
 ```text
@@ -84,13 +87,20 @@ defasagem do recebedor = L - operational_gains do recebedor
 capacidade do doador em USDT = excedente × unidade do gain do doador
 necessidade do recebedor em USDT = defasagem × unidade do gain do recebedor
 
-valor transferido = menor(capacidade, necessidade)
+valor candidato = gains inteiros do recebedor × unidade do recebedor
 
-equivalente debitado = valor transferido / unidade do gain do doador
-equivalente creditado = valor transferido / unidade do gain do recebedor
+o candidato só é elegível quando:
+- equivale a uma quantidade inteira de gains no doador;
+- equivale a uma quantidade inteira de gains no recebedor;
+- cabe no excedente operacional e financeiro do doador;
+- cabe na defasagem do recebedor.
 ```
 
-A sobra continua para o próximo recebedor. Quando não há recebedor elegível, o excedente permanece no doador.
+A busca começa pela maior quantidade inteira que cabe e reduz até encontrar
+um valor compatível. A sobra incompatível não é dividida: permanece como
+capital no slot doador e pode participar de uma redistribuição futura quando
+for suficiente para formar gains inteiros dos dois lados. Quando não há
+recebedor elegível, todo o excedente permanece no doador.
 
 Exemplo com unidade financeira igual nos slots:
 
@@ -126,7 +136,11 @@ gain_unit_usdt = round((base_value + growth_contribution) × gain_rate, 8)
 
 O cálculo de prévia e o cálculo de confirmação devem usar a mesma função de domínio.
 
-Se as unidades forem diferentes, o mesmo USDT pode representar equivalentes diferentes no doador e no recebedor. Por isso o ledger guarda `donor_gain_equivalent` e `receiver_gain_equivalent` separadamente. O valor em USDT debitado e creditado continua idêntico.
+Se as unidades forem diferentes, o mesmo USDT pode representar quantidades
+inteiras diferentes no doador e no recebedor. Por isso o ledger guarda
+`donor_gain_equivalent` e `receiver_gain_equivalent` separadamente. Uma
+transferência incompatível é omitida, nunca arredondada. O valor em USDT
+debitado e creditado continua idêntico.
 
 Todos os valores persistidos usam `numeric` com oito casas. Para cada transferência:
 
@@ -232,6 +246,14 @@ A migration inicial deve ser aditiva e preservar integralmente o estado anterior
 - `real_gains`, `added_gains`, `gains`, valores, status, preços e históricos existentes não são zerados nem reclassificados;
 - posições BTC e SOL abertas recebem snapshots sem alterar os campos já executados.
 
+No corte para a escada inteira, níveis operacionais fracionados que já tenham
+sido produzidos pela regra anterior são truncados apenas no contador da
+escada. O valor financeiro não é reduzido nem movido: a fração permanece no
+mesmo slot. Cada correção é registrada em
+`coinops.operational_gain_normalization_audit`, com nível anterior, nível
+inteiro posterior, fração e USDT retidos. Gains reais, gains legados, posições
+e histórico financeiro permanecem intactos.
+
 Gains adicionados anteriores são registrados como legado de origem não verificada. Eles não são transformados automaticamente em gain real nem em novo aporte externo.
 
 ## 12. Segurança
@@ -282,7 +304,7 @@ O teste permanente de banco está em `supabase/tests/btc_ladder_redistribution.s
 Pré-requisitos:
 
 - PostgreSQL/Supabase **local** com o scaffold compartilhado do CoinOps;
-- migrations `20260809033335_add_btc_ladder_redistribution.sql`, `20260809033608_index_btc_ladder_product_foreign_keys.sql` e `20260809165604_allow_edit_growth_plan_start_date.sql` já aplicadas nessa base local;
+- migrations `20260809033335_add_btc_ladder_redistribution.sql`, `20260809033608_index_btc_ladder_product_foreign_keys.sql`, `20260809165604_allow_edit_growth_plan_start_date.sql`, `20260810125830_add_btc_manual_operational_gains.sql`, `20260810134300_generalize_growth_ladder_btc_sol.sql` e `20260811021309_enforce_integer_ladder_gains.sql` já aplicadas nessa base local;
 - `psql` disponível;
 - URL apontando explicitamente para a base local, nunca para o projeto vinculado/remoto.
 

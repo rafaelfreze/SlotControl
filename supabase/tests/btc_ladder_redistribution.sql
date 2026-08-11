@@ -4,7 +4,8 @@
 -- production Supabase database. It requires the shared CoinOps scaffold and
 -- 20260809033335_add_btc_ladder_redistribution.sql and
 -- 20260809165604_allow_edit_growth_plan_start_date.sql and
--- 20260810125830_add_btc_manual_operational_gains.sql to be applied first.
+-- 20260810125830_add_btc_manual_operational_gains.sql and
+-- 20260811021309_enforce_integer_ladder_gains.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -312,6 +313,27 @@ cross join (values
   ('91000000-0000-0000-0000-000000000002'::uuid)
 ) fixture(user_id);
 
+-- A financial residual whose unit is incompatible with the donor must stay in
+-- one slot. It must never be split into fractional operational gains.
+savepoint whole_gain_compatibility;
+update coinops.slots
+set growth_contribution = 3.2
+where id = '93000000-0000-0000-0000-000000000002';
+
+select pg_temp.assert_true(
+  jsonb_array_length(
+    private.coinops_build_asset_ladder_preview(
+      (select product_id from fixture_scope),
+      (select tenant_id from fixture_scope),
+      '91000000-0000-0000-0000-000000000001',
+      'BTC',
+      14
+    ) -> 'transfers'
+  ) = 0,
+  'incompatible financial residual must stay in the donor instead of creating fractional gains'
+);
+rollback to savepoint whole_gain_compatibility;
+
 create temporary table open_snapshot on commit drop as
 select
   id,
@@ -349,6 +371,15 @@ select pg_catalog.set_config(
   'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000001', true
 );
 set local role authenticated;
+
+select pg_temp.expect_error(
+  $$select coinops.prepare_asset_ladder_redistribution(
+    'BTC',
+    14.5,
+    '95000000-0000-0000-0000-000000000099'::uuid
+  )$$,
+  'COINOPS_GROWTH_REFERENCE_MUST_BE_POSITIVE_INTEGER'
+);
 
 do $rpc$
 begin
@@ -490,22 +521,15 @@ select pg_catalog.set_config(
 );
 set local role authenticated;
 
-do $rpc$
-begin
-  perform coinops.apply_btc_external_contribution(
-    '93000000-0000-0000-0000-000000000002',
+select pg_temp.expect_error(
+  $$select coinops.apply_btc_external_contribution(
+    '93000000-0000-0000-0000-000000000002'::uuid,
     1,
-    'fixture external contribution',
-    '97000000-0000-0000-0000-000000000001'
-  );
-  perform coinops.apply_btc_external_contribution(
-    '93000000-0000-0000-0000-000000000002',
-    1,
-    'fixture external contribution',
-    '97000000-0000-0000-0000-000000000001'
-  );
-end;
-$rpc$;
+    'fractional external contribution is blocked',
+    '97000000-0000-0000-0000-000000000001'::uuid
+  )$$,
+  'slots_operational_gains_integer_check'
+);
 
 reset role;
 
@@ -514,37 +538,18 @@ select pg_temp.assert_true(
     select real_gains = 10
       and gains = 10
       and added_gains = 0
-      and growth_contribution = 1
+      and growth_contribution = 0
+      and operational_gains = 14
       and redistribution_received_usdt = 0.4
-      and operational_slot_value = 12.4
+      and operational_slot_value = 11.4
     from coinops.slots
     where id = '93000000-0000-0000-0000-000000000002'
-  ),
-  'external contribution must add capital without creating a real gain'
-);
-select pg_temp.assert_numeric(
-  (select operational_gains from coinops.slots where id = '93000000-0000-0000-0000-000000000002'),
-  23.09090909,
-  '1 USDT contribution must use post-contribution unit 0.11'
-);
-select pg_temp.assert_true(
-  (
-    select count(*) = 1
-      and min(gain_unit_before_usdt) = 0.1
-      and min(gain_unit_after_usdt) = 0.11
-      and min(gain_equivalent) = 9.09090909
+  ) and not exists (
+    select 1
     from coinops.btc_external_contributions
     where idempotency_key = '97000000-0000-0000-0000-000000000001'
-  ) and (
-    select count(*) = 1 and min(amount_usdt) = 1
-    from coinops.slot_capital_ledger
-    where external_contribution_id = (
-      select id from coinops.btc_external_contributions
-      where idempotency_key = '97000000-0000-0000-0000-000000000001'
-    )
-      and entry_type = 'EXTERNAL_CONTRIBUTION'
   ),
-  'contribution replay must not duplicate capital or ledger entries'
+  'fractional contribution must roll back without changing capital or counters'
 );
 
 -- Gains-first manual adjustment: the user asks for an exact number of
@@ -1152,6 +1157,24 @@ select pg_temp.assert_true(
       and asset = 'SOL' and new_goal = 2
   ),
   'SOL monthly goal must be scoped and audited exactly like BTC'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from coinops.btc_redistribution_transfers transfer
+    where transfer.user_id in (
+      '91000000-0000-0000-0000-000000000001',
+      '91000000-0000-0000-0000-000000000002'
+    )
+      and (
+        transfer.donor_gain_equivalent <> trunc(transfer.donor_gain_equivalent)
+        or transfer.receiver_gain_equivalent <> trunc(transfer.receiver_gain_equivalent)
+        or transfer.donor_operational_after <> trunc(transfer.donor_operational_after)
+        or transfer.receiver_operational_after <> trunc(transfer.receiver_operational_after)
+      )
+  ),
+  'all BTC and SOL transfers and resulting ladder levels must remain whole gains'
 );
 
 -- -------------------------------------------------------------------------

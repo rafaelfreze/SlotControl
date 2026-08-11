@@ -75,7 +75,9 @@ function planRedirect(message: string, options?: { batchId?: string | null; tone
 
 function rpcMessage(code: string | undefined, fallback: string) {
   const messages: Record<string, string> = {
+    COINOPS_GROWTH_REFERENCE_MUST_BE_POSITIVE_INTEGER: "Informe uma referência operacional inteira e maior que zero.",
     COINOPS_GROWTH_REFERENCE_MUST_BE_POSITIVE: "Informe uma referência operacional maior que zero.",
+    COINOPS_GROWTH_OPERATIONAL_STATE_MUST_BE_WHOLE_FOR_SLOT: "A escada contém um nível fracionado e foi bloqueada para correção segura.",
     COINOPS_GROWTH_BATCH_STALE: "A escada mudou depois da prévia. Prepare uma nova redistribuição.",
     COINOPS_GROWTH_PREVIEW_EQUITY_MISMATCH: "A prévia não conservou o patrimônio e foi bloqueada.",
     COINOPS_GROWTH_CONFIRM_EQUITY_MISMATCH: "A confirmação não conservou o patrimônio e foi revertida.",
@@ -116,8 +118,8 @@ function rpcMessage(code: string | undefined, fallback: string) {
 export async function prepareAssetRedistribution(formData: FormData) {
   const asset = formAsset(formData);
   const referenceLevel = formNumber(formData, "referenceLevel");
-  if (!Number.isFinite(referenceLevel) || referenceLevel <= 0) {
-    planRedirect(`Informe uma referência operacional ${asset} maior que zero.`, { tone: "error" });
+  if (!Number.isInteger(referenceLevel) || referenceLevel <= 0) {
+    planRedirect(`Informe uma referência operacional ${asset} inteira e maior que zero.`, { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();

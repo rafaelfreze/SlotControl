@@ -248,7 +248,7 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <form action={prepareAssetRedistribution} className="btc-ladder-compact-form">
             <input type="hidden" name="asset" value={asset} />
             <input type="hidden" name="idempotencyKey" value={actionKeys.prepare} />
-            <label>Referência da escada<input name="referenceLevel" type="number" min="0.00000001" step="0.00000001" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
+            <label>Referência da escada<input name="referenceLevel" type="number" min="1" step="1" inputMode="numeric" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
             <SubmitButton disabled={!plan.ok || ladder.length < 2}>Preparar redistribuição</SubmitButton>
           </form>
         </div>

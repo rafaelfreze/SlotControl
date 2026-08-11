@@ -100,6 +100,9 @@ function validateSlot(slot: BtcLadderSlot) {
   if (!isFiniteNonNegative(slot.operational_gains)) {
     throw new BtcLadderDomainError(`Slot ${slot.id}: operational_gains invalido.`);
   }
+  if (!Number.isInteger(slot.operational_gains)) {
+    throw new BtcLadderDomainError(`Slot ${slot.id}: operational_gains deve ser inteiro.`);
+  }
   if (!isFiniteNonNegative(slot.operational_value_usdt)) {
     throw new BtcLadderDomainError(`Slot ${slot.id}: operational_value_usdt invalido.`);
   }
@@ -109,8 +112,8 @@ function validateSlot(slot: BtcLadderSlot) {
 }
 
 function validateInput(referenceOperationalGains: number, slots: readonly BtcLadderSlot[]) {
-  if (!Number.isFinite(referenceOperationalGains) || referenceOperationalGains <= 0) {
-    throw new BtcLadderDomainError("A referencia operacional deve ser um numero positivo.");
+  if (!Number.isInteger(referenceOperationalGains) || referenceOperationalGains <= 0) {
+    throw new BtcLadderDomainError("A referencia operacional deve ser um numero inteiro positivo.");
   }
 
   const ids = new Set<string>();
@@ -203,15 +206,30 @@ export function buildBtcLadderPreview<TSlot extends BtcLadderSlot>(input: {
       if (receiverDeficit <= EPSILON) continue;
 
       const donorCapacityUsdt = gainEquivalentToUsdt(donorExcess, donor.gain_unit_usdt);
-      const receiverNeedUsdt = gainEquivalentToUsdt(receiverDeficit, receiver.gain_unit_usdt);
-      const amountUsdt = round8(Math.min(donorCapacityUsdt, receiverNeedUsdt));
+      const maxReceiverGains = Math.min(
+        receiverDeficit,
+        Math.floor((donorCapacityUsdt + EPSILON) / receiver.gain_unit_usdt)
+      );
+
+      let receiverGainEquivalent = Math.trunc(maxReceiverGains);
+      let donorGainEquivalent = 0;
+      let amountUsdt = 0;
+      while (receiverGainEquivalent > 0) {
+        const candidateAmount = gainEquivalentToUsdt(receiverGainEquivalent, receiver.gain_unit_usdt);
+        const candidateDonorGains = usdtToGainEquivalent(candidateAmount, donor.gain_unit_usdt);
+        if (Number.isInteger(candidateDonorGains) && candidateDonorGains <= donorExcess) {
+          amountUsdt = candidateAmount;
+          donorGainEquivalent = candidateDonorGains;
+          break;
+        }
+        receiverGainEquivalent -= 1;
+      }
+
       if (amountUsdt <= EPSILON) continue;
       if (amountUsdt > donor.operational_value_usdt) {
         throw new BtcLadderDomainError(`Slot ${donor.id}: valor operacional insuficiente para o debito proposto.`);
       }
 
-      const donorGainEquivalent = usdtToGainEquivalent(amountUsdt, donor.gain_unit_usdt);
-      const receiverGainEquivalent = usdtToGainEquivalent(amountUsdt, receiver.gain_unit_usdt);
       const donorOperationalAfter = round8(donor.operational_gains - donorGainEquivalent);
       const receiverOperationalAfter = round8(receiver.operational_gains + receiverGainEquivalent);
       const donorValueAfter = round8(donor.operational_value_usdt - amountUsdt);

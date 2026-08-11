@@ -138,7 +138,7 @@ test("a previa nunca altera real_gains de nenhum participante", () => {
   }
 });
 
-test("o mesmo USDT gera equivalentes de gain diferentes quando as unidades diferem", () => {
+test("unidades diferentes so redistribuem equivalentes inteiros para os dois slots", () => {
   const preview = buildBtcLadderPreview({
     referenceOperationalGains: 14,
     slots: [
@@ -156,22 +156,38 @@ test("o mesmo USDT gera equivalentes de gain diferentes quando as unidades difer
   assert.equal(after(preview, "B").operational_gains, 14);
 });
 
-test("conversao financeira aceita equivalentes fracionarios sem criar patrimonio", () => {
+test("sobra incompativel permanece inteira no doador sem criar gain picado", () => {
   const preview = buildBtcLadderPreview({
     referenceOperationalGains: 14,
     slots: [
       slot("A", 20, { gain_unit_usdt: 0.12, operational_value_usdt: 12.4 }),
-      slot("B", 13.5, { real_gains: 13, gain_unit_usdt: 0.12, operational_value_usdt: 11.62 })
+      slot("B", 10, { real_gains: 10, gain_unit_usdt: 0.132, operational_value_usdt: 11.32 })
+    ]
+  });
+
+  assert.equal(preview.transfers.length, 0);
+  assert.equal(after(preview, "A").operational_gains, 20);
+  assert.equal(after(preview, "B").operational_gains, 10);
+  assert.ok(Math.abs(preview.equity_difference_usdt) <= 1e-9);
+});
+
+test("unidades diferentes usam o maior multiplo comum que caiba na escada", () => {
+  const preview = buildBtcLadderPreview({
+    referenceOperationalGains: 14,
+    slots: [
+      slot("A", 20, { gain_unit_usdt: 0.12, operational_value_usdt: 12.4 }),
+      slot("B", 12, { gain_unit_usdt: 0.18, operational_value_usdt: 12.16 })
     ]
   });
   const transfer = preview.transfers[0];
 
   assert.ok(transfer);
-  assert.ok(Math.abs(transfer.amount_usdt - 0.06) <= 1e-9);
-  assert.ok(Math.abs(transfer.donor_gain_equivalent - 0.5) <= 1e-9);
-  assert.ok(Math.abs(transfer.receiver_gain_equivalent - 0.5) <= 1e-9);
+  assert.equal(transfer.amount_usdt, 0.36);
+  assert.equal(transfer.donor_gain_equivalent, 3);
+  assert.equal(transfer.receiver_gain_equivalent, 2);
+  assert.equal(after(preview, "A").operational_gains, 17);
   assert.equal(after(preview, "B").operational_gains, 14);
-  assert.ok(Math.abs(preview.equity_difference_usdt) <= 1e-9);
+  assert.ok(preview.ranking_after.every((item) => Number.isInteger(item.operational_gains)));
 });
 
 test("aporte usa a unidade pos-aporte para nao inflar gains operacionais", () => {
@@ -232,6 +248,14 @@ test("ranking e desempates permanecem deterministas", () => {
 test("entradas financeiras ou identidades invalidas sao bloqueadas", () => {
   assert.throws(
     () => buildBtcLadderPreview({ referenceOperationalGains: -1, slots: [slot("A", 20)] }),
+    BtcLadderDomainError
+  );
+  assert.throws(
+    () => buildBtcLadderPreview({ referenceOperationalGains: 14.5, slots: [slot("A", 20)] }),
+    BtcLadderDomainError
+  );
+  assert.throws(
+    () => buildBtcLadderPreview({ referenceOperationalGains: 14, slots: [slot("A", 14.66)] }),
     BtcLadderDomainError
   );
   assert.throws(
