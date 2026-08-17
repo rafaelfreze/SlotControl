@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import { getCoinOpsAuthCallback } from "@/lib/auth-email-url";
+import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
 
 type AuthFormProps = {
@@ -33,6 +34,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") || "").trim();
     const password = String(formData.get("password") || "");
+    const confirmation = String(formData.get("confirmation") || "");
     const displayName = String(formData.get("displayName") || "").trim();
 
     startTransition(async () => {
@@ -44,7 +46,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
         });
 
         if (recoveryError) {
-          setError(recoveryError.message);
+          setError(friendlyAuthError(recoveryError, "recovery"));
           return;
         }
 
@@ -53,6 +55,11 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
       }
 
       if (isSignup) {
+        const validationError = validateNewPassword(password, confirmation);
+        if (validationError) {
+          setError(validationError);
+          return;
+        }
         const { data, error: signupError } = await supabase.auth.signUp({
           email,
           password,
@@ -65,7 +72,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
         });
 
         if (signupError) {
-          setError(signupError.message);
+          setError(friendlyAuthError(signupError, "signup"));
           return;
         }
 
@@ -80,7 +87,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
         });
 
         if (loginError) {
-          setError(loginError.message);
+          setError(friendlyAuthError(loginError, "login"));
           return;
         }
       }
@@ -110,12 +117,22 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
           <input
             name="password"
             type="password"
-            minLength={6}
-            placeholder="Minimo 6 caracteres"
+            minLength={isSignup ? MIN_PASSWORD_LENGTH : undefined}
+            placeholder={isSignup ? "Mínimo 8 caracteres" : "Sua senha"}
             autoComplete={isSignup ? "new-password" : "current-password"}
             required
           />
         </label>
+      ) : null}
+
+      {isSignup ? (
+        <>
+          <p className="auth-hint">Use pelo menos 8 caracteres.</p>
+          <label>
+            Confirmar senha
+            <input name="confirmation" type="password" minLength={MIN_PASSWORD_LENGTH} placeholder="Repita sua senha" autoComplete="new-password" required />
+          </label>
+        </>
       ) : null}
 
       {error ? <div className="form-error">{error}</div> : null}
