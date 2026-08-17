@@ -14,6 +14,7 @@ test("rejeita senha curta e confirmação diferente", () => {
 
 test("normaliza erros esperados e inesperados", () => {
   assert.match(friendlyAuthError({ code: "user_already_exists" }, "signup"), /Já existe/);
+  assert.equal(friendlyAuthError({ code: "email_address_invalid" }, "signup"), "Digite um e-mail válido.");
   assert.match(friendlyAuthError({ status: 429 }, "signup"), /Muitas tentativas/);
   assert.notEqual(friendlyAuthError({}, "signup"), "{}");
 });
