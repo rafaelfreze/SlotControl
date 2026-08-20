@@ -4,7 +4,7 @@ import Link from "next/link";
 import { type ReactNode, useState } from "react";
 
 import { createStrategy, deleteStrategy, updateStrategy } from "@/app/dashboard/actions";
-import { AppHeader, MobileScreen, SectionHeader } from "@/components/app/mobile-ui";
+import { BrandHeader, MobileScreen, SectionHeader } from "@/components/app/mobile-ui";
 import { LogoutButton } from "@/components/auth/logout-button";
 import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
@@ -43,29 +43,25 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
 
   return (
     <MobileScreen>
-      <AppHeader title="Configurações" backHref="/dashboard" />
+      <BrandHeader compact />
+      <h1 className="visually-hidden">Configurações</h1>
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar configurações: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice">{notice}</section> : null}
 
       <div className="settings-page">
-        <SettingsGroup title="Conta">
-          <SettingsRow label="E-mail" value={userEmail} />
-        </SettingsGroup>
-        <SettingsGroup title="Aparência">
-          <SettingsRow label="Tema" value="Escuro" />
-        </SettingsGroup>
-        <SettingsGroup title="Preferências">
-          <SettingsRow label="Resumo operacional" value="Compacto" />
-          <SettingsRow label="Plano de crescimento" value="BTC e SOL" href="/plano-crescimento" />
-        </SettingsGroup>
-        <SettingsGroup title="Segurança">
-          <SettingsRow label="Segurança da conta" value="Supabase Auth" />
-        </SettingsGroup>
-        <SettingsGroup title="Dados">
-          <div className="native-settings-row"><span>Exportar dados</span><button type="button" onClick={exportBackup}>Exportar JSON</button></div>
-        </SettingsGroup>
-        <SettingsGroup title="Sessão">
-          <div className="native-settings-row danger"><span>Sair da conta</span><LogoutButton label="Sair" className="settings-logout" /></div>
+        <section className="settings-account-card">
+          <span className="settings-avatar" aria-hidden="true">{userEmail.slice(0, 1).toUpperCase()}</span>
+          <div><small>Usuário</small><strong>{userEmail}</strong><button type="button" onClick={() => setNotice("O perfil utiliza os dados seguros da sua conta.")}>Editar perfil</button></div>
+          <p><small>Plano</small><strong>Premium</strong></p>
+        </section>
+
+        <SettingsGroup title="Configurações">
+          <SettingsRow icon="◷" label="Plano de crescimento" value="Metas, referências e ciclos" href="/plano-crescimento" />
+          <SettingsRow icon="⊕" label="Gerenciar aportes" value="Ver e adicionar aportes" href="/plano-crescimento" />
+          <SettingsRow icon="♢" label="Alertas e notificações" value="Preferências operacionais" />
+          <SettingsRow icon="▣" label="Segurança" value="Conta e autenticação" />
+          <div className="native-settings-row"><span><i aria-hidden="true">⇩</i><span><b>Exportar dados</b><small>Relatórios e backup</small></span></span><button type="button" onClick={exportBackup}>Exportar JSON</button></div>
+          <SettingsRow icon="ⓘ" label="Sobre o CoinOps" value="Versão e informações" />
         </SettingsGroup>
 
         <details className="settings-advanced-section">
@@ -90,6 +86,8 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
             <button className="solid-button" type="submit">Criar estratégia</button>
           </form>
         </details>
+
+        <div className="settings-signout"><LogoutButton label="Sair da conta" className="settings-logout" /></div>
       </div>
     </MobileScreen>
   );
@@ -99,8 +97,8 @@ function SettingsGroup({ title, children }: { title: string; children: ReactNode
   return <section className="native-settings-group"><SectionHeader title={title} /><div>{children}</div></section>;
 }
 
-function SettingsRow({ label, value, href }: { label: string; value: string; href?: string }) {
-  const content = <><span>{label}</span><strong>{value}{href ? <b aria-hidden="true">›</b> : null}</strong></>;
+function SettingsRow({ icon, label, value, href }: { icon?: string; label: string; value: string; href?: string }) {
+  const content = <><span>{icon ? <i aria-hidden="true">{icon}</i> : null}<span><b>{label}</b><small>{value}</small></span></span><strong>{href ? <b aria-hidden="true">›</b> : null}</strong></>;
   return href ? <Link className="native-settings-row" href={href}>{content}</Link> : <div className="native-settings-row">{content}</div>;
 }
 

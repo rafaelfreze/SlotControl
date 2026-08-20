@@ -2,11 +2,13 @@
 
 import { useMemo, useState } from "react";
 
-import { AppHeader, EmptyState, FilterChips, MobileScreen } from "@/components/app/mobile-ui";
+import { BrandHeader, EmptyState, FilterChips, MarketTicker, MobileScreen } from "@/components/app/mobile-ui";
 import { formatDate, formatSignedUsdt } from "@/lib/slotgain/format";
+import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { HistoryEvent } from "@/lib/slotgain/types";
 
-type HistoryFilter = "all" | "BTC" | "SOL" | "gain" | "aporte";
+type HistoryFilter = "all" | "operation" | "gain" | "aporte";
+type HistoryAssetFilter = "ALL" | "BTC" | "SOL";
 
 type ParsedHistory = {
   message: string;
@@ -317,7 +319,9 @@ function toSlotSummary(history: HistoryEvent[]) {
 }
 
 export function HistoricoClient({ history, error }: { userEmail: string; history: HistoryEvent[]; error: string | null }) {
+  const livePrices = useLivePrices();
   const [filter, setFilter] = useState<HistoryFilter>("all");
+  const [assetFilter, setAssetFilter] = useState<HistoryAssetFilter>("ALL");
 
   const filtered = useMemo(
     () =>
@@ -328,32 +332,47 @@ export function HistoricoClient({ history, error }: { userEmail: string; history
         if (actionKey.includes("redistribu")) {
           return false;
         }
-        if (filter === "BTC" || filter === "SOL") return key === filter;
+        if (assetFilter !== "ALL" && key !== assetFilter) return false;
         if (filter === "gain") return actionKey.includes("gain") || actionKey.includes("saida");
         if (filter === "aporte") return actionKey.includes("aporte") || actionKey.includes("contribution");
+        if (filter === "operation") return !actionKey.includes("aporte") && !actionKey.includes("contribution");
         return true;
       }),
-    [filter, history]
+    [assetFilter, filter, history]
   );
+  const grouped = useMemo(() => filtered.reduce<Array<{ key: string; label: string; items: HistoryEvent[] }>>((groups, item) => {
+    const date = new Date(item.event_at);
+    const key = Number.isNaN(date.getTime()) ? "sem-data" : date.toISOString().slice(0, 10);
+    const current = groups.at(-1);
+    if (current?.key === key) { current.items.push(item); return groups; }
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = yesterday.toISOString().slice(0, 10);
+    const label = key === todayKey ? "Hoje" : key === yesterdayKey ? "Ontem" : Number.isNaN(date.getTime()) ? "Sem data" : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
+    groups.push({ key, label, items: [item] });
+    return groups;
+  }, []), [filtered]);
 
   return (
     <MobileScreen>
-      <AppHeader title="Histórico" backHref="/dashboard" />
+      <BrandHeader compact />
+      <MarketTicker livePrices={livePrices} />
+      <h1 className="visually-hidden">Histórico</h1>
       {error ? <section className="inline-alert dashboard-alert">Falha ao carregar historico: {error}</section> : null}
       <FilterChips
         value={filter}
         onChange={setFilter}
         options={[
-          { label: "Tudo", value: "all" },
-          { label: "BTC", value: "BTC" },
-          { label: "SOL", value: "SOL" },
+          { label: "Todos", value: "all" },
+          { label: "Operações", value: "operation" },
           { label: "Gains", value: "gain" },
           { label: "Aportes", value: "aporte" }
         ]}
       />
+      <label className="history-asset-filter">Filtrar por ativo<select value={assetFilter} onChange={(event) => setAssetFilter(event.target.value as HistoryAssetFilter)}><option value="ALL">Todos os ativos</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
 
-      <div className="history-compact-list" aria-label={`${filtered.length} eventos`}>
-        {filtered.map((item) => {
+      <div className="history-day-list" aria-label={`${filtered.length} eventos`}>
+        {grouped.map((group) => <section className="history-day-group" key={group.key}><h2>{group.label}</h2><div className="history-compact-list">{group.items.map((item) => {
           const parsed = parseHistoryDetail(item);
           const itemAsset = (parsed.asset || item.strategy?.asset || item.strategy_key || "SG").toUpperCase();
           const value = parsed.realizedProfit ?? parsed.valueAfter ?? parsed.slotValue;
@@ -370,7 +389,7 @@ export function HistoricoClient({ history, error }: { userEmail: string; history
               <div><p>{parsed.message}</p><small>{formatDate(item.event_at)} · {parsed.origin}</small></div>
             </details>
           );
-        })}
+        })}</div></section>)}
         {!filtered.length ? <EmptyState>Nenhum evento neste filtro.</EmptyState> : null}
       </div>
 

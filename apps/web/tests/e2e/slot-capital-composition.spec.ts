@@ -29,7 +29,7 @@ const markup = `
 `;
 
 test("saldo total consolidado permanece legível sem subtotais e sem overflow", async ({ page }) => {
-  for (const width of [320, 360, 390, 430, 1365]) {
+  for (const width of [320, 360, 375, 390, 393, 414, 430, 1365]) {
     await page.setViewportSize({ width, height: 800 });
     await page.setContent(`
       <style>
@@ -70,8 +70,9 @@ test("saldo total consolidado permanece legível sem subtotais e sem overflow", 
 });
 
 test("navegação inferior permanece presa ao viewport durante o scroll mobile", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.setContent(`
+  for (const width of [320, 360, 375, 390, 393, 414, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.setContent(`
     <!doctype html>
     <html lang="pt-BR">
       <head>
@@ -107,34 +108,35 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
     </html>
   `);
 
-  const shell = page.locator(".mobile-dashboard-shell");
-  const frame = page.locator(".app-frame");
-  const navigation = page.locator(".bottom-navigation");
-  const frameBefore = await frame.boundingBox();
-  const before = await navigation.boundingBox();
+    const shell = page.locator(".mobile-dashboard-shell");
+    const frame = page.locator(".app-frame");
+    const navigation = page.locator(".bottom-navigation");
+    const frameBefore = await frame.boundingBox();
+    const before = await navigation.boundingBox();
 
-  expect(frameBefore).not.toBeNull();
-  expect(before).not.toBeNull();
-  await shell.evaluate((element) => {
-    element.scrollTop = 900;
-  });
-  await expect.poll(() => shell.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(frameBefore, `viewport ${width}px`).not.toBeNull();
+    expect(before, `viewport ${width}px`).not.toBeNull();
+    await shell.evaluate((element) => { element.scrollTop = 900; });
+    await expect.poll(() => shell.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
-  const after = await navigation.boundingBox();
-  const frameAfter = await frame.boundingBox();
-  const scrollState = await page.evaluate(() => ({
-    pageScroll: window.scrollY,
-    viewportHeight: window.innerHeight,
-    navigationPosition: getComputedStyle(document.querySelector<HTMLElement>(".bottom-navigation")!).position
-  }));
+    const after = await navigation.boundingBox();
+    const frameAfter = await frame.boundingBox();
+    const scrollState = await page.evaluate(() => ({
+      pageScroll: window.scrollY,
+      viewportHeight: window.innerHeight,
+      navigationPosition: getComputedStyle(document.querySelector<HTMLElement>(".bottom-navigation")!).position,
+      horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+    }));
 
-  expect(after).not.toBeNull();
-  expect(frameAfter).not.toBeNull();
-  expect(Math.round(frameBefore!.y + frameBefore!.height)).toBe(scrollState.viewportHeight);
-  expect(Math.round(frameAfter!.y + frameAfter!.height)).toBe(scrollState.viewportHeight);
-  expect(Math.round(after!.height)).toBe(62);
-  expect(Math.round(after!.y)).toBe(Math.round(before!.y));
-  expect(Math.round(after!.y + after!.height)).toBe(scrollState.viewportHeight);
-  expect(scrollState.navigationPosition).toBe("fixed");
-  expect(scrollState.pageScroll).toBe(0);
+    expect(after, `viewport ${width}px`).not.toBeNull();
+    expect(frameAfter, `viewport ${width}px`).not.toBeNull();
+    expect(Math.round(frameBefore!.y + frameBefore!.height), `viewport ${width}px`).toBe(scrollState.viewportHeight);
+    expect(Math.round(frameAfter!.y + frameAfter!.height), `viewport ${width}px`).toBe(scrollState.viewportHeight);
+    expect(Math.round(after!.height), `viewport ${width}px`).toBe(62);
+    expect(Math.round(after!.y), `viewport ${width}px`).toBe(Math.round(before!.y));
+    expect(Math.round(after!.y + after!.height), `viewport ${width}px`).toBe(scrollState.viewportHeight);
+    expect(scrollState.navigationPosition).toBe("fixed");
+    expect(scrollState.pageScroll).toBe(0);
+    expect(scrollState.horizontalOverflow).toBe(0);
+  }
 });

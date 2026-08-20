@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import { useFormStatus } from "react-dom";
 
-import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
+import { AppHeader, FilterChips, MarketTicker, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
+import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { saveGrowthPlanStartDate } from "./actions";
 import { AssetLadderSection, type AssetLadderPlanResponse, type AssetPlanActionKeys } from "./btc-ladder-section";
 
@@ -53,12 +55,15 @@ export type GrowthContributionHistoryItem = {
 };
 
 export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys }: { plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys }) {
+  const livePrices = useLivePrices();
+  const [activeAsset, setActiveAsset] = useState<GrowthAsset>("BTC");
   const notice = initialNotice;
   const noticeTone = initialNoticeTone;
 
   return (
     <MobileScreen>
       <AppHeader title="Plano de Crescimento" backHref="/dashboard" />
+      <MarketTicker livePrices={livePrices} />
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
       {notice ? <section className={`${noticeTone === "error" ? "inline-alert" : "form-success"} dashboard-notice`} role="status">{notice}</section> : null}
 
@@ -69,20 +74,26 @@ export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupErr
           subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia contabilizado" : "dias contabilizados"} · base dos ciclos de 30 dias`}
           tone="neutral"
         >
-          <form action={saveGrowthPlanStartDate} className="growth-start-form">
-            <label>Data em que começou a operar
-              <input name="startedAt" type="date" defaultValue={plan.started_at?.slice(0, 10) || ""} required />
-            </label>
-            <GrowthStartSubmitButton />
-          </form>
-          <p className="btc-ladder-help">A data recalcula apenas o calendário dos ciclos BTC e SOL. Gains, valores, posições e histórico financeiro não são alterados.</p>
+          <div className="growth-cycle-summary"><span>Iniciado em <strong>{plan.started_at ? formatDate(plan.started_at) : "—"}</strong></span><span>Ciclo atual <strong>{plan.elapsed_days ?? 0} dias</strong></span></div>
+          <details className="growth-start-editor">
+            <summary>Editar data inicial</summary>
+            <form action={saveGrowthPlanStartDate} className="growth-start-form">
+              <label>Data em que começou a operar<input name="startedAt" type="date" defaultValue={plan.started_at?.slice(0, 10) || ""} required /></label>
+              <GrowthStartSubmitButton />
+            </form>
+            <p className="btc-ladder-help">A data recalcula apenas o calendário. Gains, valores, posições e histórico financeiro não são alterados.</p>
+          </details>
         </SectionCard>
       </div>
 
-      <AssetLadderSection asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} />
-      <AssetLadderSection asset="SOL" plan={solLadder} actionKeys={solActionKeys} />
+      <FilterChips value={activeAsset} onChange={setActiveAsset} options={[{ label: "BTC", value: "BTC", count: btcLadder.ladder?.length || 0 }, { label: "SOL", value: "SOL", count: solLadder.ladder?.length || 0 }]} />
+      {activeAsset === "BTC"
+        ? <AssetLadderSection asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} />
+        : <AssetLadderSection asset="SOL" plan={solLadder} actionKeys={solActionKeys} />}
 
-      <SectionCard title="Histórico financeiro anterior" subtitle="Somente leitura" tone="neutral">
+      <details className="legacy-growth-history">
+        <summary>Histórico financeiro anterior</summary>
+        <SectionCard subtitle="Somente leitura" tone="neutral">
         <div className="growth-history-list">
           {history.map((item) => (
             <article className="growth-history-item" key={item.id}>
@@ -96,7 +107,8 @@ export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupErr
           ))}
           {!history.length ? <p className="empty-copy padded-empty">Nenhum aporte financeiro anterior foi registrado.</p> : null}
         </div>
-      </SectionCard>
+        </SectionCard>
+      </details>
     </MobileScreen>
   );
 }

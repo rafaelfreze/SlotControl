@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { SectionCard } from "@/components/app/mobile-ui";
@@ -183,6 +184,7 @@ function SubmitButton({ children, disabled = false, tone = "gold" }: { children:
 }
 
 export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys }) {
+  const [activeView, setActiveView] = useState<"ladder" | "gains" | "balance">("ladder");
   const ladder = plan.ladder || plan.ranking || [];
   const preview = plan.preview || plan.active_preview || null;
   const history = plan.history || plan.batches || [];
@@ -209,7 +211,13 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
 
   return (
     <div className="btc-plan-workspace">
-      <SectionCard className="btc-manual-gains-card" title={`Adicionar gains ${asset}`} subtitle="Complete o líder ou ajuste qualquer slot" tone="green">
+      <div className="plan-mode-tabs" role="tablist" aria-label={`Funções do plano ${asset}`}>
+        <button type="button" role="tab" aria-selected={activeView === "ladder"} className={activeView === "ladder" ? "active" : ""} onClick={() => setActiveView("ladder")}>Escada {asset}</button>
+        <button type="button" role="tab" aria-selected={activeView === "gains"} className={activeView === "gains" ? "active" : ""} onClick={() => setActiveView("gains")}>Adicionar gains</button>
+        <button type="button" role="tab" aria-selected={activeView === "balance"} className={activeView === "balance" ? "active" : ""} onClick={() => setActiveView("balance")}>Aportes</button>
+      </div>
+
+      {activeView === "gains" ? <SectionCard className="btc-manual-gains-card" title={`Adicionar gains ${asset}`} subtitle="Complete o líder ou ajuste qualquer slot" tone="green">
         <div className="btc-ladder-summary btc-manual-gains-summary">
           <Metric label="Meta atual do líder" value={`${formatGain(leaderGrowthTarget.targetGains)} gains`} helper={`${cycleNumber} ciclo(s) × ${monthlyGoal}`} />
           <Metric label="Líder atual" value={leader ? `Slot #${leader.slot_number} · ${formatGain(leader.operational_gains)}` : "--"} />
@@ -230,26 +238,26 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar gains</SubmitButton>
         </form>
         <p className="btc-ladder-help">Você informa os gains e o servidor calcula o aporte em USDT. Eles aumentam somente os gains operacionais; gains reais e posições abertas permanecem intactos.</p>
-        <details className="slot-advanced-actions btc-direct-balance">
-          <summary>Adicionar saldo em USDT</summary>
-          <form action={applyAssetExternalBalance} className="btc-contribution-form">
-            <input type="hidden" name="asset" value={asset} />
-            <input type="hidden" name="idempotencyKey" value={actionKeys.balanceContribution} />
-            <label>Slot
-              <select name="slotId" required defaultValue={leader?.slot_id || ""}>
-                <option value="" disabled>Escolha o slot</option>
-                {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
-              </select>
-            </label>
-            <label>Valor USDT<input name="amountUsdt" type="number" min="0.00000001" step="0.00000001" inputMode="decimal" placeholder="5,00" required /></label>
-            <label className="btc-contribution-reason">Motivo opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: aporte adicional" /></label>
-            <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar saldo</SubmitButton>
-          </form>
-          <p className="btc-ladder-help">O valor entra integralmente no saldo atual. Ele não cria gain; os próximos gains serão calculados sobre o novo saldo quando a próxima operação for aberta.</p>
-        </details>
-      </SectionCard>
+      </SectionCard> : null}
 
-      <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone={asset === "BTC" ? "gold" : "purple"}>
+      {activeView === "balance" ? <SectionCard className="btc-manual-gains-card" title={`Aportes ${asset}`} subtitle="Saldo externo separado de gains reais" tone="green">
+        <form action={applyAssetExternalBalance} className="btc-contribution-form">
+          <input type="hidden" name="asset" value={asset} />
+          <input type="hidden" name="idempotencyKey" value={actionKeys.balanceContribution} />
+          <label>Slot
+            <select name="slotId" required defaultValue={leader?.slot_id || ""}>
+              <option value="" disabled>Escolha o slot</option>
+              {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
+            </select>
+          </label>
+          <label>Valor USDT<input name="amountUsdt" type="number" min="0.00000001" step="0.00000001" inputMode="decimal" placeholder="5,00" required /></label>
+          <label className="btc-contribution-reason">Motivo opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: aporte adicional" /></label>
+          <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar saldo</SubmitButton>
+        </form>
+        <p className="btc-ladder-help">O valor entra integralmente no saldo atual. Ele não cria gain; os próximos gains serão calculados sobre o novo saldo quando a próxima operação for aberta.</p>
+      </SectionCard> : null}
+
+      {activeView === "ladder" ? <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone={asset === "BTC" ? "gold" : "purple"}>
         {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || `A escada ${asset} está indisponível.`}</p> : null}
         <div className="btc-ladder-summary">
           <Metric
@@ -288,11 +296,11 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <p>Slots OPEN também podem doar. A posição aberta continua com quantidade, entrada e alvo originais.</p>
         </details>
         <LadderList asset={asset} slots={ladder} referenceLevel={referenceLevel} contributionBySlot={contributionBySlot} />
-      </SectionCard>
+      </SectionCard> : null}
 
-      {preview ? <RedistributionPreview asset={asset} preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
+      {activeView === "ladder" && preview ? <RedistributionPreview asset={asset} preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
 
-      <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} />
+      {activeView !== "gains" ? <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} /> : null}
     </div>
   );
 }

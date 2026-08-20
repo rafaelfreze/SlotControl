@@ -5,6 +5,7 @@ import Image from "next/image";
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
+import { formatPrice } from "@/lib/slotgain/format";
 
 type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
 
@@ -36,6 +37,41 @@ export function MobileScreen({ children }: { children: ReactNode }) {
       <BottomNavigation />
     </div>
   );
+}
+
+export function BrandHeader({ compact = false }: { compact?: boolean }) {
+  return (
+    <header className={`app-brand-header${compact ? " compact" : ""}`} aria-label="CoinOps">
+      <Image src="/icon-96x96.png" alt="" width={26} height={26} priority />
+      <span>COINOPS</span>
+    </header>
+  );
+}
+
+export type MarketTickerState = {
+  prices: Partial<Record<"BTC" | "SOL", number>>;
+  lastUpdated: Date | null;
+  status: "online" | "offline" | "loading";
+  isStale: boolean;
+};
+
+export function MarketTicker({ livePrices, className = "" }: { livePrices: MarketTickerState; className?: string }) {
+  const status = livePrices.status === "online" ? "ONLINE" : livePrices.isStale ? "ATUALIZANDO" : "OFFLINE";
+  const updatedAt = livePrices.lastUpdated
+    ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
+    : "--:--";
+
+  return (
+    <section className={`market-ticker ${livePrices.status} ${className}`.trim()} aria-label="Cotações em tempo real">
+      <TickerCell label="BTCUSDT" value={formatPrice(livePrices.prices.BTC)} />
+      <TickerCell label="SOLUSDT" value={formatPrice(livePrices.prices.SOL)} />
+      <TickerCell label={status} value={updatedAt} online />
+    </section>
+  );
+}
+
+function TickerCell({ label, value, online = false }: { label: string; value: string; online?: boolean }) {
+  return <div className={online ? "online" : undefined}><span>{label}</span><strong>{value}</strong></div>;
 }
 
 const navigation = [

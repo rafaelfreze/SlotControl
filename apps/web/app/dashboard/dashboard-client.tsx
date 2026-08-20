@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { useMemo } from "react";
 
-import { MobileScreen } from "@/components/app/mobile-ui";
+import { BrandHeader, MarketTicker, MobileScreen } from "@/components/app/mobile-ui";
 import { CompactMarketRegimeBadge } from "@/components/slotgain/compact-market-regime-badge";
 import {
   formatDecimal,
-  formatPrice,
   formatSignedUsdt,
   formatUsdt,
   getMarkedSlotValue,
@@ -103,7 +101,6 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
     ? Math.trunc(planElapsedDays)
     : getAccountAgeDays(operationStartedAt, new Date(), timeZone);
   const accountCreatedLabel = formatAccountCreatedDate(operationStartedAt, timeZone);
-  const liveStatusLabel = livePrices.status === "online" ? "Online" : livePrices.isStale ? "Atualizando" : "Offline";
   const contributedCapital = slots.reduce((sum, slot) => sum + Number(slot.growth_contribution || 0), 0);
   const btc = useMemo(() => getStrategySummary(strategies, slots, contributions, "BTC", livePrices.prices.BTC), [strategies, slots, contributions, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, contributions, "SOL", livePrices.prices.SOL), [strategies, slots, contributions, livePrices.prices.SOL]);
@@ -117,29 +114,8 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
           {notice}
         </section>
       ) : null}
-      <header className="dashboard-brand-header" aria-label="CoinOps">
-        <Image src="/icon-96x96.png" alt="" width={28} height={28} priority />
-        <span>COINOPS</span>
-      </header>
-
-      <section className={`live-price-strip ${livePrices.status}`}>
-        <div>
-          <span>BTCUSDT</span>
-          <strong>{formatPrice(livePrices.prices.BTC)}</strong>
-        </div>
-        <div>
-          <span>SOLUSDT</span>
-          <strong>{formatPrice(livePrices.prices.SOL)}</strong>
-        </div>
-        <div>
-          <span>{liveStatusLabel}</span>
-          <strong>
-            {livePrices.lastUpdated
-              ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated)
-              : "--:--"}
-          </strong>
-        </div>
-      </section>
+      <BrandHeader />
+      <MarketTicker livePrices={livePrices} />
 
       <GrowthPlanStrip btcPlan={btcLadderPlan} solPlan={solLadderPlan} />
 

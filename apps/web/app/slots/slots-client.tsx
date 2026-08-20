@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { createSlots, moveSlot, openSlot, registerGain, resetSlot, updateSlot } from "@/app/dashboard/actions";
-import { AppHeader, EmptyState, FilterChips, MobileScreen, PnLValue, StatusBadge } from "@/components/app/mobile-ui";
+import { BrandHeader, EmptyState, FilterChips, MarketTicker, MobileScreen, PnLValue, StatusBadge } from "@/components/app/mobile-ui";
 import {
   formatDate,
   formatDecimal,
@@ -95,28 +95,21 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
 
   return (
     <MobileScreen>
-      <AppHeader title="Slots" action={<span className="header-count">{slots.length}</span>} />
+      <BrandHeader compact />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
 
-      <section className={`live-price-strip compact-internal-ticker ${livePrices.status}`} aria-label="Cotações">
-        <Ticker label="BTCUSDT" value={formatPrice(livePrices.prices.BTC)} />
-        <Ticker label="SOLUSDT" value={formatPrice(livePrices.prices.SOL)} />
-        <Ticker
-          label={livePrices.status === "online" ? "ONLINE" : livePrices.isStale ? "ATUALIZANDO" : "OFFLINE"}
-          value={livePrices.lastUpdated ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(livePrices.lastUpdated) : "--:--"}
-        />
-      </section>
+      <MarketTicker livePrices={livePrices} />
 
       <FilterChips
         value={activeFilter}
         onChange={(value) => { setActiveFilter(value); setExpandedSlotId(null); }}
         options={[
-          { label: "Todos", value: "all" },
-          { label: "BTC", value: "BTC" },
-          { label: "SOL", value: "SOL" },
-          { label: "Abertos", value: "aberto" },
-          { label: "Fechados", value: "closed" }
+          { label: "Todos", value: "all", count: slots.length },
+          { label: "BTC", value: "BTC", count: slots.filter((slot) => getAsset(slot) === "BTC").length },
+          { label: "SOL", value: "SOL", count: slots.filter((slot) => getAsset(slot) === "SOL").length },
+          { label: "Abertos", value: "aberto", count: slots.filter((slot) => slot.status === "aberto").length },
+          { label: "Fechados", value: "closed", count: slots.filter((slot) => slot.status !== "aberto").length }
         ]}
       />
 
@@ -153,10 +146,6 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
       </details>
     </MobileScreen>
   );
-}
-
-function Ticker({ label, value }: { label: string; value: string }) {
-  return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
 function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggle, announce }: {
@@ -212,6 +201,7 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
             <Detail label="Última atualização" value={slot.updated_at ? formatDate(slot.updated_at) : "—"} />
           </dl>
           <div className="slot-detail-actions">
+            <Link className="slot-button slot-detail-link" href={`/slots/${slot.id}`}>Ver detalhes</Link>
             {slot.status === "aberto"
               ? <button className="slot-button" type="button" disabled>Aberto</button>
               : <SlotAction action={openSlot} slotId={slot.id} label="Abrir" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onClick={() => announce("Abrindo slot...")} />}
