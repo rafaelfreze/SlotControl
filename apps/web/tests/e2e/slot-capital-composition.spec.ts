@@ -140,3 +140,51 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
     expect(scrollState.horizontalOverflow).toBe(0);
   }
 });
+
+test("controles superiores não são comprimidos por listas longas", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(`
+    <style>
+      :root {
+        --co-bg: #050a11;
+        --co-surface: #0d1722;
+        --co-text: #f7f8fa;
+        --co-muted: #8994a3;
+        --co-line: #233140;
+        --co-green: #28d991;
+        --co-gold: #d6a936;
+        --co-gold-soft: rgba(214, 169, 54, .1);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      ${compactCss}
+    </style>
+    <div class="app-frame">
+      <main class="mobile-dashboard-shell app-screen">
+        <header class="app-brand-header">COINOPS</header>
+        <div class="filter-chips">
+          <button type="button" class="active">Todos <strong>35</strong></button>
+          <button type="button">BTC <strong>25</strong></button>
+          <button type="button">SOL <strong>10</strong></button>
+        </div>
+        <details class="slot-overview-drawer">
+          <summary>Saldo operacional total <span>538,30 USDT</span></summary>
+        </details>
+        <div class="compact-slot-list">${markup.repeat(35)}</div>
+      </main>
+      <nav class="bottom-navigation" aria-label="Navegação principal"></nav>
+    </div>
+  `);
+
+  const measurements = await page.evaluate(() => ({
+    filters: document.querySelector(".filter-chips")!.getBoundingClientRect().height,
+    overview: document.querySelector(".slot-overview-drawer")!.getBoundingClientRect().height,
+    firstRow: document.querySelector(".compact-slot-row")!.getBoundingClientRect().height,
+    pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+  }));
+
+  expect(measurements.filters).toBeGreaterThanOrEqual(33.9);
+  expect(measurements.overview).toBeGreaterThanOrEqual(33.9);
+  expect(measurements.firstRow).toBeGreaterThanOrEqual(48);
+  expect(measurements.pageOverflow).toBe(0);
+});

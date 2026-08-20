@@ -37,6 +37,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   height: 100%;
   min-height: 0;
   align-content: start;
+  grid-auto-rows: max-content;
   gap: 10px;
   margin: 0 auto;
   padding: max(10px, env(safe-area-inset-top, 0px)) 12px 76px;
