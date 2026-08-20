@@ -402,7 +402,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .dashboard-workspace > .app-brand-header { grid-column: 1/-1; }
   .dashboard-workspace > .market-ticker { grid-column: 1/7; }
   .dashboard-workspace > .growth-dashboard-strip { grid-column: 7/-1; }
-  .dashboard-workspace > .mobile-metrics { grid-column: 1/7; grid-row: span 2; }
+  .dashboard-workspace > .mobile-metrics { grid-column: 1/7; }
   .dashboard-workspace > .compact-market-regime-badge { grid-column: 7/-1; }
   .dashboard-workspace > .asset-card { grid-column: span 6; min-height: 130px; padding: 14px; }
   .dashboard-workspace > .compact-action-bar { grid-column: 1/7; }
