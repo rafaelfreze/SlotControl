@@ -18,6 +18,7 @@ import { useLivePrices } from "@/lib/slotgain/live-prices";
 import {
   indexCapitalContributionsBySlot,
   summarizeCapitalContributions,
+  summarizeSlotCapitalFlow,
   type CapitalContributionSummary,
   type CapitalContributionView
 } from "@/lib/slotgain/capital-contributions";
@@ -166,15 +167,32 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
   const asset = getAsset(slot);
   const openMarket = getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt;
   const pnl = slot.status === "aberto" ? openMarket : Number(slot.realized_profit || 0);
-  const redistributionNet = Number(slot.redistribution_received_usdt || 0) - Number(slot.redistribution_sent_usdt || 0);
+  const capitalFlow = summarizeSlotCapitalFlow(slot);
+  const hasContributedGains = contribution.gains > 0;
+  const hasAdditionalCapital = Math.abs(capitalFlow.additionalCapitalNetUsdt) >= 0.005;
 
   return (
     <article className={`compact-slot-row ${asset.toLowerCase()} ${expanded ? "expanded" : ""}`}>
       <button className="compact-slot-trigger" type="button" onClick={onToggle} aria-expanded={expanded} aria-controls={`slot-panel-${slot.id}`}>
         <span className={`compact-asset-icon ${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : "S"}</span>
         <span className="compact-slot-identity"><strong>#{slot.slot_number} {asset}</strong><span className="compact-slot-status-line"><StatusBadge status={slot.status} />{rank ? <small>rank {rank}</small> : null}</span></span>
-        <span className="compact-slot-metric"><small>Gains</small><strong>{formatDecimal(getOperationalGains(slot))}</strong></span>
-        <span className="compact-slot-metric value"><small>Valor op.</small><strong>{formatUsdt(getCurrentValue(slot))}</strong></span>
+        <span className="compact-slot-metric">
+          <small>Gains op.</small>
+          <strong>{formatDecimal(getOperationalGains(slot))}</strong>
+          {hasContributedGains ? <em title={`${formatDecimal(contribution.gains)} gains aportados`}>+{formatDecimal(contribution.gains)} ap.</em> : null}
+        </span>
+        <span className="compact-slot-metric value">
+          <small>Saldo atual</small>
+          <strong>{formatUsdt(getCurrentValue(slot))}</strong>
+          {hasAdditionalCapital ? (
+            <em
+              className={capitalFlow.additionalCapitalNetUsdt > 0 ? "positive" : "negative"}
+              title={`Capital adicional líquido já incluído no saldo: ${formatSignedUsdt(capitalFlow.additionalCapitalNetUsdt)}`}
+            >
+              extra {formatCompactSigned(capitalFlow.additionalCapitalNetUsdt)}
+            </em>
+          ) : null}
+        </span>
         <span className="compact-slot-metric pnl"><small>PnL</small><PnLValue value={pnl}>{formatSignedUsdt(pnl)}</PnLValue></span>
         <span className="compact-slot-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
       </button>
@@ -194,7 +212,8 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
             <Detail label="Lucro realizado" value={formatUsdt(Number(slot.realized_profit || 0))} />
             <Detail label="Legado (adicionados)" value={formatDecimal(slot.added_gains)} />
             <Detail label="Aporte externo" value={formatUsdt(contribution.amountUsdt)} />
-            <Detail label="Redistribuição líquida" value={formatSignedUsdt(redistributionNet)} />
+            <Detail label="Redistribuição líquida" value={formatSignedUsdt(capitalFlow.redistributionNetUsdt)} />
+            <Detail label="Capital adicional líquido" value={formatSignedUsdt(capitalFlow.additionalCapitalNetUsdt)} />
             <Detail label="Preço médio (entrada)" value={slot.preco_entrada ? formatPrice(Number(slot.preco_entrada)) : "—"} />
             <Detail label="Alvo" value={slot.preco_alvo ? formatPrice(Number(slot.preco_alvo)) : "—"} />
             <Detail label="Última atualização" value={slot.updated_at ? formatDate(slot.updated_at) : "—"} />
@@ -225,6 +244,10 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
       ) : null}
     </article>
   );
+}
+
+function formatCompactSigned(value: number) {
+  return `${value > 0 ? "+" : ""}${formatDecimal(value)}`;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: number }) {

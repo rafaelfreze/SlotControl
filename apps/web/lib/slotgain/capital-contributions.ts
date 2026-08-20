@@ -10,6 +10,18 @@ export type CapitalContributionSummary = {
   gains: number;
 };
 
+export type SlotCapitalFlowView = {
+  growth_contribution: number | string;
+  redistribution_received_usdt: number | string;
+  redistribution_sent_usdt: number | string;
+};
+
+export type SlotCapitalFlowSummary = {
+  externalContributionUsdt: number;
+  redistributionNetUsdt: number;
+  additionalCapitalNetUsdt: number;
+};
+
 function safeNumber(value: number | string) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -40,4 +52,16 @@ export function indexCapitalContributionsBySlot(contributions: CapitalContributi
     };
     return index;
   }, {});
+}
+
+export function summarizeSlotCapitalFlow(slot: SlotCapitalFlowView): SlotCapitalFlowSummary {
+  const externalContributionUsdt = safeNumber(slot.growth_contribution);
+  const redistributionNetUsdt = safeNumber(slot.redistribution_received_usdt)
+    - safeNumber(slot.redistribution_sent_usdt);
+
+  return {
+    externalContributionUsdt,
+    redistributionNetUsdt,
+    additionalCapitalNetUsdt: externalContributionUsdt + redistributionNetUsdt
+  };
 }

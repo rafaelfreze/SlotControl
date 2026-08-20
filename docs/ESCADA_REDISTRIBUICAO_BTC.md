@@ -55,6 +55,8 @@ Os conceitos são permanentemente separados:
 
 O valor operacional considera capital-base, lucro realizado, aporte externo e o saldo líquido de redistribuição. Redistribuição não é lucro e não é aporte externo.
 
+Como aportes externos alteram a unidade financeira dos gains futuros, dois slots com quantidades operacionais próximas podem ter saldos diferentes. A lista de Slots exibe o saldo atual e, quando existir, os gains aportados e o capital adicional líquido já incluído nesse saldo. O detalhe mantém separados o aporte externo bruto e a redistribuição líquida, permitindo reconstruir a composição sem confundir aporte com lucro.
+
 ## 4. Referência assistida
 
 A referência operacional da redistribuição é explícita e editável. O sistema não inventa uma referência rígida a partir da meta mensal.

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   indexCapitalContributionsBySlot,
   summarizeCapitalContributions,
+  summarizeSlotCapitalFlow,
   type CapitalContributionView
 } from "./capital-contributions.ts";
 
@@ -30,4 +31,16 @@ test("mantem o detalhamento exato por slot", () => {
 test("ignora valores invalidos em vez de contaminar os totais", () => {
   const invalid = [{ asset: "BTC", slot_id: "btc-1", amount_usdt: "x", gain_equivalent: -2 }];
   assert.deepEqual(summarizeCapitalContributions(invalid), { amountUsdt: 0, gains: 0 });
+});
+
+test("explica o saldo adicional liquido depois da redistribuicao", () => {
+  const summary = summarizeSlotCapitalFlow({
+    growth_contribution: "4.04494392",
+    redistribution_received_usdt: "0",
+    redistribution_sent_usdt: "2.35955062"
+  });
+
+  assert.equal(summary.externalContributionUsdt, 4.04494392);
+  assert.equal(summary.redistributionNetUsdt, -2.35955062);
+  assert.ok(Math.abs(summary.additionalCapitalNetUsdt - 1.6853933) < 1e-8);
 });
