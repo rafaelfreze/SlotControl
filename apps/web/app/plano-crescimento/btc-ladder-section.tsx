@@ -7,6 +7,7 @@ import { formatDate, formatUsdt } from "@/lib/slotgain/format";
 import { indexCapitalContributionsBySlot, summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { getLeaderGrowthTarget } from "@/lib/slotgain/growth-target";
 import {
+  applyAssetExternalBalance,
   applyAssetManualOperationalGains,
   cancelAssetRedistribution,
   confirmAssetRedistribution,
@@ -83,7 +84,9 @@ export type AssetExternalContributionHistory = {
   slot_id?: string;
   slot_number: number;
   amount_usdt: Numeric;
+  accounting_amount_usdt?: Numeric | null;
   gain_equivalent: Numeric;
+  input_mode?: "MANUAL_GAINS" | "USDT" | null;
   operational_before?: Numeric;
   operational_after?: Numeric;
   reason: string;
@@ -121,6 +124,7 @@ export type AssetPlanActionKeys = {
   prepare: string;
   confirm: string;
   contribution: string;
+  balanceContribution: string;
 };
 
 function numberValue(value: Numeric | null | undefined) {
@@ -196,7 +200,9 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
     asset,
     slot_id: contribution.slot_id || "",
     amount_usdt: contribution.amount_usdt,
-    gain_equivalent: contribution.gain_equivalent
+    accounting_amount_usdt: contribution.accounting_amount_usdt,
+    gain_equivalent: contribution.gain_equivalent,
+    input_mode: contribution.input_mode
   }));
   const contributionBySlot = indexCapitalContributionsBySlot(contributionRows);
   const leaderContribution = leader ? summarizeCapitalContributions(contributionRows, { slotId: leader.slot_id }) : { amountUsdt: 0, gains: 0 };
@@ -224,6 +230,23 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar gains</SubmitButton>
         </form>
         <p className="btc-ladder-help">Você informa os gains e o servidor calcula o aporte em USDT. Eles aumentam somente os gains operacionais; gains reais e posições abertas permanecem intactos.</p>
+        <details className="slot-advanced-actions btc-direct-balance">
+          <summary>Adicionar saldo em USDT</summary>
+          <form action={applyAssetExternalBalance} className="btc-contribution-form">
+            <input type="hidden" name="asset" value={asset} />
+            <input type="hidden" name="idempotencyKey" value={actionKeys.balanceContribution} />
+            <label>Slot
+              <select name="slotId" required defaultValue={leader?.slot_id || ""}>
+                <option value="" disabled>Escolha o slot</option>
+                {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
+              </select>
+            </label>
+            <label>Valor USDT<input name="amountUsdt" type="number" min="0.00000001" step="0.00000001" inputMode="decimal" placeholder="5,00" required /></label>
+            <label className="btc-contribution-reason">Motivo opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: aporte adicional" /></label>
+            <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar saldo</SubmitButton>
+          </form>
+          <p className="btc-ladder-help">O valor entra integralmente no saldo atual. Ele não cria gain; os próximos gains serão calculados sobre o novo saldo quando a próxima operação for aberta.</p>
+        </details>
       </SectionCard>
 
       <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone={asset === "BTC" ? "gold" : "purple"}>
@@ -397,11 +420,11 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
         ) : (
           <details key={`contribution-${event.contribution.id}`}>
             <summary>
-              <span><strong>Ajuste manual · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>
-              <b>{formatLedgerUsdt(event.contribution.amount_usdt)}</b>
+              <span><strong>{event.contribution.input_mode === "USDT" ? "Saldo adicionado" : "Gains adicionados"} · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>
+              <b>{formatLedgerUsdt(event.contribution.accounting_amount_usdt ?? event.contribution.amount_usdt)}</b>
             </summary>
             <div className="btc-history-details">
-              <span>Equivalente: {formatGain(event.contribution.gain_equivalent)} gains</span>
+              <span>{event.contribution.input_mode === "USDT" ? "Saldo informado" : "Gains operacionais"}: {event.contribution.input_mode === "USDT" ? formatLedgerUsdt(event.contribution.amount_usdt) : formatGain(event.contribution.gain_equivalent)}</span>
               <span>Operacional: {formatGain(event.contribution.operational_before)} → {formatGain(event.contribution.operational_after)}</span>
               {event.contribution.applied_by ? <span>Registrado por: {event.contribution.applied_by}</span> : null}
               <p>{event.contribution.reason}</p>

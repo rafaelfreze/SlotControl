@@ -6,7 +6,8 @@
 -- 20260809165604_allow_edit_growth_plan_start_date.sql and
 -- 20260810125830_add_btc_manual_operational_gains.sql and
 -- 20260811021309_enforce_integer_ladder_gains.sql and
--- 20260820103028_compound_gain_from_total_operational_balance.sql to be applied first.
+-- 20260820103028_compound_gain_from_total_operational_balance.sql and
+-- 20260820111415_compound_operational_balance_sequence.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -77,6 +78,8 @@ begin
     or to_regprocedure('coinops.prepare_asset_ladder_redistribution(text,numeric,uuid)') is null
     or to_regprocedure('coinops.confirm_asset_ladder_redistribution(text,uuid,uuid)') is null
     or to_regprocedure('coinops.apply_asset_manual_operational_gains(text,uuid,numeric,text,uuid)') is null
+    or to_regprocedure('coinops.apply_asset_external_contribution(text,uuid,numeric,text,uuid)') is null
+    or to_regprocedure('private.coinops_compound_operational_value_usdt(numeric,numeric,integer)') is null
     or to_regprocedure('coinops.update_asset_strategy(uuid,text,numeric,numeric,numeric,integer)') is null then
     raise exception 'TEST_UNIFIED_GROWTH_LADDER_MIGRATION_REQUIRED';
   end if;
@@ -1110,6 +1113,14 @@ select pg_catalog.set_config(
 );
 set local role authenticated;
 
+create temporary table manual_compound_snapshot on commit drop as
+select operational_slot_value as value_before,
+  operational_gains as operational_before,
+  real_gains as real_before,
+  gain_rate
+from coinops.slots
+where id = '93000000-0000-0000-0000-000000000021';
+
 do $sol_manual$
 begin
   perform coinops.apply_asset_manual_operational_gains(
@@ -1145,6 +1156,54 @@ select pg_temp.assert_true(
     where idempotency_key = '97000000-0000-0000-0000-000000000020'
   ),
   'SOL manual gain must be idempotent and must not increase real or legacy-added gains'
+);
+select pg_temp.assert_true(
+  (
+    select slot.operational_slot_value =
+        private.coinops_compound_operational_value_usdt(snapshot.value_before, snapshot.gain_rate, 1)
+      and slot.operational_gains = snapshot.operational_before + 1
+      and slot.real_gains = snapshot.real_before
+    from coinops.slots slot
+    cross join manual_compound_snapshot snapshot
+    where slot.id = '93000000-0000-0000-0000-000000000021'
+  ) and (
+    select input_mode = 'MANUAL_GAINS'
+      and accounting_amount_usdt = round(value_after - value_before, 8)
+    from coinops.btc_external_contributions
+    where idempotency_key = '97000000-0000-0000-0000-000000000020'
+  ),
+  'manual gains must compound one by one over the immediately previous balance'
+);
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000002', true
+);
+set local role authenticated;
+
+do $direct_balance$
+begin
+  perform coinops.apply_asset_external_contribution(
+    'SOL', '93000000-0000-0000-0000-000000000022', 5,
+    'fixture direct balance', '97000000-0000-0000-0000-000000000022'
+  );
+end;
+$direct_balance$;
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select operational_slot_value = 47.5
+      and operational_gains = 14 and real_gains = 12
+    from coinops.slots
+    where id = '93000000-0000-0000-0000-000000000022'
+  ) and (
+    select input_mode = 'USDT' and amount_usdt = 5
+      and accounting_amount_usdt = 5 and gain_equivalent = 0
+    from coinops.btc_external_contributions
+    where idempotency_key = '97000000-0000-0000-0000-000000000022'
+  ),
+  'a direct USDT contribution must add exact balance without fabricating gains'
 );
 select pg_temp.assert_true(
   (

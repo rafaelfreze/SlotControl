@@ -46,7 +46,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       .order("sort_order", { ascending: true }),
     supabase
       .from("btc_external_contributions")
-      .select("asset,slot_id,amount_usdt,gain_equivalent"),
+      .select("asset,slot_id,amount_usdt,accounting_amount_usdt,gain_equivalent,input_mode"),
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
     supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
     supabase.rpc("get_asset_ladder_plan", { p_asset: "BTC" }),

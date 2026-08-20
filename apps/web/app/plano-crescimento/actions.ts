@@ -99,10 +99,12 @@ function rpcMessage(code: string | undefined, fallback: string) {
     COINOPS_BTC_MONTH_ALREADY_COMPLETED: "Já existe uma redistribuição BTC confirmada neste ciclo.",
     COINOPS_BTC_CONTRIBUTION_INVALID: "Informe um aporte externo maior que zero e um motivo.",
     COINOPS_CONTRIBUTION_AMOUNT_MUST_BE_POSITIVE: "Informe um valor de aporte externo maior que zero.",
+    COINOPS_CONTRIBUTION_AMOUNT_INVALID: "Informe um valor de saldo maior que zero.",
     COINOPS_CONTRIBUTION_REASON_INVALID: "Informe um motivo válido para o aporte externo.",
     COINOPS_MANUAL_GAINS_MUST_BE_POSITIVE_INTEGER: "Informe uma quantidade inteira de gains maior que zero.",
     COINOPS_MANUAL_GAINS_TOO_LARGE_FOR_SINGLE_ADJUSTMENT: "A quantidade é muito alta para um único ajuste. Divida os gains em dois lançamentos.",
     COINOPS_MANUAL_GAINS_EXACT_AMOUNT_NOT_FOUND: "Não foi possível converter os gains em um aporte financeiro exato.",
+    COINOPS_MANUAL_GAINS_RESULT_OUT_OF_RANGE: "O saldo calculado ficou fora do limite permitido. Divida os gains em lançamentos menores.",
     COINOPS_IDEMPOTENCY_CONFLICT: "Esta intenção financeira já foi usada com dados diferentes.",
     COINOPS_SCOPE_NOT_FOUND: "Não foi possível identificar a conta CoinOps ativa.",
     COINOPS_ACTIVE_INTERNAL_MEMBERSHIP_REQUIRED: "A conta não possui acesso CoinOps ativo.",
@@ -219,6 +221,45 @@ export async function applyAssetManualOperationalGains(formData: FormData) {
   const amountLabel = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 8 }).format(amountUsdt);
   const staleNotice = stalePreviewCount > 0 ? " A prévia anterior foi invalidada; prepare outra." : "";
   planRedirect(`${gainLabel} gains operacionais adicionados${slotNumber > 0 ? ` ao Slot #${slotNumber}` : ""}. Aporte calculado: ${amountLabel} USDT. Gains reais não foram alterados.${staleNotice}`);
+}
+
+export async function applyAssetExternalBalance(formData: FormData) {
+  const asset = formAsset(formData);
+  const slotId = formText(formData, "slotId");
+  const amountUsdt = formNumber(formData, "amountUsdt");
+  const note = formText(formData, "note") || "Aporte externo em USDT";
+  if (!slotId || !Number.isFinite(amountUsdt) || amountUsdt <= 0) {
+    planRedirect("Informe o slot e um valor USDT maior que zero.", { tone: "error" });
+  }
+
+  const { supabase } = await getAuthenticatedClient();
+  const { data, error } = await supabase.rpc("apply_asset_external_contribution", {
+    p_asset: asset,
+    p_slot_id: slotId,
+    p_amount_usdt: amountUsdt,
+    p_reason: note,
+    p_idempotency_key: idempotencyKey(formData)
+  });
+  if (error) {
+    planRedirect(rpcMessage(error.message, "O saldo externo não pôde ser adicionado."), { tone: "error" });
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath("/slots");
+  revalidatePath("/plano-crescimento");
+
+  const result = data as RpcResult | null;
+  const amount = Number(result?.amount_usdt ?? amountUsdt);
+  const slotNumber = Number(result?.slot_number ?? 0);
+  const stalePreviewCount = Number(result?.stale_preview_count ?? 0);
+  const amountLabel = new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8
+  }).format(amount);
+  const staleNotice = stalePreviewCount > 0
+    ? " A prévia anterior foi invalidada; prepare outra."
+    : "";
+  planRedirect(`Saldo de ${amountLabel} USDT adicionado${slotNumber > 0 ? ` ao Slot #${slotNumber}` : ""}. Gains reais e operacionais não foram alterados.${staleNotice}`);
 }
 
 export async function saveAssetMonthlyGoal(formData: FormData) {

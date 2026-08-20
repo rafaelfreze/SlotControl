@@ -41,7 +41,7 @@ export default async function SlotsPage({
       .order("sort_order", { ascending: true }),
     supabase
       .from("btc_external_contributions")
-      .select("asset,slot_id,amount_usdt,gain_equivalent")
+      .select("asset,slot_id,amount_usdt,accounting_amount_usdt,gain_equivalent,input_mode")
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error || contributionsResponse.error;

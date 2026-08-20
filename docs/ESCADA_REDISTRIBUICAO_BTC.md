@@ -45,7 +45,7 @@ Os ciclos são contínuos em blocos de 30 dias a partir dessa data: dias 1–30 
 Os conceitos são permanentemente separados:
 
 - `real_gains`: operações realmente concluídas. É cumulativo e imutável; pode apenas aumentar em uma transição válida de slot aberto para gain.
-- `operational_gains`: posição atual do slot na escada. Pode subir com gain real, redistribuição recebida ou aporte externo, e cair com redistribuição enviada.
+- `operational_gains`: posição atual do slot na escada. Pode subir com gain real, gain manual ou redistribuição recebida, e cair com redistribuição enviada. Um aporte informado diretamente em USDT altera o saldo, não esse contador.
 - `added_gains`: classificação legada dos gains adicionados antes desta escada. Os valores existentes são preservados e registrados no saldo de abertura, sem reclassificação automática.
 - `gains`: campo histórico de compatibilidade com a decomposição anterior. Não é a fonte do ranking da nova escada.
 - `growth_contribution`: aportes externos em USDT.
@@ -53,11 +53,22 @@ Os conceitos são permanentemente separados:
 
 É válido um slot possuir `real_gains = 20` e `operational_gains = 14`.
 
-O valor operacional considera capital-base, lucro realizado, aporte externo e o saldo líquido de redistribuição. Redistribuição não é lucro e não é aporte externo.
+O saldo operacional considera capital-base, gains compostos realizados, aporte externo e o saldo líquido de redistribuição. Redistribuição não é lucro e não é aporte externo.
 
 Dois slots com quantidades operacionais próximas podem ter saldos diferentes porque cada saldo consolida sua própria trajetória de gains, aportes e redistribuições. A linha principal de Slots mostra somente o saldo operacional total, já com todos esses movimentos somados ou subtraídos. O detalhe mantém separados gains reais, gains aportados, aporte externo bruto, redistribuição líquida e capital adicional líquido, permitindo reconstruir a composição sem confundir aporte com lucro.
 
-Ao abrir uma nova operação BTC ou SOL, o CoinOps congela o saldo operacional total daquele instante como valor da posição. O próximo gain real é calculado sobre esse saldo completo (`saldo operacional × taxa do gain`). Assim, aportes e redistribuições já incorporados participam dos gains futuros. Uma posição que já estava OPEN antes dessa regra preserva seu snapshot original e nunca é reescrita no meio da execução.
+Cada gain real ou manual é aplicado uma vez sobre o saldo imediatamente anterior. Para `N` gains inteiros:
+
+```text
+saldo_depois = round(saldo_antes × (1 + taxa)^N, 8)
+aporte_dos_gains = saldo_depois - saldo_antes
+```
+
+Assim, dez gains de 1% não são uma parcela linear de 10% sobre a base antiga: são dez multiplicações sucessivas por `1,01`. Um gain posterior sempre parte do saldo produzido pelo gain anterior.
+
+Um aporte informado diretamente em USDT é diferente: o valor entra integralmente no saldo, sem criar gain operacional nem gain real. Na próxima operação, os gains passam a incidir sobre esse novo saldo completo.
+
+Ao abrir uma nova operação BTC ou SOL, o CoinOps congela o saldo operacional total daquele instante como valor da posição. O próximo gain real é calculado sobre esse snapshot completo (`saldo congelado × taxa do gain`). Assim, aportes e redistribuições já incorporados participam dos gains futuros. Uma posição que já estava OPEN preserva seu notional, preço, alvo e data originais e nunca é reescrita no meio da execução.
 
 ## 4. Referência assistida
 
@@ -204,6 +215,7 @@ As estruturas oficiais são:
 - `coinops.btc_redistribution_transfers`: uma linha imutável por transferência BTC ou SOL, com doador, recebedor, statuses e valores antes/depois;
 - `coinops.slot_capital_ledger`: partidas de abertura, gain real, débito, crédito e aporte externo;
 - `coinops.btc_external_contributions`: aportes externos manuais BTC ou SOL, com nome físico legado preservado;
+- `coinops.slot_compounding_adjustments`: auditoria imutável do antes/depois da conversão única para saldo composto sequencial;
 - `coinops.growth_plan_goal_audit`: alterações das metas mensais BTC e SOL;
 - `coinops.growth_plan_start_audit`: alterações da data inicial operacional e quantidade de prévias invalidadas.
 
@@ -213,11 +225,11 @@ O ledger deve permitir reconstruir cada transferência sem consultar estado futu
 
 ## 10. Gains operacionais manuais
 
-O Plano permite escolher um slot e informar diretamente quantos gains operacionais inteiros devem ser adicionados. O servidor converte essa quantidade no aporte exato em USDT, registra valor, slot, data, motivo e usuário, e mantém a mesma trilha financeira de aportes externos.
+O Plano permite escolher um slot e informar diretamente quantos gains operacionais inteiros devem ser adicionados. O servidor aplica cada gain sequencialmente sobre o saldo vigente, calcula como aporte exatamente a diferença entre o saldo composto final e o saldo inicial, registra valor, slot, data, motivo e usuário, e mantém a mesma trilha financeira de aportes externos.
 
 O formulário sugere automaticamente a diferença entre a meta orientativa do líder e seu nível atual. O usuário pode alterar tanto o slot quanto a quantidade antes de confirmar. Nenhum ajuste é automático.
 
-O aporte:
+O ajuste por gains:
 
 - aumenta `growth_contribution` e `operational_gains` conforme a conversão de domínio;
 - não aumenta `real_gains`;
@@ -225,18 +237,19 @@ O aporte:
 - não movimenta patrimônio de outro slot;
 - possui chave idempotente própria e lançamento `EXTERNAL_CONTRIBUTION` no ledger.
 
-Como o próprio aporte aumenta `growth_contribution`, ele também aumenta a unidade financeira dos gains futuros. Para não inflar o poder financeiro do aporte, seu novo equivalente operacional é calculado com a unidade **pós-aporte**:
+O cálculo é composto e determinístico:
 
 ```text
-growth_after = growth_before + amount_usdt
-gain_unit_after = round((base_value + growth_after) × gain_rate, 8)
-gain_equivalent = amount_usdt / gain_unit_after
-operational_gains_after = operational_gains_before + gain_equivalent
+saldo_composto = round(saldo_atual × (1 + gain_rate)^gains_informados, 8)
+amount_usdt = saldo_composto - saldo_atual
+operational_gains_after = operational_gains_before + gains_informados
 ```
 
-Quando a entrada é feita em gains, o servidor resolve a operação inversa e encontra o `amount_usdt` de oito casas que reconverte exatamente à quantidade inteira solicitada. Uma prévia de redistribuição ainda `PREPARED` é marcada como `STALE`, pois o ranking mudou.
+Exemplo: com saldo de 10 USDT e taxa de 1%, dez gains manuais produzem `10 × 1,01^10 = 11,04622125 USDT`. O aporte auditado é a diferença de `1,04622125 USDT`, não uma soma linear de `1,00 USDT`.
 
-É incorreto dividir o aporte pela unidade anterior, pois uma unidade menor produziria mais gains equivalentes do que o capital novo realmente suporta depois de incorporado ao slot.
+Também existe a opção separada **Adicionar saldo em USDT**. Nesse modo, 5 USDT somados a um saldo de 10 resultam exatamente em 15 USDT, sem alterar `real_gains` ou `operational_gains`; os gains da próxima posição passam a ser calculados sobre 15 USDT.
+
+Uma prévia de redistribuição ainda `PREPARED` é marcada como `STALE` após qualquer ajuste de capital ou gains, pois o ranking e os saldos mudaram.
 
 Não existe aporte automático nem obrigação de completar todos os slots. Os gains manuais aparecem no histórico como ajuste/aporte e nunca são classificados como gains reais.
 
@@ -249,6 +262,8 @@ A migration inicial deve ser aditiva e preservar integralmente o estado anterior
 - cada slot BTC e SOL recebe um `OPENING_BALANCE` append-only na entrada de sua escada;
 - `real_gains`, `added_gains`, `gains`, valores, status, preços e históricos existentes não são zerados nem reclassificados;
 - posições BTC e SOL abertas recebem snapshots sem alterar os campos já executados.
+
+A conversão da contabilidade linear antiga para a composição sequencial reproduz o ledger imutável na ordem dos eventos. Ela corrige somente `realized_profit`, o valor efetivo dos aportes manuais antigos e a unidade contábil de gain de posições abertas. `real_gains`, `operational_gains`, status, notional, quantidade, entrada, alvo, datas e histórico permanecem intactos. Cada antes/depois é registrado em `coinops.slot_compounding_adjustments`.
 
 No corte para a escada inteira, níveis operacionais fracionados que já tenham
 sido produzidos pela regra anterior são truncados apenas no contador da

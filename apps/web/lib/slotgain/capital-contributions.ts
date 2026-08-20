@@ -2,7 +2,9 @@ export type CapitalContributionView = {
   asset: string;
   slot_id: string;
   amount_usdt: number | string;
+  accounting_amount_usdt?: number | string | null;
   gain_equivalent: number | string;
+  input_mode?: "MANUAL_GAINS" | "USDT" | null;
 };
 
 export type CapitalContributionSummary = {
@@ -37,7 +39,9 @@ export function summarizeCapitalContributions(
     if (asset && contribution.asset.toUpperCase() !== asset) return summary;
     if (filters.slotId && contribution.slot_id !== filters.slotId) return summary;
 
-    summary.amountUsdt += safeNumber(contribution.amount_usdt);
+    summary.amountUsdt += safeNumber(
+      contribution.accounting_amount_usdt ?? contribution.amount_usdt
+    );
     summary.gains += safeNumber(contribution.gain_equivalent);
     return summary;
   }, { amountUsdt: 0, gains: 0 });
@@ -47,7 +51,9 @@ export function indexCapitalContributionsBySlot(contributions: CapitalContributi
   return contributions.reduce<Record<string, CapitalContributionSummary>>((index, contribution) => {
     const current = index[contribution.slot_id] || { amountUsdt: 0, gains: 0 };
     index[contribution.slot_id] = {
-      amountUsdt: current.amountUsdt + safeNumber(contribution.amount_usdt),
+      amountUsdt: current.amountUsdt + safeNumber(
+        contribution.accounting_amount_usdt ?? contribution.amount_usdt
+      ),
       gains: current.gains + safeNumber(contribution.gain_equivalent)
     };
     return index;
