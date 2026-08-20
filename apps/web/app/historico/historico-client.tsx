@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { BrandHeader, EmptyState, FilterChips, MarketTicker, MobileScreen } from "@/components/app/mobile-ui";
-import { formatDate, formatSignedUsdt } from "@/lib/slotgain/format";
+import { COINOPS_TIME_ZONE, formatDate, formatSignedUsdt } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { HistoryEvent } from "@/lib/slotgain/types";
 
@@ -142,6 +142,7 @@ function formatExportDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: COINOPS_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -149,6 +150,18 @@ function formatExportDate(value: string) {
     minute: "2-digit",
     second: "2-digit"
   }).format(date);
+}
+
+function getOperationalDateKey(date: Date) {
+  if (Number.isNaN(date.getTime())) return "sem-data";
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: COINOPS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function numberCell(value: number | null) {
@@ -318,7 +331,7 @@ function toSlotSummary(history: HistoryEvent[]) {
   return Array.from(rows.values());
 }
 
-export function HistoricoClient({ history, error }: { userEmail: string; history: HistoryEvent[]; error: string | null }) {
+export function HistoricoClient({ history, error, referenceNow }: { userEmail: string; history: HistoryEvent[]; error: string | null; referenceNow: string }) {
   const livePrices = useLivePrices();
   const [filter, setFilter] = useState<HistoryFilter>("all");
   const [assetFilter, setAssetFilter] = useState<HistoryAssetFilter>("ALL");
@@ -342,16 +355,16 @@ export function HistoricoClient({ history, error }: { userEmail: string; history
   );
   const grouped = useMemo(() => filtered.reduce<Array<{ key: string; label: string; items: HistoryEvent[] }>>((groups, item) => {
     const date = new Date(item.event_at);
-    const key = Number.isNaN(date.getTime()) ? "sem-data" : date.toISOString().slice(0, 10);
+    const key = getOperationalDateKey(date);
     const current = groups.at(-1);
     if (current?.key === key) { current.items.push(item); return groups; }
-    const todayKey = new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayKey = yesterday.toISOString().slice(0, 10);
-    const label = key === todayKey ? "Hoje" : key === yesterdayKey ? "Ontem" : Number.isNaN(date.getTime()) ? "Sem data" : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
+    const now = new Date(referenceNow);
+    const todayKey = getOperationalDateKey(now);
+    const yesterdayKey = getOperationalDateKey(new Date(now.getTime() - 86_400_000));
+    const label = key === todayKey ? "Hoje" : key === yesterdayKey ? "Ontem" : Number.isNaN(date.getTime()) ? "Sem data" : new Intl.DateTimeFormat("pt-BR", { timeZone: COINOPS_TIME_ZONE, day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
     groups.push({ key, label, items: [item] });
     return groups;
-  }, []), [filtered]);
+  }, []), [filtered, referenceNow]);
 
   return (
     <MobileScreen>
@@ -380,7 +393,7 @@ export function HistoricoClient({ history, error }: { userEmail: string; history
           return (
             <details key={item.id} className={`history-compact-row ${itemAsset === "SOL" ? "sol" : "btc"}`}>
               <summary>
-                <time dateTime={item.event_at}><strong>{Number.isNaN(date.getTime()) ? "--/--" : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(date)}</strong><small>{Number.isNaN(date.getTime()) ? "--:--" : new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(date)}</small></time>
+                <time dateTime={item.event_at}><strong>{Number.isNaN(date.getTime()) ? "--/--" : new Intl.DateTimeFormat("pt-BR", { timeZone: COINOPS_TIME_ZONE, day: "2-digit", month: "2-digit" }).format(date)}</strong><small>{Number.isNaN(date.getTime()) ? "--:--" : new Intl.DateTimeFormat("pt-BR", { timeZone: COINOPS_TIME_ZONE, hour: "2-digit", minute: "2-digit" }).format(date)}</small></time>
                 <span className={`history-asset-icon ${itemAsset === "SOL" ? "sol" : "btc"}`}>{itemAsset === "SOL" ? "S" : "₿"}</span>
                 <span className="history-event-main"><strong>{itemAsset}{item.slot_number ? ` · Slot #${item.slot_number}` : ""}</strong><small>{item.action}</small></span>
                 <strong className="history-event-value">{value === null ? "—" : formatSignedUsdt(value)}</strong>

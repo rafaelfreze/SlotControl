@@ -64,5 +64,5 @@ export default async function HistoricoPage() {
   const mergedHistory = [...history, ...contributionEvents].sort((first, second) => new Date(second.event_at).getTime() - new Date(first.event_at).getTime());
   const error = historyResponse.error || contributionsResponse.error || slotsResponse.error;
 
-  return <HistoricoClient userEmail={user.email || "Usuario"} history={mergedHistory} error={error?.message || null} />;
+  return <HistoricoClient userEmail={user.email || "Usuario"} history={mergedHistory} error={error?.message || null} referenceNow={new Date().toISOString()} />;
 }
