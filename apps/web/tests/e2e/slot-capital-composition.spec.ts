@@ -132,6 +132,7 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
   expect(frameAfter).not.toBeNull();
   expect(Math.round(frameBefore!.y + frameBefore!.height)).toBe(scrollState.viewportHeight);
   expect(Math.round(frameAfter!.y + frameAfter!.height)).toBe(scrollState.viewportHeight);
+  expect(Math.round(after!.height)).toBe(62);
   expect(Math.round(after!.y)).toBe(Math.round(before!.y));
   expect(Math.round(after!.y + after!.height)).toBe(scrollState.viewportHeight);
   expect(scrollState.navigationPosition).toBe("fixed");

@@ -41,7 +41,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .minimal-page-header-action { display: flex; justify-content: flex-end; }
 .header-count { display: grid; min-width: 30px; height: 30px; place-items: center; border: 1px solid var(--co-line); border-radius: 9px; color: var(--co-muted); font-size: .7rem; font-weight: 800; }
 
-.bottom-navigation { position: fixed; z-index: 50; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); min-height: 62px; padding: 5px 8px calc(env(safe-area-inset-bottom, 0px) + 5px); overflow: hidden; border: 0; border-top: 1px solid var(--co-line); background: rgba(6, 10, 16, .97); box-shadow: none; backdrop-filter: none; }
+.bottom-navigation { position: fixed; z-index: 50; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); height: 62px; min-height: 62px; padding: 4px 8px 8px; overflow: hidden; border: 0; border-top: 1px solid var(--co-line); background: rgba(6, 10, 16, .97); box-shadow: none; backdrop-filter: none; }
 .bottom-navigation a { display: grid; min-width: 0; min-height: 50px; place-items: center; align-content: center; gap: 3px; padding: 3px 1px; color: #75818d; }
 .bottom-navigation a span { font-size: .92rem; line-height: 1; }
 .bottom-navigation a small { font-size: .58rem; line-height: 1; }
