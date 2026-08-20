@@ -16,12 +16,10 @@ const markup = `
         <span class="compact-slot-metric">
           <small data-audit>Gains op.</small>
           <strong data-audit>22</strong>
-          <em data-audit>+24 ap.</em>
         </span>
         <span class="compact-slot-metric value">
           <small data-audit>Saldo atual</small>
           <strong data-audit>13,17 USDT</strong>
-          <em class="positive" data-audit>extra +1,69</em>
         </span>
         <span class="compact-slot-metric pnl"><small>PnL</small><strong>+1,49 USDT</strong></span>
         <span class="compact-slot-chevron">⌄</span>
@@ -30,7 +28,7 @@ const markup = `
   </div>
 `;
 
-test("composição do saldo permanece legível sem overflow", async ({ page }) => {
+test("saldo total consolidado permanece legível sem subtotais e sem overflow", async ({ page }) => {
   for (const width of [320, 360, 390, 430, 1365]) {
     await page.setViewportSize({ width, height: 800 });
     await page.setContent(`
@@ -66,5 +64,7 @@ test("composição do saldo permanece legível sem overflow", async ({ page }) =
     }));
 
     expect(overflow, `viewport ${width}px`).toEqual({ page: 0, row: 0, clippedLabels: [] });
+    await expect(page.locator(".compact-slot-trigger")).not.toContainText("ap.");
+    await expect(page.locator(".compact-slot-trigger")).not.toContainText("extra");
   }
 });

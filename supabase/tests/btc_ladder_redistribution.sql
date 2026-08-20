@@ -5,7 +5,8 @@
 -- 20260809033335_add_btc_ladder_redistribution.sql and
 -- 20260809165604_allow_edit_growth_plan_start_date.sql and
 -- 20260810125830_add_btc_manual_operational_gains.sql and
--- 20260811021309_enforce_integer_ladder_gains.sql to be applied first.
+-- 20260811021309_enforce_integer_ladder_gains.sql and
+-- 20260820103028_compound_gain_from_total_operational_balance.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -1157,6 +1158,51 @@ select pg_temp.assert_true(
       and asset = 'SOL' and new_goal = 2
   ),
   'SOL monthly goal must be scoped and audited exactly like BTC'
+);
+
+-- A new position compounds from the complete current operational balance.
+-- The row already includes real gains, external capital and redistribution;
+-- none of those components is duplicated when the position opens.
+create temporary table compound_gain_snapshot on commit drop as
+select operational_slot_value as value_before,
+  realized_profit as realized_before,
+  operational_gains as operational_before,
+  real_gains as real_before,
+  gain_rate
+from coinops.slots
+where id = '93000000-0000-0000-0000-000000000021';
+
+update coinops.slots
+set status = 'aberto', preco_entrada = 100, preco_atual = 100, preco_alvo = 105
+where id = '93000000-0000-0000-0000-000000000021';
+
+select pg_temp.assert_true(
+  (
+    select position_notional_usdt = operational_slot_value
+      and position_gain_unit_usdt = round(operational_slot_value * gain_rate, 8)
+      and real_gains = (select real_before from compound_gain_snapshot)
+    from coinops.slots
+    where id = '93000000-0000-0000-0000-000000000021'
+  ),
+  'a new SOL position must freeze the complete operational balance and calculate its gain from that total'
+);
+
+update coinops.slots
+set status = 'gain', gains = gains + 1, real_gains = real_gains + 1,
+  preco_entrada = null, preco_atual = null, preco_alvo = null
+where id = '93000000-0000-0000-0000-000000000021';
+
+select pg_temp.assert_true(
+  (
+    select slot.operational_slot_value = round(snapshot.value_before * (1 + snapshot.gain_rate), 8)
+      and slot.realized_profit = round(snapshot.realized_before + (snapshot.value_before * snapshot.gain_rate), 8)
+      and slot.operational_gains = snapshot.operational_before + 1
+      and slot.real_gains = snapshot.real_before + 1
+    from coinops.slots slot
+    cross join compound_gain_snapshot snapshot
+    where slot.id = '93000000-0000-0000-0000-000000000021'
+  ),
+  'closing the new SOL position must add one gain calculated from the complete frozen balance'
 );
 
 select pg_temp.assert_true(

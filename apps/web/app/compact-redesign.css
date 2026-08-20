@@ -120,7 +120,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .compact-slot-row { overflow: hidden; border: 1px solid var(--co-line); border-left: 2px solid var(--co-btc); border-radius: 10px; background: var(--co-surface); }
 .compact-slot-row.sol { border-left-color: var(--co-sol); }
 .compact-slot-row.expanded { border-color: var(--co-line-strong); }
-.compact-slot-trigger { display: grid; grid-template-columns: 28px minmax(54px, .85fr) minmax(35px, .48fr) minmax(68px, 1fr) minmax(55px, .8fr) 12px; width: 100%; min-height: 56px; align-items: center; gap: 5px; padding: 5px 7px; border: 0; background: transparent; color: var(--co-text); text-align: left; cursor: pointer; }
+.compact-slot-trigger { display: grid; grid-template-columns: 28px minmax(54px, .85fr) minmax(35px, .48fr) minmax(68px, 1fr) minmax(55px, .8fr) 12px; width: 100%; min-height: 50px; align-items: center; gap: 5px; padding: 5px 7px; border: 0; background: transparent; color: var(--co-text); text-align: left; cursor: pointer; }
 .compact-asset-icon, .history-asset-icon { display: grid; width: 26px; height: 26px; place-items: center; border-radius: 50%; background: var(--co-btc); color: #1b1103; font-size: .8rem; font-weight: 900; }
 .compact-asset-icon.sol, .history-asset-icon.sol { background: linear-gradient(135deg, #42e8d0 0 42%, #9b62e8 43% 70%, #101522 71%); color: white; }
 .compact-slot-identity { display: grid; min-width: 0; gap: 3px; }
@@ -133,9 +133,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .compact-slot-metric { display: grid; min-width: 0; gap: 3px; }
 .compact-slot-metric small { overflow: hidden; color: var(--co-muted); font-size: .47rem; text-overflow: ellipsis; white-space: nowrap; }
 .compact-slot-metric strong { overflow: hidden; font-size: clamp(.6rem, 2.7vw, .69rem); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
-.compact-slot-metric em { overflow: hidden; color: var(--co-muted); font-size: .42rem; font-style: normal; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
-.compact-slot-metric em.positive { color: var(--co-green); }
-.compact-slot-metric em.negative { color: var(--co-red); }
 .compact-slot-metric.pnl { text-align: right; }
 .compact-slot-chevron { color: var(--co-muted); font-size: .7rem; text-align: right; }
 .slot-detail-panel { padding: 0 9px 9px; border-top: 1px solid var(--co-line); }
@@ -255,7 +252,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .compact-slot-trigger { grid-template-columns: 26px 54px 32px 65px 52px 10px; gap: 3px; padding-inline: 5px; }
   .compact-slot-metric small { font-size: .43rem; }
   .compact-slot-metric strong { font-size: .57rem; }
-  .compact-slot-metric em { font-size: .38rem; }
   .asset-stats span { padding-inline: 4px; }
   .asset-stats strong { font-size: .63rem; }
   .btc-ladder-summary, .btc-preview-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -263,10 +259,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 @media (min-width: 768px) {
   .mobile-dashboard-shell, .mobile-dashboard-shell.app-screen { width: min(100%, 900px); max-width: 900px; padding: 20px 24px 42px; }
-  .compact-slot-trigger { grid-template-columns: 34px 1.1fr .65fr 1fr .85fr 16px; min-height: 54px; padding-inline: 10px; }
+  .compact-slot-trigger { grid-template-columns: 34px 1.1fr .65fr 1fr .85fr 16px; min-height: 50px; padding-inline: 10px; }
   .compact-slot-metric small { font-size: .52rem; }
   .compact-slot-metric strong { font-size: .72rem; }
-  .compact-slot-metric em { font-size: .47rem; }
   .slot-detail-panel { padding: 0 12px 12px; }
   .slot-detail-list { columns: 2; column-gap: 24px; }
   .slot-detail-list > div { break-inside: avoid; }
@@ -295,7 +290,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .compact-slot-list { overflow: hidden; border: 1px solid var(--co-line); border-radius: 12px; }
   .compact-slot-row { border: 0; border-left: 2px solid var(--co-btc); border-radius: 0; }
   .compact-slot-row + .compact-slot-row { border-top: 1px solid var(--co-line); }
-  .compact-slot-trigger { grid-template-columns: 34px minmax(160px, 1.4fr) .7fr 1fr .9fr 18px; min-height: 55px; }
+  .compact-slot-trigger { grid-template-columns: 34px minmax(160px, 1.4fr) .7fr 1fr .9fr 18px; min-height: 50px; }
   .btc-plan-workspace { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .btc-ladder-main { grid-row: span 2; }
   .settings-page { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }

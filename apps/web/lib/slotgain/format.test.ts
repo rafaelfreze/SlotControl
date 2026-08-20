@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getOpenMarketMetrics } from "./format.ts";
+import { getCurrentValue, getOpenMarketMetrics } from "./format.ts";
+
+test("saldo atual usa o total operacional consolidado sem recalcular seus componentes", () => {
+  assert.equal(getCurrentValue({
+    base_value: 10,
+    gain_rate: 0.012,
+    gains: 12,
+    operational_slot_value: 13.17393263
+  }), 13.17393263);
+});
 
 test("posição BTC aberta marca somente o PnL do notional congelado sobre o valor operacional atual", () => {
   const metrics = getOpenMarketMetrics({

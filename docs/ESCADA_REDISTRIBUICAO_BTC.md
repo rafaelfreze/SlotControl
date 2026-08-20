@@ -55,7 +55,9 @@ Os conceitos são permanentemente separados:
 
 O valor operacional considera capital-base, lucro realizado, aporte externo e o saldo líquido de redistribuição. Redistribuição não é lucro e não é aporte externo.
 
-Como aportes externos alteram a unidade financeira dos gains futuros, dois slots com quantidades operacionais próximas podem ter saldos diferentes. A lista de Slots exibe o saldo atual e, quando existir, os gains aportados e o capital adicional líquido já incluído nesse saldo. O detalhe mantém separados o aporte externo bruto e a redistribuição líquida, permitindo reconstruir a composição sem confundir aporte com lucro.
+Dois slots com quantidades operacionais próximas podem ter saldos diferentes porque cada saldo consolida sua própria trajetória de gains, aportes e redistribuições. A linha principal de Slots mostra somente o saldo operacional total, já com todos esses movimentos somados ou subtraídos. O detalhe mantém separados gains reais, gains aportados, aporte externo bruto, redistribuição líquida e capital adicional líquido, permitindo reconstruir a composição sem confundir aporte com lucro.
+
+Ao abrir uma nova operação BTC ou SOL, o CoinOps congela o saldo operacional total daquele instante como valor da posição. O próximo gain real é calculado sobre esse saldo completo (`saldo operacional × taxa do gain`). Assim, aportes e redistribuições já incorporados participam dos gains futuros. Uma posição que já estava OPEN antes dessa regra preserva seu snapshot original e nunca é reescrita no meio da execução.
 
 ## 4. Referência assistida
 

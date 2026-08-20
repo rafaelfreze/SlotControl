@@ -88,6 +88,10 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
   const closedRanks = useMemo(() => rankSlots(slots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [slots]);
   const contributionBySlot = useMemo(() => indexCapitalContributionsBySlot(contributions), [contributions]);
   const contributionSummary = useMemo(() => summarizeCapitalContributions(contributions), [contributions]);
+  const totalOperationalBalance = useMemo(
+    () => slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0),
+    [slots]
+  );
 
   return (
     <MobileScreen>
@@ -117,8 +121,8 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
       />
 
       <details className="slot-overview-drawer">
-        <summary>Visão geral <span>{formatDecimal(contributionSummary.gains)} gains aportados</span></summary>
-        <div><span>Valor operacional</span><strong>{formatUsdt(slots.reduce((sum, slot) => sum + getCurrentValue(slot), 0))}</strong></div>
+        <summary>Saldo operacional total <span>{formatUsdt(totalOperationalBalance)}</span></summary>
+        <div><span>Gains aportados</span><strong>{formatDecimal(contributionSummary.gains)}</strong></div>
         <div><span>Lucro realizado</span><strong>{formatUsdt(slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0))}</strong></div>
         <div><span>Aportes</span><strong>{formatUsdt(contributionSummary.amountUsdt)}</strong></div>
       </details>
@@ -168,8 +172,6 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
   const openMarket = getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt;
   const pnl = slot.status === "aberto" ? openMarket : Number(slot.realized_profit || 0);
   const capitalFlow = summarizeSlotCapitalFlow(slot);
-  const hasContributedGains = contribution.gains > 0;
-  const hasAdditionalCapital = Math.abs(capitalFlow.additionalCapitalNetUsdt) >= 0.005;
 
   return (
     <article className={`compact-slot-row ${asset.toLowerCase()} ${expanded ? "expanded" : ""}`}>
@@ -179,19 +181,10 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
         <span className="compact-slot-metric">
           <small>Gains op.</small>
           <strong>{formatDecimal(getOperationalGains(slot))}</strong>
-          {hasContributedGains ? <em title={`${formatDecimal(contribution.gains)} gains aportados`}>+{formatDecimal(contribution.gains)} ap.</em> : null}
         </span>
         <span className="compact-slot-metric value">
           <small>Saldo atual</small>
           <strong>{formatUsdt(getCurrentValue(slot))}</strong>
-          {hasAdditionalCapital ? (
-            <em
-              className={capitalFlow.additionalCapitalNetUsdt > 0 ? "positive" : "negative"}
-              title={`Capital adicional líquido já incluído no saldo: ${formatSignedUsdt(capitalFlow.additionalCapitalNetUsdt)}`}
-            >
-              extra {formatCompactSigned(capitalFlow.additionalCapitalNetUsdt)}
-            </em>
-          ) : null}
         </span>
         <span className="compact-slot-metric pnl"><small>PnL</small><PnLValue value={pnl}>{formatSignedUsdt(pnl)}</PnLValue></span>
         <span className="compact-slot-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
@@ -244,10 +237,6 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
       ) : null}
     </article>
   );
-}
-
-function formatCompactSigned(value: number) {
-  return `${value > 0 ? "+" : ""}${formatDecimal(value)}`;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: number }) {
