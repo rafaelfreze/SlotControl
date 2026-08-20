@@ -68,3 +68,63 @@ test("saldo total consolidado permanece legível sem subtotais e sem overflow", 
     await expect(page.locator(".compact-slot-trigger")).not.toContainText("extra");
   }
 });
+
+test("navegação inferior permanece presa ao viewport durante o scroll mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(`
+    <!doctype html>
+    <html lang="pt-BR">
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <style>
+          :root {
+            --co-bg: #050a11;
+            --co-surface: #0d1722;
+            --co-text: #f7f8fa;
+            --co-muted: #8994a3;
+            --co-line: #233140;
+            --co-gold: #d6a936;
+          }
+          * { box-sizing: border-box; }
+          html, body { margin: 0; }
+          ${compactCss}
+        </style>
+      </head>
+      <body>
+        <div class="app-frame">
+          <main class="mobile-dashboard-shell app-screen">
+            <div style="height: 1800px">Conteúdo longo</div>
+          </main>
+          <nav class="bottom-navigation" aria-label="Navegação principal">
+            <a href="#"><span>◈</span><small>Resumo</small></a>
+            <a href="#"><span>▦</span><small>Slots</small></a>
+            <a href="#"><span>↗</span><small>Plano</small></a>
+            <a href="#"><span>◷</span><small>Histórico</small></a>
+            <a href="#"><span>⚙</span><small>Config</small></a>
+          </nav>
+        </div>
+      </body>
+    </html>
+  `);
+
+  const shell = page.locator(".mobile-dashboard-shell");
+  const navigation = page.locator(".bottom-navigation");
+  const before = await navigation.boundingBox();
+
+  expect(before).not.toBeNull();
+  await shell.evaluate((element) => {
+    element.scrollTop = 900;
+  });
+  await expect.poll(() => shell.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+  const after = await navigation.boundingBox();
+  const scrollState = await page.evaluate(() => ({
+    pageScroll: window.scrollY,
+    viewportHeight: window.innerHeight
+  }));
+
+  expect(after).not.toBeNull();
+  expect(Math.round(after!.y)).toBe(Math.round(before!.y));
+  expect(Math.round(after!.y + after!.height)).toBe(scrollState.viewportHeight);
+  expect(scrollState.pageScroll).toBe(0);
+});
