@@ -377,8 +377,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 @media (min-width: 768px) {
-  .mobile-dashboard-shell, .mobile-dashboard-shell.app-screen { width: min(100%, 900px); max-width: 900px; padding: 20px 24px 34px; }
-  .bottom-navigation { display: none; }
+  .mobile-dashboard-shell, .mobile-dashboard-shell.app-screen { width: min(100%, 900px); max-width: 900px; padding: 20px 24px 76px; }
   .compact-slot-trigger { grid-template-columns: 34px 1.1fr .65fr 1fr .85fr 16px; min-height: 49px; padding-inline: 10px; }
   .slot-detail-list { columns: 2; column-gap: 24px; }
   .slot-detail-list > div { break-inside: avoid; }
@@ -389,6 +388,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (min-width: 1024px) {
   body { overflow: auto; }
   .app-frame { position: static; display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100dvh; overflow: visible; }
+  .bottom-navigation { display: none; }
   .desktop-sidebar { display: flex; position: sticky; top: 0; height: 100dvh; flex-direction: column; gap: 24px; padding: 22px 14px; border-right: 1px solid var(--co-line); background: #080d14; }
   .desktop-sidebar nav { display: grid; gap: 5px; }
   .desktop-sidebar nav a { display: flex; min-height: 38px; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--co-muted); font-size: .65rem; }
