@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getCurrentValue, getOpenMarketMetrics } from "./format.ts";
+import { formatDate, getCurrentValue, getOpenMarketMetrics } from "./format.ts";
+
+test("datas operacionais usam o fuso oficial em servidor e navegador", () => {
+  const formatted = formatDate("2026-08-20T09:30:00.000Z");
+
+  assert.match(formatted, /20\/08/);
+  assert.match(formatted, /05:30/);
+});
 
 test("saldo atual usa o total operacional consolidado sem recalcular seus componentes", () => {
   assert.equal(getCurrentValue({

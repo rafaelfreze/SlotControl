@@ -126,6 +126,8 @@ export function getStatusLabel(status: SlotStatus) {
   return labels[status] || status;
 }
 
+export const COINOPS_TIME_ZONE = "America/Cuiaba";
+
 export function formatDate(value: string | null) {
   if (!value) {
     return "Nunca";
@@ -137,6 +139,7 @@ export function formatDate(value: string | null) {
   }
 
   return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: COINOPS_TIME_ZONE,
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",

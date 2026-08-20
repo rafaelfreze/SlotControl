@@ -6,6 +6,7 @@ import { useMemo } from "react";
 import { BrandHeader, MarketTicker, MobileScreen } from "@/components/app/mobile-ui";
 import { CompactMarketRegimeBadge } from "@/components/slotgain/compact-market-regime-badge";
 import {
+  COINOPS_TIME_ZONE,
   formatDecimal,
   formatSignedUsdt,
   formatUsdt,
@@ -95,7 +96,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
     0
   );
   const openSlots = openSlotsList.length;
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const timeZone = COINOPS_TIME_ZONE;
   const planElapsedDays = Number(operationElapsedDays);
   const accountAgeDays = operationElapsedDays !== null && Number.isFinite(planElapsedDays) && planElapsedDays >= 0
     ? Math.trunc(planElapsedDays)
