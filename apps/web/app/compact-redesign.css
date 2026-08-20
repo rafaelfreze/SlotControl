@@ -53,15 +53,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /*
  * Keep the authenticated mobile shell inside one viewport. WebKit can move a
  * fixed descendant when body is also the scroll container, especially in PWA
- * mode while the visual viewport changes. Only the content pane scrolls; the
- * navigation is anchored to the non-scrolling shell.
+ * mode while the visual viewport changes. The inset defines the real visible
+ * height; an explicit 100dvh can end above the iOS bottom edge. Only the
+ * content pane scrolls and the navigation stays on the shell's bottom edge.
  */
 @media (max-width: 1023px) {
   .app-frame {
     position: fixed;
     inset: 0;
     width: 100%;
-    height: 100dvh;
+    height: auto;
     min-height: 0;
     overflow: hidden;
   }

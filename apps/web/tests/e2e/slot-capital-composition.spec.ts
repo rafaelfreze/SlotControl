@@ -108,9 +108,12 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
   `);
 
   const shell = page.locator(".mobile-dashboard-shell");
+  const frame = page.locator(".app-frame");
   const navigation = page.locator(".bottom-navigation");
+  const frameBefore = await frame.boundingBox();
   const before = await navigation.boundingBox();
 
+  expect(frameBefore).not.toBeNull();
   expect(before).not.toBeNull();
   await shell.evaluate((element) => {
     element.scrollTop = 900;
@@ -118,12 +121,16 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
   await expect.poll(() => shell.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
   const after = await navigation.boundingBox();
+  const frameAfter = await frame.boundingBox();
   const scrollState = await page.evaluate(() => ({
     pageScroll: window.scrollY,
     viewportHeight: window.innerHeight
   }));
 
   expect(after).not.toBeNull();
+  expect(frameAfter).not.toBeNull();
+  expect(Math.round(frameBefore!.y + frameBefore!.height)).toBe(scrollState.viewportHeight);
+  expect(Math.round(frameAfter!.y + frameAfter!.height)).toBe(scrollState.viewportHeight);
   expect(Math.round(after!.y)).toBe(Math.round(before!.y));
   expect(Math.round(after!.y + after!.height)).toBe(scrollState.viewportHeight);
   expect(scrollState.pageScroll).toBe(0);
