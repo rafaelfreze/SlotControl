@@ -124,7 +124,8 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
   const frameAfter = await frame.boundingBox();
   const scrollState = await page.evaluate(() => ({
     pageScroll: window.scrollY,
-    viewportHeight: window.innerHeight
+    viewportHeight: window.innerHeight,
+    navigationPosition: getComputedStyle(document.querySelector<HTMLElement>(".bottom-navigation")!).position
   }));
 
   expect(after).not.toBeNull();
@@ -133,5 +134,6 @@ test("navegação inferior permanece presa ao viewport durante o scroll mobile",
   expect(Math.round(frameAfter!.y + frameAfter!.height)).toBe(scrollState.viewportHeight);
   expect(Math.round(after!.y)).toBe(Math.round(before!.y));
   expect(Math.round(after!.y + after!.height)).toBe(scrollState.viewportHeight);
+  expect(scrollState.navigationPosition).toBe("fixed");
   expect(scrollState.pageScroll).toBe(0);
 });

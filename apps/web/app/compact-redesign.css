@@ -55,7 +55,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
  * fixed descendant when body is also the scroll container, especially in PWA
  * mode while the visual viewport changes. The inset defines the real visible
  * height; an explicit 100dvh can end above the iOS bottom edge. Only the
- * content pane scrolls and the navigation stays on the shell's bottom edge.
+ * content pane scrolls while the navigation remains attached to the visual
+ * viewport. Keeping the navigation absolute inside this shell makes iOS move
+ * it upward during elastic/visual-viewport resizing and leaves a black gap.
  */
 @media (max-width: 1023px) {
   .app-frame {
@@ -78,7 +80,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   }
 
   .bottom-navigation {
-    position: absolute;
+    position: fixed;
     inset: auto 0 0;
   }
 }
