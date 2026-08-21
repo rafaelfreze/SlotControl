@@ -7,23 +7,25 @@ const compactCss = readFileSync(resolve(process.cwd(), "app/compact-redesign.css
 const markup = `
   <div class="compact-slot-list">
     <article class="compact-slot-row btc">
-      <button class="compact-slot-trigger" type="button">
-        <span class="compact-asset-icon btc">₿</span>
-        <span class="compact-slot-identity">
-          <strong>#12 BTC</strong>
-          <span class="compact-slot-status-line"><span class="status-badge free">LIVRE</span><small>rank 1</small></span>
-        </span>
-        <span class="compact-slot-metric">
-          <small data-audit>Gains op.</small>
-          <strong data-audit>22</strong>
-        </span>
-        <span class="compact-slot-metric value">
-          <small data-audit>Saldo atual</small>
-          <strong data-audit>13,17 USDT</strong>
-        </span>
-        <span class="compact-slot-metric pnl"><small>PnL</small><strong>+1,49 USDT</strong></span>
-        <span class="compact-slot-chevron">⌄</span>
-      </button>
+      <div class="compact-slot-operational-row">
+        <button class="compact-slot-trigger" type="button">
+          <span class="compact-asset-icon btc">₿</span>
+          <span class="compact-slot-identity">
+            <strong>#12 BTC</strong>
+            <span class="compact-slot-status-line"><span class="status-badge free">LIVRE</span><small>rank 1</small></span>
+          </span>
+          <span class="compact-slot-metric">
+            <small data-audit>Gains op.</small>
+            <strong data-audit>22</strong>
+          </span>
+          <span class="compact-slot-metric value">
+            <small data-audit>Saldo atual</small>
+            <strong data-audit>13,17 USDT</strong>
+          </span>
+        </button>
+        <form class="slot-quick-action"><button class="slot-quick-button open" type="submit">+ Abrir</button></form>
+        <button class="compact-slot-menu" type="button" aria-label="Mais ações">⋯</button>
+      </div>
     </article>
   </div>
 `;
@@ -56,8 +58,8 @@ test("saldo total consolidado permanece legível sem subtotais e sem overflow", 
 
     const overflow = await page.evaluate(() => ({
       page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      row: document.querySelector(".compact-slot-trigger")!.scrollWidth
-        - document.querySelector(".compact-slot-trigger")!.clientWidth,
+      row: document.querySelector(".compact-slot-operational-row")!.scrollWidth
+        - document.querySelector(".compact-slot-operational-row")!.clientWidth,
       clippedLabels: [...document.querySelectorAll<HTMLElement>("[data-audit]")]
         .filter((element) => element.scrollWidth > element.clientWidth + 1)
         .map((element) => element.textContent)
@@ -66,6 +68,8 @@ test("saldo total consolidado permanece legível sem subtotais e sem overflow", 
     expect(overflow, `viewport ${width}px`).toEqual({ page: 0, row: 0, clippedLabels: [] });
     await expect(page.locator(".compact-slot-trigger")).not.toContainText("ap.");
     await expect(page.locator(".compact-slot-trigger")).not.toContainText("extra");
+    await expect(page.locator(".compact-slot-trigger")).not.toContainText("PnL");
+    await expect(page.locator(".slot-quick-button")).toHaveText("+ Abrir");
   }
 });
 
@@ -185,6 +189,38 @@ test("controles superiores não são comprimidos por listas longas", async ({ pa
 
   expect(measurements.filters).toBeGreaterThanOrEqual(33.9);
   expect(measurements.overview).toBeGreaterThanOrEqual(33.9);
-  expect(measurements.firstRow).toBeGreaterThanOrEqual(48);
+  expect(measurements.firstRow).toBeGreaterThanOrEqual(55);
   expect(measurements.pageOverflow).toBe(0);
+});
+
+test("ação rápida ocupa o primeiro nível e bloqueia reenvio enquanto processa", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(`
+    <style>
+      :root { --co-bg:#050a11; --co-surface:#0d1722; --co-text:#f7f8fa; --co-muted:#8994a3; --co-line:#233140; --co-green:#28d991; --co-gold:#d6a936; --co-gold-soft:rgba(214,169,54,.1); }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 9px; background: var(--co-bg); color: var(--co-text); }
+      ${compactCss}
+    </style>
+    ${markup}
+    <script>
+      window.submissions = 0;
+      document.querySelector('.slot-quick-action').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const button = event.currentTarget.querySelector('button');
+        if (button.disabled) return;
+        button.disabled = true;
+        button.textContent = 'Abrindo...';
+        window.submissions += 1;
+      });
+    </script>
+  `);
+
+  const quickAction = page.locator(".slot-quick-button");
+  await quickAction.dblclick();
+
+  await expect(quickAction).toBeDisabled();
+  await expect(quickAction).toHaveText("Abrindo...");
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { submissions: number }).submissions)).toBe(1);
+  await expect(page.locator(".compact-slot-menu")).toHaveAccessibleName("Mais ações");
 });

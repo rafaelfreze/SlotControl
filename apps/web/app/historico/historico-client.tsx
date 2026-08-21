@@ -382,7 +382,7 @@ export function HistoricoClient({ history, error, referenceNow }: { userEmail: s
           { label: "Aportes", value: "aporte" }
         ]}
       />
-      <label className="history-asset-filter">Filtrar por ativo<select value={assetFilter} onChange={(event) => setAssetFilter(event.target.value as HistoryAssetFilter)}><option value="ALL">Todos os ativos</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
+      <label className="history-asset-filter"><span className="visually-hidden">Filtrar por ativo</span><select aria-label="Filtrar histórico por ativo" value={assetFilter} onChange={(event) => setAssetFilter(event.target.value as HistoryAssetFilter)}><option value="ALL">Todos os ativos</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
 
       <div className="history-day-list" aria-label={`${filtered.length} eventos`}>
         {grouped.map((group) => <section className="history-day-group" key={group.key}><h2>{group.label}</h2><div className="history-compact-list">{group.items.map((item) => {

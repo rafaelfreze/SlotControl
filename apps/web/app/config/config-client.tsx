@@ -58,13 +58,14 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
         <SettingsGroup title="Configurações">
           <SettingsRow icon="◷" label="Plano de crescimento" value="Metas, referências e ciclos" href="/plano-crescimento" />
           <SettingsRow icon="⊕" label="Gerenciar aportes" value="Ver e adicionar aportes" href="/plano-crescimento" />
-          <SettingsRow icon="♢" label="Alertas e notificações" value="Preferências operacionais" />
+          <SettingsRow icon="⌁" label="Estratégia" value="Gains, base e operação" href="/config#estrategia" />
+          <SettingsRow icon="♢" label="Notificações" value="Preferências operacionais" />
           <SettingsRow icon="▣" label="Segurança" value="Conta e autenticação" />
-          <div className="native-settings-row"><span><i aria-hidden="true">⇩</i><span><b>Exportar dados</b><small>Relatórios e backup</small></span></span><button type="button" onClick={exportBackup}>Exportar JSON</button></div>
-          <SettingsRow icon="ⓘ" label="Sobre o CoinOps" value="Versão e informações" />
+          <div className="native-settings-row"><span><i aria-hidden="true">⇩</i><span><b>Dados</b><small>Relatórios e backup</small></span></span><button type="button" onClick={exportBackup}>Exportar</button></div>
+          <SettingsRow icon="ⓘ" label="Sistema" value="Sobre o CoinOps" />
         </SettingsGroup>
 
-        <details className="settings-advanced-section">
+        <details className="settings-advanced-section" id="estrategia">
           <summary><span>Configurações operacionais</span><small>Estratégias, gains e mercado</small></summary>
           <div className="strategy-settings-grid">
             {btc ? <StrategySection strategy={btc} tone="gold" /> : null}

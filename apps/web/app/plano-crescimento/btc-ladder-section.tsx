@@ -284,9 +284,9 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           </form>
         </div>
 
-        <p className="btc-ladder-help">A meta de {monthlyGoal} mede a velocidade a cada 30 dias. A referência é o nível operacional que você escolhe para equilibrar a escada; ela não cria dívida automática para cada slot.</p>
         <details className="btc-ladder-guide">
           <summary>Como fazer a redistribuição</summary>
+          <p>A meta de {monthlyGoal} mede a velocidade a cada 30 dias. A referência é o nível operacional escolhido para equilibrar a escada; ela não cria dívida automática para cada slot.</p>
           <ol>
             <li>Escolha uma referência operacional, por exemplo 7 ou 14 gains.</li>
             <li>Toque em Preparar redistribuição. Isso cria somente uma prévia e não altera os slots.</li>
@@ -300,7 +300,7 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
 
       {activeView === "ladder" && preview ? <RedistributionPreview asset={asset} preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
 
-      {activeView !== "gains" ? <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} /> : null}
+      {activeView === "ladder" ? <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} /> : null}
     </div>
   );
 }
@@ -313,9 +313,9 @@ function LadderList({ asset, slots, referenceLevel, contributionBySlot = {} }: {
   const primarySlots = slots.slice(0, 5);
   const remainingSlots = slots.slice(5);
   return (
-    <div className="btc-ladder-table" role="table" aria-label={`Ranking operacional ${asset}`}>
-      <div className="btc-ladder-table-head" role="row">
-        <span role="columnheader">Ranking</span><span role="columnheader">Status</span><span role="columnheader">Reais</span><span role="columnheader">Operacionais</span><span role="columnheader">Valor</span><span role="columnheader">Excedente/defasagem</span>
+    <div className="btc-ladder-table" role="list" aria-label={`Ranking operacional ${asset}`}>
+      <div className="btc-ladder-table-head" aria-hidden="true">
+        <span>Ranking</span><span>Slot</span><span>Nível</span><span>Status</span>
       </div>
       {primarySlots.map((slot) => <LadderRow key={slot.slot_id} slot={slot} referenceLevel={referenceLevel} contribution={contributionBySlot[slot.slot_id]} />)}
       {remainingSlots.length ? <details className="btc-ladder-more"><summary>Ver todos os {slots.length} slots</summary>{remainingSlots.map((slot) => <LadderRow key={slot.slot_id} slot={slot} referenceLevel={referenceLevel} contribution={contributionBySlot[slot.slot_id]} />)}</details> : null}
@@ -330,14 +330,20 @@ function LadderRow({ slot, referenceLevel, contribution }: { slot: AssetLadderSl
     : numberValue(slot.reference_difference_gains);
 
   return (
-    <div className="btc-ladder-row" role="row">
-      <span role="cell" className="btc-ladder-slot"><small>Ranking</small><strong>#{slot.rank}</strong><em>Slot {slot.slot_number}</em></span>
-      <span role="cell"><small>Status</small><b className={slot.status.toLowerCase() === "aberto" ? "open" : "free"}>{statusLabel(slot.status)}</b></span>
-      <span role="cell"><small>Reais</small><strong>{formatGain(slot.real_gains)}</strong></span>
-      <span role="cell"><small>Operacionais</small><strong>{formatGain(slot.operational_gains)}</strong><em>+{formatGain(contribution?.gains || 0)} aportados</em></span>
-      <span role="cell"><small>Valor</small><strong>{formatUsdt(numberValue(slot.operational_value_usdt))}</strong></span>
-      <span role="cell"><small>Diferença</small><strong className={difference !== null && difference > 0 ? "positive" : difference !== null && difference < 0 ? "negative" : "neutral"}>{difference === null ? "--" : formatSignedGain(difference)}</strong></span>
-    </div>
+    <details className="btc-ladder-row" role="listitem">
+      <summary>
+        <strong>#{slot.rank}</strong>
+        <span>Slot {slot.slot_number}</span>
+        <b>{formatGain(slot.operational_gains)} gains</b>
+        <em className={slot.status.toLowerCase() === "aberto" ? "open" : "free"}>{statusLabel(slot.status)}</em>
+      </summary>
+      <div className="btc-ladder-row-details">
+        <span><small>Gains reais</small><strong>{formatGain(slot.real_gains)}</strong></span>
+        <span><small>Valor operacional</small><strong>{formatUsdt(numberValue(slot.operational_value_usdt))}</strong></span>
+        <span><small>Gains aportados</small><strong>+{formatGain(contribution?.gains || 0)}</strong></span>
+        <span><small>Diferença</small><strong className={difference !== null && difference > 0 ? "positive" : difference !== null && difference < 0 ? "negative" : "neutral"}>{difference === null ? "--" : formatSignedGain(difference)}</strong></span>
+      </div>
+    </details>
   );
 }
 
@@ -404,7 +410,8 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
   ].sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime());
 
   return (
-    <SectionCard className="btc-history-card" title={`Histórico mensal ${asset}`} subtitle="Redistribuições e ajustes manuais" tone="neutral">
+    <details className="btc-history-card plan-history-drawer">
+      <summary>Histórico de redistribuições e ajustes {asset}</summary>
       <div className="btc-ladder-history">
         {events.map((event) => event.kind === "batch" ? (
           <details key={`batch-${event.batch.batch_id}`}>
@@ -441,6 +448,6 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
         ))}
         {!events.length ? <p className="empty-copy padded-empty">Nenhuma redistribuição ou ajuste manual {asset} registrado.</p> : null}
       </div>
-    </SectionCard>
+    </details>
   );
 }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { moveSlot, openSlot, registerGain, resetSlot, updateSlot } from "@/app/dashboard/actions";
-import { AppHeader, MobileScreen, PnLValue, StatusBadge } from "@/components/app/mobile-ui";
+import { AppHeader, MobileScreen, PnLValue, SlotActionForm, StatusBadge } from "@/components/app/mobile-ui";
 import { summarizeCapitalContributions, summarizeSlotCapitalFlow, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { formatDate, formatDecimal, formatPrice, formatSignedUsdt, formatUsdt, getCurrentValue, getOpenMarketMetrics } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
@@ -58,16 +58,16 @@ export function SlotDetailClient({ slot, contributions, history, setupError }: {
         </details>
 
         <div className="full-slot-actions">
-          {slot.status === "aberto" ? <button disabled>Aberto</button> : <Action action={openSlot} slotId={slot.id} label="Abrir" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onClick={() => setNotice("Abrindo slot...")} />}
-          <Action action={registerGain} slotId={slot.id} label="Adicionar gain" disabled={slot.status === "zerado" || slot.status === "hold"} onClick={() => setNotice("Registrando gain...")} />
-          <Action action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => setNotice("Zerando slot...")} />
+          {slot.status === "aberto" ? <button disabled>Aberto</button> : <SlotActionForm action={openSlot} slotId={slot.id} label="Abrir" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onSubmit={() => setNotice("Abrindo slot...")} />}
+          <SlotActionForm action={registerGain} slotId={slot.id} label="Adicionar gain" disabled={slot.status === "zerado" || slot.status === "hold"} onSubmit={() => setNotice("Registrando gain...")} />
+          <SlotActionForm action={resetSlot} slotId={slot.id} label="Zerar" onSubmit={() => setNotice("Zerando slot...")} />
         </div>
 
         <details className="slot-advanced-actions full-slot-edit">
           <summary>Editar e organizar</summary>
           <div className="slot-card-actions">
-            <Action action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => setNotice("Movendo slot...")} />
-            <Action action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => setNotice("Movendo slot...")} />
+            <SlotActionForm action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onSubmit={() => setNotice("Movendo slot...")} />
+            <SlotActionForm action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onSubmit={() => setNotice("Movendo slot...")} />
           </div>
           <form className="tool-form stacked-form" action={updateSlot}>
             <input type="hidden" name="slotId" value={slot.id} />
@@ -95,7 +95,3 @@ export function SlotDetailClient({ slot, contributions, history, setupError }: {
 
 function Detail({ label, value }: { label: string; value: string }) { return <div><span>{label}</span><strong>{value}</strong></div>; }
 function DetailRow({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div>; }
-
-function Action({ action, slotId, label, disabled = false, hidden, onClick }: { action: (formData: FormData) => void | Promise<void>; slotId: string; label: string; disabled?: boolean; hidden?: Record<string, string>; onClick: () => void }) {
-  return <form action={action}><input type="hidden" name="slotId" value={slotId} />{hidden ? Object.entries(hidden).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />) : null}<button type="submit" disabled={disabled} onClick={onClick}>{label}</button></form>;
-}

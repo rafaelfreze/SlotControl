@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
+import { useFormStatus } from "react-dom";
 import { usePathname } from "next/navigation";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 import { formatPrice } from "@/lib/slotgain/format";
@@ -205,4 +206,49 @@ export function PnLValue({ value, children }: { value: number; children: ReactNo
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return <div className="compact-empty-state">{children}</div>;
+}
+
+export function SlotActionForm({
+  action,
+  slotId,
+  label,
+  pendingLabel,
+  className = "",
+  buttonClassName = "",
+  disabled = false,
+  hidden,
+  onSubmit
+}: {
+  action: (formData: FormData) => void | Promise<void>;
+  slotId: string;
+  label: string;
+  pendingLabel?: string;
+  className?: string;
+  buttonClassName?: string;
+  disabled?: boolean;
+  hidden?: Record<string, string>;
+  onSubmit?: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <form className={className} action={action} onSubmit={onSubmit}>
+      <input type="hidden" name="slotId" value={slotId} />
+      {hidden ? Object.entries(hidden).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />) : null}
+      <SlotSubmitButton
+        className={buttonClassName}
+        disabled={disabled}
+        label={label}
+        pendingLabel={pendingLabel || `${label}...`}
+      />
+    </form>
+  );
+}
+
+function SlotSubmitButton({ className, disabled, label, pendingLabel }: { className: string; disabled: boolean; label: string; pendingLabel: string }) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button className={className} type="submit" disabled={disabled || pending} aria-busy={pending}>
+      {pending ? pendingLabel : label}
+    </button>
+  );
 }

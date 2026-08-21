@@ -70,8 +70,8 @@ export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupErr
       <div id="inicio-operacao">
         <SectionCard
           className="growth-start-card"
-          title="Início da operação"
-          subtitle={`${plan.elapsed_days ?? 0} ${(plan.elapsed_days ?? 0) === 1 ? "dia contabilizado" : "dias contabilizados"} · base dos ciclos de 30 dias`}
+          title="Ciclo atual"
+          subtitle="Início da operação"
           tone="neutral"
         >
           <div className="growth-cycle-summary"><span>Iniciado em <strong>{plan.started_at ? formatDate(plan.started_at) : "—"}</strong></span><span>Ciclo atual <strong>{plan.elapsed_days ?? 0} dias</strong></span></div>

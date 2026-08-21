@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { createSlots, moveSlot, openSlot, registerGain, resetSlot, updateSlot } from "@/app/dashboard/actions";
-import { BrandHeader, EmptyState, FilterChips, MarketTicker, MobileScreen, PnLValue, StatusBadge } from "@/components/app/mobile-ui";
+import { BrandHeader, EmptyState, FilterChips, MarketTicker, MobileScreen, PnLValue, SlotActionForm, StatusBadge } from "@/components/app/mobile-ui";
 import {
   formatDate,
   formatDecimal,
@@ -69,6 +69,8 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
   const livePrices = useLivePrices();
   const initialFilter: DisplayFilter = initialFlow === "abrir"
     ? "closed"
+    : initialFlow === "gain"
+      ? "aberto"
     : initialAsset?.toUpperCase() === "SOL"
       ? "SOL"
       : initialAsset?.toUpperCase() === "BTC"
@@ -164,20 +166,47 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
 
   return (
     <article className={`compact-slot-row ${asset.toLowerCase()} ${expanded ? "expanded" : ""}`}>
-      <button className="compact-slot-trigger" type="button" onClick={onToggle} aria-expanded={expanded} aria-controls={`slot-panel-${slot.id}`}>
-        <span className={`compact-asset-icon ${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : "S"}</span>
-        <span className="compact-slot-identity"><strong>#{slot.slot_number} {asset}</strong><span className="compact-slot-status-line"><StatusBadge status={slot.status} />{rank ? <small>rank {rank}</small> : null}</span></span>
-        <span className="compact-slot-metric">
-          <small>Gains op.</small>
-          <strong>{formatDecimal(getOperationalGains(slot))}</strong>
-        </span>
-        <span className="compact-slot-metric value">
-          <small>Saldo atual</small>
-          <strong>{formatUsdt(getCurrentValue(slot))}</strong>
-        </span>
-        <span className="compact-slot-metric pnl"><small>PnL</small><PnLValue value={pnl}>{formatSignedUsdt(pnl)}</PnLValue></span>
-        <span className="compact-slot-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
-      </button>
+      <div className="compact-slot-operational-row">
+        <button className="compact-slot-trigger" type="button" onClick={onToggle} aria-expanded={expanded} aria-controls={`slot-panel-${slot.id}`} aria-label={`Ver resumo do slot ${slot.slot_number} ${asset}`}>
+          <span className={`compact-asset-icon ${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : "S"}</span>
+          <span className="compact-slot-identity"><strong>#{slot.slot_number} {asset}</strong><span className="compact-slot-status-line"><StatusBadge status={slot.status} />{rank ? <small>rank {rank}</small> : null}</span></span>
+          <span className="compact-slot-metric">
+            <small>Gains op.</small>
+            <strong>{formatDecimal(getOperationalGains(slot))}</strong>
+          </span>
+          <span className="compact-slot-metric value">
+            <small>Saldo atual</small>
+            <strong>{formatUsdt(getCurrentValue(slot))}</strong>
+          </span>
+        </button>
+
+        {slot.status === "aberto" ? (
+          <SlotActionForm
+            action={registerGain}
+            slotId={slot.id}
+            label="✓ Gain"
+            pendingLabel="Gain..."
+            className="slot-quick-action"
+            buttonClassName="slot-quick-button gain"
+            onSubmit={() => announce("Registrando gain...")}
+          />
+        ) : (
+          <SlotActionForm
+            action={openSlot}
+            slotId={slot.id}
+            label="+ Abrir"
+            pendingLabel="Abrindo..."
+            className="slot-quick-action"
+            buttonClassName="slot-quick-button open"
+            hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined}
+            onSubmit={() => announce("Abrindo slot...")}
+          />
+        )}
+
+        <button className="compact-slot-menu" type="button" onClick={onToggle} aria-expanded={expanded} aria-controls={`slot-panel-${slot.id}`} aria-label={`Mais ações do slot ${slot.slot_number}`}>
+          {expanded ? "×" : "⋯"}
+        </button>
+      </div>
 
       {expanded ? (
         <div className="slot-detail-panel" id={`slot-panel-${slot.id}`}>
@@ -204,15 +233,15 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
             <Link className="slot-button slot-detail-link" href={`/slots/${slot.id}`}>Ver detalhes</Link>
             {slot.status === "aberto"
               ? <button className="slot-button" type="button" disabled>Aberto</button>
-              : <SlotAction action={openSlot} slotId={slot.id} label="Abrir" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onClick={() => announce("Abrindo slot...")} />}
-            <SlotAction action={registerGain} slotId={slot.id} label="Adicionar gain" disabled={slot.status === "zerado" || slot.status === "hold"} onClick={() => announce("Registrando gain...")} />
-            <SlotAction action={resetSlot} slotId={slot.id} label="Zerar" onClick={() => announce("Zerando slot...")} />
+              : <SlotActionForm action={openSlot} slotId={slot.id} label="Abrir" buttonClassName="slot-button" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onSubmit={() => announce("Abrindo slot...")} />}
+            <SlotActionForm action={registerGain} slotId={slot.id} label="Adicionar gain" buttonClassName="slot-button" disabled={slot.status === "zerado" || slot.status === "hold"} onSubmit={() => announce("Registrando gain...")} />
+            <SlotActionForm action={resetSlot} slotId={slot.id} label="Zerar" buttonClassName="slot-button" onSubmit={() => announce("Zerando slot...")} />
           </div>
           <details className="slot-advanced-actions">
             <summary>Editar e organizar</summary>
             <div className="slot-card-actions">
-              <SlotAction action={moveSlot} slotId={slot.id} label="Subir" hidden={{ direction: "up" }} onClick={() => announce("Movendo slot...")} />
-              <SlotAction action={moveSlot} slotId={slot.id} label="Descer" hidden={{ direction: "down" }} onClick={() => announce("Movendo slot...")} />
+              <SlotActionForm action={moveSlot} slotId={slot.id} label="Subir" buttonClassName="slot-button" hidden={{ direction: "up" }} onSubmit={() => announce("Movendo slot...")} />
+              <SlotActionForm action={moveSlot} slotId={slot.id} label="Descer" buttonClassName="slot-button" hidden={{ direction: "down" }} onSubmit={() => announce("Movendo slot...")} />
             </div>
             <form className="tool-form stacked-form" action={updateSlot}>
               <input type="hidden" name="slotId" value={slot.id} />
@@ -240,21 +269,4 @@ function Detail({ label, value }: { label: string; value: string }) {
 function SelectStrategy({ name, strategies, selectedAsset }: { name: string; strategies: StrategyView[]; selectedAsset: AssetFilter }) {
   const filtered = selectedAsset === "ALL" ? strategies : strategies.filter((strategy) => strategy.asset.toUpperCase() === selectedAsset);
   return <select name={name} required>{filtered.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.title}</option>)}</select>;
-}
-
-function SlotAction({ action, slotId, label, disabled = false, hidden, onClick }: {
-  action: (formData: FormData) => void | Promise<void>;
-  slotId: string;
-  label: string;
-  disabled?: boolean;
-  hidden?: Record<string, string>;
-  onClick: () => void;
-}) {
-  return (
-    <form action={action}>
-      <input type="hidden" name="slotId" value={slotId} />
-      {hidden ? Object.entries(hidden).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />) : null}
-      <button className="slot-button" type="submit" disabled={disabled} onClick={onClick}>{label}</button>
-    </form>
-  );
 }

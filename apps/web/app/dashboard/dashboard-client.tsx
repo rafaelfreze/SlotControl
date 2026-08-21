@@ -124,28 +124,29 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
         <div className="portfolio-title">Portfólio</div>
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
         <MetricRow title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" />
-        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper={`Inclui ${formatUsdt(contributedCapital)} em aportes`} />
+        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper={contributedCapital > 0 ? `Aportes ${formatUsdt(contributedCapital)}` : "Total"} />
         <MetricRow title="Slots" value={`${openSlots} de ${slots.length}`} helper="Ativos" />
       </section>
-
-      <CompactMarketRegimeBadge marketState={marketState} regimeSettings={regimeSettings} />
 
       <StrategyCard summary={btc} accent="gold" />
       <StrategyCard summary={sol} accent="purple" />
 
-      <section className="compact-action-bar" aria-label="Acoes principais">
-        <Link href="/slots?flow=abrir">+ Abrir</Link>
-        <Link href="/slots?flow=gain">✓ Gain</Link>
-        <Link href="/plano-crescimento">Plano</Link>
-      </section>
+      <CompactMarketRegimeBadge marketState={marketState} regimeSettings={regimeSettings} />
 
-      <Link className="compact-account-age" href="/plano-crescimento#inicio-operacao" aria-label="Tempo em operação; editar data inicial no Plano">
-        <span>Conta em operacao</span>
-        <strong>{accountAgeDays} {accountAgeDays === 1 ? "dia" : "dias"}</strong>
-        <small>Desde {accountCreatedLabel} · editar no Plano</small>
-      </Link>
-
-      <p className="mobile-session">{userEmail}</p>
+      <details className="dashboard-utility-drawer">
+        <summary>Conta e atalhos <span>{accountAgeDays} {accountAgeDays === 1 ? "dia" : "dias"}</span></summary>
+        <section className="compact-action-bar" aria-label="Acoes principais">
+          <Link href="/slots?flow=abrir">+ Abrir</Link>
+          <Link href="/slots?flow=gain">✓ Gain</Link>
+          <Link href="/plano-crescimento">Plano</Link>
+        </section>
+        <Link className="compact-account-age" href="/plano-crescimento#inicio-operacao" aria-label="Tempo em operação; editar data inicial no Plano">
+          <span>Conta em operacao</span>
+          <strong>{accountAgeDays} {accountAgeDays === 1 ? "dia" : "dias"}</strong>
+          <small>Desde {accountCreatedLabel} · editar no Plano</small>
+        </Link>
+        <p className="mobile-session">{userEmail}</p>
+      </details>
       </div>
     </MobileScreen>
   );
@@ -221,9 +222,6 @@ function StrategyCard({ summary, accent }: { summary: StrategySummary; accent: "
         </span>
         <span>
           Aberto <strong className={`financial-${getFinancialValueTone(summary.openResult)}`}>{formatSignedUsdt(summary.openResult)}</strong>
-        </span>
-        <span>
-          Slots <strong>{summary.openSlots}</strong>
         </span>
       </div>
 
