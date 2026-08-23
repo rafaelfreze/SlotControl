@@ -270,7 +270,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btc-ladder-summary span, .btc-preview-summary span { overflow: hidden; color: var(--co-muted); font-size: .46rem; text-overflow: ellipsis; white-space: nowrap; }
 .btc-ladder-summary strong, .btc-preview-summary strong { overflow: hidden; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
 .btc-ladder-summary small { color: var(--co-muted); font-size: .44rem; }
-.btc-ladder-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 7px; }
+.ladder-summary-compact { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; overflow: hidden; margin-top: 1px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); }
+.ladder-summary-compact > div { min-height: 52px; padding: 7px 9px; border: 0; border-radius: 0; background: transparent; }
+.ladder-summary-compact > div:nth-child(even) { border-left: 1px solid var(--co-line); }
+.ladder-summary-compact > div:nth-child(n + 3) { border-top: 1px solid var(--co-line); }
+.ladder-summary-compact span { overflow: visible; font-size: .5rem; text-overflow: clip; white-space: normal; }
+.ladder-summary-compact strong { font-size: .68rem; }
+.plan-settings { display: grid; gap: 6px; margin-top: 7px; }
+.plan-setting-row { min-width: 0; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); }
+.plan-setting-row-summary { display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; }
+.plan-setting-row-summary > span { display: grid; min-width: 0; gap: 2px; }
+.plan-setting-row-summary small { color: var(--co-muted); font-size: .5rem; }
+.plan-setting-row-summary strong { overflow-wrap: anywhere; font-size: .66rem; }
+.plan-setting-row-summary > button, .plan-setting-cancel { min-width: 60px; min-height: 36px; padding: 0 8px; border: 1px solid var(--co-line); border-radius: 7px; background: var(--co-surface-2); color: var(--co-gold); font-size: .55rem; font-weight: 750; }
+.plan-setting-row.editing .plan-setting-row-summary { border-bottom: 1px solid var(--co-line); }
+.plan-setting-editor { min-width: 0; padding: 7px 8px 8px; }
+.plan-setting-form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 6px; width: 100%; min-width: 0; }
+.plan-setting-form label { display: grid; min-width: 0; gap: 4px; color: var(--co-muted); font-size: .51rem; }
+.plan-setting-form input { width: 100%; min-width: 0; min-height: 34px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface); color: var(--co-text); }
+.plan-setting-form .btc-ladder-button { min-width: 60px; min-height: 36px; }
+.redistribution-cta { display: grid; width: 100%; min-width: 0; }
+.redistribution-cta .btc-ladder-button { width: 100%; min-height: 40px; }
 .btc-contribution-form { display: grid; gap: 6px; }
 .btc-ladder-compact-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 5px; }
 .btc-contribution-form label, .btc-ladder-compact-form label { display: grid; gap: 4px; color: var(--co-muted); font-size: .53rem; }
@@ -283,11 +303,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btc-ladder-guide summary { min-height: 32px; padding: 8px; color: var(--co-muted); font-size: .56rem; cursor: pointer; }
 .btc-ladder-guide ol, .btc-ladder-guide p { margin: 0; padding: 0 24px 8px; color: var(--co-muted); font-size: .55rem; line-height: 1.45; }
 .btc-ladder-table { margin-top: 8px; overflow: hidden; border: 1px solid var(--co-line); border-radius: 8px; }
-.btc-ladder-table-head, .btc-ladder-row > summary { display: grid; grid-template-columns: 42px 1fr .9fr 58px; align-items: center; gap: 5px; padding: 6px 7px; }
+.btc-ladder-table-head, .btc-ladder-row > summary { display: grid; grid-template-columns: 34px minmax(54px, 1fr) minmax(70px, .9fr) 55px; align-items: center; gap: 5px; padding: 6px 7px; }
 .btc-ladder-table-head { min-height: 26px; background: var(--co-surface-3); }
 .btc-ladder-table-head span { color: var(--co-muted); font-size: .43rem; font-weight: 780; text-transform: uppercase; }
-.btc-ladder-row { min-height: 38px; border-top: 1px solid var(--co-line); }
-.btc-ladder-row > summary { min-height: 38px; cursor: pointer; list-style: none; }
+.btc-ladder-row { min-height: 52px; border-top: 1px solid var(--co-line); }
+.btc-ladder-row > summary { min-height: 52px; cursor: pointer; list-style: none; }
 .btc-ladder-row > summary::-webkit-details-marker { display: none; }
 .btc-ladder-row > summary strong, .btc-ladder-row > summary span, .btc-ladder-row > summary b { overflow: hidden; font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
 .btc-ladder-row > summary b { font-weight: 750; }
@@ -394,7 +414,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .asset-stats span { padding-inline: 3px; }
   .asset-stats strong { font-size: .61rem; }
   .btc-ladder-summary, .btc-preview-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .btc-ladder-controls { grid-template-columns: 1fr; }
+  .plan-setting-form { grid-template-columns: minmax(0, 1fr) auto; }
+  .plan-setting-form label { grid-column: 1 / -1; }
   .history-compact-row > summary { grid-template-columns: 31px 25px minmax(0, 1fr) minmax(54px, auto) 8px; gap: 4px; padding-inline: 6px; }
 }
 

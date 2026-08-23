@@ -88,8 +88,8 @@ export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupErr
 
       <FilterChips value={activeAsset} onChange={setActiveAsset} options={[{ label: "BTC", value: "BTC", count: btcLadder.ladder?.length || 0 }, { label: "SOL", value: "SOL", count: solLadder.ladder?.length || 0 }]} />
       {activeAsset === "BTC"
-        ? <AssetLadderSection asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} />
-        : <AssetLadderSection asset="SOL" plan={solLadder} actionKeys={solActionKeys} />}
+        ? <AssetLadderSection key="BTC" asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} />
+        : <AssetLadderSection key="SOL" asset="SOL" plan={solLadder} actionKeys={solActionKeys} />}
 
       <details className="legacy-growth-history">
         <summary>Histórico financeiro anterior</summary>

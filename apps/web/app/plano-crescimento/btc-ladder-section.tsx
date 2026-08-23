@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useFormStatus } from "react-dom";
 
 import { SectionCard } from "@/components/app/mobile-ui";
@@ -185,6 +185,7 @@ function SubmitButton({ children, disabled = false, tone = "gold" }: { children:
 
 export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys }) {
   const [activeView, setActiveView] = useState<"ladder" | "gains" | "balance">("ladder");
+  const [editingSetting, setEditingSetting] = useState<"goal" | "reference" | null>(null);
   const ladder = plan.ladder || plan.ranking || [];
   const preview = plan.preview || plan.active_preview || null;
   const history = plan.history || plan.batches || [];
@@ -257,36 +258,60 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
         <p className="btc-ladder-help">O valor entra integralmente no saldo atual. Ele não cria gain; os próximos gains serão calculados sobre o novo saldo quando a próxima operação for aberta.</p>
       </SectionCard> : null}
 
-      {activeView === "ladder" ? <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)} · meta ${monthlyGoal} gains por 30 dias`} tone={asset === "BTC" ? "gold" : "purple"}>
+      {activeView === "ladder" ? <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)}`} tone={asset === "BTC" ? "gold" : "purple"}>
         {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || `A escada ${asset} está indisponível.`}</p> : null}
-        <div className="btc-ladder-summary">
+        <div className="btc-ladder-summary ladder-summary-compact" data-testid="ladder-summary">
           <Metric
-            label="Gains reais no ciclo"
+            label="Reais"
             value={formatGain(plan.real_gains_month)}
             helper={hasExactMonthlyRealGains ? undefined : "estimado (histórico legado)"}
           />
-          <Metric label="Referência assistida" value={referenceLevel === null ? "--" : `${formatGain(referenceLevel)} gains`} />
-          <Metric label="Excedente disponível" value={referenceLevel === null ? "--" : `${formatGain(plan.available_excess_gains)} gains`} />
-          <Metric label="Capital elegível" value={referenceLevel === null ? "--" : formatUsdt(numberValue(plan.available_excess_usdt))} />
+          <Metric label="Referência" value={referenceLevel === null ? "--" : `${formatGain(referenceLevel)} gains`} />
+          <Metric label="Excedente" value={referenceLevel === null ? "--" : `${formatGain(plan.available_excess_gains)} gains`} />
+          <Metric label="Elegível" value={referenceLevel === null ? "--" : formatUsdt(numberValue(plan.available_excess_usdt))} />
         </div>
 
-        <div className="btc-ladder-controls">
-          <form action={saveAssetGrowthConfig} className="btc-ladder-compact-form">
-            <input type="hidden" name="asset" value={asset} />
-            <label>Meta mensal {asset}<input name="monthlyGoal" type="number" min="1" max="1000" step="1" defaultValue={monthlyGoal} required /></label>
-            <label>Referência da escada<input name="referenceLevel" type="number" min="1" step="1" inputMode="numeric" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
-            <SubmitButton>Salvar configuração</SubmitButton>
-          </form>
-          <form action={prepareAssetRedistribution} className="btc-ladder-compact-form">
+        <div className="plan-settings" data-testid="plan-settings">
+          <PlanSettingRow
+            label="Meta mensal"
+            value={`${formatGain(monthlyGoal)} ${monthlyGoal === 1 ? "gain" : "gains"}`}
+            editing={editingSetting === "goal"}
+            onEdit={() => setEditingSetting((current) => current === "goal" ? null : "goal")}
+            testId="plan-setting-goal"
+          >
+            <form action={saveAssetGrowthConfig} className="plan-setting-form" data-testid="plan-setting-goal-editor">
+              <input type="hidden" name="asset" value={asset} />
+              <input type="hidden" name="referenceLevel" value={referenceLevel ?? ""} />
+              <label>Nova meta mensal<input name="monthlyGoal" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={monthlyGoal} required /></label>
+              <button className="plan-setting-cancel" type="button" onClick={() => setEditingSetting(null)}>Cancelar</button>
+              <SubmitButton>Salvar</SubmitButton>
+            </form>
+          </PlanSettingRow>
+          <PlanSettingRow
+            label="Referência da escada"
+            value={referenceLevel === null ? "Não definida" : `${formatGain(referenceLevel)} gains`}
+            editing={editingSetting === "reference"}
+            onEdit={() => setEditingSetting((current) => current === "reference" ? null : "reference")}
+            testId="plan-setting-reference"
+          >
+            <form action={saveAssetGrowthConfig} className="plan-setting-form" data-testid="plan-setting-reference-editor">
+              <input type="hidden" name="asset" value={asset} />
+              <input type="hidden" name="monthlyGoal" value={monthlyGoal} />
+              <label>Nova referência<input name="referenceLevel" type="number" min="1" step="1" inputMode="numeric" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
+              <button className="plan-setting-cancel" type="button" onClick={() => setEditingSetting(null)}>Cancelar</button>
+              <SubmitButton>Salvar</SubmitButton>
+            </form>
+          </PlanSettingRow>
+          <form action={prepareAssetRedistribution} className="redistribution-cta" data-testid="prepare-redistribution">
             <input type="hidden" name="asset" value={asset} />
             <input type="hidden" name="idempotencyKey" value={actionKeys.prepare} />
             <input type="hidden" name="referenceLevel" value={referenceLevel ?? ""} />
-            <SubmitButton disabled={!plan.ok || ladder.length < 2}>Preparar redistribuição</SubmitButton>
+            <SubmitButton disabled={!plan.ok || ladder.length < 2 || referenceLevel === null}>Preparar redistribuição</SubmitButton>
           </form>
         </div>
 
         <details className="btc-ladder-guide">
-          <summary>Como fazer a redistribuição</summary>
+          <summary>Como funciona?</summary>
           <p>A meta de {monthlyGoal} mede a velocidade a cada 30 dias. A referência é o nível operacional escolhido para equilibrar a escada; ela não cria dívida automática para cada slot.</p>
           <ol>
             <li>Escolha uma referência operacional, por exemplo 7 ou 14 gains.</li>
@@ -310,11 +335,23 @@ function Metric({ label, value, helper }: { label: string; value: string; helper
   return <div><span>{label}</span><strong>{value}</strong>{helper ? <small>{helper}</small> : null}</div>;
 }
 
+function PlanSettingRow({ label, value, editing, onEdit, testId, children }: { label: string; value: string; editing: boolean; onEdit: () => void; testId: string; children: ReactNode }) {
+  return (
+    <div className={`plan-setting-row${editing ? " editing" : ""}`} data-testid={testId}>
+      <div className="plan-setting-row-summary">
+        <span><small>{label}</small><strong>{value}</strong></span>
+        <button type="button" onClick={onEdit} aria-expanded={editing}>{editing ? "Fechar" : "Editar"}</button>
+      </div>
+      {editing ? <div className="plan-setting-editor">{children}</div> : null}
+    </div>
+  );
+}
+
 function LadderList({ asset, slots, referenceLevel, contributionBySlot = {} }: { asset: GrowthAsset; slots: AssetLadderSlotItem[]; referenceLevel: number | null; contributionBySlot?: Record<string, { amountUsdt: number; gains: number }> }) {
   const primarySlots = slots.slice(0, 5);
   const remainingSlots = slots.slice(5);
   return (
-    <div className="btc-ladder-table" role="list" aria-label={`Ranking operacional ${asset}`}>
+    <div className="btc-ladder-table" role="list" aria-label={`Ranking operacional ${asset}`} data-testid="ladder-ranking">
       <div className="btc-ladder-table-head" aria-hidden="true">
         <span>Ranking</span><span>Slot</span><span>Nível</span><span>Status</span>
       </div>
