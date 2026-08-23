@@ -4,5 +4,5 @@ export function getValueForGains(baseValue: number, growthContribution: number, 
     return capital;
   }
 
-  return Number((capital * (1 + gainRate * gains)).toFixed(8));
+  return Number((capital * ((1 + gainRate) ** gains)).toFixed(8));
 }

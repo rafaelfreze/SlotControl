@@ -77,6 +77,7 @@ function rpcMessage(code: string | undefined, fallback: string) {
   const messages: Record<string, string> = {
     COINOPS_GROWTH_REFERENCE_MUST_BE_POSITIVE_INTEGER: "Informe uma referência operacional inteira e maior que zero.",
     COINOPS_GROWTH_REFERENCE_MUST_BE_POSITIVE: "Informe uma referência operacional maior que zero.",
+    COINOPS_GROWTH_REFERENCE_DIFFERS_FROM_SAVED_CONFIG: "A referência mudou. Salve a configuração do ativo antes de preparar a redistribuição.",
     COINOPS_GROWTH_OPERATIONAL_STATE_MUST_BE_WHOLE_FOR_SLOT: "A escada contém um nível fracionado e foi bloqueada para correção segura.",
     COINOPS_GROWTH_BATCH_STALE: "A escada mudou depois da prévia. Prepare uma nova redistribuição.",
     COINOPS_GROWTH_PREVIEW_EQUITY_MISMATCH: "A prévia não conservou o patrimônio e foi bloqueada.",
@@ -260,25 +261,30 @@ export async function applyAssetExternalBalance(formData: FormData) {
   planRedirect(`Saldo de ${amountLabel} USDT adicionado${slotNumber > 0 ? ` ao Slot #${slotNumber}` : ""}. Gains reais e operacionais não foram alterados.${staleNotice}`);
 }
 
-export async function saveAssetMonthlyGoal(formData: FormData) {
+export async function saveAssetGrowthConfig(formData: FormData) {
   const asset = formAsset(formData);
   const monthlyGoal = Math.trunc(formNumber(formData, "monthlyGoal"));
+  const referenceLevel = formNumber(formData, "referenceLevel");
   if (!Number.isFinite(monthlyGoal) || monthlyGoal < 1 || monthlyGoal > 1000) {
     planRedirect(`A meta mensal ${asset} deve ser um inteiro entre 1 e 1000.`, { tone: "error" });
   }
+  if (!Number.isInteger(referenceLevel) || referenceLevel <= 0) {
+    planRedirect(`A referência ${asset} deve ser um inteiro maior que zero.`, { tone: "error" });
+  }
 
   const { supabase } = await getAuthenticatedClient();
-  const { error } = await supabase.rpc("update_growth_plan_goal", {
+  const { error } = await supabase.rpc("update_growth_plan_config", {
     p_asset: asset,
-    p_monthly_goal: monthlyGoal
+    p_monthly_goal: monthlyGoal,
+    p_ladder_reference: referenceLevel
   });
   if (error) {
-    planRedirect(rpcMessage(error.message, `Não foi possível salvar a meta mensal ${asset}.`), { tone: "error" });
+    planRedirect(rpcMessage(error.message, `Não foi possível salvar a configuração ${asset}.`), { tone: "error" });
   }
 
   revalidatePath("/dashboard");
   revalidatePath("/plano-crescimento");
-  planRedirect(`Meta mensal ${asset} salva e auditada.`);
+  planRedirect(`Meta e referência ${asset} salvas e auditadas sem alterar o outro ativo.`);
 }
 
 export async function saveGrowthPlanStartDate(formData: FormData) {

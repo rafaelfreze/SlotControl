@@ -14,6 +14,7 @@ export type BtcLadderSlot = {
   operational_gains: number;
   operational_value_usdt: number;
   gain_unit_usdt: number;
+  gain_rate: number;
 };
 
 export type RankedBtcLadderSlot<TSlot extends BtcLadderSlot = BtcLadderSlot> = TSlot & {
@@ -109,6 +110,9 @@ function validateSlot(slot: BtcLadderSlot) {
   if (!Number.isFinite(slot.gain_unit_usdt) || slot.gain_unit_usdt <= 0) {
     throw new BtcLadderDomainError(`Slot ${slot.id}: gain_unit_usdt deve ser positivo.`);
   }
+  if (!Number.isFinite(slot.gain_rate) || slot.gain_rate <= 0 || slot.gain_rate > 1) {
+    throw new BtcLadderDomainError(`Slot ${slot.id}: gain_rate deve ser positivo.`);
+  }
 }
 
 function validateInput(referenceOperationalGains: number, slots: readonly BtcLadderSlot[]) {
@@ -140,6 +144,22 @@ export function usdtToGainEquivalent(amountUsdt: number, gainUnitUsdt: number) {
   return round8(amountUsdt / gainUnitUsdt);
 }
 
+export function compoundOperationalValue(valueUsdt: number, gainRate: number, gains: number) {
+  if (!isFiniteNonNegative(valueUsdt) || !Number.isFinite(gainRate) || gainRate <= 0 || gainRate > 1
+    || !Number.isInteger(gains) || gains < 0) {
+    throw new BtcLadderDomainError("Composicao operacional recebeu valores invalidos.");
+  }
+  return round8(valueUsdt * ((1 + gainRate) ** gains));
+}
+
+export function reverseOperationalGains(valueUsdt: number, gainRate: number, gains: number) {
+  if (!isFiniteNonNegative(valueUsdt) || !Number.isFinite(gainRate) || gainRate <= 0 || gainRate > 1
+    || !Number.isInteger(gains) || gains < 0) {
+    throw new BtcLadderDomainError("Reversao operacional recebeu valores invalidos.");
+  }
+  return round8(valueUsdt / ((1 + gainRate) ** gains));
+}
+
 function rankSlots<TSlot extends BtcLadderSlot>(slots: readonly TSlot[], referenceOperationalGains: number) {
   return [...slots]
     .sort(compareSlots)
@@ -165,11 +185,14 @@ function summarizeRemaining(slots: readonly BtcLadderSlot[], referenceOperationa
       const difference = slot.operational_gains - referenceOperationalGains;
       if (difference > EPSILON) {
         summary.excessGains = round8(summary.excessGains + difference);
-        summary.excessUsdt = round8(summary.excessUsdt + gainEquivalentToUsdt(difference, slot.gain_unit_usdt));
+        summary.excessUsdt = round8(summary.excessUsdt + slot.operational_value_usdt
+          - reverseOperationalGains(slot.operational_value_usdt, slot.gain_rate, difference));
       } else if (difference < -EPSILON) {
         const deficit = -difference;
         summary.deficitGains = round8(summary.deficitGains + deficit);
-        summary.deficitUsdt = round8(summary.deficitUsdt + gainEquivalentToUsdt(deficit, slot.gain_unit_usdt));
+        summary.deficitUsdt = round8(summary.deficitUsdt
+          + compoundOperationalValue(slot.operational_value_usdt, slot.gain_rate, deficit)
+          - slot.operational_value_usdt);
       }
       return summary;
     },
@@ -205,18 +228,21 @@ export function buildBtcLadderPreview<TSlot extends BtcLadderSlot>(input: {
       if (donorExcess <= EPSILON) break;
       if (receiverDeficit <= EPSILON) continue;
 
-      let donorGainEquivalent = Math.min(
-        Math.trunc(donorExcess),
-        Math.floor(((receiverDeficit * receiver.gain_unit_usdt) + EPSILON) / donor.gain_unit_usdt)
-      );
+      let donorGainEquivalent = Math.min(Math.trunc(donorExcess), Math.trunc(receiverDeficit));
       let receiverGainEquivalent = 0;
       let amountUsdt = 0;
       while (donorGainEquivalent > 0) {
-        const candidateAmount = gainEquivalentToUsdt(donorGainEquivalent, donor.gain_unit_usdt);
-        const candidateReceiverGains = Math.min(
-          Math.trunc(receiverDeficit),
-          Math.floor((candidateAmount + EPSILON) / receiver.gain_unit_usdt)
-        );
+        const candidateAmount = round8(donor.operational_value_usdt
+          - reverseOperationalGains(donor.operational_value_usdt, donor.gain_rate, donorGainEquivalent));
+        let candidateReceiverGains = Math.trunc(receiverDeficit);
+        while (candidateReceiverGains > 0
+          && round8(compoundOperationalValue(
+            receiver.operational_value_usdt,
+            receiver.gain_rate,
+            candidateReceiverGains
+          ) - receiver.operational_value_usdt) > candidateAmount + EPSILON) {
+          candidateReceiverGains -= 1;
+        }
         if (candidateReceiverGains > 0) {
           amountUsdt = candidateAmount;
           receiverGainEquivalent = candidateReceiverGains;

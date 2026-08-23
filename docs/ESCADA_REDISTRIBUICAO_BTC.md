@@ -68,11 +68,11 @@ Assim, dez gains de 1% não são uma parcela linear de 10% sobre a base antiga: 
 
 Um aporte informado diretamente em USDT é diferente: o valor entra integralmente no saldo, sem criar gain operacional nem gain real. Na próxima operação, os gains passam a incidir sobre esse novo saldo completo.
 
-Ao abrir uma nova operação BTC ou SOL, o CoinOps congela o saldo operacional total daquele instante como valor da posição. O próximo gain real é calculado sobre esse snapshot completo (`saldo congelado × taxa do gain`). Assim, aportes e redistribuições já incorporados participam dos gains futuros. Uma posição que já estava OPEN preserva seu notional, preço, alvo e data originais e nunca é reescrita no meio da execução.
+Ao abrir uma nova operação BTC ou SOL, o CoinOps congela o saldo operacional total daquele instante como valor físico da posição e usa esse snapshot somente na marcação de mercado. O gain manual realizado é um conceito separado: ele aplica a taxa configurada do ativo sobre o saldo operacional total imediatamente anterior ao fechamento (`saldo operacional atual × taxa do gain`). Assim, aportes e redistribuições confirmados durante uma posição OPEN participam do próximo gain sem reescrever notional, quantidade, preço, alvo ou data da operação já executada.
 
 ## 4. Referência assistida
 
-A referência operacional da redistribuição é explícita e editável. O sistema não inventa uma referência rígida a partir da meta mensal.
+A referência operacional da redistribuição é explícita, editável e persistida separadamente para BTC e SOL. O sistema não inventa uma referência rígida a partir da meta mensal e nunca usa a configuração do outro ativo como fallback.
 
 Ao preparar um batch, o usuário informa o nível de referência `L`. Uma referência anterior pode ser apresentada como conveniência, mas continua editável e só produz efeitos depois da confirmação da nova prévia.
 
@@ -99,10 +99,10 @@ Para cada par elegível:
 excedente do doador = operational_gains do doador - L
 defasagem do recebedor = L - operational_gains do recebedor
 
-capacidade do doador em USDT = excedente × unidade do gain do doador
-necessidade do recebedor em USDT = defasagem × unidade do gain do recebedor
+capacidade do doador em USDT = saldo atual - saldo atual / (1 + taxa)^excedente
+necessidade do recebedor em USDT = saldo atual × (1 + taxa)^defasagem - saldo atual
 
-valor candidato = gains inteiros do doador × unidade do gain do doador
+valor candidato = saldo atual do doador - saldo atual do doador / (1 + taxa)^gains inteiros
 
 o candidato só é elegível quando:
 - retira uma quantidade inteira de gains do doador;
@@ -145,13 +145,13 @@ A ordem `C` antes de `B` decorre da prioridade oficial de completar primeiro que
 
 ## 6. Conversão gains ↔ USDT
 
-A conversão é centralizada e usa a composição financeira vigente do slot:
+A conversão é centralizada e usa o saldo total corrente do slot:
 
 ```text
-gain_unit_usdt = round((base_value + growth_contribution) × gain_rate, 8)
+gain_unit_usdt = round(operational_slot_value × gain_rate, 8)
 ```
 
-O cálculo de prévia e o cálculo de confirmação devem usar a mesma função de domínio.
+Para retirar `N` gains operacionais do doador, o servidor aplica a operação inversa composta; para acrescentar `N` gains completos ao recebedor, calcula a composição a partir do saldo corrente. O cálculo de prévia e o cálculo de confirmação usam as mesmas funções de domínio.
 
 Se as unidades forem diferentes, o mesmo USDT pode representar quantidades
 inteiras diferentes no doador e no recebedor. Por isso o ledger guarda
@@ -188,7 +188,7 @@ Redistribuição nunca modifica:
 
 O CoinOps guarda snapshots contábeis da posição aberta, incluindo o notional e a unidade de gain da abertura. Uma redistribuição posterior altera o saldo operacional, mas não reescreve o negócio já executado.
 
-Quando a posição fecha, somente o gain real é acrescentado. O total enviado anteriormente permanece em `redistribution_sent_usdt`; portanto, o capital transferido não reaparece no doador.
+Quando a posição fecha, somente um gain real é acrescentado, calculado sobre o saldo operacional corrente. O total enviado anteriormente permanece em `redistribution_sent_usdt`; portanto, o capital transferido não reaparece no doador. Os snapshots físicos da posição permanecem intocados e servem apenas ao PnL aberto.
 
 ## 8. Preparação, edição e confirmação
 
@@ -218,7 +218,8 @@ As estruturas oficiais são:
 - `coinops.slot_capital_ledger`: partidas de abertura, gain real, débito, crédito e aporte externo;
 - `coinops.btc_external_contributions`: aportes externos manuais BTC ou SOL, com nome físico legado preservado;
 - `coinops.slot_compounding_adjustments`: auditoria imutável do antes/depois da conversão única para saldo composto sequencial;
-- `coinops.growth_plan_goal_audit`: alterações das metas mensais BTC e SOL;
+- `coinops.growth_plan_goal_audit`: alterações independentes das metas mensais e referências BTC e SOL;
+- `coinops.slot_operational_reconciliations`: dry-run e evidência imutável da reconstrução de cada saldo pelo ledger;
 - `coinops.growth_plan_start_audit`: alterações da data inicial operacional e quantidade de prévias invalidadas.
 
 A confirmação usa lock transacional e bloqueio das linhas dos slots. A mesma chave de confirmação não cria um segundo efeito. Duas abas não podem aplicar o mesmo patrimônio duas vezes: o primeiro request que confirma um batch conclui; qualquer repetição desse mesmo batch retorna o resultado já persistido sem movimentar capital novamente.
@@ -267,7 +268,7 @@ A migration inicial deve ser aditiva e preservar integralmente o estado anterior
 - `real_gains`, `added_gains`, `gains`, valores, status, preços e históricos existentes não são zerados nem reclassificados;
 - posições BTC e SOL abertas recebem snapshots sem alterar os campos já executados.
 
-A conversão da contabilidade linear antiga para a composição sequencial reproduz o ledger imutável na ordem dos eventos. Ela corrige somente `realized_profit`, o valor efetivo dos aportes manuais antigos e a unidade contábil de gain de posições abertas. `real_gains`, `operational_gains`, status, notional, quantidade, entrada, alvo, datas e histórico permanecem intactos. Cada antes/depois é registrado em `coinops.slot_compounding_adjustments`.
+A conversão da contabilidade linear antiga para a composição sequencial reproduz o ledger imutável e os ajustes auditados na ordem dos eventos. Ela corrige somente campos derivados reconstruíveis: `realized_profit`, composição do aporte e saldos internos pareados de redistribuição. `real_gains`, `operational_gains`, status, notional, quantidade, entrada, alvo, datas e histórico permanecem intactos. O dry-run e o antes/depois ficam em `coinops.slot_operational_reconciliations`; os ajustes anteriores continuam preservados em `coinops.slot_compounding_adjustments`.
 
 No corte para a escada inteira, níveis operacionais fracionados que já tenham
 sido produzidos pela regra anterior são truncados apenas no contador da
@@ -327,7 +328,7 @@ O teste permanente de banco está em `supabase/tests/btc_ladder_redistribution.s
 Pré-requisitos:
 
 - PostgreSQL/Supabase **local** com o scaffold compartilhado do CoinOps;
-- migrations `20260809033335_add_btc_ladder_redistribution.sql`, `20260809033608_index_btc_ladder_product_foreign_keys.sql`, `20260809165604_allow_edit_growth_plan_start_date.sql`, `20260810125830_add_btc_manual_operational_gains.sql`, `20260810134300_generalize_growth_ladder_btc_sol.sql` e `20260811021309_enforce_integer_ladder_gains.sql` já aplicadas nessa base local;
+- migrations `20260809033335_add_btc_ladder_redistribution.sql`, `20260809033608_index_btc_ladder_product_foreign_keys.sql`, `20260809165604_allow_edit_growth_plan_start_date.sql`, `20260810125830_add_btc_manual_operational_gains.sql`, `20260810134300_generalize_growth_ladder_btc_sol.sql`, `20260811021309_enforce_integer_ladder_gains.sql`, `20260823223000_compound_operational_finance_and_asset_config.sql` e `20260823234500_repair_full_ledger_compound_reconciliation.sql` já aplicadas nessa base local;
 - `psql` disponível;
 - URL apontando explicitamente para a base local, nunca para o projeto vinculado/remoto.
 

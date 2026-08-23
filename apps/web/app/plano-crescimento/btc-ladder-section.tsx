@@ -13,7 +13,7 @@ import {
   cancelAssetRedistribution,
   confirmAssetRedistribution,
   prepareAssetRedistribution,
-  saveAssetMonthlyGoal,
+  saveAssetGrowthConfig,
   type GrowthAsset
 } from "./actions";
 
@@ -188,7 +188,7 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
   const ladder = plan.ladder || plan.ranking || [];
   const preview = plan.preview || plan.active_preview || null;
   const history = plan.history || plan.batches || [];
-  const monthlyGoal = Number(plan.monthly_goal || (asset === "BTC" ? 7 : 1));
+  const monthlyGoal = Number(plan.monthly_goal ?? (asset === "BTC" ? 7 : 1));
   const referenceCandidate = plan.reference_level ?? plan.suggested_reference_level;
   const parsedReference = numberValue(referenceCandidate);
   const referenceLevel = referenceCandidate !== null && referenceCandidate !== undefined && parsedReference > 0
@@ -271,15 +271,16 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
         </div>
 
         <div className="btc-ladder-controls">
-          <form action={saveAssetMonthlyGoal} className="btc-ladder-compact-form">
+          <form action={saveAssetGrowthConfig} className="btc-ladder-compact-form">
             <input type="hidden" name="asset" value={asset} />
             <label>Meta mensal {asset}<input name="monthlyGoal" type="number" min="1" max="1000" step="1" defaultValue={monthlyGoal} required /></label>
-            <SubmitButton>Salvar meta</SubmitButton>
+            <label>Referência da escada<input name="referenceLevel" type="number" min="1" step="1" inputMode="numeric" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
+            <SubmitButton>Salvar configuração</SubmitButton>
           </form>
           <form action={prepareAssetRedistribution} className="btc-ladder-compact-form">
             <input type="hidden" name="asset" value={asset} />
             <input type="hidden" name="idempotencyKey" value={actionKeys.prepare} />
-            <label>Referência da escada<input name="referenceLevel" type="number" min="1" step="1" inputMode="numeric" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
+            <input type="hidden" name="referenceLevel" value={referenceLevel ?? ""} />
             <SubmitButton disabled={!plan.ok || ladder.length < 2}>Preparar redistribuição</SubmitButton>
           </form>
         </div>

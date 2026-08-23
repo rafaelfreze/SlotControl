@@ -98,7 +98,7 @@ function currentValue(slot: Pick<SlotRecord, "base_value" | "gain_rate" | "gains
   const operationalValue = Number(slot.operational_slot_value);
   return Number.isFinite(operationalValue) && operationalValue >= 0
     ? operationalValue
-    : Number(slot.base_value || 0) * (1 + Number(slot.gain_rate || 0) * Number(slot.gains || 0));
+    : getValueForGains(Number(slot.base_value || 0), 0, Number(slot.gain_rate || 0), Number(slot.gains || 0));
 }
 
 function roundEntryPrice(value: number) {

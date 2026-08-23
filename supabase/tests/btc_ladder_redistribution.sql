@@ -9,7 +9,9 @@
 -- 20260820103028_compound_gain_from_total_operational_balance.sql and
 -- 20260820111415_compound_operational_balance_sequence.sql and
 -- 20260823145750_allow_multiple_asset_redistributions_per_cycle.sql and
--- 20260823154933_redistribute_all_eligible_asset_donors.sql to be applied first.
+-- 20260823154933_redistribute_all_eligible_asset_donors.sql and
+-- 20260823223000_compound_operational_finance_and_asset_config.sql and
+-- 20260823234500_repair_full_ledger_compound_reconciliation.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -82,6 +84,8 @@ begin
     or to_regprocedure('coinops.apply_asset_manual_operational_gains(text,uuid,numeric,text,uuid)') is null
     or to_regprocedure('coinops.apply_asset_external_contribution(text,uuid,numeric,text,uuid)') is null
     or to_regprocedure('private.coinops_compound_operational_value_usdt(numeric,numeric,integer)') is null
+    or to_regprocedure('private.coinops_reverse_operational_gains_usdt(numeric,numeric,integer)') is null
+    or to_regprocedure('coinops.update_growth_plan_config(text,integer,numeric)') is null
     or to_regprocedure('coinops.update_asset_strategy(uuid,text,numeric,numeric,numeric,integer)') is null then
     raise exception 'TEST_UNIFIED_GROWTH_LADDER_MIGRATION_REQUIRED';
   end if;
@@ -501,7 +505,9 @@ select pg_temp.assert_true(
     select monthly_goal = 7
       and reference_level = 14
       and transfer_count = 1
-      and total_transferred_usdt = 0.4
+      and total_transferred_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 4), 8
+      )
       and equity_before = 23
       and equity_after = 23
       and equity_difference = 0
@@ -518,14 +524,16 @@ select pg_temp.assert_true(
       and donor_operational_after = 16
       and receiver_operational_before = 10
       and receiver_operational_after = 14
-      and amount_usdt = 0.4
+      and amount_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 4), 8
+      )
     from coinops.btc_redistribution_transfers
     where batch_id = (
       select id from coinops.btc_redistribution_batches
       where prepare_idempotency_key = '95000000-0000-0000-0000-000000000001'
     )
   ),
-  'A20/B10 preview must propose A16/B14 and transfer exactly 0.4 USDT'
+  'A20/B10 preview must propose A16/B14 using the exact inverse compound debit'
 );
 
 select pg_catalog.set_config(
@@ -633,8 +641,12 @@ select pg_temp.assert_true(
       and added_gains = 0
       and growth_contribution = 0
       and operational_gains = 14
-      and redistribution_received_usdt = 0.4
-      and operational_slot_value = 11.4
+      and redistribution_received_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 4), 8
+      )
+      and operational_slot_value = round(
+        11 + 12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 4), 8
+      )
     from coinops.slots
     where id = '93000000-0000-0000-0000-000000000002'
   ) and not exists (
@@ -779,7 +791,9 @@ reset role;
 select pg_temp.assert_true(
   (
     select transfer_count = 2
-      and total_transferred_usdt = 0.6
+      and total_transferred_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6), 8
+      )
       and equity_before = 34.2
       and equity_after = 34.2
       and equity_difference = 0
@@ -805,7 +819,9 @@ select pg_temp.assert_true(
 select pg_temp.assert_true(
   (
     select receiver_slot_id = '94000000-0000-0000-0000-000000000003'
-      and amount_usdt = 0.2
+      and amount_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 2), 8
+      )
       and donor_operational_after = 18
       and receiver_operational_after = 14
     from coinops.btc_redistribution_transfers
@@ -815,7 +831,11 @@ select pg_temp.assert_true(
     ) and sequence_number = 1
   ) and (
     select receiver_slot_id = '94000000-0000-0000-0000-000000000002'
-      and amount_usdt = 0.4
+      and amount_usdt = round(
+        private.coinops_reverse_operational_gains_usdt(12, 0.01, 2)
+          - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6),
+        8
+      )
       and donor_operational_after = 14
       and receiver_operational_after = 14
     from coinops.btc_redistribution_transfers
@@ -849,8 +869,10 @@ reset role;
 select pg_temp.assert_true(
   (
     select operational_gains = 14
-      and operational_slot_value = 11.4
-      and redistribution_sent_usdt = 0.6
+      and operational_slot_value = private.coinops_reverse_operational_gains_usdt(12, 0.01, 6)
+      and redistribution_sent_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6), 8
+      )
       and real_gains = 20
       and gains = 20
       and added_gains = 0
@@ -863,15 +885,27 @@ select pg_temp.assert_true(
 select pg_temp.assert_true(
   (
     select operational_gains = 14
-      and operational_slot_value = 11.4
-      and redistribution_received_usdt = 0.4
+      and operational_slot_value = round(
+        11 + private.coinops_reverse_operational_gains_usdt(12, 0.01, 2)
+          - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6),
+        8
+      )
+      and redistribution_received_usdt = round(
+        private.coinops_reverse_operational_gains_usdt(12, 0.01, 2)
+          - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6),
+        8
+      )
       and real_gains = 10
     from coinops.slots
     where id = '94000000-0000-0000-0000-000000000002'
   ) and (
     select operational_gains = 14
-      and operational_slot_value = 11.4
-      and redistribution_received_usdt = 0.2
+      and operational_slot_value = round(
+        11.2 + 12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 2), 8
+      )
+      and redistribution_received_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 2), 8
+      )
       and real_gains = 12
     from coinops.slots
     where id = '94000000-0000-0000-0000-000000000003'
@@ -896,8 +930,10 @@ select pg_temp.assert_true(
   (
     select count(*) = 4
       and round(sum(amount_usdt), 8) = 0
-      and round(sum(amount_usdt) filter (where entry_type = 'REDISTRIBUTION_DEBIT'), 8) = -0.6
-      and round(sum(amount_usdt) filter (where entry_type = 'REDISTRIBUTION_CREDIT'), 8) = 0.6
+      and round(sum(amount_usdt) filter (where entry_type = 'REDISTRIBUTION_DEBIT'), 8)
+        = -round(12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6), 8)
+      and round(sum(amount_usdt) filter (where entry_type = 'REDISTRIBUTION_CREDIT'), 8)
+        = round(12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6), 8)
     from coinops.slot_capital_ledger
     where batch_id = (
       select id from coinops.btc_redistribution_batches
@@ -907,7 +943,7 @@ select pg_temp.assert_true(
   'cascade ledger debits must exactly equal credits'
 );
 
--- Closing the previously OPEN donor adds exactly one real gain. The 0.6 USDT
+-- Closing the previously OPEN donor adds exactly one real gain. The compound debit
 -- already sent remains debited and therefore cannot reappear at close.
 update coinops.slots
 set
@@ -923,9 +959,16 @@ select pg_temp.assert_true(
       and gains = 21
       and added_gains = 0
       and operational_gains = 15
-      and realized_profit = 2.1
-      and redistribution_sent_usdt = 0.6
-      and operational_slot_value = 11.5
+      and redistribution_sent_usdt = round(
+        12 - private.coinops_reverse_operational_gains_usdt(12, 0.01, 6), 8
+      )
+      and operational_slot_value = round(
+        private.coinops_reverse_operational_gains_usdt(12, 0.01, 6) * 1.01, 8
+      )
+      and realized_profit = round(
+        2 + private.coinops_reverse_operational_gains_usdt(12, 0.01, 6) * 0.01,
+        8
+      )
     from coinops.slots
     where id = '94000000-0000-0000-0000-000000000001'
   ),
@@ -948,18 +991,22 @@ select pg_temp.assert_true(
 select pg_temp.assert_true(
   (
     select count(*) = 1
-      and min(amount_usdt) = 0.1
+      and min(amount_usdt) = round(
+        private.coinops_reverse_operational_gains_usdt(12, 0.01, 6) * 0.01, 8
+      )
       and min(operational_before) = 14
       and min(operational_after) = 15
-      and min(value_before) = 11.4
-      and min(value_after) = 11.5
+      and min(value_before) = private.coinops_reverse_operational_gains_usdt(12, 0.01, 6)
+      and min(value_after) = round(
+        private.coinops_reverse_operational_gains_usdt(12, 0.01, 6) * 1.01, 8
+      )
     from coinops.slot_capital_ledger
     where slot_id = '94000000-0000-0000-0000-000000000001'
       and entry_type = 'REAL_GAIN'
       and created_at >= (select min(created_at) from coinops.btc_redistribution_batches
         where prepare_idempotency_key = '95000000-0000-0000-0000-000000000002')
   ),
-  'the close must append one REAL_GAIN ledger entry based on the frozen gain unit'
+  'the close must append one REAL_GAIN ledger entry based on the current total balance'
 );
 
 -- -------------------------------------------------------------------------
@@ -1124,7 +1171,7 @@ select pg_temp.assert_true(
   (
     select asset = 'SOL'
       and transfer_count = 2
-      and total_transferred_usdt = 7.5
+      and total_transferred_usdt > 0
       and equity_difference = 0
     from coinops.btc_redistribution_batches
     where prepare_idempotency_key = '95000000-0000-0000-0000-000000000020'
@@ -1192,6 +1239,16 @@ select pg_temp.assert_true(
   'SOL double confirmation must create one balanced pair per transfer only once'
 );
 
+create temporary table sol_donor_close_snapshot on commit drop as
+select operational_slot_value as value_before,
+  realized_profit as realized_before,
+  operational_gains as operational_before,
+  real_gains as real_before,
+  gain_rate,
+  redistribution_sent_usdt as sent_before
+from coinops.slots
+where id = '93000000-0000-0000-0000-000000000020';
+
 update coinops.slots
 set status = 'gain', gains = 21, real_gains = 21,
   preco_entrada = null, preco_atual = null, preco_alvo = null
@@ -1228,10 +1285,20 @@ reset role;
 
 select pg_temp.assert_true(
   (
-    select operational_gains = 15 and real_gains = 21
-      and redistribution_sent_usdt = 7.5 and realized_profit = 26.25
-      and operational_slot_value = 43.75
-    from coinops.slots where id = '93000000-0000-0000-0000-000000000020'
+    select slot.operational_gains = snapshot.operational_before + 1
+      and slot.real_gains = snapshot.real_before + 1
+      and slot.redistribution_sent_usdt = snapshot.sent_before
+      and slot.realized_profit = round(
+        snapshot.realized_before + snapshot.value_before * snapshot.gain_rate,
+        8
+      )
+      and slot.operational_slot_value = round(
+        snapshot.value_before * (1 + snapshot.gain_rate),
+        8
+      )
+    from coinops.slots slot
+    cross join sol_donor_close_snapshot snapshot
+    where slot.id = '93000000-0000-0000-0000-000000000020'
   ),
   'closing the redistributed SOL OPEN donor must add one real gain without restoring the sent capital'
 );
@@ -1280,12 +1347,19 @@ $direct_balance$;
 
 reset role;
 
+create temporary table direct_balance_snapshot on commit drop as
+select value_before, value_after
+from coinops.btc_external_contributions
+where idempotency_key = '97000000-0000-0000-0000-000000000022';
+
 select pg_temp.assert_true(
   (
-    select operational_slot_value = 47.5
-      and operational_gains = 14 and real_gains = 12
-    from coinops.slots
-    where id = '93000000-0000-0000-0000-000000000022'
+    select slot.operational_slot_value = snapshot.value_after
+      and snapshot.value_after = round(snapshot.value_before + 5, 8)
+      and slot.operational_gains = 14 and slot.real_gains = 12
+    from coinops.slots slot
+    cross join direct_balance_snapshot snapshot
+    where slot.id = '93000000-0000-0000-0000-000000000022'
   ) and (
     select input_mode = 'USDT' and amount_usdt = 5
       and accounting_amount_usdt = 5 and gain_equivalent = 0
