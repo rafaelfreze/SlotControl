@@ -123,7 +123,7 @@ npm run build
 - Ranking por ativo e gains operacionais, incluindo slots abertos como doadores ou recebedores sem reescrever a posição executada
 - Gains reais imutáveis, gains operacionais redistribuíveis e gains adicionados anteriores preservados como legado
 - Ajuste manual por quantidade de gains no Plano, com sugestão para completar o líder e conversão financeira server-side
-- Ledger transacional para redistribuições internas e aportes externos, com conservação patrimonial e idempotência
+- Ledger transacional para redistribuições internas e aportes externos, com conservação patrimonial, idempotência e múltiplas redistribuições BTC/SOL permitidas no mesmo ciclo
 - Taxa de gain configurável por estratégia, usada na unidade financeira `round((base + aporte) × taxa, 8)`; saldos de redistribuição permanecem contabilizados separadamente
 - Preço de entrada identificado ao abrir o slot, sem exibição ou edição manual no card; rankings separados de slots abertos e fechados por quantidade de gains
 - Layout escuro mobile-first inspirado em ferramentas de trading

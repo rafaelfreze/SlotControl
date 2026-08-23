@@ -7,7 +7,8 @@
 -- 20260810125830_add_btc_manual_operational_gains.sql and
 -- 20260811021309_enforce_integer_ladder_gains.sql and
 -- 20260820103028_compound_gain_from_total_operational_balance.sql and
--- 20260820111415_compound_operational_balance_sequence.sql to be applied first.
+-- 20260820111415_compound_operational_balance_sequence.sql and
+-- 20260823145750_allow_multiple_asset_redistributions_per_cycle.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -189,6 +190,10 @@ begin
         (
           '91000000-0000-0000-0000-000000000003', 'authenticated', 'authenticated',
           'btc-ladder-no-membership@fixture.invalid', 'fixture-only', now(), now(), now()
+        ),
+        (
+          '91000000-0000-0000-0000-000000000004', 'authenticated', 'authenticated',
+          'growth-ladder-repeat@fixture.invalid', 'fixture-only', now(), now(), now()
         )
       on conflict (id) do nothing
     $insert_users$;
@@ -203,7 +208,8 @@ select scope.product_id, scope.tenant_id, fixture.user_id, 'coinops.owner', 'act
 from fixture_scope scope
 cross join (values
   ('91000000-0000-0000-0000-000000000001'::uuid),
-  ('91000000-0000-0000-0000-000000000002'::uuid)
+  ('91000000-0000-0000-0000-000000000002'::uuid),
+  ('91000000-0000-0000-0000-000000000004'::uuid)
 ) fixture(user_id);
 
 insert into coinops.strategies (
@@ -1280,6 +1286,148 @@ select pg_temp.assert_true(
       )
   ),
   'all BTC and SOL transfers and resulting ladder levels must remain whole gains'
+);
+
+-- -------------------------------------------------------------------------
+-- Repeated redistributions: BTC and SOL may complete more than one distinct
+-- batch in the same 30-day cycle. Idempotency still applies to each batch.
+-- -------------------------------------------------------------------------
+
+insert into coinops.strategies (
+  id, product_id, tenant_id, user_id, key, title, display_name, asset,
+  base_value, gain_rate, initial_slots, drop_percent, restart_amount, sort_order
+)
+select
+  fixture.strategy_id, scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000004', fixture.strategy_key,
+  fixture.title, fixture.title, fixture.asset, fixture.base_value,
+  fixture.gain_rate, 2, 0, 0, fixture.sort_order
+from fixture_scope scope
+cross join (values
+  ('92000000-0000-0000-0000-000000000030'::uuid, 'btc-repeat', 'BTC repeat fixture', 'BTC'::text, 10::numeric, 0.01::numeric, 1),
+  ('92000000-0000-0000-0000-000000000031'::uuid, 'sol-repeat', 'SOL repeat fixture', 'SOL'::text, 25::numeric, 0.05::numeric, 2)
+) fixture(strategy_id, strategy_key, title, asset, base_value, gain_rate, sort_order);
+
+insert into coinops.slots (
+  id, product_id, tenant_id, user_id, strategy_id,
+  slot_number, sort_order, status, gains, real_gains, added_gains,
+  operational_gains, base_value, gain_rate, realized_profit,
+  growth_contribution, started_once, notes
+)
+select
+  fixture.slot_id, scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000004', fixture.strategy_id,
+  fixture.slot_number, fixture.slot_number, 'gain', fixture.real_gains,
+  fixture.real_gains, 0, fixture.operational_gains, fixture.base_value,
+  fixture.gain_rate, fixture.real_gains * fixture.base_value * fixture.gain_rate,
+  0, true, 'repeat redistribution fixture'
+from fixture_scope scope
+cross join (values
+  ('93000000-0000-0000-0000-000000000030'::uuid, '92000000-0000-0000-0000-000000000030'::uuid, 1, 20, 20::numeric, 10::numeric, 0.01::numeric),
+  ('93000000-0000-0000-0000-000000000031'::uuid, '92000000-0000-0000-0000-000000000030'::uuid, 2, 10, 10::numeric, 10::numeric, 0.01::numeric),
+  ('93000000-0000-0000-0000-000000000032'::uuid, '92000000-0000-0000-0000-000000000031'::uuid, 1, 20, 20::numeric, 25::numeric, 0.05::numeric),
+  ('93000000-0000-0000-0000-000000000033'::uuid, '92000000-0000-0000-0000-000000000031'::uuid, 2, 10, 10::numeric, 25::numeric, 0.05::numeric)
+) fixture(slot_id, strategy_id, slot_number, real_gains, operational_gains, base_value, gain_rate);
+
+select pg_catalog.set_config(
+  'request.jwt.claim.sub', '91000000-0000-0000-0000-000000000004', true
+);
+set local role authenticated;
+
+do $repeat_batches$
+declare
+  batch_id uuid;
+begin
+  select (
+    coinops.prepare_asset_ladder_redistribution(
+      'BTC', 14, '95000000-0000-0000-0000-000000000030'
+    ) ->> 'batch_id'
+  )::uuid into batch_id;
+  perform coinops.confirm_asset_ladder_redistribution(
+    'BTC', batch_id, '96000000-0000-0000-0000-000000000030'
+  );
+
+  select (
+    coinops.prepare_asset_ladder_redistribution(
+      'BTC', 15, '95000000-0000-0000-0000-000000000031'
+    ) ->> 'batch_id'
+  )::uuid into batch_id;
+  perform coinops.confirm_asset_ladder_redistribution(
+    'BTC', batch_id, '96000000-0000-0000-0000-000000000031'
+  );
+  perform coinops.confirm_asset_ladder_redistribution(
+    'BTC', batch_id, '96000000-0000-0000-0000-000000000031'
+  );
+
+  select (
+    coinops.prepare_asset_ladder_redistribution(
+      'SOL', 14, '95000000-0000-0000-0000-000000000032'
+    ) ->> 'batch_id'
+  )::uuid into batch_id;
+  perform coinops.confirm_asset_ladder_redistribution(
+    'SOL', batch_id, '96000000-0000-0000-0000-000000000032'
+  );
+
+  select (
+    coinops.prepare_asset_ladder_redistribution(
+      'SOL', 15, '95000000-0000-0000-0000-000000000033'
+    ) ->> 'batch_id'
+  )::uuid into batch_id;
+  perform coinops.confirm_asset_ladder_redistribution(
+    'SOL', batch_id, '96000000-0000-0000-0000-000000000033'
+  );
+end;
+$repeat_batches$;
+
+reset role;
+
+select pg_temp.assert_true(
+  (
+    select count(*) = 2 and count(distinct month_reference) = 1
+      and bool_and(status = 'COMPLETED')
+    from coinops.btc_redistribution_batches
+    where user_id = '91000000-0000-0000-0000-000000000004'
+      and asset = 'BTC'
+  ) and (
+    select count(*) = 2 and count(distinct month_reference) = 1
+      and bool_and(status = 'COMPLETED')
+    from coinops.btc_redistribution_batches
+    where user_id = '91000000-0000-0000-0000-000000000004'
+      and asset = 'SOL'
+  ),
+  'BTC and SOL must each allow two completed redistribution batches in one cycle'
+);
+
+select pg_temp.assert_true(
+  (
+    select bool_and(operational_gains = 15)
+      and sum(real_gains) = 30
+    from coinops.slots
+    where user_id = '91000000-0000-0000-0000-000000000004'
+      and strategy_id = '92000000-0000-0000-0000-000000000030'
+  ) and (
+    select bool_and(operational_gains = 15)
+      and sum(real_gains) = 30
+    from coinops.slots
+    where user_id = '91000000-0000-0000-0000-000000000004'
+      and strategy_id = '92000000-0000-0000-0000-000000000031'
+  ),
+  'repeated batches must rebalance operational gains without changing real gains'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from coinops.btc_redistribution_batches batch
+    left join lateral (
+      select count(*) as entry_count, round(sum(ledger.amount_usdt), 8) as net_amount
+      from coinops.slot_capital_ledger ledger
+      where ledger.batch_id = batch.id
+    ) ledger_totals on true
+    where batch.user_id = '91000000-0000-0000-0000-000000000004'
+      and (ledger_totals.entry_count <> 2 or ledger_totals.net_amount <> 0)
+  ),
+  'every repeated batch must still create one balanced debit/credit pair exactly once'
 );
 
 -- -------------------------------------------------------------------------

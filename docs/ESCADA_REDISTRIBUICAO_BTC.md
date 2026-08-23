@@ -219,7 +219,9 @@ As estruturas oficiais são:
 - `coinops.growth_plan_goal_audit`: alterações das metas mensais BTC e SOL;
 - `coinops.growth_plan_start_audit`: alterações da data inicial operacional e quantidade de prévias invalidadas.
 
-A confirmação usa lock transacional e bloqueio das linhas dos slots. A mesma chave de confirmação não cria um segundo efeito. Duas abas não podem aplicar o mesmo patrimônio duas vezes: o primeiro batch válido conclui; o seguinte precisa falhar como conflito ou snapshot obsoleto.
+A confirmação usa lock transacional e bloqueio das linhas dos slots. A mesma chave de confirmação não cria um segundo efeito. Duas abas não podem aplicar o mesmo patrimônio duas vezes: o primeiro request que confirma um batch conclui; qualquer repetição desse mesmo batch retorna o resultado já persistido sem movimentar capital novamente.
+
+BTC e SOL podem concluir quantas redistribuições forem necessárias dentro do mesmo ciclo de 30 dias. Cada nova redistribuição exige uma nova prévia server-side e uma nova intenção idempotente. Ao preparar outra prévia do mesmo ativo e ciclo, apenas uma prévia anterior ainda pendente fica obsoleta; batches já concluídos permanecem imutáveis no histórico. O ativo continua isolado, portanto uma nova redistribuição BTC não invalida nem altera uma redistribuição SOL, e vice-versa.
 
 O ledger deve permitir reconstruir cada transferência sem consultar estado futuro dos slots.
 
