@@ -205,24 +205,24 @@ export function buildBtcLadderPreview<TSlot extends BtcLadderSlot>(input: {
       if (donorExcess <= EPSILON) break;
       if (receiverDeficit <= EPSILON) continue;
 
-      const donorCapacityUsdt = gainEquivalentToUsdt(donorExcess, donor.gain_unit_usdt);
-      const maxReceiverGains = Math.min(
-        receiverDeficit,
-        Math.floor((donorCapacityUsdt + EPSILON) / receiver.gain_unit_usdt)
+      let donorGainEquivalent = Math.min(
+        Math.trunc(donorExcess),
+        Math.floor(((receiverDeficit * receiver.gain_unit_usdt) + EPSILON) / donor.gain_unit_usdt)
       );
-
-      let receiverGainEquivalent = Math.trunc(maxReceiverGains);
-      let donorGainEquivalent = 0;
+      let receiverGainEquivalent = 0;
       let amountUsdt = 0;
-      while (receiverGainEquivalent > 0) {
-        const candidateAmount = gainEquivalentToUsdt(receiverGainEquivalent, receiver.gain_unit_usdt);
-        const candidateDonorGains = usdtToGainEquivalent(candidateAmount, donor.gain_unit_usdt);
-        if (Number.isInteger(candidateDonorGains) && candidateDonorGains <= donorExcess) {
+      while (donorGainEquivalent > 0) {
+        const candidateAmount = gainEquivalentToUsdt(donorGainEquivalent, donor.gain_unit_usdt);
+        const candidateReceiverGains = Math.min(
+          Math.trunc(receiverDeficit),
+          Math.floor((candidateAmount + EPSILON) / receiver.gain_unit_usdt)
+        );
+        if (candidateReceiverGains > 0) {
           amountUsdt = candidateAmount;
-          donorGainEquivalent = candidateDonorGains;
+          receiverGainEquivalent = candidateReceiverGains;
           break;
         }
-        receiverGainEquivalent -= 1;
+        donorGainEquivalent -= 1;
       }
 
       if (amountUsdt <= EPSILON) continue;

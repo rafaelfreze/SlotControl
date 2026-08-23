@@ -8,7 +8,8 @@
 -- 20260811021309_enforce_integer_ladder_gains.sql and
 -- 20260820103028_compound_gain_from_total_operational_balance.sql and
 -- 20260820111415_compound_operational_balance_sequence.sql and
--- 20260823145750_allow_multiple_asset_redistributions_per_cycle.sql to be applied first.
+-- 20260823145750_allow_multiple_asset_redistributions_per_cycle.sql and
+-- 20260823154933_redistribute_all_eligible_asset_donors.sql to be applied first.
 --
 -- Example (PowerShell, local PostgreSQL only):
 --   & psql.exe $env:COINOPS_LOCAL_DATABASE_URL `
@@ -323,26 +324,108 @@ cross join (values
   ('91000000-0000-0000-0000-000000000002'::uuid)
 ) fixture(user_id);
 
--- A financial residual whose unit is incompatible with the donor must stay in
--- one slot. It must never be split into fractional operational gains.
+-- Different financial units must still consume every eligible donor's whole
+-- gain excess. The exact USDT residual stays in the receiver balance and no
+-- operational counter becomes fractional.
 savepoint whole_gain_compatibility;
 update coinops.slots
 set growth_contribution = 3.2
 where id = '93000000-0000-0000-0000-000000000002';
 
 select pg_temp.assert_true(
-  jsonb_array_length(
-    private.coinops_build_asset_ladder_preview(
-      (select product_id from fixture_scope),
-      (select tenant_id from fixture_scope),
-      '91000000-0000-0000-0000-000000000001',
-      'BTC',
-      14
-    ) -> 'transfers'
-  ) = 0,
-  'incompatible financial residual must stay in the donor instead of creating fractional gains'
+  (private.coinops_build_asset_ladder_preview(
+    (select product_id from fixture_scope),
+    (select tenant_id from fixture_scope),
+    '91000000-0000-0000-0000-000000000001',
+    'BTC',
+    14
+  ) #>> '{transfers,0,donor_gain_equivalent}')::numeric = 6
+  and (private.coinops_build_asset_ladder_preview(
+    (select product_id from fixture_scope),
+    (select tenant_id from fixture_scope),
+    '91000000-0000-0000-0000-000000000001',
+    'BTC',
+    14
+  ) #>> '{transfers,0,receiver_gain_equivalent}')::numeric = 4,
+  'different units must debit whole donor gains and credit only whole receiver gains'
 );
 rollback to savepoint whole_gain_compatibility;
+
+-- Every donor above the same reference must participate, even when a manual
+-- contribution gave one donor a different financial gain unit.
+savepoint all_eligible_donors;
+update coinops.slots
+set
+  gains = 31,
+  real_gains = 31,
+  operational_gains = 31,
+  realized_profit = 4.16430223
+where id = '93000000-0000-0000-0000-000000000001';
+
+update coinops.slots
+set
+  gains = 24,
+  real_gains = 24,
+  operational_gains = 24,
+  growth_contribution = 6.535392,
+  realized_profit = 0
+where id = '93000000-0000-0000-0000-000000000002';
+
+insert into coinops.slots (
+  id, product_id, tenant_id, user_id, strategy_id,
+  slot_number, sort_order, status, gains, real_gains, added_gains,
+  operational_gains, base_value, gain_rate, realized_profit,
+  growth_contribution, started_once, notes
+)
+select
+  fixture.slot_id, scope.product_id, scope.tenant_id,
+  '91000000-0000-0000-0000-000000000001'::uuid,
+  '92000000-0000-0000-0000-000000000001'::uuid,
+  fixture.slot_number, fixture.slot_number, 'gain', fixture.operational_gains,
+  fixture.operational_gains, 0, fixture.operational_gains,
+  10, 0.01, fixture.realized_profit, 0, true,
+  'all eligible donors fixture'
+from fixture_scope scope
+cross join (values
+  ('95000000-0000-0000-0000-000000000003'::uuid, 3, 16, 2.07507021::numeric),
+  ('95000000-0000-0000-0000-000000000004'::uuid, 4, 4, 0.48870933::numeric)
+) fixture(slot_id, slot_number, operational_gains, realized_profit);
+
+with preview as (
+  select private.coinops_build_asset_ladder_preview(
+    (select product_id from fixture_scope),
+    (select tenant_id from fixture_scope),
+    '91000000-0000-0000-0000-000000000001',
+    'BTC',
+    21
+  ) as data
+)
+select pg_temp.assert_true(
+  (data ->> 'available_excess_gains')::numeric = 13
+  and (data ->> 'remaining_excess_gains')::numeric = 0
+  and (data ->> 'equity_difference_usdt')::numeric = 0
+  and jsonb_array_length(data -> 'transfers') = 3
+  and (
+    select count(*)
+    from jsonb_array_elements(data -> 'transfers') transfer
+    where (transfer ->> 'donor_slot_number')::integer = 2
+      and (transfer ->> 'donor_gain_equivalent')::numeric = 3
+  ) = 1
+  and (
+    select bool_and((item ->> 'operational_gains')::numeric = expected.level)
+    from jsonb_array_elements(data -> 'ranking_after') item
+    join (values
+      (1, 21::numeric),
+      (2, 21::numeric),
+      (3, 21::numeric),
+      (4, 13::numeric)
+    ) expected(slot_number, level)
+      on expected.slot_number = (item ->> 'slot_number')::integer
+  ),
+  'all eligible donors must spend their whole excess and conserve equity'
+)
+from preview;
+rollback to savepoint all_eligible_donors;
 
 create temporary table open_snapshot on commit drop as
 select

@@ -156,7 +156,7 @@ test("unidades diferentes so redistribuem equivalentes inteiros para os dois slo
   assert.equal(after(preview, "B").operational_gains, 14);
 });
 
-test("sobra incompativel permanece inteira no doador sem criar gain picado", () => {
+test("unidade diferente consome todo excedente inteiro e preserva o residual no saldo recebedor", () => {
   const preview = buildBtcLadderPreview({
     referenceOperationalGains: 14,
     slots: [
@@ -165,9 +165,34 @@ test("sobra incompativel permanece inteira no doador sem criar gain picado", () 
     ]
   });
 
-  assert.equal(preview.transfers.length, 0);
-  assert.equal(after(preview, "A").operational_gains, 20);
-  assert.equal(after(preview, "B").operational_gains, 10);
+  assert.equal(preview.transfers.length, 1);
+  assert.equal(preview.transfers[0].donor_gain_equivalent, 4);
+  assert.equal(preview.transfers[0].receiver_gain_equivalent, 3);
+  assert.equal(preview.transfers[0].amount_usdt, 0.48);
+  assert.equal(after(preview, "A").operational_gains, 16);
+  assert.equal(after(preview, "B").operational_gains, 13);
+  assert.equal(after(preview, "B").operational_value_usdt, 11.8);
+  assert.ok(Math.abs(preview.equity_difference_usdt) <= 1e-9);
+});
+
+test("todos os doadores acima da referencia entregam o excedente elegivel", () => {
+  const preview = buildBtcLadderPreview({
+    referenceOperationalGains: 21,
+    slots: [
+      slot("A", 31, { gain_unit_usdt: 0.12, operational_value_usdt: 14.16430223 }),
+      slot("B", 24, { slot_number: 2, gain_unit_usdt: 0.16535392, operational_value_usdt: 13.28921868 }),
+      slot("C", 16, { slot_number: 3, gain_unit_usdt: 0.12, operational_value_usdt: 12.07507021 }),
+      slot("D", 4, { slot_number: 4, gain_unit_usdt: 0.12, operational_value_usdt: 10.48870933 })
+    ]
+  });
+
+  assert.deepEqual(preview.transfers.map((item) => item.donor_slot_id), ["A", "A", "B"]);
+  assert.equal(after(preview, "A").operational_gains, 21);
+  assert.equal(after(preview, "B").operational_gains, 21);
+  assert.equal(after(preview, "C").operational_gains, 21);
+  assert.equal(after(preview, "D").operational_gains, 13);
+  assert.equal(preview.remaining_excess_gains, 0);
+  assert.ok(preview.ranking_after.every((item) => Number.isInteger(item.operational_gains)));
   assert.ok(Math.abs(preview.equity_difference_usdt) <= 1e-9);
 });
 

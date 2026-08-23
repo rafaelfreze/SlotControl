@@ -102,20 +102,22 @@ defasagem do recebedor = L - operational_gains do recebedor
 capacidade do doador em USDT = excedente × unidade do gain do doador
 necessidade do recebedor em USDT = defasagem × unidade do gain do recebedor
 
-valor candidato = gains inteiros do recebedor × unidade do recebedor
+valor candidato = gains inteiros do doador × unidade do gain do doador
 
 o candidato só é elegível quando:
-- equivale a uma quantidade inteira de gains no doador;
-- equivale a uma quantidade inteira de gains no recebedor;
+- retira uma quantidade inteira de gains do doador;
+- acrescenta somente a quantidade inteira de gains que o valor comporta no recebedor;
 - cabe no excedente operacional e financeiro do doador;
 - cabe na defasagem do recebedor.
 ```
 
-A busca começa pela maior quantidade inteira que cabe e reduz até encontrar
-um valor compatível. A sobra incompatível não é dividida: permanece como
-capital no slot doador e pode participar de uma redistribuição futura quando
-for suficiente para formar gains inteiros dos dois lados. Quando não há
-recebedor elegível, todo o excedente permanece no doador.
+A busca começa pelo maior excedente inteiro do doador que o recebedor atual
+consegue absorver sem ultrapassar a referência. Todos os doadores acima de `L`
+são percorridos; a sobra de cada um continua descendo pela lista de recebedores.
+Se as unidades financeiras forem diferentes, os centavos que não completam um
+gain permanecem no saldo operacional do recebedor. Eles não viram gain
+fracionado e não são perdidos. Quando nenhum recebedor consegue formar ao menos
+um gain inteiro, o excedente restante permanece no doador.
 
 Exemplo com unidade financeira igual nos slots:
 
@@ -153,9 +155,9 @@ O cálculo de prévia e o cálculo de confirmação devem usar a mesma função 
 
 Se as unidades forem diferentes, o mesmo USDT pode representar quantidades
 inteiras diferentes no doador e no recebedor. Por isso o ledger guarda
-`donor_gain_equivalent` e `receiver_gain_equivalent` separadamente. Uma
-transferência incompatível é omitida, nunca arredondada. O valor em USDT
-debitado e creditado continua idêntico.
+`donor_gain_equivalent` e `receiver_gain_equivalent` separadamente. O saldo
+financeiro recebe o valor exato; somente gains completos entram no contador
+operacional. O valor em USDT debitado e creditado continua idêntico.
 
 Todos os valores persistidos usam `numeric` com oito casas. Para cada transferência:
 
