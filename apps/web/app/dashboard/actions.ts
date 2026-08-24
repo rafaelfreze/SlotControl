@@ -46,6 +46,15 @@ type StrategyRecord = {
   drop_percent?: number | string;
 };
 
+type RegisterGainRpcResult = {
+  already_applied?: boolean;
+  asset?: string;
+  gains_after?: number | string;
+  value_before?: number | string;
+  value_after?: number | string;
+  gain_amount_usdt?: number | string;
+};
+
 async function getUserClient() {
   if (!isSupabaseConfigured()) {
     redirect("/login?setup=missing-env");
@@ -737,44 +746,57 @@ export async function openSlot(formData: FormData) {
 export async function registerGain(formData: FormData) {
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
-  if (!slot || slot.status !== "aberto") {
-    return;
+  if (!slot) {
+    finish("Slot não encontrado.");
+  }
+  if (slot.status !== "aberto") {
+    finish(slot.status === "gain" ? "Gain já registrado." : "Este slot não está aberto.");
   }
 
-  const gains = Number(slot.gains || 0) + 1;
-  const realGains = Number(slot.real_gains || 0) + 1;
   const { data: strategy } = await supabase
     .from("strategies")
     .select("key,asset")
     .eq("id", slot.strategy_id)
     .eq("user_id", user.id)
     .single<Pick<StrategyRecord, "key" | "asset">>();
-  const valueBefore = currentValue(slot);
-  const strategyGainRate = await getCurrentStrategyGainRate(supabase, user.id, slot.strategy_id);
-  const slotUpdate: Record<string, unknown> = {
-    status: "gain",
-    gains,
-    real_gains: realGains,
-    added_gains: Number(slot.added_gains || 0),
-    gain_rate: strategyGainRate,
-    started_once: true,
-    preco_entrada: null,
-    preco_atual: null,
-    preco_alvo: null
-  };
 
-  const { data: updatedSlot, error: updateError } = await supabase
-    .from("slots")
-    .update(slotUpdate)
-    .eq("id", slot.id)
-    .eq("user_id", user.id)
-    .eq("status", "aberto")
-    .select("id,operational_slot_value,realized_profit,operational_gains")
-    .maybeSingle<{ id: string; operational_slot_value: number | string; realized_profit: number | string; operational_gains: number | string }>();
-  if (updateError || !updatedSlot) {
-    throw new Error("O slot não pôde ser fechado porque foi atualizado por outra operação.");
+  const { data: rpcData, error: rpcError } = await supabase.rpc(
+    "register_asset_real_gain",
+    { p_slot_id: slot.id }
+  );
+  if (rpcError) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "register_asset_real_gain_failed",
+      slotId: slot.id,
+      code: rpcError.code,
+      details: rpcError.details,
+      hint: rpcError.hint
+    }));
+    finish("Não foi possível registrar o gain. O slot continua aberto.");
   }
-  const valueAfter = Number(updatedSlot.operational_slot_value);
+
+  const result = rpcData as RegisterGainRpcResult | null;
+  if (!result) {
+    finish("Não foi possível confirmar o gain. O slot continua aberto.");
+  }
+  if (result.already_applied) {
+    finish("Gain já registrado.");
+  }
+
+  const gains = Number(result.gains_after);
+  const valueBefore = Number(result.value_before);
+  const valueAfter = Number(result.value_after);
+  const realizedGain = Number(result.gain_amount_usdt);
+  if (![gains, valueBefore, valueAfter, realizedGain].every(Number.isFinite)) {
+    console.error(JSON.stringify({
+      level: "error",
+      event: "register_asset_real_gain_invalid_result",
+      slotId: slot.id
+    }));
+    finish("O gain foi processado, mas a atualização da tela falhou. Recarregue a página.");
+  }
+
   await addHistory("Gain", `Gain registrado. Novo valor: ${formatUsdt(valueAfter)}.`, {
     userId: user.id,
     strategyId: slot.strategy_id,
@@ -795,7 +817,7 @@ export async function registerGain(formData: FormData) {
       gains,
       statusBefore: slot.status,
       statusAfter: "gain",
-      realizedProfit: valueAfter - valueBefore,
+      realizedProfit: realizedGain,
       note: "Gain manual registrado pelo usuario."
     }
   });
