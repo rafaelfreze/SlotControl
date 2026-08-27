@@ -9,6 +9,7 @@ import type { HistoryEvent } from "@/lib/slotgain/types";
 
 type HistoryFilter = "all" | "operation" | "gain" | "aporte";
 type HistoryAssetFilter = "ALL" | "BTC" | "SOL";
+type HistoryScopeFilter = "baseline" | "legacy" | "all";
 
 type ParsedHistory = {
   message: string;
@@ -331,10 +332,11 @@ function toSlotSummary(history: HistoryEvent[]) {
   return Array.from(rows.values());
 }
 
-export function HistoricoClient({ history, error, referenceNow }: { userEmail: string; history: HistoryEvent[]; error: string | null; referenceNow: string }) {
+export function HistoricoClient({ history, error, referenceNow, baselineStartedAt }: { userEmail: string; history: HistoryEvent[]; error: string | null; referenceNow: string; baselineStartedAt: string | null }) {
   const livePrices = useLivePrices();
   const [filter, setFilter] = useState<HistoryFilter>("all");
   const [assetFilter, setAssetFilter] = useState<HistoryAssetFilter>("ALL");
+  const [scopeFilter, setScopeFilter] = useState<HistoryScopeFilter>(baselineStartedAt ? "baseline" : "all");
 
   const filtered = useMemo(
     () =>
@@ -342,16 +344,17 @@ export function HistoricoClient({ history, error, referenceNow }: { userEmail: s
         const parsed = parseHistoryDetail(item);
         const key = (parsed.asset || item.strategy?.asset || item.strategy_key || "").toUpperCase();
         const actionKey = `${item.action} ${parsed.eventType}`.toLowerCase();
-        if (actionKey.includes("redistribu")) {
-          return false;
-        }
+        const eventTime = new Date(item.event_at).getTime();
+        const baselineTime = baselineStartedAt ? new Date(baselineStartedAt).getTime() : null;
+        if (scopeFilter === "baseline" && baselineTime !== null && eventTime < baselineTime) return false;
+        if (scopeFilter === "legacy" && (baselineTime === null || eventTime >= baselineTime)) return false;
         if (assetFilter !== "ALL" && key !== assetFilter) return false;
         if (filter === "gain") return actionKey.includes("gain") || actionKey.includes("saida");
         if (filter === "aporte") return actionKey.includes("aporte") || actionKey.includes("contribution");
         if (filter === "operation") return !actionKey.includes("aporte") && !actionKey.includes("contribution");
         return true;
       }),
-    [assetFilter, filter, history]
+    [assetFilter, baselineStartedAt, filter, history, scopeFilter]
   );
   const grouped = useMemo(() => filtered.reduce<Array<{ key: string; label: string; items: HistoryEvent[] }>>((groups, item) => {
     const date = new Date(item.event_at);
@@ -372,6 +375,15 @@ export function HistoricoClient({ history, error, referenceNow }: { userEmail: s
       <MarketTicker livePrices={livePrices} />
       <h1 className="visually-hidden">Histórico</h1>
       {error ? <section className="inline-alert dashboard-alert">Falha ao carregar historico: {error}</section> : null}
+      {baselineStartedAt ? <FilterChips
+        value={scopeFilter}
+        onChange={setScopeFilter}
+        options={[
+          { label: "Desde o baseline", value: "baseline" },
+          { label: "Legado", value: "legacy" },
+          { label: "Tudo", value: "all" }
+        ]}
+      /> : null}
       <FilterChips
         value={filter}
         onChange={setFilter}
@@ -381,8 +393,7 @@ export function HistoricoClient({ history, error, referenceNow }: { userEmail: s
           { label: "Gains", value: "gain" },
           { label: "Aportes", value: "aporte" }
         ]}
-      />
-      <label className="history-asset-filter"><span className="visually-hidden">Filtrar por ativo</span><select aria-label="Filtrar histórico por ativo" value={assetFilter} onChange={(event) => setAssetFilter(event.target.value as HistoryAssetFilter)}><option value="ALL">Todos os ativos</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
+      />      <label className="history-asset-filter"><span className="visually-hidden">Filtrar por ativo</span><select aria-label="Filtrar histórico por ativo" value={assetFilter} onChange={(event) => setAssetFilter(event.target.value as HistoryAssetFilter)}><option value="ALL">Todos os ativos</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
 
       <div className="history-day-list" aria-label={`${filtered.length} eventos`}>
         {grouped.map((group) => <section className="history-day-group" key={group.key}><h2>{group.label}</h2><div className="history-compact-list">{group.items.map((item) => {

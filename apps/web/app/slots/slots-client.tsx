@@ -15,6 +15,7 @@ import {
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import {
   indexCapitalContributionsBySlot,
   summarizeCapitalContributions,
@@ -31,6 +32,7 @@ type SlotsClientProps = {
   strategies: StrategyView[];
   slots: SlotView[];
   contributions: CapitalContributionView[];
+  monitoring: OfficialMonitoringOverview;
   setupError: string | null;
   initialNotice: string | null;
   initialAsset: string | null;
@@ -65,7 +67,7 @@ function rankSlots(slots: SlotView[]) {
     }, {});
 }
 
-export function SlotsClient({ strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow }: SlotsClientProps) {
+export function SlotsClient({ strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow, monitoring }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const initialFilter: DisplayFilter = initialFlow === "abrir"
     ? "closed"
@@ -102,6 +104,14 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
 
       <MarketTicker livePrices={livePrices} />
+      {monitoring.active ? <details className="official-slot-queue">
+        <summary>Próximos slots <span>{monitoring.strategy?.mode === "DEFENSIVE_POST_ATH" ? "Defensivo" : "Normal"}</span></summary>
+        <div><b>BTC · {monitoring.strategy?.btc_spacing}%</b><span>Meta {monitoring.assets?.BTC?.target ?? "pausada"}</span><strong>#{monitoring.assets?.BTC?.next_slot?.slot_number ?? "—"}</strong></div>
+        <div><b>SOL · {monitoring.strategy?.sol_spacing}%</b><span>Meta {monitoring.assets?.SOL?.target ?? "pausada"}</span><strong>#{monitoring.assets?.SOL?.next_slot?.slot_number ?? "—"}</strong></div>
+        <small>Principais abertos: BTC {monitoring.pools?.BTC?.main_open ?? 0}/25 · SOL {monitoring.pools?.SOL?.main_open ?? 0}/25</small>
+      </details> : null}
+
+
 
       <FilterChips
         value={activeFilter}

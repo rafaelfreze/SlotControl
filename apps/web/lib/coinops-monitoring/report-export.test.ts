@@ -1,0 +1,4 @@
+import assert from "node:assert/strict";import test from "node:test";import{buildCycleCsv,buildCyclePdfLines,buildSimplePdf,type ReportSlotRow}from"./report-export.ts";
+const row:ReportSlotRow={asset:"BTC",slot_number:1,status:"livre",target:7,cycle_real_gains:2,cycle_redistribution_in:1,cycle_redistribution_out:0,cycle_external_gain_equivalent:0,cycle_progress:3,operational_value_start:10,entries_count:2,gains_count:2};
+test("CSV preserva colunas auditaveis",()=>{const csv=buildCycleCsv([row]);assert.match(csv,/redistribution_in/);assert.match(csv,/BTC,1,livre,7,2,1/)});
+test("PDF minimo e valido",()=>{const bytes=buildSimplePdf(buildCyclePdfLines({cycle_number:1,start_at:"2026-08-27",end_at:"2026-09-26",strategy_version:1,mode:"NORMAL_GROWTH"},[row]));assert.equal(new TextDecoder().decode(bytes.slice(0,8)),"%PDF-1.4")});

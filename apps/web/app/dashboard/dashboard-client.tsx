@@ -14,6 +14,7 @@ import {
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import { formatAccountCreatedDate, getAccountAgeDays } from "@/lib/slotgain/account-age";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
 import { getMonthlyGrowthStatus } from "@/lib/slotgain/growth-status";
@@ -33,6 +34,7 @@ type DashboardClientProps = {
   marketState: Partial<BtcMarketState> | null;
   regimeSettings: Partial<MarketRegimeSettingsType> | null;
   btcLadderPlan: DashboardAssetLadderPlan | null;
+  monitoring: OfficialMonitoringOverview;
   solLadderPlan: DashboardAssetLadderPlan | null;
 };
 
@@ -82,7 +84,7 @@ function getStrategySummary(strategies: StrategyView[], slots: SlotView[], contr
   };
 }
 
-export function DashboardClient({ userEmail, operationStartedAt, operationElapsedDays, strategies, slots, contributions, setupError, initialNotice, marketState, regimeSettings, btcLadderPlan, solLadderPlan }: DashboardClientProps) {
+export function DashboardClient({ userEmail, operationStartedAt, operationElapsedDays, strategies, slots, contributions, setupError, initialNotice, marketState, regimeSettings, btcLadderPlan, solLadderPlan, monitoring }: DashboardClientProps) {
   const livePrices = useLivePrices();
   const notice = initialNotice;
   const realizedProfit = slots.reduce((sum, slot) => sum + Number(slot.realized_profit || 0), 0);
@@ -117,6 +119,11 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
       ) : null}
       <BrandHeader />
       <MarketTicker livePrices={livePrices} />
+
+      {monitoring.active ? <Link className="official-dashboard-strip" href="/plano-crescimento">
+        <span>Monitoramento oficial · Ciclo {monitoring.cycle?.number}</span>
+        <strong>{monitoring.strategy?.mode === "DEFENSIVE_POST_ATH" ? "Defensivo" : "Normal"} · {monitoring.cycle?.days_remaining ?? "—"} dias</strong>
+      </Link> : null}
 
       <GrowthPlanStrip btcPlan={btcLadderPlan} solPlan={solLadderPlan} />
 

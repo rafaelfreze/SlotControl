@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
+import { loadOfficialMonitoring } from "@/lib/coinops-monitoring/server";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import type { CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
@@ -26,7 +27,7 @@ export default async function SlotsPage({
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, contributionsResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, contributionsResponse, monitoring] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -41,7 +42,8 @@ export default async function SlotsPage({
       .order("sort_order", { ascending: true }),
     supabase
       .from("btc_external_contributions")
-      .select("asset,slot_id,amount_usdt,accounting_amount_usdt,gain_equivalent,input_mode")
+      .select("asset,slot_id,amount_usdt,accounting_amount_usdt,gain_equivalent,input_mode"),
+    loadOfficialMonitoring()
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error || contributionsResponse.error;
@@ -55,6 +57,7 @@ export default async function SlotsPage({
       initialNotice={searchParams?.notice || null}
       initialAsset={searchParams?.asset || null}
       initialFlow={searchParams?.flow || null}
+      monitoring={monitoring.overview}
     />
   );
 }

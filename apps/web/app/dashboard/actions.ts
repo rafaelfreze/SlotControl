@@ -682,6 +682,23 @@ export async function openSlot(formData: FormData) {
     return;
   }
 
+  const { data: eligibility, error: eligibilityError } = await supabase.rpc(
+    "validate_official_slot_entry",
+    { p_slot_id: slot.id }
+  );
+  if (eligibilityError && eligibilityError.code !== "PGRST202") {
+    finish("Não foi possível validar a fila oficial. Nenhuma abertura foi registrada.");
+  }
+  const officialEligibility = eligibility as { active?: boolean; allowed?: boolean; code?: string; expected_slot_number?: number } | null;
+  if (officialEligibility?.active && !officialEligibility.allowed) {
+    if (officialEligibility.code === "ALL_TARGETS_MET") {
+      finish("Todos os slots habilitados atingiram a meta deste ciclo. Novas entradas estão pausadas.");
+    }
+    const expected = officialEligibility.expected_slot_number ? ` O próximo é o Slot #${officialEligibility.expected_slot_number}.` : "";
+    finish(`Este slot não é o próximo da fila oficial.${expected}`);
+  }
+
+
   let entryPrice = Math.max(0, formNumber(formData, "entryPrice", 0));
   if (entryPrice <= 0) {
     entryPrice = await getSuggestedEntryPriceFromLastOpen(supabase, user.id, slot);

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
+import { loadOfficialMonitoring } from "@/lib/coinops-monitoring/server";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import type { CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { normalizeSlot, type SlotRow, type StrategyView } from "@/lib/slotgain/types";
@@ -31,7 +32,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     redirect("/login");
   }
 
-  const [strategiesResponse, slotsResponse, contributionsResponse, marketStateResponse, regimeSettingsResponse, btcLadderResponse, solLadderResponse] = await Promise.all([
+  const [strategiesResponse, slotsResponse, contributionsResponse, marketStateResponse, regimeSettingsResponse, btcLadderResponse, solLadderResponse, monitoring] = await Promise.all([
     supabase
       .from("strategies")
       .select(
@@ -50,7 +51,8 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
     supabase.from("btc_market_state").select("*").eq("singleton", true).maybeSingle(),
     supabase.from("market_regime_settings").select("*").eq("user_id", user.id).maybeSingle(),
     supabase.rpc("get_asset_ladder_plan", { p_asset: "BTC" }),
-    supabase.rpc("get_asset_ladder_plan", { p_asset: "SOL" })
+    supabase.rpc("get_asset_ladder_plan", { p_asset: "SOL" }),
+    loadOfficialMonitoring()
   ]);
 
   const setupError = strategiesResponse.error || slotsResponse.error || contributionsResponse.error || marketStateResponse.error || regimeSettingsResponse.error || btcLadderResponse.error || solLadderResponse.error;
@@ -70,6 +72,7 @@ export default async function DashboardPage({ searchParams }: { searchParams?: {
       regimeSettings={regimeSettingsResponse.data}
       btcLadderPlan={btcPlan}
       solLadderPlan={(solLadderResponse.data || null) as DashboardAssetLadderPlan | null}
+      monitoring={monitoring.overview}
     />
   );
 }

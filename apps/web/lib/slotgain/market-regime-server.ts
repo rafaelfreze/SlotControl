@@ -128,6 +128,15 @@ export async function refreshBtcMarketRegime() {
   const { error: stateError } = await supabase.from("btc_market_state").upsert(state, { onConflict: stateConflictKey });
   if (stateError) throw stateError;
 
+  const { data: officialMonitoring, error: officialMonitoringError } = await supabase.rpc(
+    "process_official_monitoring_tick",
+    { p_btc_price: prices.currentPrice, p_observed_at: now }
+  );
+  if (officialMonitoringError && officialMonitoringError.code !== "PGRST202") {
+    throw officialMonitoringError;
+  }
+
+
   let settingsQuery = supabase.from("market_regime_settings").select("*");
   let assetSettingsQuery = supabase.from("asset_market_strategy_settings").select("user_id,asset,buy_drop_top_percent,buy_drop_normal_percent,buy_drop_deep_percent,top_zero_reserve_count,normal_zero_reserve_count,deep_zero_reserve_count,deep_active_slot_limit");
   if (tenantId) {
@@ -174,7 +183,7 @@ export async function refreshBtcMarketRegime() {
     });
     console.log("[market-regime] future_triggers_recalculated", { userId: row.user_id, regime: nextMode, count: triggerCount });
   }
-  return { ...state, changedUsers };
+  return { ...state, changedUsers, officialMonitoring };
 }
 
 export async function getBtcMarketState() {

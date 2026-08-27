@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
+import { loadOfficialMonitoring } from "@/lib/coinops-monitoring/server";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import type { AssetLadderPlanResponse, AssetPlanActionKeys } from "./btc-ladder-section";
 import { GrowthPlanClient, type GrowthContributionHistoryItem, type ProgrammedGrowthPlanResponse } from "./growth-plan-client";
@@ -16,7 +17,7 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const [historyResponse, btcLadderResponse, solLadderResponse, contributionAccountingResponse] = await Promise.all([
+  const [historyResponse, btcLadderResponse, solLadderResponse, contributionAccountingResponse, monitoring] = await Promise.all([
     supabase
       .from("programmed_growth_contributions")
       .select("id,asset,month_number,cumulative_goal,slot_number,gains_before,gains_after,value_before,value_after,contributed_amount,note,created_at")
@@ -26,7 +27,8 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
     supabase.rpc("get_asset_ladder_plan", { p_asset: "SOL" }),
     supabase
       .from("btc_external_contributions")
-      .select("id,accounting_amount_usdt,input_mode")
+      .select("id,accounting_amount_usdt,input_mode"),
+    loadOfficialMonitoring()
   ]);
 
   const actionKeys = (): AssetPlanActionKeys => ({
@@ -65,6 +67,9 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
       initialNotice={searchParams?.notice || null}
       initialNoticeTone={searchParams?.tone === "error" ? "error" : "success"}
       btcActionKeys={actionKeys()}
+      monitoring={monitoring.overview}
+      monitoringPreview={monitoring.preview}
+      monitoringError={monitoring.error}
       solActionKeys={actionKeys()}
     />
   );

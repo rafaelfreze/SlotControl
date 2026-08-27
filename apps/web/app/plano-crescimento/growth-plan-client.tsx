@@ -5,9 +5,11 @@ import { useFormStatus } from "react-dom";
 
 import { AppHeader, FilterChips, MarketTicker, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
 import { formatDate, formatUsdt } from "@/lib/slotgain/format";
+import type { BaselinePreview, OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { saveGrowthPlanStartDate } from "./actions";
 import { AssetLadderSection, type AssetLadderPlanResponse, type AssetPlanActionKeys } from "./btc-ladder-section";
+import { OfficialMonitoringPanel } from "./official-monitoring-panel";
 
 type GrowthAsset = "BTC" | "SOL";
 
@@ -54,7 +56,7 @@ export type GrowthContributionHistoryItem = {
   created_at: string;
 };
 
-export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys }: { plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys }) {
+export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys, monitoring, monitoringPreview, monitoringError }: { plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys; monitoring: OfficialMonitoringOverview; monitoringPreview: BaselinePreview | null; monitoringError: string | null }) {
   const livePrices = useLivePrices();
   const [activeAsset, setActiveAsset] = useState<GrowthAsset>("BTC");
   const notice = initialNotice;
@@ -66,6 +68,7 @@ export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupErr
       <MarketTicker livePrices={livePrices} />
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
       {notice ? <section className={`${noticeTone === "error" ? "inline-alert" : "form-success"} dashboard-notice`} role="status">{notice}</section> : null}
+      <OfficialMonitoringPanel overview={monitoring} preview={monitoringPreview} error={monitoringError} />
 
       <div id="inicio-operacao">
         <SectionCard
