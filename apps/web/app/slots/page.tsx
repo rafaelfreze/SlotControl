@@ -50,6 +50,7 @@ export default async function SlotsPage({
 
   return (
     <SlotsClient
+      userLabel={user.email || "Usuario"}
       strategies={(strategiesResponse.data ?? []) as StrategyView[]}
       slots={((slotsResponse.data ?? []) as unknown as SlotRow[]).map(normalizeSlot)}
       contributions={(contributionsResponse.data ?? []) as CapitalContributionView[]}

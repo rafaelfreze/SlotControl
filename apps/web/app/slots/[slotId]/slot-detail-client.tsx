@@ -9,8 +9,9 @@ import { summarizeCapitalContributions, summarizeSlotCapitalFlow, type CapitalCo
 import { formatDate, formatDecimal, formatPrice, formatSignedUsdt, formatUsdt, getCurrentValue, getOpenMarketMetrics } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { HistoryEvent, SlotView } from "@/lib/slotgain/types";
+import { DesktopSlotDetail } from "./desktop-slot-detail";
 
-export function SlotDetailClient({ slot, contributions, history, setupError }: { slot: SlotView; contributions: CapitalContributionView[]; history: HistoryEvent[]; setupError: string | null }) {
+export function SlotDetailClient({ slot, contributions, history, setupError, userLabel }: { slot: SlotView; contributions: CapitalContributionView[]; history: HistoryEvent[]; setupError: string | null; userLabel: string }) {
   const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(null);
   const asset = slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC";
@@ -21,7 +22,7 @@ export function SlotDetailClient({ slot, contributions, history, setupError }: {
   const pnl = slot.status === "aberto" ? getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt : Number(slot.realized_profit || 0);
 
   return (
-    <MobileScreen>
+    <MobileScreen desktop={<DesktopSlotDetail slot={slot} contributions={contributions} history={history} setupError={setupError} livePrices={livePrices} userLabel={userLabel} />}>
       <AppHeader title={`Slot #${slot.slot_number} ${asset}`} backHref="/slots" action={<StatusBadge status={slot.status} />} />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar o slot: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}

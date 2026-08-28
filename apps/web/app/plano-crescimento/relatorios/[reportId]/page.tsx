@@ -1,2 +1,90 @@
-import Link from"next/link";import{notFound,redirect}from"next/navigation";import{AppHeader,MobileScreen,SectionCard}from"@/components/app/mobile-ui";import{loadCycleReport}from"@/lib/coinops-monitoring/report-server";import{createClient}from"@/lib/supabase/server";import{formatUsdt}from"@/lib/slotgain/format";
-export const metadata={title:"Relatório do ciclo"};export default async function ReportPage({params}:{params:{reportId:string}}){const supabase=createClient();const{data:{user}}=await supabase.auth.getUser();if(!user)redirect("/login");const{data}=await loadCycleReport(params.reportId);if(!data)notFound();const totals=data.rows.reduce((acc,row)=>({real:acc.real+row.cycle_real_gains,progress:acc.progress+row.cycle_progress,initial:acc.initial+row.operational_value_start,final:acc.final+Number(row.operational_value_end||0),met:acc.met+Number(row.cycle_progress>=row.target)}),{real:0,progress:0,initial:0,final:0,met:0});return <MobileScreen><AppHeader title={`Relatório · Ciclo ${data.cycle.cycle_number}`} backHref="/plano-crescimento/relatorios"/><section className="official-report-header"><div><small>{data.report.status}</small><h1>{data.cycle.mode==="DEFENSIVE_POST_ATH"?"Período defensivo":"Ciclo de 30 dias"}</h1></div><p>Estratégia v{data.strategyVersion.version} · legado excluído</p></section><div className="official-report-summary"><span>Capital inicial<strong>{formatUsdt(totals.initial)}</strong></span><span>Capital atual<strong>{formatUsdt(totals.final)}</strong></span><span>Gains reais<strong>{totals.real}</strong></span><span>Metas batidas<strong>{totals.met}/{data.rows.length}</strong></span></div><div className="official-export-links"><Link href={`/api/reports/${data.report.id}/pdf`}>PDF</Link><Link href={`/api/reports/${data.report.id}/csv`}>CSV</Link><Link href={`/api/reports/${data.report.id}/json`}>JSON</Link></div><SectionCard title="Progresso dos slots" subtitle="Real + recebido − enviado + aporte equivalente"><div className="official-progress-list">{data.rows.map((row)=><article key={`${row.asset}-${row.slot_number}`}><div><b>{row.asset} #{row.slot_number}</b><small>{row.status}</small></div><span>{row.cycle_progress}/{row.target}</span><progress max={Math.max(row.target,1)} value={Math.min(row.cycle_progress,row.target)}/><small>Real {row.cycle_real_gains} · +{row.cycle_redistribution_in} · −{row.cycle_redistribution_out}</small></article>)}</div></SectionCard><SectionCard title="Eventos do regime" subtitle="ATH e Fundo Forte auditáveis"><div className="official-event-list">{data.regimeEvents.map((event,index)=><p key={`${event.occurred_at}-${index}`}><b>{event.event_type}</b><span>{new Date(event.occurred_at).toLocaleString("pt-BR")}</span></p>)}{!data.regimeEvents.length?<p>Nenhuma mudança de regime no ciclo.</p>:null}</div></SectionCard></MobileScreen>}
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+
+import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui";
+import { loadCycleReport } from "@/lib/coinops-monitoring/report-server";
+import { createClient } from "@/lib/supabase/server";
+import { formatUsdt } from "@/lib/slotgain/format";
+
+import { DesktopReportDetail } from "./desktop-report-detail";
+
+export const metadata = { title: "Relatório do ciclo" };
+
+export default async function ReportPage({ params }: { params: { reportId: string } }) {
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) redirect("/login");
+
+  const { data } = await loadCycleReport(params.reportId);
+
+  if (!data) notFound();
+
+  const totals = data.rows.reduce((acc, row) => ({
+    real: acc.real + row.cycle_real_gains,
+    progress: acc.progress + row.cycle_progress,
+    initial: acc.initial + row.operational_value_start,
+    final: acc.final + Number(row.operational_value_end || 0),
+    met: acc.met + Number(row.cycle_progress >= row.target)
+  }), { real: 0, progress: 0, initial: 0, final: 0, met: 0 });
+
+  const mobileReport = (
+    <>
+      <AppHeader title={`Relatório · Ciclo ${data.cycle.cycle_number}`} backHref="/plano-crescimento/relatorios" />
+      <section className="official-report-header">
+        <div>
+          <small>{data.report.status}</small>
+          <h1>{data.cycle.mode === "DEFENSIVE_POST_ATH" ? "Período defensivo" : "Ciclo de 30 dias"}</h1>
+        </div>
+        <p>Estratégia v{data.strategyVersion.version} · legado excluído</p>
+      </section>
+      <div className="official-report-summary">
+        <span>Capital inicial<strong>{formatUsdt(totals.initial)}</strong></span>
+        <span>Capital atual<strong>{formatUsdt(totals.final)}</strong></span>
+        <span>Gains reais<strong>{totals.real}</strong></span>
+        <span>Metas batidas<strong>{totals.met}/{data.rows.length}</strong></span>
+      </div>
+      <div className="official-export-links">
+        <Link href={`/api/reports/${data.report.id}/pdf`}>PDF</Link>
+        <Link href={`/api/reports/${data.report.id}/csv`}>CSV</Link>
+        <Link href={`/api/reports/${data.report.id}/json`}>JSON</Link>
+      </div>
+      <SectionCard title="Progresso dos slots" subtitle="Real + recebido − enviado + aporte equivalente">
+        <div className="official-progress-list">
+          {data.rows.map((row) => (
+            <article key={`${row.asset}-${row.slot_number}`}>
+              <div><b>{row.asset} #{row.slot_number}</b><small>{row.status}</small></div>
+              <span>{row.cycle_progress}/{row.target}</span>
+              <progress max={Math.max(row.target, 1)} value={Math.min(row.cycle_progress, row.target)} />
+              <small>Real {row.cycle_real_gains} · +{row.cycle_redistribution_in} · −{row.cycle_redistribution_out}</small>
+            </article>
+          ))}
+        </div>
+      </SectionCard>
+      <SectionCard title="Eventos do regime" subtitle="ATH e Fundo Forte auditáveis">
+        <div className="official-event-list">
+          {data.regimeEvents.map((event, index) => (
+            <p key={`${event.occurred_at}-${index}`}>
+              <b>{event.event_type}</b>
+              <span>{new Date(event.occurred_at).toLocaleString("pt-BR")}</span>
+            </p>
+          ))}
+          {!data.regimeEvents.length ? <p>Nenhuma mudança de regime no ciclo.</p> : null}
+        </div>
+      </SectionCard>
+    </>
+  );
+
+  return (
+    <MobileScreen
+      desktop={(
+        <DesktopReportDetail
+          data={data}
+          userLabel={user.email || "Conta CoinOps"}
+        />
+      )}
+    >
+      {mobileReport}
+    </MobileScreen>
+  );
+}

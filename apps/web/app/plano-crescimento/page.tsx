@@ -59,6 +59,7 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
 
   return (
     <GrowthPlanClient
+      userLabel={user.email || "Usuario"}
       plan={{ ok: btcLadder.ok, started_at: btcLadder.started_at, elapsed_days: btcLadder.elapsed_days, cycle_days: btcLadder.cycle_days } as ProgrammedGrowthPlanResponse}
       btcLadder={btcLadder}
       solLadder={solLadder}

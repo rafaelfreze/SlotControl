@@ -10,6 +10,8 @@ import { formatDecimal, formatPercent } from "@/lib/slotgain/format";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 import { MarketRegimeSettings } from "@/components/slotgain/market-regime-settings";
 import type { AssetMarketStrategySettings, BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
+import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { DesktopConfig } from "./desktop-config";
 
 type ConfigClientProps = {
   userEmail: string;
@@ -23,6 +25,7 @@ type ConfigClientProps = {
 };
 
 export function ConfigClient({ userEmail, strategies, slots, setupError, initialNotice, marketState, regimeSettings, assetSettings }: ConfigClientProps) {
+  const livePrices = useLivePrices();
   const [notice, setNotice] = useState<string | null>(initialNotice);
   const btc = strategies.find((strategy) => strategy.asset.toUpperCase() === "BTC");
   const sol = strategies.find((strategy) => strategy.asset.toUpperCase() === "SOL");
@@ -42,7 +45,7 @@ export function ConfigClient({ userEmail, strategies, slots, setupError, initial
   }
 
   return (
-    <MobileScreen>
+    <MobileScreen desktop={<DesktopConfig userLabel={userEmail} strategies={strategies} slots={slots} livePrices={livePrices} marketState={marketState} regimeSettings={regimeSettings} assetSettings={assetSettings} />}>
       <BrandHeader compact />
       <h1 className="visually-hidden">Configurações</h1>
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar configurações: {setupError}</section> : null}

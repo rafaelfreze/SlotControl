@@ -21,6 +21,7 @@ import { getMonthlyGrowthStatus } from "@/lib/slotgain/growth-status";
 import { summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import type { BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
+import { DesktopDashboard } from "./desktop-dashboard";
 
 type DashboardClientProps = {
   userEmail: string;
@@ -109,7 +110,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
   const sol = useMemo(() => getStrategySummary(strategies, slots, contributions, "SOL", livePrices.prices.SOL), [strategies, slots, contributions, livePrices.prices.SOL]);
 
   return (
-    <MobileScreen>
+    <MobileScreen desktop={<DesktopDashboard userLabel={userEmail} strategies={strategies} slots={slots} contributions={contributions} monitoring={monitoring} livePrices={livePrices} />}>
       <div className="dashboard-workspace">
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados do Supabase: {setupError}</section> : null}
       {notice ? (

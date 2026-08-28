@@ -30,12 +30,13 @@ export function AppHeader({
   );
 }
 
-export function MobileScreen({ children }: { children: ReactNode }) {
+export function MobileScreen({ children, desktop }: { children: ReactNode; desktop?: ReactNode }) {
   return (
-    <div className="app-frame">
+    <div className={`app-frame${desktop ? " has-desktop-workspace" : ""}`}>
       <DesktopSidebar />
       <main className="mobile-dashboard-shell app-screen">{children}</main>
       <BottomNavigation />
+      {desktop ? <div className="desktop-workspace-slot">{desktop}</div> : null}
     </div>
   );
 }

@@ -6,12 +6,14 @@ import { BrandHeader, EmptyState, FilterChips, MarketTicker, MobileScreen } from
 import { COINOPS_TIME_ZONE, formatDate, formatSignedUsdt } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { HistoryEvent } from "@/lib/slotgain/types";
+import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
+import { DesktopHistory } from "./desktop-history";
 
 type HistoryFilter = "all" | "operation" | "gain" | "aporte";
 type HistoryAssetFilter = "ALL" | "BTC" | "SOL";
 type HistoryScopeFilter = "baseline" | "legacy" | "all";
 
-type ParsedHistory = {
+export type ParsedHistory = {
   message: string;
   asset: string;
   eventType: string;
@@ -91,7 +93,7 @@ function inferOrigin(action: string, eventType: string, origin?: string | null) 
   return "MANUAL";
 }
 
-function parseHistoryDetail(item: HistoryEvent): ParsedHistory {
+export function parseHistoryDetail(item: HistoryEvent): ParsedHistory {
   try {
     const parsed = JSON.parse(item.detail) as Partial<ParsedHistory>;
     const legacy = extractLegacyNumbers(item.detail);
@@ -332,7 +334,7 @@ function toSlotSummary(history: HistoryEvent[]) {
   return Array.from(rows.values());
 }
 
-export function HistoricoClient({ history, error, referenceNow, baselineStartedAt }: { userEmail: string; history: HistoryEvent[]; error: string | null; referenceNow: string; baselineStartedAt: string | null }) {
+export function HistoricoClient({ userEmail, history, error, referenceNow, baselineStartedAt, monitoring }: { userEmail: string; history: HistoryEvent[]; error: string | null; referenceNow: string; baselineStartedAt: string | null; monitoring: OfficialMonitoringOverview }) {
   const livePrices = useLivePrices();
   const [filter, setFilter] = useState<HistoryFilter>("all");
   const [assetFilter, setAssetFilter] = useState<HistoryAssetFilter>("ALL");
@@ -370,7 +372,7 @@ export function HistoricoClient({ history, error, referenceNow, baselineStartedA
   }, []), [filtered, referenceNow]);
 
   return (
-    <MobileScreen>
+    <MobileScreen desktop={<DesktopHistory userLabel={userEmail} history={history} livePrices={livePrices} monitoring={monitoring} baselineStartedAt={baselineStartedAt} />}>
       <BrandHeader compact />
       <MarketTicker livePrices={livePrices} />
       <h1 className="visually-hidden">Histórico</h1>

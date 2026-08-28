@@ -24,11 +24,13 @@ import {
   type CapitalContributionView
 } from "@/lib/slotgain/capital-contributions";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
+import { DesktopSlots } from "./desktop-slots";
 
 type DisplayFilter = "all" | "BTC" | "SOL" | "aberto" | "closed";
 type AssetFilter = "BTC" | "SOL" | "ALL";
 
 type SlotsClientProps = {
+  userLabel: string;
   strategies: StrategyView[];
   slots: SlotView[];
   contributions: CapitalContributionView[];
@@ -67,7 +69,7 @@ function rankSlots(slots: SlotView[]) {
     }, {});
 }
 
-export function SlotsClient({ strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow, monitoring }: SlotsClientProps) {
+export function SlotsClient({ userLabel, strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow, monitoring }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const initialFilter: DisplayFilter = initialFlow === "abrir"
     ? "closed"
@@ -98,7 +100,7 @@ export function SlotsClient({ strategies, slots, contributions, setupError, init
   );
 
   return (
-    <MobileScreen>
+    <MobileScreen desktop={<DesktopSlots userLabel={userLabel} strategies={strategies} slots={slots} contributions={contributions} monitoring={monitoring} livePrices={livePrices} initialFilter={initialAsset} />}>
       <BrandHeader compact />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}

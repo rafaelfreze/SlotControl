@@ -45,6 +45,7 @@ export default async function SlotDetailPage({ params }: { params: { slotId: str
       contributions={(contributionResponse.data ?? []) as CapitalContributionView[]}
       history={history}
       setupError={contributionResponse.error?.message || historyResponse.error?.message || null}
+      userLabel={user.email || "Conta CoinOps"}
     />
   );
 }

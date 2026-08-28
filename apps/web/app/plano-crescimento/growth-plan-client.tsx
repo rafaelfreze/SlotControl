@@ -10,6 +10,7 @@ import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { saveGrowthPlanStartDate } from "./actions";
 import { AssetLadderSection, type AssetLadderPlanResponse, type AssetPlanActionKeys } from "./btc-ladder-section";
 import { OfficialMonitoringPanel } from "./official-monitoring-panel";
+import { DesktopPlan } from "./desktop-plan";
 
 type GrowthAsset = "BTC" | "SOL";
 
@@ -56,14 +57,14 @@ export type GrowthContributionHistoryItem = {
   created_at: string;
 };
 
-export function GrowthPlanClient({ plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys, monitoring, monitoringPreview, monitoringError }: { plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys; monitoring: OfficialMonitoringOverview; monitoringPreview: BaselinePreview | null; monitoringError: string | null }) {
+export function GrowthPlanClient({ userLabel, plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys, monitoring, monitoringPreview, monitoringError }: { userLabel: string; plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys; monitoring: OfficialMonitoringOverview; monitoringPreview: BaselinePreview | null; monitoringError: string | null }) {
   const livePrices = useLivePrices();
   const [activeAsset, setActiveAsset] = useState<GrowthAsset>("BTC");
   const notice = initialNotice;
   const noticeTone = initialNoticeTone;
 
   return (
-    <MobileScreen>
+    <MobileScreen desktop={<DesktopPlan userLabel={userLabel} livePrices={livePrices} monitoring={monitoring} plan={plan} btcLadder={btcLadder} solLadder={solLadder} btcActionKeys={btcActionKeys} solActionKeys={solActionKeys} />}>
       <AppHeader title="Plano de Crescimento" backHref="/dashboard" />
       <MarketTicker livePrices={livePrices} />
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
