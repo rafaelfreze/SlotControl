@@ -284,3 +284,110 @@
   .desktop-plan-main .redistribution-cta { grid-column:1/-1; }
   .desktop-report-sections { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
+
+/* Desktop legibility scale. Values stay local to the >=1024px workspace. */
+@media (min-width:1024px) {
+  .desktop-panel-header > div:first-child > span,
+  .desktop-kpi > span,
+  .desktop-data-note,
+  .desktop-empty,
+  .desktop-line-chart > div,
+  .desktop-chart-empty small,
+  .desktop-distribution-legend > div,
+  .desktop-alert-row small,
+  .desktop-alert-row time,
+  .desktop-mini-metric span,
+  .desktop-mini-metric small,
+  .desktop-drawer-kpis small,
+  .desktop-slot-drawer dt,
+  .desktop-asset-selector button small,
+  .desktop-cycle-summary small,
+  .desktop-plan-links > a,
+  .desktop-settings-nav button small,
+  .desktop-account-profile small,
+  .desktop-setting-list span,
+  .desktop-strategy-form label,
+  .desktop-settings-details > summary small,
+  .desktop-report-row small,
+  .desktop-report-sections small {
+    font-size:var(--desktop-font-label);
+  }
+
+  .desktop-panel-header h2,
+  .desktop-empty strong,
+  .desktop-chart-empty strong,
+  .desktop-line-chart > div strong,
+  .desktop-donut strong,
+  .desktop-alert-row strong,
+  .desktop-data-table,
+  .desktop-data-table td strong,
+  .desktop-slot-link,
+  .desktop-more-button,
+  .desktop-quick-actions strong,
+  .desktop-cycle-card dd,
+  .desktop-plan-facts dd,
+  .desktop-slot-drawer header small,
+  .desktop-drawer-kpis strong,
+  .desktop-slot-drawer > section h3,
+  .desktop-slot-drawer dd,
+  .desktop-asset-selector button,
+  .desktop-cycle-summary strong,
+  .desktop-settings-nav button strong,
+  .desktop-account-profile strong,
+  .desktop-setting-list strong,
+  .desktop-settings-details > summary span,
+  .desktop-report-row strong,
+  .desktop-report-row > b,
+  .desktop-report-sections strong {
+    font-size:var(--desktop-font-control);
+  }
+
+  .desktop-kpi > strong { font-size:var(--desktop-font-value); }
+  .desktop-mini-metric strong { font-size:1.125rem; }
+
+  .desktop-panel-header > a,
+  .desktop-topbar-actions > a,
+  .desktop-segmented button,
+  .desktop-filter-group button,
+  .desktop-asset-pill,
+  .desktop-status,
+  .desktop-row-action,
+  button.desktop-row-action,
+  .desktop-search input,
+  .desktop-sort select,
+  .desktop-add-slot input,
+  .desktop-add-slot select,
+  .desktop-strategy-form input,
+  .desktop-sort,
+  .desktop-add-slot > summary,
+  .desktop-add-slot button,
+  .desktop-primary-button,
+  .desktop-secondary-button,
+  .desktop-danger-button,
+  .desktop-plan-main .plan-mode-tabs button,
+  .desktop-alerts-page-panel .desktop-filter-group select {
+    font-size:var(--desktop-font-label);
+  }
+
+  .desktop-panel-header > a,
+  .desktop-topbar-actions > a,
+  .desktop-segmented button,
+  .desktop-filter-group button,
+  .desktop-row-action,
+  button.desktop-row-action,
+  .desktop-add-slot > summary,
+  .desktop-alerts-page-panel .desktop-filter-group select {
+    min-height:32px;
+  }
+
+  .desktop-data-table th {
+    height:38px;
+    font-size:var(--desktop-font-label);
+  }
+
+  .desktop-data-table td { height:48px; }
+  .desktop-donut small,
+  .desktop-distribution-panel > .desktop-data-note { font-size:.6875rem; }
+  .desktop-cycle-card dt,
+  .desktop-plan-facts dt { font-size:var(--desktop-font-label); }
+}

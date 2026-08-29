@@ -15,10 +15,21 @@ export default async function ReportsPage() {
 
   if (!user) redirect("/login");
 
-  const { data: reports, error } = await supabase
-    .from("cycle_reports")
-    .select("id,status,report_version,generated_at,finalized_at,operational_cycles(cycle_number,mode,start_at,end_at,status)")
-    .order("created_at", { ascending: false });
+  const [{ data: reports, error }, { data: baseline }] = await Promise.all([
+    supabase
+      .from("cycle_reports")
+      .select("id,status,report_version,generated_at,finalized_at,operational_cycles(cycle_number,mode,start_at,end_at,status)")
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("monitoring_baselines")
+      .select("official_date,started_at")
+      .eq("status", "ACTIVE")
+      .maybeSingle()
+  ]);
+
+  const officialDate = baseline?.official_date
+    ? baseline.official_date.slice(0, 10).split("-").reverse().join("/")
+    : null;
 
   const desktopReports: DesktopReportListItem[] = (reports ?? []).map((report) => {
     const cycle = report.operational_cycles as unknown as {
@@ -44,7 +55,7 @@ export default async function ReportsPage() {
       <AppHeader title="Relatórios" backHref="/plano-crescimento" />
       <section className="official-report-header">
         <div><small>Pós-baseline</small><h1>Ciclos reais</h1></div>
-        <p>Somente eventos desde 27/08/2026. O legado não é misturado.</p>
+        <p>{officialDate ? `Somente eventos desde ${officialDate}.` : "Os eventos oficiais começarão na ativação."} O legado não é misturado.</p>
       </section>
       {error ? (
         <EmptyState><strong>Relatórios indisponíveis</strong><span>{error.message}</span></EmptyState>

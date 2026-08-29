@@ -28,7 +28,7 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
     supabase
       .from("btc_external_contributions")
       .select("id,accounting_amount_usdt,input_mode"),
-    loadOfficialMonitoring()
+    loadOfficialMonitoring({ includeDetailedPreview: true })
   ]);
 
   const actionKeys = (): AssetPlanActionKeys => ({

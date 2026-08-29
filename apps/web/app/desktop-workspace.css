@@ -27,6 +27,10 @@
   .desktop-workspace-root {
     --desktop-sidebar-width: clamp(220px, 17vw, 246px);
     --desktop-topbar-height: 66px;
+    --desktop-font-body: 1rem;
+    --desktop-font-control: .8125rem;
+    --desktop-font-label: .75rem;
+    --desktop-font-value: 1.25rem;
     display: grid;
     grid-template-columns: var(--desktop-sidebar-width) minmax(0, 1fr);
     width: 100%;
@@ -36,6 +40,8 @@
     overflow: hidden;
     background: radial-gradient(circle at 65% -20%, rgba(28, 92, 105, .09), transparent 34%), var(--co-bg);
     color: var(--co-text);
+    font-size: 16px;
+    line-height: 1.4;
   }
 
   .desktop-workspace-sidebar {
@@ -57,7 +63,7 @@
     gap: 10px;
     padding: 4px 10px 14px;
     color: var(--co-text);
-    font-size: .79rem;
+    font-size: .875rem;
     font-weight: 880;
     letter-spacing: .16em;
   }
@@ -75,7 +81,7 @@
     border: 1px solid transparent;
     border-radius: 9px;
     color: #8b98a6;
-    font-size: .69rem;
+    font-size: .875rem;
     font-weight: 680;
     transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
   }
@@ -94,8 +100,8 @@
     background: rgba(255, 255, 255, .018);
   }
 
-  .desktop-sidebar-context small { overflow: hidden; color: var(--co-muted); font-size: .58rem; line-height: 1.45; text-overflow: ellipsis; }
-  .desktop-mode-indicator { display: inline-flex; width: max-content; max-width: 100%; align-items: center; gap: 6px; color: var(--co-muted); font-size: .6rem; font-weight: 820; letter-spacing: .035em; text-transform: uppercase; }
+  .desktop-sidebar-context small { overflow: hidden; color: var(--co-muted); font-size: var(--desktop-font-label); line-height: 1.45; text-overflow: ellipsis; }
+  .desktop-mode-indicator { display: inline-flex; width: max-content; max-width: 100%; align-items: center; gap: 6px; color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 820; letter-spacing: .035em; text-transform: uppercase; }
   .desktop-mode-indicator::before { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: currentColor; content: ""; }
   .desktop-mode-indicator.normal { color: var(--co-green); }
   .desktop-mode-indicator.defensive { color: var(--co-red); }
@@ -108,9 +114,9 @@
   .desktop-feed-status span,
   .desktop-user-summary span { display: grid; min-width: 0; gap: 1px; }
   .desktop-feed-status small,
-  .desktop-user-summary small { color: #667482; font-size: .5rem; }
+  .desktop-user-summary small { color: #667482; font-size: var(--desktop-font-label); }
   .desktop-feed-status strong,
-  .desktop-user-summary strong { overflow: hidden; color: var(--co-text); font-size: .61rem; text-overflow: ellipsis; white-space: nowrap; }
+  .desktop-user-summary strong { overflow: hidden; color: var(--co-text); font-size: var(--desktop-font-control); text-overflow: ellipsis; white-space: nowrap; }
   .desktop-feed-status[data-tone="online"] { color: var(--co-green); }
   .desktop-feed-status[data-tone="stale"],
   .desktop-feed-status[data-tone="loading"] { color: var(--co-gold); }
@@ -119,16 +125,16 @@
   .desktop-workspace-main { display: grid; grid-template-rows: var(--desktop-topbar-height) minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
   .desktop-workspace-topbar { position: relative; z-index: 5; display: flex; min-width: 0; min-height: var(--desktop-topbar-height); align-items: center; justify-content: space-between; gap: 20px; padding: 10px clamp(16px, 2vw, 28px); border-bottom: 1px solid var(--co-line); background: rgba(7, 14, 23, .97); }
   .desktop-topbar-heading { display: grid; min-width: 0; gap: 2px; }
-  .desktop-topbar-heading h1 { overflow: hidden; margin: 0; color: var(--co-text); font-size: 1rem; font-weight: 790; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
-  .desktop-topbar-heading p { overflow: hidden; margin: 0; color: var(--co-muted); font-size: .57rem; text-overflow: ellipsis; white-space: nowrap; }
+  .desktop-topbar-heading h1 { overflow: hidden; margin: 0; color: var(--co-text); font-size: var(--desktop-font-value); font-weight: 790; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
+  .desktop-topbar-heading p { overflow: hidden; margin: 0; color: var(--co-muted); font-size: var(--desktop-font-label); text-overflow: ellipsis; white-space: nowrap; }
   .desktop-topbar-context { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 8px; }
   .desktop-topbar-prices { display: flex; align-items: center; gap: 10px; padding-right: 10px; border-right: 1px solid var(--co-line); }
-  .desktop-topbar-prices span { color: var(--co-muted); font-size: .53rem; font-weight: 760; white-space: nowrap; }
-  .desktop-topbar-prices strong { margin-left: 3px; color: var(--co-text); font-size: .64rem; font-variant-numeric: tabular-nums; }
-  .desktop-context-chip { display: inline-flex; min-height: 28px; align-items: center; padding: 0 9px; border: 1px solid var(--co-line); border-radius: 8px; background: rgba(255, 255, 255, .018); color: var(--co-muted); font-size: .56rem; font-weight: 740; white-space: nowrap; }
+  .desktop-topbar-prices span { color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 760; white-space: nowrap; }
+  .desktop-topbar-prices strong { margin-left: 3px; color: var(--co-text); font-size: var(--desktop-font-control); font-variant-numeric: tabular-nums; }
+  .desktop-context-chip { display: inline-flex; min-height: 30px; align-items: center; padding: 0 9px; border: 1px solid var(--co-line); border-radius: 8px; background: rgba(255, 255, 255, .018); color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 740; white-space: nowrap; }
   .desktop-context-chip.normal { border-color: rgba(41, 215, 149, .2); color: var(--co-green); }
   .desktop-context-chip.defensive { border-color: rgba(255, 92, 112, .22); color: var(--co-red); }
-  .desktop-topbar-updated { color: #697784; font-size: .52rem; white-space: nowrap; }
+  .desktop-topbar-updated { color: #697784; font-size: var(--desktop-font-label); white-space: nowrap; }
   .desktop-topbar-updated strong { color: var(--co-muted); font-variant-numeric: tabular-nums; }
   .desktop-topbar-actions { display: flex; align-items: center; gap: 7px; }
 
@@ -137,16 +143,16 @@
   .desktop-panel { min-width: 0; border: 1px solid var(--co-line); border-radius: 11px; background: rgba(12, 21, 31, .88); }
   .desktop-panel-heading { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--co-line); }
   .desktop-panel-heading > div:first-child { display: grid; min-width: 0; gap: 2px; }
-  .desktop-panel-heading span { color: var(--co-muted); font-size: .49rem; font-weight: 760; letter-spacing: .065em; text-transform: uppercase; }
-  .desktop-panel-heading h2 { overflow: hidden; margin: 0; color: var(--co-text); font-size: .72rem; font-weight: 770; text-overflow: ellipsis; white-space: nowrap; }
+  .desktop-panel-heading span { color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 760; letter-spacing: .065em; text-transform: uppercase; }
+  .desktop-panel-heading h2 { overflow: hidden; margin: 0; color: var(--co-text); font-size: .875rem; font-weight: 770; text-overflow: ellipsis; white-space: nowrap; }
   .desktop-panel-actions { display: flex; align-items: center; gap: 6px; }
 
   .desktop-kpi { display: grid; min-width: 0; min-height: 100px; align-content: start; gap: 6px; padding: 12px; border: 1px solid var(--co-line); border-radius: 11px; background: rgba(12, 21, 31, .88); }
   .desktop-kpi-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
-  .desktop-kpi-heading > span { overflow: hidden; color: var(--co-muted); font-size: .52rem; font-weight: 770; letter-spacing: .045em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+  .desktop-kpi-heading > span { overflow: hidden; color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 770; letter-spacing: .045em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
   .desktop-kpi-heading i { display: grid; width: 24px; height: 24px; flex: 0 0 auto; place-items: center; border-radius: 7px; background: rgba(255, 255, 255, .03); color: var(--co-muted); font-style: normal; }
-  .desktop-kpi > strong { overflow: hidden; color: var(--co-text); font-size: 1.04rem; font-variant-numeric: tabular-nums; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
-  .desktop-kpi > small { overflow: hidden; color: var(--co-muted); font-size: .54rem; line-height: 1.35; text-overflow: ellipsis; }
+  .desktop-kpi > strong { overflow: hidden; color: var(--co-text); font-size: var(--desktop-font-value); font-variant-numeric: tabular-nums; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
+  .desktop-kpi > small { overflow: hidden; color: var(--co-muted); font-size: var(--desktop-font-label); line-height: 1.35; text-overflow: ellipsis; }
   .desktop-kpi[data-tone="gold"] > strong,
   .desktop-kpi[data-tone="gold"] .desktop-kpi-heading i { color: var(--co-gold); }
   .desktop-kpi[data-tone="positive"] > strong,
@@ -158,8 +164,8 @@
   .desktop-kpi[data-tone="info"] .desktop-kpi-heading i { color: #60a5fa; }
 
   .desktop-empty-state { display: grid; min-height: 132px; place-content: center; gap: 6px; padding: 20px; color: var(--co-muted); text-align: center; }
-  .desktop-empty-state strong { color: var(--co-text); font-size: .72rem; }
-  .desktop-empty-state span { max-width: 48ch; font-size: .59rem; line-height: 1.5; }
+  .desktop-empty-state strong { color: var(--co-text); font-size: .875rem; }
+  .desktop-empty-state span { max-width: 48ch; font-size: var(--desktop-font-label); line-height: 1.5; }
 }
 
 @media (min-width: 1024px) and (max-width: 1180px) {

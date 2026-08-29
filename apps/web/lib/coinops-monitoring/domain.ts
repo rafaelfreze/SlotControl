@@ -3,7 +3,6 @@ export type OfficialStrategyMode = "NORMAL_GROWTH" | "DEFENSIVE_POST_ATH";
 export type SlotPool = "MAIN" | "RESERVE";
 
 export const OFFICIAL_MONITORING_TIME_ZONE = "America/Campo_Grande";
-export const OFFICIAL_BASELINE_DATE = "2026-08-27";
 export const OFFICIAL_CYCLE_DAYS = 30;
 
 export const OFFICIAL_TARGETS: Record<OfficialAsset, number> = { BTC: 7, SOL: 2 };

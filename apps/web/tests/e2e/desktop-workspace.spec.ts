@@ -19,12 +19,12 @@ function markup() {
     <aside class="desktop-workspace-sidebar">
       <a class="desktop-sidebar-brand">COINOPS</a>
       <nav class="desktop-sidebar-nav">${nav.map((item, i) => `<a class="desktop-sidebar-link" data-active="${i === 0}">${item}</a>`).join("")}</nav>
-      <footer class="desktop-sidebar-footer">Feed conectado</footer>
+      <footer class="desktop-sidebar-footer"><div class="desktop-feed-status" data-tone="online"><span><small>Feed</small><strong>Conectado</strong></span></div></footer>
     </aside>
     <div class="desktop-workspace-main">
-      <header class="desktop-workspace-topbar"><strong>Resumo geral</strong><button type="button">Atualizar</button></header>
+      <header class="desktop-workspace-topbar"><div class="desktop-topbar-heading"><h1>Resumo geral</h1><p>Visão completa da operação</p></div><button type="button">Atualizar</button></header>
       <main class="desktop-workspace-content">
-        <section class="desktop-kpi-grid">${kpis.map((item) => `<article class="desktop-kpi desktop-kpi-card"><small>${item}</small><strong>123,45 USDT</strong><span>Contexto</span></article>`).join("")}</section>
+        <section class="desktop-kpi-grid">${kpis.map((item) => `<article class="desktop-kpi desktop-kpi-card"><span>${item}</span><strong>123,45 USDT</strong><small>Contexto</small></article>`).join("")}</section>
         <section class="desktop-dashboard-grid">
           <article class="desktop-panel desktop-performance-panel">Desempenho do patrimônio</article>
           <article class="desktop-panel">Distribuição</article>
@@ -70,6 +70,11 @@ test("shell ocupa a largura real com densidade consistente na matriz desktop", a
       const rows = [...document.querySelectorAll<HTMLTableRowElement>(".desktop-data-table tbody tr")]
         .map((element) => element.getBoundingClientRect());
       const firstTop = cards[0]?.top ?? 0;
+      const fontSize = (selector: string) => {
+        const element = document.querySelector<HTMLElement>(selector);
+        if (!element) throw new Error(`Elemento ausente: ${selector}`);
+        return Number.parseFloat(getComputedStyle(element).fontSize);
+      };
       return {
         documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         bodyOverflow: document.body.scrollWidth - document.body.clientWidth,
@@ -82,6 +87,16 @@ test("shell ocupa a largura real com densidade consistente na matriz desktop", a
         firstRowCards: cards.filter((card) => Math.abs(card.top - firstTop) < 1).length,
         cardRows: new Set(cards.map((card) => Math.round(card.top))).size,
         rowHeights: rows.map((row) => row.height),
+        typography: {
+          body: fontSize(".desktop-workspace-root"),
+          sidebar: fontSize(".desktop-sidebar-link"),
+          topbarTitle: fontSize(".desktop-topbar-heading h1"),
+          kpiLabel: fontSize(".desktop-kpi > span"),
+          kpiValue: fontSize(".desktop-kpi > strong"),
+          kpiHelper: fontSize(".desktop-kpi > small"),
+          tableHeader: fontSize(".desktop-data-table th"),
+          tableBody: fontSize(".desktop-data-table td")
+        },
         clippedSidebar: [...document.querySelectorAll<HTMLElement>(".desktop-sidebar-link")]
           .filter((element) => element.scrollWidth > element.clientWidth + 1)
           .map((element) => element.textContent),
@@ -101,6 +116,15 @@ test("shell ocupa a largura real com densidade consistente na matriz desktop", a
     expect(result.firstRowCards, `${width}px densidade dos KPIs`).toBeGreaterThanOrEqual(4);
     expect(result.cardRows, `${width}px linhas de KPIs`).toBeLessThanOrEqual(2);
     expect(result.rowHeights.every((value) => value >= 44 && value <= 58), `${width}px densidade da tabela`).toBe(true);
+    expect(result.typography.body, `${width}px corpo desktop`).toBeGreaterThanOrEqual(15);
+    expect(result.typography.body, `${width}px corpo desktop`).toBeLessThanOrEqual(16);
+    expect(result.typography.sidebar, `${width}px sidebar legível`).toBeGreaterThanOrEqual(13);
+    expect(result.typography.topbarTitle, `${width}px título da topbar`).toBeGreaterThanOrEqual(17);
+    expect(result.typography.kpiLabel, `${width}px label dos KPIs`).toBeGreaterThanOrEqual(12);
+    expect(result.typography.kpiValue, `${width}px valor dos KPIs`).toBeGreaterThanOrEqual(18);
+    expect(result.typography.kpiHelper, `${width}px contexto dos KPIs`).toBeGreaterThanOrEqual(12);
+    expect(result.typography.tableHeader, `${width}px cabeçalho da tabela`).toBeGreaterThanOrEqual(12);
+    expect(result.typography.tableBody, `${width}px corpo da tabela`).toBeGreaterThanOrEqual(13);
     expect(result.clippedSidebar, `${width}px labels da sidebar`).toEqual([]);
     expect(result.bottomNav, `${width}px bottom navigation`).toBe("none");
 

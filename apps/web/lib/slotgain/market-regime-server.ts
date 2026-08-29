@@ -1,14 +1,18 @@
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
+import type { OfficialStrategyMode } from "@/lib/coinops-monitoring/domain";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, calculateMarketRegime, distanceFromAthPercent, effectiveMarketRegime, selectOperablePendingSlots, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegime, type MarketRegimeSettings } from "./market-regime";
+import { buildOfficialFutureEntryPlan, type OfficialTriggerSlot } from "./official-entry-triggers";
 
 type BinanceKline = [number, string, string, string, string];
 type StateRow = BtcMarketState & { singleton: boolean };
 
 const BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT";
+const BINANCE_SOL_TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT";
 const BINANCE_MONTHLY_URL = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=1000";
 const BINANCE_DAILY_URL = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=2";
 const COINGECKO_BTC_URL = "https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&community_data=false&developer_data=false&sparkline=false";
+const COINGECKO_SOL_URL = "https://api.coingecko.com/api/v3/coins/solana?localization=false&tickers=false&community_data=false&developer_data=false&sparkline=false";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store", headers: { accept: "application/json" } });
@@ -18,26 +22,32 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 async function fetchBtcReferencePrices() {
   try {
-    const [ticker, monthly, daily] = await Promise.all([
+    const [ticker, solTicker, monthly, daily] = await Promise.all([
       fetchJson<{ price?: string }>(BINANCE_TICKER_URL),
+      fetchJson<{ price?: string }>(BINANCE_SOL_TICKER_URL),
       fetchJson<BinanceKline[]>(BINANCE_MONTHLY_URL),
       fetchJson<BinanceKline[]>(BINANCE_DAILY_URL)
     ]);
     const currentPrice = Number(ticker.price);
+    const solCurrentPrice = Number(solTicker.price);
     const monthlyHigh = Math.max(...monthly.map((candle) => Number(candle[2])));
     const latestClosedDaily = daily.length > 1 ? Number(daily[0]?.[4]) : currentPrice;
-    if (![currentPrice, monthlyHigh, latestClosedDaily].every((value) => Number.isFinite(value) && value > 0)) {
+    if (![currentPrice, solCurrentPrice, monthlyHigh, latestClosedDaily].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error("Referencia da Binance invalida.");
     }
-    return { currentPrice, monthlyHigh, latestClosedDaily, source: "BINANCE_BTCUSDT_MONTHLY_HIGH" };
+    return { currentPrice, solCurrentPrice, monthlyHigh, latestClosedDaily, source: "BINANCE_BTCUSDT_MONTHLY_HIGH" };
   } catch (binanceError) {
-    const coin = await fetchJson<{ market_data?: { ath?: { usd?: number }; current_price?: { usd?: number } } }>(COINGECKO_BTC_URL);
+    const [coin, solCoin] = await Promise.all([
+      fetchJson<{ market_data?: { ath?: { usd?: number }; current_price?: { usd?: number } } }>(COINGECKO_BTC_URL),
+      fetchJson<{ market_data?: { current_price?: { usd?: number } } }>(COINGECKO_SOL_URL)
+    ]);
     const currentPrice = Number(coin.market_data?.current_price?.usd);
+    const solCurrentPrice = Number(solCoin.market_data?.current_price?.usd);
     const athPrice = Number(coin.market_data?.ath?.usd);
-    if (![currentPrice, athPrice].every((value) => Number.isFinite(value) && value > 0)) {
+    if (![currentPrice, solCurrentPrice, athPrice].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error(`Fontes de ATH indisponiveis: ${binanceError instanceof Error ? binanceError.message : "Binance sem resposta"}.`);
     }
-    return { currentPrice, monthlyHigh: athPrice, latestClosedDaily: currentPrice, source: "COINGECKO_BTC_USD_FALLBACK" };
+    return { currentPrice, solCurrentPrice, monthlyHigh: athPrice, latestClosedDaily: currentPrice, source: "COINGECKO_BTC_SOL_USD_FALLBACK" };
   }
 }
 
@@ -54,17 +64,70 @@ function asSettings(value: Record<string, unknown>): MarketRegimeSettings {
   };
 }
 
-type PendingSlot = { id: string; strategy_id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains: number; preco_entrada: number | string | null; strategies: { asset: string | null; gain_rate: number | string | null } | null };
+type PendingSlot = { id: string; strategy_id: string; slot_number: number; sort_order: number; status: "zerado" | "aberto" | "gain" | "hold"; gains: number; operational_gains: number | string; operational_slot_value: number | string; preco_entrada: number | string | null; strategies: { asset: string | null; gain_rate: number | string | null } | null };
+type OfficialProgressRow = { cycle_id: string; slot_id: string; asset: "BTC" | "SOL"; cycle_progress: number | string; last_operated_at: string | null };
+type OfficialPoolRow = { baseline_id: string; slot_id: string | null; asset: "BTC" | "SOL"; slot_number: number; pool: "MAIN" | "RESERVE"; enabled: boolean; funded: boolean; allow_reserve: boolean; active_from_cycle: number };
+type OfficialTriggerContext = { baselineId: string; userId: string; tenantId: string; mode: OfficialStrategyMode; cycleId: string; cycleNumber: number; progress: OfficialProgressRow[]; pool: OfficialPoolRow[] };
 
-export async function recalculateFutureEntryTriggers(userId: string, regime: MarketRegime, settingsByAsset: Record<"BTC" | "SOL", Partial<AssetMarketStrategySettings>>) {
+function officialScopeKey(userId: string, tenantId: unknown) {
+  return `${typeof tenantId === "string" ? tenantId : ""}:${userId}`;
+}
+
+async function loadOfficialTriggerContexts(tenantId: string | null) {
+  const supabase = createServiceRoleClient();
+  let baselineQuery = supabase.from("monitoring_baselines").select("id,user_id,tenant_id").eq("status", "ACTIVE");
+  if (tenantId) baselineQuery = baselineQuery.eq("tenant_id", tenantId);
+  const { data: baselineRows, error: baselineError } = await baselineQuery;
+  if (baselineError) throw baselineError;
+  if (!baselineRows?.length) return new Map<string, OfficialTriggerContext>();
+
+  const baselineIds = baselineRows.map((row) => row.id);
+  const [{ data: regimeRows, error: regimeError }, { data: cycleRows, error: cycleError }, { data: poolRows, error: poolError }] = await Promise.all([
+    supabase.from("strategy_regime_state").select("baseline_id,mode").in("baseline_id", baselineIds),
+    supabase.from("operational_cycles").select("id,baseline_id,cycle_number").in("baseline_id", baselineIds).eq("status", "ACTIVE"),
+    supabase.from("slot_pool_configuration").select("baseline_id,slot_id,asset,slot_number,pool,enabled,funded,allow_reserve,active_from_cycle").in("baseline_id", baselineIds)
+  ]);
+  if (regimeError) throw regimeError;
+  if (cycleError) throw cycleError;
+  if (poolError) throw poolError;
+
+  const cycleIds = (cycleRows || []).map((row) => row.id);
+  const { data: progressRows, error: progressError } = cycleIds.length
+    ? await supabase.from("cycle_slot_progress").select("cycle_id,slot_id,asset,cycle_progress,last_operated_at").in("cycle_id", cycleIds)
+    : { data: [], error: null };
+  if (progressError) throw progressError;
+
+  const contexts = new Map<string, OfficialTriggerContext>();
+  for (const baseline of baselineRows) {
+    const regime = (regimeRows || []).find((row) => row.baseline_id === baseline.id);
+    const cycle = (cycleRows || []).find((row) => row.baseline_id === baseline.id);
+    if (!regime || !cycle || (regime.mode !== "NORMAL_GROWTH" && regime.mode !== "DEFENSIVE_POST_ATH")) {
+      throw new Error("COINOPS_OFFICIAL_TRIGGER_CONTEXT_INCOMPLETE");
+    }
+    contexts.set(officialScopeKey(baseline.user_id, baseline.tenant_id), {
+      baselineId: baseline.id,
+      userId: baseline.user_id,
+      tenantId: baseline.tenant_id,
+      mode: regime.mode,
+      cycleId: cycle.id,
+      cycleNumber: Number(cycle.cycle_number),
+      progress: (progressRows || []).filter((row) => row.cycle_id === cycle.id) as OfficialProgressRow[],
+      pool: (poolRows || []).filter((row) => row.baseline_id === baseline.id) as OfficialPoolRow[]
+    });
+  }
+  return contexts;
+}
+
+export async function recalculateFutureEntryTriggers(userId: string, regime: MarketRegime, settingsByAsset: Record<"BTC" | "SOL", Partial<AssetMarketStrategySettings>>, officialContext?: OfficialTriggerContext) {
   const supabase = createServiceRoleClient();
   const tenantId = getCoinOpsServiceTenantId();
+  const scopedTenantId = officialContext?.tenantId || tenantId;
   let slotsQuery = supabase
     .from("slots")
-    .select("id,strategy_id,slot_number,sort_order,status,gains,preco_entrada,strategies(asset,gain_rate)")
+    .select("id,strategy_id,slot_number,sort_order,status,gains,operational_gains,operational_slot_value,preco_entrada,strategies(asset,gain_rate)")
     .eq("user_id", userId)
     .in("status", ["aberto", "hold"]);
-  if (tenantId) slotsQuery = slotsQuery.eq("tenant_id", tenantId);
+  if (scopedTenantId) slotsQuery = slotsQuery.eq("tenant_id", scopedTenantId);
   const { data: rows, error } = await slotsQuery;
   if (error) throw error;
   let recalculated = 0;
@@ -72,20 +135,57 @@ export async function recalculateFutureEntryTriggers(userId: string, regime: Mar
     const slots = ((rows || []) as unknown as PendingSlot[]).filter((slot) => (slot.strategies?.asset || "BTC").toUpperCase() === asset);
     const reference = Math.min(...slots.filter((slot) => slot.status === "aberto").map((slot) => Number(slot.preco_entrada || 0)).filter((value) => value > 0));
     if (!Number.isFinite(reference)) continue;
-    const pending = selectOperablePendingSlots(asset, regime, slots.map((slot) => ({ id: slot.id, slot_number: slot.slot_number, sort_order: slot.sort_order, status: slot.status, gains: Number(slot.gains || 0) })), settingsByAsset[asset]);
-    const drop = activeBuyDropPercent(asset, regime, settingsByAsset[asset]);
+    let pending: PendingSlot[];
+    let drop: number;
+    if (officialContext) {
+      const progressBySlot = new Map(officialContext.progress.filter((row) => row.asset === asset).map((row) => [row.slot_id, row]));
+      const triggerSlots = officialContext.pool.flatMap((pool): OfficialTriggerSlot[] => {
+        const current = pool.asset === asset && pool.slot_id ? slots.find((slot) => slot.id === pool.slot_id) : null;
+        const progress = current ? progressBySlot.get(current.id) : null;
+        if (!current || !progress) return [];
+        return [{
+          id: current.id,
+          asset,
+          status: current.status,
+          slotNumber: pool.slot_number,
+          pool: pool.pool,
+          enabled: pool.enabled,
+          funded: pool.funded,
+          allowReserve: pool.allow_reserve,
+          activeFromCycleNumber: pool.active_from_cycle,
+          operationalGains: Number(current.operational_gains || 0),
+          operationalValue: Number(current.operational_slot_value || 0),
+          cycleProgress: Number(progress.cycle_progress || 0),
+          lastOperatedAt: progress.last_operated_at
+        }];
+      });
+      const plan = buildOfficialFutureEntryPlan(asset, officialContext.mode, officialContext.cycleNumber, triggerSlots);
+      const pendingById = new Map(slots.map((slot) => [slot.id, slot]));
+      pending = plan.candidateIds.flatMap((id) => {
+        const candidate = pendingById.get(id);
+        return candidate ? [candidate] : [];
+      });
+      drop = plan.dropPercent;
+    } else {
+      const pendingIds = selectOperablePendingSlots(asset, regime, slots.map((slot) => ({ id: slot.id, slot_number: slot.slot_number, sort_order: slot.sort_order, status: slot.status, gains: Number(slot.gains || 0) })), settingsByAsset[asset]);
+      const pendingById = new Map(slots.map((slot) => [slot.id, slot]));
+      pending = pendingIds.flatMap((candidate) => {
+        const slot = pendingById.get(candidate.id);
+        return slot ? [slot] : [];
+      });
+      drop = activeBuyDropPercent(asset, regime, settingsByAsset[asset]);
+    }
     for (const [index, candidate] of pending.entries()) {
-      const slot = slots.find((item) => item.id === candidate.id);
-      if (!slot) continue;
+      const slot = candidate;
       const entryPrice = Math.round(reference * Math.pow(1 - drop / 100, index + 1));
       if (Math.abs(Number(slot.preco_entrada || 0) - entryPrice) < 1) continue;
       const gainRate = Number(slots.find((item) => item.id === slot.id)?.strategies?.gain_rate || 0);
       let updateQuery = supabase.from("slots").update({ preco_entrada: entryPrice, preco_alvo: Math.round(entryPrice * (1 + gainRate)) }).eq("id", slot.id).eq("user_id", userId).eq("status", "hold");
-      if (tenantId) updateQuery = updateQuery.eq("tenant_id", tenantId);
+      if (scopedTenantId) updateQuery = updateQuery.eq("tenant_id", scopedTenantId);
       const { data: updated } = await updateQuery.select("id").maybeSingle();
       if (!updated) continue;
       recalculated += 1;
-      await supabase.from("history_events").insert({ user_id: userId, strategy_id: slot.strategy_id, slot_id: slot.id, action: "Gatilho de entrada", detail: JSON.stringify({ schemaVersion: 2, eventType: "gatilho_futuro_recalculado", asset, regime, dropPercent: drop, expectedPrice: entryPrice, note: "Apenas entrada futura recalculada; slot aberto e historico permaneceram inalterados.", eventAt: new Date().toISOString() }), slot_number: slot.slot_number });
+      await supabase.from("history_events").insert({ user_id: userId, strategy_id: slot.strategy_id, slot_id: slot.id, action: "Gatilho de entrada", detail: JSON.stringify({ schemaVersion: 2, eventType: "gatilho_futuro_recalculado", asset, regime: officialContext?.mode || regime, modeSource: officialContext ? "OFFICIAL_BASELINE" : "LEGACY", dropPercent: drop, expectedPrice: entryPrice, note: "Apenas entrada futura recalculada; slot aberto e historico permaneceram inalterados.", eventAt: new Date().toISOString() }), slot_number: slot.slot_number });
     }
   }
   return recalculated;
@@ -128,13 +228,23 @@ export async function refreshBtcMarketRegime() {
   const { error: stateError } = await supabase.from("btc_market_state").upsert(state, { onConflict: stateConflictKey });
   if (stateError) throw stateError;
 
-  const { data: officialMonitoring, error: officialMonitoringError } = await supabase.rpc(
+  let officialMonitoringResponse = await supabase.rpc(
     "process_official_monitoring_tick",
-    { p_btc_price: prices.currentPrice, p_observed_at: now }
+    { p_btc_price: prices.currentPrice, p_sol_price: prices.solCurrentPrice, p_observed_at: now }
   );
+  if (officialMonitoringResponse.error?.code === "PGRST202") {
+    officialMonitoringResponse = await supabase.rpc(
+      "process_official_monitoring_tick",
+      { p_btc_price: prices.currentPrice, p_observed_at: now }
+    );
+  }
+  const { data: officialMonitoring, error: officialMonitoringError } = officialMonitoringResponse;
   if (officialMonitoringError && officialMonitoringError.code !== "PGRST202") {
     throw officialMonitoringError;
   }
+  const officialTriggerContexts = officialMonitoringError?.code === "PGRST202"
+    ? new Map<string, OfficialTriggerContext>()
+    : await loadOfficialTriggerContexts(tenantId);
 
 
   let settingsQuery = supabase.from("market_regime_settings").select("*");
@@ -156,7 +266,16 @@ export async function refreshBtcMarketRegime() {
     }
   }
   let changedUsers = 0;
+  for (const officialContext of officialTriggerContexts.values()) {
+    const triggerCount = await recalculateFutureEntryTriggers(officialContext.userId, "NORMAL", {
+      BTC: DEFAULT_ASSET_MARKET_SETTINGS.BTC,
+      SOL: DEFAULT_ASSET_MARKET_SETTINGS.SOL
+    }, officialContext);
+    console.log("[market-regime] official_future_triggers_recalculated", { userId: officialContext.userId, mode: officialContext.mode, count: triggerCount });
+  }
   for (const row of settingsRows || []) {
+    const officialContext = officialTriggerContexts.get(officialScopeKey(row.user_id, row.tenant_id));
+    if (officialContext) continue;
     const settings = asSettings(row as Record<string, unknown>);
     const calculatedForUser = calculateMarketRegime(distance, settings);
     const nextMode = settings.mode_source === "MANUAL"
@@ -183,7 +302,7 @@ export async function refreshBtcMarketRegime() {
     });
     console.log("[market-regime] future_triggers_recalculated", { userId: row.user_id, regime: nextMode, count: triggerCount });
   }
-  return { ...state, changedUsers, officialMonitoring };
+  return { ...state, changedUsers, officialUsers: officialTriggerContexts.size, officialMonitoring };
 }
 
 export async function getBtcMarketState() {
