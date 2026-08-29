@@ -2,6 +2,8 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 
+import { fetchOfficialReferencePrices } from "./official-reference-prices";
+
 export type MonitoringAssetOverview = {
   target: number | null;
   enabled: number;
@@ -199,24 +201,4 @@ export async function loadOfficialMonitoring(options: OfficialMonitoringLoadOpti
   };
 }
 
-export async function fetchOfficialReferencePrices() {
-  const [btcResponse, solResponse] = await Promise.all([
-    fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", { cache: "no-store" }),
-    fetch("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT", { cache: "no-store" })
-  ]);
-
-  if (!btcResponse.ok || !solResponse.ok) throw new Error("COINOPS_BASELINE_PRICE_FEED_UNAVAILABLE");
-
-  const [btcPayload, solPayload] = await Promise.all([
-    btcResponse.json() as Promise<{ price?: string }>,
-    solResponse.json() as Promise<{ price?: string }>
-  ]);
-  const BTC = Number(btcPayload.price);
-  const SOL = Number(solPayload.price);
-
-  if (![BTC, SOL].every((price) => Number.isFinite(price) && price > 0)) {
-    throw new Error("COINOPS_BASELINE_PRICE_INVALID");
-  }
-
-  return { BTC, SOL };
-}
+export { fetchOfficialReferencePrices };
