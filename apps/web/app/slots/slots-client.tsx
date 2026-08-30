@@ -100,7 +100,7 @@ export function SlotsClient({ userLabel, strategies, slots, contributions, setup
   );
 
   return (
-    <MobileScreen desktop={<DesktopSlots userLabel={userLabel} strategies={strategies} slots={slots} contributions={contributions} monitoring={monitoring} livePrices={livePrices} initialFilter={initialAsset} />}>
+    <MobileScreen desktop={<DesktopSlots userLabel={userLabel} strategies={strategies} slots={slots} contributions={contributions} monitoring={monitoring} livePrices={livePrices} initialFilter={initialAsset} initialFlow={initialFlow} />}>
       <BrandHeader compact />
       {setupError ? <section className="inline-alert dashboard-alert">Falha ao carregar dados: {setupError}</section> : null}
       {notice ? <section className="form-success dashboard-notice" role="status">{notice}</section> : null}
@@ -142,6 +142,7 @@ export function SlotsClient({ userLabel, strategies, slots, contributions, setup
             livePrice={getAsset(slot) === "SOL" ? livePrices.prices.SOL : livePrices.prices.BTC}
             rank={slot.status === "aberto" ? openRanks[slot.id] : closedRanks[slot.id]}
             contribution={contributionBySlot[slot.id] || { amountUsdt: 0, gains: 0 }}
+            returnFilter={activeFilter}
             expanded={expandedSlotId === slot.id}
             onToggle={() => setExpandedSlotId((current) => current === slot.id ? null : slot.id)}
             announce={setNotice}
@@ -162,11 +163,12 @@ export function SlotsClient({ userLabel, strategies, slots, contributions, setup
   );
 }
 
-function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggle, announce }: {
+function CompactSlotRow({ slot, livePrice, rank, contribution, returnFilter, expanded, onToggle, announce }: {
   slot: SlotView;
   livePrice?: number;
   rank?: number;
   contribution: CapitalContributionSummary;
+  returnFilter: DisplayFilter;
   expanded: boolean;
   onToggle: () => void;
   announce: (message: string) => void;
@@ -200,6 +202,7 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
             pendingLabel="Gain..."
             className="slot-quick-action"
             buttonClassName="slot-quick-button gain"
+            hidden={{ returnFilter }}
             onSubmit={() => announce("Registrando gain...")}
           />
         ) : (
@@ -210,7 +213,7 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
             pendingLabel="Abrindo..."
             className="slot-quick-action"
             buttonClassName="slot-quick-button open"
-            hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined}
+            hidden={livePrice ? { entryPrice: String(Math.round(livePrice)), returnFilter } : { returnFilter }}
             onSubmit={() => announce("Abrindo slot...")}
           />
         )}
@@ -245,8 +248,8 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, expanded, onToggl
             <Link className="slot-button slot-detail-link" href={`/slots/${slot.id}`}>Ver detalhes</Link>
             {slot.status === "aberto"
               ? <button className="slot-button" type="button" disabled>Aberto</button>
-              : <SlotActionForm action={openSlot} slotId={slot.id} label="Abrir" buttonClassName="slot-button" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)) } : undefined} onSubmit={() => announce("Abrindo slot...")} />}
-            <SlotActionForm action={registerGain} slotId={slot.id} label="Adicionar gain" buttonClassName="slot-button" disabled={slot.status === "zerado" || slot.status === "hold"} onSubmit={() => announce("Registrando gain...")} />
+              : <SlotActionForm action={openSlot} slotId={slot.id} label="Abrir" buttonClassName="slot-button" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)), returnFilter } : { returnFilter }} onSubmit={() => announce("Abrindo slot...")} />}
+            <SlotActionForm action={registerGain} slotId={slot.id} label="Adicionar gain" buttonClassName="slot-button" disabled={slot.status === "zerado" || slot.status === "hold"} hidden={{ returnFilter }} onSubmit={() => announce("Registrando gain...")} />
             <SlotActionForm action={resetSlot} slotId={slot.id} label="Zerar" buttonClassName="slot-button" onSubmit={() => announce("Zerando slot...")} />
           </div>
           <details className="slot-advanced-actions">

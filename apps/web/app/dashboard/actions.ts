@@ -8,6 +8,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getValueForGains } from "@/lib/slotgain/gain-calculation";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, effectiveMarketRegime, validateMarketRegimeSettings, type AssetMarketStrategySettings, type MarketRegimeSettings } from "@/lib/slotgain/market-regime";
 import { recalculateFutureEntryTriggers } from "@/lib/slotgain/market-regime-server";
+import { addNoticeToPath, getSlotsReturnPath } from "@/lib/slotgain/slot-filter-navigation";
 
 type SlotStatus = "zerado" | "aberto" | "gain" | "hold";
 
@@ -253,7 +254,7 @@ function finish(message: string, path = "/slots"): never {
   revalidatePath("/historico");
   revalidatePath("/config");
   revalidatePath("/plano-crescimento");
-  redirect(`${path}?notice=${encodeURIComponent(message)}`);
+  redirect(addNoticeToPath(path, message));
 }
 
 async function addHistory(
@@ -676,6 +677,7 @@ export async function moveSlot(formData: FormData) {
 }
 
 export async function openSlot(formData: FormData) {
+  const returnPath = getSlotsReturnPath(formData.get("returnFilter"));
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
   if (!slot || slot.status === "aberto") {
@@ -687,15 +689,15 @@ export async function openSlot(formData: FormData) {
     { p_slot_id: slot.id }
   );
   if (eligibilityError && eligibilityError.code !== "PGRST202") {
-    finish("Não foi possível validar a fila oficial. Nenhuma abertura foi registrada.");
+    finish("Não foi possível validar a fila oficial. Nenhuma abertura foi registrada.", returnPath);
   }
   const officialEligibility = eligibility as { active?: boolean; allowed?: boolean; code?: string; expected_slot_number?: number } | null;
   if (officialEligibility?.active && !officialEligibility.allowed) {
     if (officialEligibility.code === "ALL_TARGETS_MET") {
-      finish("Todos os slots habilitados atingiram a meta deste ciclo. Novas entradas estão pausadas.");
+      finish("Todos os slots habilitados atingiram a meta deste ciclo. Novas entradas estão pausadas.", returnPath);
     }
     const expected = officialEligibility.expected_slot_number ? ` O próximo é o Slot #${officialEligibility.expected_slot_number}.` : "";
-    finish(`Este slot não é o próximo da fila oficial.${expected}`);
+    finish(`Este slot não é o próximo da fila oficial.${expected}`, returnPath);
   }
 
 
@@ -757,17 +759,18 @@ export async function openSlot(formData: FormData) {
     }
   });
 
-  finish("Slot aberto.");
+  finish("Slot aberto.", returnPath);
 }
 
 export async function registerGain(formData: FormData) {
+  const returnPath = getSlotsReturnPath(formData.get("returnFilter"));
   const { supabase, user } = await getUserClient();
   const slot = await getSlotFromForm(supabase, user.id, formData);
   if (!slot) {
-    finish("Slot não encontrado.");
+    finish("Slot não encontrado.", returnPath);
   }
   if (slot.status !== "aberto") {
-    finish(slot.status === "gain" ? "Gain já registrado." : "Este slot não está aberto.");
+    finish(slot.status === "gain" ? "Gain já registrado." : "Este slot não está aberto.", returnPath);
   }
 
   const { data: strategy } = await supabase
@@ -790,15 +793,15 @@ export async function registerGain(formData: FormData) {
       details: rpcError.details,
       hint: rpcError.hint
     }));
-    finish("Não foi possível registrar o gain. O slot continua aberto.");
+    finish("Não foi possível registrar o gain. O slot continua aberto.", returnPath);
   }
 
   const result = rpcData as RegisterGainRpcResult | null;
   if (!result) {
-    finish("Não foi possível confirmar o gain. O slot continua aberto.");
+    finish("Não foi possível confirmar o gain. O slot continua aberto.", returnPath);
   }
   if (result.already_applied) {
-    finish("Gain já registrado.");
+    finish("Gain já registrado.", returnPath);
   }
 
   const gains = Number(result.gains_after);
@@ -811,7 +814,7 @@ export async function registerGain(formData: FormData) {
       event: "register_asset_real_gain_invalid_result",
       slotId: slot.id
     }));
-    finish("O gain foi processado, mas a atualização da tela falhou. Recarregue a página.");
+    finish("O gain foi processado, mas a atualização da tela falhou. Recarregue a página.", returnPath);
   }
 
   await addHistory("Gain", `Gain registrado. Novo valor: ${formatUsdt(valueAfter)}.`, {
@@ -839,7 +842,7 @@ export async function registerGain(formData: FormData) {
     }
   });
 
-  finish("Gain registrado.");
+  finish("Gain registrado.", returnPath);
 }
 
 export async function resetSlot(formData: FormData) {
