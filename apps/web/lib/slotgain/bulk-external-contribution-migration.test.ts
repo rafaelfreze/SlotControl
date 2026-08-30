@@ -9,6 +9,13 @@ const migration = readFileSync(
   ),
   "utf8"
 );
+const ambiguityFixMigration = readFileSync(
+  new URL(
+    "../../../../supabase/migrations/20260830142944_fix_bulk_external_contribution_batch_id_ambiguity.sql",
+    import.meta.url
+  ),
+  "utf8"
+);
 const action = readFileSync(
   new URL("../../app/plano-crescimento/actions.ts", import.meta.url),
   "utf8"
@@ -106,4 +113,27 @@ test("bulk contribution is represented once in plan and global history", () => {
   assert.match(historyPage, /totalAmount/);
   assert.match(historyClient, /"ID Lote"/);
   assert.match(historyClient, /"Total do Lote"/);
+});
+
+test("batch id hotfix removes PL/pgSQL ambiguity without changing financial rules", () => {
+  const functionStart = "create or replace function coinops.apply_asset_external_contribution_batch(";
+  const functionEnd = "$batch$;";
+  const originalFunction = migration.slice(
+    migration.indexOf(functionStart),
+    migration.indexOf(functionEnd, migration.indexOf(functionStart)) + functionEnd.length
+  );
+  const fixedFunction = ambiguityFixMigration.slice(
+    ambiguityFixMigration.indexOf(functionStart),
+    ambiguityFixMigration.indexOf(functionEnd, ambiguityFixMigration.indexOf(functionStart)) + functionEnd.length
+  );
+
+  assert.match(fixedFunction, /bulk_contribution_batch_id uuid := gen_random_uuid\(\);/);
+  assert.doesNotMatch(fixedFunction, /(^|\n)\s*batch_id uuid :=/);
+  assert.doesNotMatch(fixedFunction, /'bulkBatchId',\s*batch_id\b/);
+  assert.doesNotMatch(fixedFunction, /contribution\.bulk_batch_id = batch_id\b/);
+  assert.doesNotMatch(fixedFunction, /batch_row\.id = batch_id\b/);
+  assert.equal(
+    fixedFunction.replaceAll("bulk_contribution_batch_id", "batch_id"),
+    originalFunction
+  );
 });
