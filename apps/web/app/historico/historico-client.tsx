@@ -30,6 +30,11 @@ export type ParsedHistory = {
   statusAfter: string | null;
   realizedProfit: number | null;
   note: string | null;
+  batchId: string | null;
+  amountPerSlot: number | null;
+  slotCount: number | null;
+  openSlotCount: number | null;
+  totalAmount: number | null;
 };
 
 type ExportRow = {
@@ -53,6 +58,11 @@ type ExportRow = {
   "Status Antes": string;
   "Status Depois": string;
   "Lucro Realizado": string;
+  "ID Lote": string;
+  "Valor por Slot": string;
+  "Quantidade de Slots": string;
+  "Slots Abertos Incluidos": string;
+  "Total do Lote": string;
   Observacao: string;
 };
 
@@ -115,7 +125,12 @@ export function parseHistoryDetail(item: HistoryEvent): ParsedHistory {
       statusBefore: parsed.statusBefore ?? null,
       statusAfter: parsed.statusAfter ?? null,
       realizedProfit: parsed.realizedProfit ?? (valueBefore !== null && valueAfter !== null ? valueAfter - valueBefore : null),
-      note: parsed.note ?? null
+      note: parsed.note ?? null,
+      batchId: parsed.batchId ? String(parsed.batchId) : null,
+      amountPerSlot: parsed.amountPerSlot ?? null,
+      slotCount: parsed.slotCount ?? null,
+      openSlotCount: parsed.openSlotCount ?? null,
+      totalAmount: parsed.totalAmount ?? null
     };
   } catch {
     const legacy = extractLegacyNumbers(item.detail || "");
@@ -136,7 +151,12 @@ export function parseHistoryDetail(item: HistoryEvent): ParsedHistory {
       statusBefore: null,
       statusAfter: null,
       realizedProfit,
-      note: item.detail || null
+      note: item.detail || null,
+      batchId: null,
+      amountPerSlot: null,
+      slotCount: null,
+      openSlotCount: null,
+      totalAmount: null
     };
   }
 }
@@ -196,6 +216,11 @@ function toExportRows(history: HistoryEvent[]): ExportRow[] {
       "Status Antes": parsed.statusBefore || "",
       "Status Depois": parsed.statusAfter || "",
       "Lucro Realizado": numberCell(parsed.realizedProfit),
+      "ID Lote": parsed.batchId || "",
+      "Valor por Slot": numberCell(parsed.amountPerSlot),
+      "Quantidade de Slots": numberCell(parsed.slotCount),
+      "Slots Abertos Incluidos": numberCell(parsed.openSlotCount),
+      "Total do Lote": numberCell(parsed.totalAmount),
       Observacao: parsed.note || parsed.message
     };
   });
@@ -412,7 +437,12 @@ export function HistoricoClient({ userEmail, history, error, referenceNow, basel
                 <strong className="history-event-value">{value === null ? "—" : formatSignedUsdt(value)}</strong>
                 <span aria-hidden="true">⌄</span>
               </summary>
-              <div><p>{parsed.message}</p><small>{formatDate(item.event_at)} · {parsed.origin}</small></div>
+              <div>
+                <p>{parsed.message}</p>
+                {parsed.batchId ? <p><strong>Total: {formatSignedUsdt(parsed.totalAmount || 0)}</strong> · {formatSignedUsdt(parsed.amountPerSlot || 0)} por slot · {parsed.slotCount} slots · {parsed.openSlotCount} abertos incluídos</p> : null}
+                {parsed.batchId && parsed.note ? <p>{parsed.note}</p> : null}
+                <small>{formatDate(item.event_at)} · {parsed.origin}{parsed.batchId ? ` · Lote ${parsed.batchId}` : ""}</small>
+              </div>
             </details>
           );
         })}</div></section>)}

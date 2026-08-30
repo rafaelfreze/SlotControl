@@ -82,6 +82,7 @@ export type AssetRedistributionBatchHistory = {
 
 export type AssetExternalContributionHistory = {
   id: string;
+  asset?: GrowthAsset;
   slot_id?: string;
   slot_number: number;
   amount_usdt: Numeric;
@@ -93,6 +94,12 @@ export type AssetExternalContributionHistory = {
   reason: string;
   applied_by?: string | null;
   created_at: string;
+  bulk_batch_id?: string | null;
+  bulk_sequence?: number | null;
+  bulk_slot_count?: number | null;
+  bulk_total_amount_usdt?: Numeric | null;
+  bulk_amount_per_slot_usdt?: Numeric | null;
+  bulk_open_slot_count?: number | null;
 };
 
 export type AssetLadderPlanResponse = {
@@ -119,6 +126,7 @@ export type AssetLadderPlanResponse = {
   history?: AssetRedistributionBatchHistory[];
   batches?: AssetRedistributionBatchHistory[];
   contributions?: AssetExternalContributionHistory[];
+  bulk_eligible_slot_ids?: string[];
 };
 
 export type AssetPlanActionKeys = {
@@ -186,7 +194,20 @@ function SubmitButton({ children, disabled = false, tone = "gold" }: { children:
 export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys }) {
   const [activeView, setActiveView] = useState<"ladder" | "gains" | "balance">("ladder");
   const [editingSetting, setEditingSetting] = useState<"goal" | "reference" | null>(null);
+  const [balanceScope, setBalanceScope] = useState<"single" | "all">("single");
+  const [balanceAmount, setBalanceAmount] = useState("");
+  const [bulkReviewOpen, setBulkReviewOpen] = useState(false);
   const ladder = plan.ladder || plan.ranking || [];
+  const hasAuthoritativeBulkScope = Array.isArray(plan.bulk_eligible_slot_ids);
+  const eligibleSlotIds = new Set(plan.bulk_eligible_slot_ids || []);
+  const primarySlots = ladder.filter((slot) => hasAuthoritativeBulkScope
+    ? eligibleSlotIds.has(slot.slot_id)
+    : slot.slot_number >= 1 && slot.slot_number <= 25);
+  const bulkSlotCount = primarySlots.length;
+  const bulkOpenSlotCount = primarySlots.filter((slot) => slot.status.toLowerCase() === "aberto").length;
+  const parsedBalanceAmount = Number.parseFloat(balanceAmount.replace(",", "."));
+  const validBalanceAmount = Number.isFinite(parsedBalanceAmount) && parsedBalanceAmount > 0;
+  const bulkTotalAmount = validBalanceAmount ? parsedBalanceAmount * bulkSlotCount : 0;
   const preview = plan.preview || plan.active_preview || null;
   const history = plan.history || plan.batches || [];
   const monthlyGoal = Number(plan.monthly_goal ?? (asset === "BTC" ? 7 : 1));
@@ -245,17 +266,37 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
         <form action={applyAssetExternalBalance} className="btc-contribution-form">
           <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="idempotencyKey" value={actionKeys.balanceContribution} />
-          <label>Slot
+          <input type="hidden" name="scope" value={balanceScope} />
+          {primarySlots.map((slot) => <input key={slot.slot_id} type="hidden" name="expectedSlotIds" value={slot.slot_id} />)}
+          <div className="contribution-scope-toggle" role="group" aria-label="Slots que receberão o aporte">
+            <button type="button" className={balanceScope === "single" ? "active" : ""} aria-pressed={balanceScope === "single"} onClick={() => { setBalanceScope("single"); setBulkReviewOpen(false); }}>Um slot</button>
+            <button type="button" className={balanceScope === "all" ? "active" : ""} aria-pressed={balanceScope === "all"} onClick={() => { setBalanceScope("all"); setBulkReviewOpen(false); }}>Todos os {bulkSlotCount}</button>
+          </div>
+          {balanceScope === "single" ? <label>Slot
             <select name="slotId" required defaultValue={leader?.slot_id || ""}>
               <option value="" disabled>Escolha o slot</option>
               {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
             </select>
-          </label>
-          <label>Valor USDT<input name="amountUsdt" type="number" min="0.00000001" step="0.00000001" inputMode="decimal" placeholder="5,00" required /></label>
+          </label> : null}
+          <label>{balanceScope === "all" ? "Valor por slot" : "Valor USDT"}<input name="amountUsdt" type="number" min="0.00000001" step="0.00000001" inputMode="decimal" placeholder="5,00" value={balanceAmount} onChange={(event) => { setBalanceAmount(event.target.value); setBulkReviewOpen(false); }} required /></label>
           <label className="btc-contribution-reason">Motivo opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: aporte adicional" /></label>
-          <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar saldo</SubmitButton>
+          {balanceScope === "single" ? <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar saldo</SubmitButton> : (
+            <div className="bulk-contribution-action">
+              <div className="bulk-contribution-summary" aria-live="polite">
+                <span>{bulkSlotCount} slots · {bulkOpenSlotCount} OPEN · {bulkSlotCount - bulkOpenSlotCount} LIVRES</span>
+                <strong>{validBalanceAmount ? `${bulkSlotCount} × ${formatLedgerUsdt(parsedBalanceAmount)} = ${formatLedgerUsdt(bulkTotalAmount)}` : "Informe o valor por slot"}</strong>
+              </div>
+              {!bulkReviewOpen ? <button className="btc-ladder-button green" type="button" disabled={!plan.ok || !bulkSlotCount || !validBalanceAmount} onClick={() => setBulkReviewOpen(true)}>Revisar aporte</button> : (
+                <div className="bulk-contribution-confirmation">
+                  <p>O aporte será aplicado em todos os {bulkSlotCount} slots {asset}, inclusive os {bulkOpenSlotCount} OPEN. Qualquer falha reverte o lote inteiro.</p>
+                  <label className="bulk-contribution-checkbox"><input type="checkbox" name="confirmBulk" value="confirmed" required />Confirmo o total de {formatLedgerUsdt(bulkTotalAmount)}</label>
+                  <SubmitButton tone="green" disabled={!plan.ok || !bulkSlotCount || !validBalanceAmount}>Confirmar aporte em todos</SubmitButton>
+                </div>
+              )}
+            </div>
+          )}
         </form>
-        <p className="btc-ladder-help">O valor entra integralmente no saldo atual. Ele não cria gain; os próximos gains serão calculados sobre o novo saldo quando a próxima operação for aberta.</p>
+        <p className="btc-ladder-help">Você pode usar qualquer valor positivo por slot. O saldo entra integralmente em BTC ou SOL, inclusive nos OPEN, sem criar gain nem alterar a posição atual.</p>
       </SectionCard> : null}
 
       {activeView === "ladder" ? <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)}`} tone={asset === "BTC" ? "gold" : "purple"}>
@@ -442,9 +483,20 @@ function RedistributionPreview({ asset, preview, confirmIdempotencyKey }: { asse
 }
 
 function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAsset; batches: AssetRedistributionBatchHistory[]; contributions: AssetExternalContributionHistory[] }) {
+  const contributionsByBulkBatch = new Map<string, AssetExternalContributionHistory[]>();
+  contributions.forEach((contribution) => {
+    if (!contribution.bulk_batch_id) return;
+    const group = contributionsByBulkBatch.get(contribution.bulk_batch_id) || [];
+    group.push(contribution);
+    contributionsByBulkBatch.set(contribution.bulk_batch_id, group);
+  });
+  const visibleContributions = contributions.filter((contribution) => {
+    if (!contribution.bulk_batch_id) return true;
+    return contributionsByBulkBatch.get(contribution.bulk_batch_id)?.[0]?.id === contribution.id;
+  });
   const events = [
     ...batches.map((batch) => ({ kind: "batch" as const, createdAt: batch.created_at, batch })),
-    ...contributions.map((contribution) => ({ kind: "contribution" as const, createdAt: contribution.created_at, contribution }))
+    ...visibleContributions.map((contribution) => ({ kind: "contribution" as const, createdAt: contribution.created_at, contribution }))
   ].sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime());
 
   return (
@@ -470,7 +522,25 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
               ))}
             </div>
           </details>
-        ) : (
+        ) : event.contribution.bulk_batch_id ? (() => {
+          const group = [...(contributionsByBulkBatch.get(event.contribution.bulk_batch_id || "") || [])]
+            .sort((first, second) => Number(first.bulk_sequence || 0) - Number(second.bulk_sequence || 0));
+          const reportedCount = Number(event.contribution.bulk_slot_count || group.length);
+          const total = numberValue(event.contribution.bulk_total_amount_usdt)
+            || group.reduce((sum, contribution) => sum + numberValue(contribution.accounting_amount_usdt ?? contribution.amount_usdt), 0);
+          const openCount = Number(event.contribution.bulk_open_slot_count ?? 0);
+          return <details key={`contribution-bulk-${event.contribution.bulk_batch_id}`}>
+            <summary>
+              <span><strong>Aporte em lote · {reportedCount} slots</strong><small>{formatDate(event.contribution.created_at)} · {openCount} OPEN</small></span>
+              <b>{formatLedgerUsdt(total)}</b>
+            </summary>
+            <div className="btc-history-details">
+              <span>{group.length === reportedCount ? "Lote completo" : `${group.length} de ${reportedCount} itens carregados`} · {asset}</span>
+              <p>{event.contribution.reason}</p>
+              {group.map((contribution) => <p key={contribution.id}>#{contribution.slot_number} · {formatLedgerUsdt(contribution.accounting_amount_usdt ?? contribution.amount_usdt)}</p>)}
+            </div>
+          </details>;
+        })() : (
           <details key={`contribution-${event.contribution.id}`}>
             <summary>
               <span><strong>{event.contribution.input_mode === "USDT" ? "Saldo adicionado" : "Gains adicionados"} · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>

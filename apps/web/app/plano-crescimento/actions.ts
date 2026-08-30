@@ -9,6 +9,11 @@ type RpcResult = {
   batch_id?: string | null;
   status?: string | null;
   transfer_count?: number | null;
+  slot_count?: number | null;
+  open_slot_count?: number | null;
+  free_slot_count?: number | null;
+  amount_per_slot_usdt?: number | string | null;
+  total_amount_usdt?: number | string | null;
   contribution_id?: string | null;
   slot_number?: number | null;
   amount_usdt?: number | string | null;
@@ -100,6 +105,13 @@ function rpcMessage(code: string | undefined, fallback: string) {
     COINOPS_CONTRIBUTION_AMOUNT_MUST_BE_POSITIVE: "Informe um valor de aporte externo maior que zero.",
     COINOPS_CONTRIBUTION_AMOUNT_INVALID: "Informe um valor de saldo maior que zero.",
     COINOPS_CONTRIBUTION_REASON_INVALID: "Informe um motivo válido para o aporte externo.",
+    COINOPS_ACTIVE_BASELINE_REQUIRED: "Ative o monitoramento oficial antes de usar o aporte em todos os slots.",
+    COINOPS_BULK_CONTRIBUTION_SLOT_COUNT_INVALID: "A quantidade de slots do lote é inválida. Recarregue o Plano.",
+    COINOPS_BULK_CONTRIBUTION_SCOPE_CHANGED: "A lista de slots mudou depois da revisão. Recarregue o Plano e confira o lote novamente.",
+    COINOPS_BULK_CONTRIBUTION_INCOMPLETE: "O lote anterior não foi concluído e permaneceu sem efeito. Recarregue o Plano.",
+    COINOPS_BULK_CONTRIBUTION_BATCH_POSTCONDITION_FAILED: "O lote não passou na reconciliação e foi totalmente revertido.",
+    COINOPS_BULK_CONTRIBUTION_ITEM_POSTCONDITION_FAILED: "Um slot não preservou seu estado e o lote foi totalmente revertido.",
+    COINOPS_BULK_CONTRIBUTION_CYCLE_POSTCONDITION_FAILED: "O lote alteraria a fila operacional e foi totalmente revertido.",
     COINOPS_MANUAL_GAINS_MUST_BE_POSITIVE_INTEGER: "Informe uma quantidade inteira de gains maior que zero.",
     COINOPS_MANUAL_GAINS_TOO_LARGE_FOR_SINGLE_ADJUSTMENT: "A quantidade é muito alta para um único ajuste. Divida os gains em dois lançamentos.",
     COINOPS_MANUAL_GAINS_EXACT_AMOUNT_NOT_FOUND: "Não foi possível converter os gains em um aporte financeiro exato.",
@@ -224,21 +236,59 @@ export async function applyAssetManualOperationalGains(formData: FormData) {
 
 export async function applyAssetExternalBalance(formData: FormData) {
   const asset = formAsset(formData);
+  const scope = formText(formData, "scope") || "single";
   const slotId = formText(formData, "slotId");
   const amountUsdt = formNumber(formData, "amountUsdt");
-  const note = formText(formData, "note") || "Aporte externo em USDT";
-  if (!slotId || !Number.isFinite(amountUsdt) || amountUsdt <= 0) {
-    planRedirect("Informe o slot e um valor USDT maior que zero.", { tone: "error" });
+  const isBulk = scope === "all";
+  const note = formText(formData, "note") || (isBulk ? `Aporte externo em todos os slots ${asset}` : "Aporte externo em USDT");
+  if (!Number.isFinite(amountUsdt) || amountUsdt <= 0) {
+    planRedirect("Informe um valor USDT por slot maior que zero.", { tone: "error" });
+  }
+  if (scope !== "single" && scope !== "all") {
+    planRedirect("O escopo do aporte é inválido. Recarregue o Plano.", { tone: "error" });
+  }
+  if (!isBulk && !slotId) {
+    planRedirect("Escolha o slot que receberá o saldo.", { tone: "error" });
   }
 
   const { supabase } = await getAuthenticatedClient();
-  const { data, error } = await supabase.rpc("apply_asset_external_contribution", {
-    p_asset: asset,
-    p_slot_id: slotId,
-    p_amount_usdt: amountUsdt,
-    p_reason: note,
-    p_idempotency_key: idempotencyKey(formData)
-  });
+  const financialIntent = idempotencyKey(formData);
+  let data: unknown;
+  let error: { message?: string } | null;
+  if (isBulk) {
+    const expectedSlotIds = formData.getAll("expectedSlotIds")
+      .map((value) => String(value).trim())
+      .filter((value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+    const uniqueExpectedSlotIds = [...new Set(expectedSlotIds)];
+    const confirmed = formText(formData, "confirmBulk") === "confirmed";
+    if (
+      uniqueExpectedSlotIds.length <= 0
+      || uniqueExpectedSlotIds.length > 25
+      || uniqueExpectedSlotIds.length !== formData.getAll("expectedSlotIds").length
+      || !confirmed
+    ) {
+      planRedirect("Revise e confirme o total do aporte antes de aplicar em todos os slots.", { tone: "error" });
+    }
+    const response = await supabase.rpc("apply_asset_external_contribution_batch", {
+      p_asset: asset,
+      p_amount_per_slot_usdt: amountUsdt,
+      p_expected_slot_ids: uniqueExpectedSlotIds,
+      p_reason: note,
+      p_idempotency_key: financialIntent
+    });
+    data = response.data;
+    error = response.error;
+  } else {
+    const response = await supabase.rpc("apply_asset_external_contribution", {
+      p_asset: asset,
+      p_slot_id: slotId,
+      p_amount_usdt: amountUsdt,
+      p_reason: note,
+      p_idempotency_key: financialIntent
+    });
+    data = response.data;
+    error = response.error;
+  }
   if (error) {
     planRedirect(rpcMessage(error.message, "O saldo externo não pôde ser adicionado."), { tone: "error" });
   }
@@ -246,8 +296,24 @@ export async function applyAssetExternalBalance(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/slots");
   revalidatePath("/plano-crescimento");
+  revalidatePath("/historico");
 
   const result = data as RpcResult | null;
+  if (isBulk) {
+    const slotCount = Number(result?.slot_count ?? 0);
+    const openSlotCount = Number(result?.open_slot_count ?? 0);
+    const totalAmount = Number(result?.total_amount_usdt ?? amountUsdt * slotCount);
+    const totalLabel = new Intl.NumberFormat("pt-BR", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 8
+    }).format(totalAmount);
+    const stalePreviewCount = Number(result?.stale_preview_count ?? 0);
+    const staleNotice = stalePreviewCount > 0
+      ? " A prévia anterior foi invalidada; prepare outra."
+      : "";
+    planRedirect(`Lote concluído: ${totalLabel} USDT adicionados em ${slotCount} slots ${asset}, incluindo ${openSlotCount} OPEN. Gains e posições foram preservados.${staleNotice}`);
+  }
+
   const amount = Number(result?.amount_usdt ?? amountUsdt);
   const slotNumber = Number(result?.slot_number ?? 0);
   const stalePreviewCount = Number(result?.stale_preview_count ?? 0);

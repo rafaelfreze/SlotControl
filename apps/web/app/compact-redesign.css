@@ -292,6 +292,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .redistribution-cta { display: grid; width: 100%; min-width: 0; }
 .redistribution-cta .btc-ladder-button { width: 100%; min-height: 40px; }
 .btc-contribution-form { display: grid; gap: 6px; }
+.contribution-scope-toggle { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-column: 1 / -1; gap: 5px; }
+.contribution-scope-toggle button { min-height: 42px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); color: var(--co-muted); font-size: .56rem; font-weight: 780; }
+.contribution-scope-toggle button.active { border-color: rgba(41, 215, 149, .42); background: rgba(41, 215, 149, .1); color: var(--co-green); }
+.bulk-contribution-action { display: grid; grid-column: 1 / -1; gap: 6px; min-width: 0; }
+.bulk-contribution-summary { display: grid; gap: 3px; padding: 7px 8px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); color: var(--co-muted); font-size: .54rem; }
+.bulk-contribution-summary strong { color: var(--co-text); font-size: .62rem; line-height: 1.35; overflow-wrap: anywhere; }
+.bulk-contribution-action > .btc-ladder-button { width: 100%; min-height: 42px; }
+.bulk-contribution-confirmation { display: grid; gap: 7px; padding: 8px; border: 1px solid rgba(41, 215, 149, .3); border-radius: 8px; background: rgba(41, 215, 149, .06); }
+.bulk-contribution-confirmation p { margin: 0; color: var(--co-muted); font-size: .55rem; line-height: 1.4; }
+.btc-contribution-form label.bulk-contribution-checkbox { display: flex; align-items: flex-start; gap: 7px; color: var(--co-text); font-size: .56rem; line-height: 1.4; }
+.btc-contribution-form label.bulk-contribution-checkbox input { flex: 0 0 auto; width: 16px; min-height: 16px; margin-top: 1px; accent-color: var(--co-green); }
+.bulk-contribution-confirmation .btc-ladder-button { width: 100%; min-height: 42px; }
 .btc-ladder-compact-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 5px; }
 .btc-contribution-form label, .btc-ladder-compact-form label { display: grid; gap: 4px; color: var(--co-muted); font-size: .53rem; }
 .btc-contribution-form input, .btc-contribution-form select, .btc-ladder-compact-form input { width: 100%; min-height: 34px; padding: 6px 8px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); color: var(--co-text); }
@@ -426,6 +438,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .slot-detail-list { columns: 2; column-gap: 24px; }
   .slot-detail-list > div { break-inside: avoid; }
   .btc-contribution-form { grid-template-columns: 1fr .7fr 1.3fr auto; align-items: end; }
+  .bulk-contribution-confirmation { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .bulk-contribution-confirmation p { grid-column: 1 / -1; }
+  .bulk-contribution-confirmation .btc-ladder-button { width: auto; min-width: 190px; }
   .full-slot-detail, .slot-recent-operations { width: min(100%, 680px); margin-inline: auto; }
 }
 
