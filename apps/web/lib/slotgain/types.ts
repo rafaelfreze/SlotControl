@@ -29,6 +29,7 @@ export type SlotView = {
   operational_slot_value: number | string;
   position_notional_usdt: number | string | null;
   position_gain_unit_usdt: number | string | null;
+  position_opened_at: string | null;
   accounting_version: number;
   gain_rate: number | string;
   preco_entrada: number | string | null;
@@ -69,6 +70,7 @@ export function normalizeSlot(slot: SlotRow): SlotView {
     redistribution_sent_usdt: slot.redistribution_sent_usdt ?? 0,
     position_notional_usdt: slot.position_notional_usdt ?? null,
     position_gain_unit_usdt: slot.position_gain_unit_usdt ?? null,
+    position_opened_at: slot.position_opened_at ?? null,
     accounting_version: slot.accounting_version ?? 0,
     preco_entrada: keepsPrices ? slot.preco_entrada : null,
     preco_atual: slot.status === "aberto" ? slot.preco_atual : null,

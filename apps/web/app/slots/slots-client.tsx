@@ -15,6 +15,7 @@ import {
   getOpenMarketMetrics
 } from "@/lib/slotgain/format";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { getOperationalGains, rankOpenSlotIds, rankSlotIds, sortSlotsForOperationalList } from "@/lib/slotgain/slot-ranking";
 import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import {
   indexCapitalContributionsBySlot,
@@ -45,30 +46,6 @@ function getAsset(slot: SlotView) {
   return slot.strategy?.asset?.toUpperCase() === "SOL" ? "SOL" : "BTC";
 }
 
-function getOperationalGains(slot: SlotView) {
-  const value = Number(slot.operational_gains);
-  return Number.isFinite(value) ? value : Number(slot.gains || 0);
-}
-
-function sortSlots(slots: SlotView[]) {
-  return [...slots].sort((first, second) => {
-    const statusOrder = (slot: SlotView) => slot.status === "aberto" ? 0 : 1;
-    return statusOrder(first) - statusOrder(second)
-      || getOperationalGains(second) - getOperationalGains(first)
-      || first.slot_number - second.slot_number
-      || first.id.localeCompare(second.id);
-  });
-}
-
-function rankSlots(slots: SlotView[]) {
-  return [...slots]
-    .sort((a, b) => getOperationalGains(b) - getOperationalGains(a) || a.slot_number - b.slot_number || a.id.localeCompare(b.id))
-    .reduce<Record<string, number>>((ranking, slot, index) => {
-      ranking[slot.id] = index + 1;
-      return ranking;
-    }, {});
-}
-
 export function SlotsClient({ userLabel, strategies, slots, contributions, setupError, initialNotice, initialAsset, initialFlow, monitoring }: SlotsClientProps) {
   const livePrices = useLivePrices();
   const initialFilter: DisplayFilter = initialFlow === "abrir"
@@ -84,14 +61,14 @@ export function SlotsClient({ userLabel, strategies, slots, contributions, setup
   const [expandedSlotId, setExpandedSlotId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(initialNotice);
 
-  const visibleSlots = useMemo(() => sortSlots(slots.filter((slot) => {
+  const visibleSlots = useMemo(() => sortSlotsForOperationalList(slots.filter((slot) => {
     if (activeFilter === "BTC" || activeFilter === "SOL") return getAsset(slot) === activeFilter;
     if (activeFilter === "aberto") return slot.status === "aberto";
     if (activeFilter === "closed") return slot.status === "gain" || slot.status === "zerado";
     return true;
   })), [activeFilter, slots]);
-  const openRanks = useMemo(() => rankSlots(slots.filter((slot) => slot.status === "aberto")), [slots]);
-  const closedRanks = useMemo(() => rankSlots(slots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [slots]);
+  const openRanks = useMemo(() => rankOpenSlotIds(slots.filter((slot) => slot.status === "aberto")), [slots]);
+  const closedRanks = useMemo(() => rankSlotIds(slots.filter((slot) => slot.status === "gain" || slot.status === "zerado")), [slots]);
   const contributionBySlot = useMemo(() => indexCapitalContributionsBySlot(contributions), [contributions]);
   const contributionSummary = useMemo(() => summarizeCapitalContributions(contributions), [contributions]);
   const totalOperationalBalance = useMemo(
