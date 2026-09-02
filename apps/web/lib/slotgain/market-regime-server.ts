@@ -266,12 +266,13 @@ export async function refreshBtcMarketRegime() {
     }
   }
   let changedUsers = 0;
+  let recalculatedTriggers = 0;
   for (const officialContext of officialTriggerContexts.values()) {
     const triggerCount = await recalculateFutureEntryTriggers(officialContext.userId, "NORMAL", {
       BTC: DEFAULT_ASSET_MARKET_SETTINGS.BTC,
       SOL: DEFAULT_ASSET_MARKET_SETTINGS.SOL
     }, officialContext);
-    console.log("[market-regime] official_future_triggers_recalculated", { userId: officialContext.userId, mode: officialContext.mode, count: triggerCount });
+    recalculatedTriggers += triggerCount;
   }
   for (const row of settingsRows || []) {
     const officialContext = officialTriggerContexts.get(officialScopeKey(row.user_id, row.tenant_id));
@@ -300,7 +301,20 @@ export async function refreshBtcMarketRegime() {
       BTC: assetSettingsByUser.get(`${row.user_id}:BTC`) || DEFAULT_ASSET_MARKET_SETTINGS.BTC,
       SOL: assetSettingsByUser.get(`${row.user_id}:SOL`) || DEFAULT_ASSET_MARKET_SETTINGS.SOL
     });
-    console.log("[market-regime] future_triggers_recalculated", { userId: row.user_id, regime: nextMode, count: triggerCount });
+    recalculatedTriggers += triggerCount;
+  }
+
+  const previousMode = previous ? asMarketRegime(previous.effective_mode) : null;
+  const globalModeChanged = previousMode !== null && previousMode !== automaticMode;
+  if (globalModeChanged || changedUsers > 0 || recalculatedTriggers > 0) {
+    console.info("[market-regime] relevant_changes", {
+      globalModeChanged,
+      previousMode,
+      effectiveMode: automaticMode,
+      changedUsers,
+      recalculatedTriggers,
+      officialUsers: officialTriggerContexts.size
+    });
   }
   return { ...state, changedUsers, officialUsers: officialTriggerContexts.size, officialMonitoring };
 }
