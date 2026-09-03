@@ -10,8 +10,11 @@ import { getLeaderGrowthTarget } from "@/lib/slotgain/growth-target";
 import {
   applyAssetExternalBalance,
   applyAssetManualOperationalGains,
+  cancelAssetManualOperationalGainsBatch,
   cancelAssetRedistribution,
+  confirmAssetManualOperationalGainsBatch,
   confirmAssetRedistribution,
+  prepareAssetManualOperationalGainsBatch,
   prepareAssetRedistribution,
   saveAssetGrowthConfig,
   type GrowthAsset
@@ -102,6 +105,33 @@ export type AssetExternalContributionHistory = {
   bulk_open_slot_count?: number | null;
 };
 
+export type AssetManualOperationalGainBatchItem = {
+  slot_id: string;
+  slot_number: number;
+  status: string;
+  operational_before: Numeric;
+  operational_after: Numeric;
+  value_before: Numeric;
+  value_after: Numeric;
+  amount_usdt: Numeric;
+};
+
+export type AssetManualOperationalGainBatchPreview = {
+  batch_id: string;
+  status: string;
+  below_operational_gains: Numeric;
+  operational_gains_per_slot: Numeric;
+  slot_count: number;
+  open_slot_count: number;
+  total_amount_usdt: Numeric;
+  operational_total_before: Numeric;
+  operational_total_after: Numeric;
+  items: AssetManualOperationalGainBatchItem[];
+  expires_at: string;
+  reason: string;
+  created_at: string;
+};
+
 export type AssetLadderPlanResponse = {
   ok: boolean;
   asset?: GrowthAsset;
@@ -127,6 +157,7 @@ export type AssetLadderPlanResponse = {
   batches?: AssetRedistributionBatchHistory[];
   contributions?: AssetExternalContributionHistory[];
   bulk_eligible_slot_ids?: string[];
+  manual_gain_batch_preview?: AssetManualOperationalGainBatchPreview | null;
 };
 
 export type AssetPlanActionKeys = {
@@ -134,6 +165,8 @@ export type AssetPlanActionKeys = {
   confirm: string;
   contribution: string;
   balanceContribution: string;
+  prepareManualGains: string;
+  confirmManualGains: string;
 };
 
 function numberValue(value: Numeric | null | undefined) {
@@ -191,12 +224,13 @@ function SubmitButton({ children, disabled = false, tone = "gold" }: { children:
   return <button className={`btc-ladder-button ${tone}`} type="submit" disabled={disabled || pending}>{pending ? "Processando..." : children}</button>;
 }
 
-export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys }) {
-  const [activeView, setActiveView] = useState<"ladder" | "gains" | "balance">("ladder");
+export function AssetLadderSection({ asset, plan, actionKeys, initialView = "ladder" }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys; initialView?: "ladder" | "gains" | "balance" }) {
+  const [activeView, setActiveView] = useState<"ladder" | "gains" | "balance">(initialView);
   const [editingSetting, setEditingSetting] = useState<"goal" | "reference" | null>(null);
   const [balanceScope, setBalanceScope] = useState<"single" | "all">("single");
   const [balanceAmount, setBalanceAmount] = useState("");
   const [bulkReviewOpen, setBulkReviewOpen] = useState(false);
+  const [gainScope, setGainScope] = useState<"single" | "bulk">(plan.manual_gain_batch_preview ? "bulk" : "single");
   const ladder = plan.ladder || plan.ranking || [];
   const hasAuthoritativeBulkScope = Array.isArray(plan.bulk_eligible_slot_ids);
   const eligibleSlotIds = new Set(plan.bulk_eligible_slot_ids || []);
@@ -230,6 +264,9 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
   }));
   const contributionBySlot = indexCapitalContributionsBySlot(contributionRows);
   const leaderContribution = leader ? summarizeCapitalContributions(contributionRows, { slotId: leader.slot_id }) : { amountUsdt: 0, gains: 0 };
+  const manualGainBatch = plan.manual_gain_batch_preview || null;
+  const manualGainBatchItems = manualGainBatch?.items || [];
+  const manualGainBatchOpenCount = Number(manualGainBatch?.open_slot_count || 0);
 
   return (
     <div className="btc-plan-workspace">
@@ -246,7 +283,11 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <Metric label="Faltam no líder" value={leader ? `${formatGain(leaderGrowthTarget.missingGains)} gains` : "--"} />
           <Metric label="Aportes no líder" value={leader ? `+${formatGain(leaderContribution.gains)} gains` : "--"} helper={leader ? `+${formatLedgerUsdt(leaderContribution.amountUsdt)}` : undefined} />
         </div>
-        <form action={applyAssetManualOperationalGains} className="btc-contribution-form">
+        <div className="contribution-scope-toggle" role="group" aria-label="Modo de adição de gains">
+          <button type="button" className={gainScope === "single" ? "active" : ""} aria-pressed={gainScope === "single"} onClick={() => setGainScope("single")}>Um slot</button>
+          <button type="button" className={gainScope === "bulk" ? "active" : ""} aria-pressed={gainScope === "bulk"} onClick={() => setGainScope("bulk")}>Em massa</button>
+        </div>
+        {gainScope === "single" ? <form action={applyAssetManualOperationalGains} className="btc-contribution-form">
           <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="idempotencyKey" value={actionKeys.contribution} />
           <label>Slot
@@ -258,8 +299,39 @@ export function AssetLadderSection({ asset, plan, actionKeys }: { asset: GrowthA
           <label>Gains a adicionar<input name="operationalGains" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={leaderGrowthTarget.suggestedManualGains} required /></label>
           <label className="btc-contribution-reason">Observação opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: completar meta desde 01/04" /></label>
           <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar gains</SubmitButton>
-        </form>
-        <p className="btc-ladder-help">Você informa os gains e o servidor calcula o aporte em USDT. Eles aumentam somente os gains operacionais; gains reais e posições abertas permanecem intactos.</p>
+        </form> : manualGainBatch ? <div className="manual-gain-batch-preview" data-testid="manual-gain-batch-preview">
+          <div className="bulk-contribution-summary" aria-live="polite">
+            <span>{manualGainBatch.slot_count} slots abaixo de {formatGain(manualGainBatch.below_operational_gains)} gains · {manualGainBatchOpenCount} OPEN · {manualGainBatch.slot_count - manualGainBatchOpenCount} LIVRES</span>
+            <strong>Depositar {formatLedgerUsdt(manualGainBatch.total_amount_usdt)} para adicionar +{formatGain(manualGainBatch.operational_gains_per_slot)} gains em cada slot</strong>
+          </div>
+          <details className="manual-gain-batch-items">
+            <summary>Conferir {manualGainBatchItems.length} slots e valores</summary>
+            <div>
+              {manualGainBatchItems.map((item) => <p key={item.slot_id}><strong>#{item.slot_number} · {statusLabel(item.status)}</strong><span>{formatGain(item.operational_before)} → {formatGain(item.operational_after)} gains</span><em>{formatLedgerUsdt(item.amount_usdt)}</em></p>)}
+            </div>
+          </details>
+          <form action={confirmAssetManualOperationalGainsBatch} className="bulk-contribution-confirmation">
+            <input type="hidden" name="asset" value={asset} />
+            <input type="hidden" name="batchId" value={manualGainBatch.batch_id} />
+            <input type="hidden" name="idempotencyKey" value={actionKeys.confirmManualGains} />
+            <p>Esta prévia foi calculada no servidor e expira em {formatDate(manualGainBatch.expires_at)}. Se algum slot mudar, o lote inteiro será bloqueado antes de qualquer alteração.</p>
+            <label className="bulk-contribution-checkbox"><input type="checkbox" name="confirmBulk" value="confirmed" required />Confirmo o aporte total de {formatLedgerUsdt(manualGainBatch.total_amount_usdt)}.</label>
+            <SubmitButton tone="green" disabled={!plan.ok || !manualGainBatchItems.length}>Confirmar gains em massa</SubmitButton>
+          </form>
+          <form action={cancelAssetManualOperationalGainsBatch} className="manual-gain-batch-cancel">
+            <input type="hidden" name="asset" value={asset} />
+            <input type="hidden" name="batchId" value={manualGainBatch.batch_id} />
+            <SubmitButton tone="neutral">Cancelar prévia</SubmitButton>
+          </form>
+        </div> : <form action={prepareAssetManualOperationalGainsBatch} className="btc-contribution-form" data-testid="prepare-manual-gains-batch">
+          <input type="hidden" name="asset" value={asset} />
+          <input type="hidden" name="idempotencyKey" value={actionKeys.prepareManualGains} />
+          <label>Selecionar slots com menos de<input name="belowOperationalGains" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue="3" required /></label>
+          <label>Gains por slot<input name="operationalGains" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue="2" required /></label>
+          <label className="btc-contribution-reason">Observação opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: nivelar investimento inicial" /></label>
+          <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Calcular aporte do lote</SubmitButton>
+        </form>}
+        <p className="btc-ladder-help">No modo em massa, “menos de 3” inclui somente 0, 1 e 2 gains. A prévia usa o capital real de cada slot {asset}, inclui OPEN e só aplica após sua confirmação. Gains reais e posições abertas permanecem intactos.</p>
       </SectionCard> : null}
 
       {activeView === "balance" ? <SectionCard className="btc-manual-gains-card" title={`Aportes ${asset}`} subtitle="Saldo externo separado de gains reais" tone="green">

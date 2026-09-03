@@ -10,14 +10,14 @@ import { GrowthPlanClient, type GrowthContributionHistoryItem, type ProgrammedGr
 
 export const metadata: Metadata = { title: "Plano de Crescimento" };
 
-export default async function GrowthPlanPage({ searchParams }: { searchParams?: { notice?: string; tone?: string } }) {
+export default async function GrowthPlanPage({ searchParams }: { searchParams?: { notice?: string; tone?: string; asset?: string; view?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
 
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const [historyResponse, btcLadderResponse, solLadderResponse, contributionAccountingResponse, contributionBatchResponse, poolResponse, monitoring] = await Promise.all([
+  const [historyResponse, btcLadderResponse, solLadderResponse, contributionAccountingResponse, contributionBatchResponse, manualGainBatchResponse, poolResponse, monitoring] = await Promise.all([
     supabase
       .from("programmed_growth_contributions")
       .select("id,asset,month_number,cumulative_goal,slot_number,gains_before,gains_after,value_before,value_after,contributed_amount,note,created_at")
@@ -37,6 +37,12 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
       .order("created_at", { ascending: false })
       .limit(200),
     supabase
+      .from("asset_manual_operational_gain_batches")
+      .select("id,asset,status,below_operational_gains,operational_gains_per_slot,expected_slot_count,open_slot_count,total_amount_usdt,operational_total_before,operational_total_after,items,expires_at,reason,created_at")
+      .eq("status", "PREPARED")
+      .order("created_at", { ascending: false })
+      .limit(10),
+    supabase
       .from("slot_pool_configuration")
       .select("baseline_id,asset,slot_id,slot_number")
       .eq("pool", "MAIN")
@@ -52,7 +58,9 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
     prepare: randomUUID(),
     confirm: randomUUID(),
     contribution: randomUUID(),
-    balanceContribution: randomUUID()
+    balanceContribution: randomUUID(),
+    prepareManualGains: randomUUID(),
+    confirmManualGains: randomUUID()
   });
   const contributionRows = (contributionAccountingResponse.data || []) as AssetExternalContributionHistory[];
   const contributionBatchRows = (contributionBatchResponse.data || []) as Array<{
@@ -64,6 +72,41 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
     total_amount_usdt: number | string;
   }>;
   const batchById = new Map(contributionBatchRows.map((batch) => [batch.id, batch]));
+  const manualGainBatchRows = (manualGainBatchResponse.data || []) as Array<{
+    id: string;
+    asset: "BTC" | "SOL";
+    status: string;
+    below_operational_gains: number | string;
+    operational_gains_per_slot: number | string;
+    expected_slot_count: number;
+    open_slot_count: number;
+    total_amount_usdt: number | string;
+    operational_total_before: number | string;
+    operational_total_after: number | string;
+    items: unknown;
+    expires_at: string;
+    reason: string;
+    created_at: string;
+  }>;
+  const manualGainBatchByAsset = new Map<"BTC" | "SOL", NonNullable<AssetLadderPlanResponse["manual_gain_batch_preview"]>>();
+  manualGainBatchRows.forEach((batch) => {
+    if (manualGainBatchByAsset.has(batch.asset)) return;
+    manualGainBatchByAsset.set(batch.asset, {
+      batch_id: batch.id,
+      status: batch.status,
+      below_operational_gains: batch.below_operational_gains,
+      operational_gains_per_slot: batch.operational_gains_per_slot,
+      slot_count: batch.expected_slot_count,
+      open_slot_count: batch.open_slot_count,
+      total_amount_usdt: batch.total_amount_usdt,
+      operational_total_before: batch.operational_total_before,
+      operational_total_after: batch.operational_total_after,
+      items: Array.isArray(batch.items) ? batch.items : [],
+      expires_at: batch.expires_at,
+      reason: batch.reason,
+      created_at: batch.created_at
+    });
+  });
   const activeBaselineId = monitoring.overview.baseline?.id;
   const poolRows = (poolResponse.data || []) as Array<{ baseline_id: string; asset: "BTC" | "SOL"; slot_id: string; slot_number: number }>;
   const eligibleSlotIds = (asset: "BTC" | "SOL") => poolRows
@@ -90,7 +133,8 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
     return {
       ...plan,
       contributions: [...mergedContributions.values()].sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime()),
-      bulk_eligible_slot_ids: asset ? eligibleSlotIds(asset) : []
+      bulk_eligible_slot_ids: asset ? eligibleSlotIds(asset) : [],
+      manual_gain_batch_preview: asset ? manualGainBatchByAsset.get(asset) || null : null
     } satisfies AssetLadderPlanResponse;
   };
   const btcLadder = applyContributionAccounting(btcLadderResponse.data, "BTC_LADDER_LOAD_ERROR");
@@ -103,9 +147,11 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
       btcLadder={btcLadder}
       solLadder={solLadder}
       history={(historyResponse.data || []) as GrowthContributionHistoryItem[]}
-      setupError={historyResponse.error?.message || btcLadderResponse.error?.message || solLadderResponse.error?.message || contributionAccountingResponse.error?.message || contributionBatchResponse.error?.message || poolResponse.error?.message || null}
+      setupError={historyResponse.error?.message || btcLadderResponse.error?.message || solLadderResponse.error?.message || contributionAccountingResponse.error?.message || contributionBatchResponse.error?.message || manualGainBatchResponse.error?.message || poolResponse.error?.message || null}
       initialNotice={searchParams?.notice || null}
       initialNoticeTone={searchParams?.tone === "error" ? "error" : "success"}
+      initialAsset={searchParams?.asset === "SOL" ? "SOL" : "BTC"}
+      initialView={searchParams?.view === "gains" || searchParams?.view === "balance" ? searchParams.view : "ladder"}
       btcActionKeys={actionKeys()}
       monitoring={monitoring.overview}
       monitoringPreview={monitoring.preview}

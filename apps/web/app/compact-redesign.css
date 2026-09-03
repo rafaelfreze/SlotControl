@@ -304,6 +304,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btc-contribution-form label.bulk-contribution-checkbox { display: flex; align-items: flex-start; gap: 7px; color: var(--co-text); font-size: .56rem; line-height: 1.4; }
 .btc-contribution-form label.bulk-contribution-checkbox input { flex: 0 0 auto; width: 16px; min-height: 16px; margin-top: 1px; accent-color: var(--co-green); }
 .bulk-contribution-confirmation .btc-ladder-button { width: 100%; min-height: 42px; }
+.manual-gain-batch-preview { display: grid; gap: 7px; }
+.manual-gain-batch-items { border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); color: var(--co-muted); }
+.manual-gain-batch-items summary { min-height: 36px; padding: 10px; cursor: pointer; color: var(--co-text); font-size: .57rem; font-weight: 760; }
+.manual-gain-batch-items > div { display: grid; gap: 4px; padding: 0 7px 7px; }
+.manual-gain-batch-items p { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; margin: 0; padding: 6px 2px; border-top: 1px solid var(--co-line); font-size: .54rem; }
+.manual-gain-batch-items p strong { color: var(--co-text); }
+.manual-gain-batch-items p span { color: var(--co-muted); }
+.manual-gain-batch-items p em { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--co-green); font-style: normal; font-weight: 760; white-space: nowrap; }
+.manual-gain-batch-cancel { display: flex; justify-content: flex-end; }
+.manual-gain-batch-cancel .btc-ladder-button { min-height: 36px; }
 .btc-ladder-compact-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 5px; }
 .btc-contribution-form label, .btc-ladder-compact-form label { display: grid; gap: 4px; color: var(--co-muted); font-size: .53rem; }
 .btc-contribution-form input, .btc-contribution-form select, .btc-ladder-compact-form input { width: 100%; min-height: 34px; padding: 6px 8px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); color: var(--co-text); }
@@ -441,6 +451,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .bulk-contribution-confirmation { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
   .bulk-contribution-confirmation p { grid-column: 1 / -1; }
   .bulk-contribution-confirmation .btc-ladder-button { width: auto; min-width: 190px; }
+  .manual-gain-batch-preview { max-width: 680px; }
+  .manual-gain-batch-items p { grid-template-columns: minmax(160px, 1fr) minmax(150px, 1fr) auto; align-items: center; }
+  .manual-gain-batch-items p em { grid-column: auto; grid-row: auto; }
   .full-slot-detail, .slot-recent-operations { width: min(100%, 680px); margin-inline: auto; }
 }
 

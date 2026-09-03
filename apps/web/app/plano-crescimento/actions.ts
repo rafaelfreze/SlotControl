@@ -6,6 +6,8 @@ import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 type RpcResult = {
+  ok?: boolean | null;
+  code?: string | null;
   batch_id?: string | null;
   status?: string | null;
   transfer_count?: number | null;
@@ -18,6 +20,7 @@ type RpcResult = {
   slot_number?: number | null;
   amount_usdt?: number | string | null;
   gain_equivalent?: number | string | null;
+  operational_gains_per_slot?: number | string | null;
   operational_after?: number | string | null;
   stale_preview_count?: number | null;
 };
@@ -67,13 +70,24 @@ function idempotencyKey(formData: FormData) {
   return provided;
 }
 
-function planRedirect(message: string, options?: { batchId?: string | null; tone?: "success" | "error" }): never {
+function planRedirect(message: string, options?: {
+  batchId?: string | null;
+  tone?: "success" | "error";
+  asset?: GrowthAsset;
+  view?: "ladder" | "gains" | "balance";
+}): never {
   const params = new URLSearchParams({
     notice: message,
     tone: options?.tone || "success"
   });
   if (options?.batchId) {
     params.set("batch", options.batchId);
+  }
+  if (options?.asset) {
+    params.set("asset", options.asset);
+  }
+  if (options?.view) {
+    params.set("view", options.view);
   }
   redirect(`/plano-crescimento?${params.toString()}`);
 }
@@ -116,6 +130,15 @@ function rpcMessage(code: string | undefined, fallback: string) {
     COINOPS_MANUAL_GAINS_TOO_LARGE_FOR_SINGLE_ADJUSTMENT: "A quantidade é muito alta para um único ajuste. Divida os gains em dois lançamentos.",
     COINOPS_MANUAL_GAINS_EXACT_AMOUNT_NOT_FOUND: "Não foi possível converter os gains em um aporte financeiro exato.",
     COINOPS_MANUAL_GAINS_RESULT_OUT_OF_RANGE: "O saldo calculado ficou fora do limite permitido. Divida os gains em lançamentos menores.",
+    COINOPS_MANUAL_GAINS_BATCH_THRESHOLD_INVALID: "Informe um limite inteiro de gains entre 1 e 1000.",
+    COINOPS_MANUAL_GAINS_BATCH_EMPTY: "Nenhum slot elegível ficou abaixo desse limite. Ajuste o filtro e gere outra prévia.",
+    COINOPS_MANUAL_GAINS_BATCH_PREVIEW_INVALID: "A prévia do lote não passou na conferência financeira.",
+    COINOPS_MANUAL_GAINS_BATCH_NOT_FOUND: "A prévia de gains não existe mais ou pertence a outro escopo.",
+    COINOPS_MANUAL_GAINS_BATCH_NOT_PREPARED: "Esta prévia de gains não está mais disponível. Gere uma nova antes de confirmar.",
+    COINOPS_MANUAL_GAINS_BATCH_EXPIRED: "A prévia de gains expirou. Gere uma nova antes de confirmar.",
+    COINOPS_MANUAL_GAINS_BATCH_STALE: "Um slot mudou depois da prévia. Nenhum gain foi aplicado; gere uma nova prévia.",
+    COINOPS_MANUAL_GAINS_BATCH_ITEM_POSTCONDITION_FAILED: "A conferência de um slot falhou e o lote inteiro foi revertido.",
+    COINOPS_MANUAL_GAINS_BATCH_POSTCONDITION_FAILED: "A conferência do lote falhou e nenhum gain foi aplicado.",
     COINOPS_IDEMPOTENCY_CONFLICT: "Esta intenção financeira já foi usada com dados diferentes.",
     COINOPS_SCOPE_NOT_FOUND: "Não foi possível identificar a conta CoinOps ativa.",
     COINOPS_ACTIVE_INTERNAL_MEMBERSHIP_REQUIRED: "A conta não possui acesso CoinOps ativo.",
@@ -232,6 +255,101 @@ export async function applyAssetManualOperationalGains(formData: FormData) {
   const amountLabel = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 8 }).format(amountUsdt);
   const staleNotice = stalePreviewCount > 0 ? " A prévia anterior foi invalidada; prepare outra." : "";
   planRedirect(`${gainLabel} gains operacionais adicionados${slotNumber > 0 ? ` ao Slot #${slotNumber}` : ""}. Aporte calculado: ${amountLabel} USDT. Gains reais não foram alterados.${staleNotice}`);
+}
+
+export async function prepareAssetManualOperationalGainsBatch(formData: FormData) {
+  const asset = formAsset(formData);
+  const belowOperationalGains = formNumber(formData, "belowOperationalGains");
+  const operationalGains = formNumber(formData, "operationalGains");
+  const note = formText(formData, "note") || `Ajuste operacional em massa ${asset}`;
+  if (
+    !Number.isInteger(belowOperationalGains)
+    || belowOperationalGains < 1
+    || belowOperationalGains > 1000
+    || !Number.isInteger(operationalGains)
+    || operationalGains < 1
+    || operationalGains > 1000
+  ) {
+    planRedirect("Informe o limite e a quantidade como números inteiros maiores que zero.", { asset, view: "gains", tone: "error" });
+  }
+
+  const { supabase } = await getAuthenticatedClient();
+  const { data, error } = await supabase.rpc("prepare_asset_manual_operational_gains_batch", {
+    p_asset: asset,
+    p_below_operational_gains: belowOperationalGains,
+    p_operational_gains_per_slot: operationalGains,
+    p_reason: note,
+    p_idempotency_key: idempotencyKey(formData)
+  });
+  if (error) {
+    planRedirect(rpcMessage(error.message, "Não foi possível calcular a prévia de gains em massa."), { asset, view: "gains", tone: "error" });
+  }
+
+  const result = data as RpcResult | null;
+  if (!result?.ok || !result.batch_id) {
+    planRedirect(rpcMessage(result?.code || undefined, "A prévia de gains não ficou disponível."), { asset, view: "gains", tone: "error" });
+  }
+
+  revalidatePath("/plano-crescimento");
+  planRedirect(`Prévia pronta: ${Number(result.slot_count || 0)} slots ${asset} receberão +${operationalGains} gains. Confira o aporte antes de confirmar.`, {
+    batchId: result.batch_id,
+    asset,
+    view: "gains"
+  });
+}
+
+export async function confirmAssetManualOperationalGainsBatch(formData: FormData) {
+  const asset = formAsset(formData);
+  const batchId = formText(formData, "batchId");
+  if (!batchId || formText(formData, "confirmBulk") !== "confirmed") {
+    planRedirect("Revise a prévia e confirme o aporte antes de aplicar os gains em massa.", { asset, view: "gains", tone: "error" });
+  }
+
+  const { supabase } = await getAuthenticatedClient();
+  const { data, error } = await supabase.rpc("confirm_asset_manual_operational_gains_batch", {
+    p_asset: asset,
+    p_batch_id: batchId,
+    p_idempotency_key: idempotencyKey(formData)
+  });
+  if (error) {
+    planRedirect(rpcMessage(error.message, "Os gains em massa não puderam ser aplicados."), { asset, view: "gains", tone: "error" });
+  }
+
+  const result = data as RpcResult | null;
+  if (!result?.ok || result.status !== "COMPLETED") {
+    planRedirect(rpcMessage(result?.code || undefined, "A prévia mudou e os gains não foram aplicados."), { asset, view: "gains", tone: "error" });
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath("/slots");
+  revalidatePath("/plano-crescimento");
+  revalidatePath("/historico");
+  const totalAmount = Number(result.total_amount_usdt || 0);
+  const totalLabel = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 8 }).format(totalAmount);
+  planRedirect(`Lote concluído: ${Number(result.slot_count || 0)} slots ${asset} receberam +${Number(result.operational_gains_per_slot || 0)} gains operacionais cada. Aporte calculado: ${totalLabel} USDT. Gains reais e posições foram preservados.`, {
+    asset,
+    view: "gains"
+  });
+}
+
+export async function cancelAssetManualOperationalGainsBatch(formData: FormData) {
+  const asset = formAsset(formData);
+  const batchId = formText(formData, "batchId");
+  if (!batchId) {
+    planRedirect("Prévia de gains inválida.", { asset, view: "gains", tone: "error" });
+  }
+
+  const { supabase } = await getAuthenticatedClient();
+  const { error } = await supabase.rpc("cancel_asset_manual_operational_gains_batch", {
+    p_asset: asset,
+    p_batch_id: batchId
+  });
+  if (error) {
+    planRedirect(rpcMessage(error.message, "A prévia de gains não pôde ser cancelada."), { asset, view: "gains", tone: "error" });
+  }
+
+  revalidatePath("/plano-crescimento");
+  planRedirect(`Prévia de gains ${asset} cancelada sem alterar nenhum slot.`, { asset, view: "gains" });
 }
 
 export async function applyAssetExternalBalance(formData: FormData) {

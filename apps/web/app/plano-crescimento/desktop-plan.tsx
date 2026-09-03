@@ -20,7 +20,9 @@ export function DesktopPlan({
   btcLadder,
   solLadder,
   btcActionKeys,
-  solActionKeys
+  solActionKeys,
+  initialAsset,
+  initialView
 }: {
   userLabel: string;
   livePrices: MarketTickerState;
@@ -30,8 +32,10 @@ export function DesktopPlan({
   solLadder: AssetLadderPlanResponse;
   btcActionKeys: AssetPlanActionKeys;
   solActionKeys: AssetPlanActionKeys;
+  initialAsset: Asset;
+  initialView: "ladder" | "gains" | "balance";
 }) {
-  const [asset, setAsset] = useState<Asset>("BTC");
+  const [asset, setAsset] = useState<Asset>(initialAsset);
   const ladder = asset === "BTC" ? btcLadder : solLadder;
   const actionKeys = asset === "BTC" ? btcActionKeys : solActionKeys;
   const rows = ladder.ladder || ladder.ranking || [];
@@ -66,7 +70,7 @@ export function DesktopPlan({
 
     <section className="desktop-plan-layout">
       <div className="desktop-plan-main">
-        <AssetLadderSection key={asset} asset={asset} plan={ladder} actionKeys={actionKeys} />
+        <AssetLadderSection key={asset} asset={asset} plan={ladder} actionKeys={actionKeys} initialView={asset === initialAsset ? initialView : "ladder"} />
       </div>
       <aside className="desktop-plan-aside">
         <article className="desktop-panel"><header className="desktop-panel-header"><div><span>Operação</span><h2>Resumo {asset}</h2></div></header><dl className="desktop-plan-facts">

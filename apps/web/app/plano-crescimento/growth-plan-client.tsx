@@ -57,14 +57,14 @@ export type GrowthContributionHistoryItem = {
   created_at: string;
 };
 
-export function GrowthPlanClient({ userLabel, plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, btcActionKeys, solActionKeys, monitoring, monitoringPreview, monitoringError }: { userLabel: string; plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys; monitoring: OfficialMonitoringOverview; monitoringPreview: BaselinePreview | null; monitoringError: string | null }) {
+export function GrowthPlanClient({ userLabel, plan, btcLadder, solLadder, history, setupError, initialNotice, initialNoticeTone, initialAsset, initialView, btcActionKeys, solActionKeys, monitoring, monitoringPreview, monitoringError }: { userLabel: string; plan: ProgrammedGrowthPlanResponse; btcLadder: AssetLadderPlanResponse; solLadder: AssetLadderPlanResponse; history: GrowthContributionHistoryItem[]; setupError: string | null; initialNotice: string | null; initialNoticeTone: "success" | "error"; initialAsset: GrowthAsset; initialView: "ladder" | "gains" | "balance"; btcActionKeys: AssetPlanActionKeys; solActionKeys: AssetPlanActionKeys; monitoring: OfficialMonitoringOverview; monitoringPreview: BaselinePreview | null; monitoringError: string | null }) {
   const livePrices = useLivePrices();
-  const [activeAsset, setActiveAsset] = useState<GrowthAsset>("BTC");
+  const [activeAsset, setActiveAsset] = useState<GrowthAsset>(initialAsset);
   const notice = initialNotice;
   const noticeTone = initialNoticeTone;
 
   return (
-    <MobileScreen desktop={<DesktopPlan userLabel={userLabel} livePrices={livePrices} monitoring={monitoring} plan={plan} btcLadder={btcLadder} solLadder={solLadder} btcActionKeys={btcActionKeys} solActionKeys={solActionKeys} />}>
+    <MobileScreen desktop={<DesktopPlan userLabel={userLabel} livePrices={livePrices} monitoring={monitoring} plan={plan} btcLadder={btcLadder} solLadder={solLadder} btcActionKeys={btcActionKeys} solActionKeys={solActionKeys} initialAsset={initialAsset} initialView={initialView} />}>
       <AppHeader title="Plano de Crescimento" backHref="/dashboard" />
       <MarketTicker livePrices={livePrices} />
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
@@ -92,8 +92,8 @@ export function GrowthPlanClient({ userLabel, plan, btcLadder, solLadder, histor
 
       <FilterChips value={activeAsset} onChange={setActiveAsset} options={[{ label: "BTC", value: "BTC", count: btcLadder.ladder?.length || 0 }, { label: "SOL", value: "SOL", count: solLadder.ladder?.length || 0 }]} />
       {activeAsset === "BTC"
-        ? <AssetLadderSection key="BTC" asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} />
-        : <AssetLadderSection key="SOL" asset="SOL" plan={solLadder} actionKeys={solActionKeys} />}
+        ? <AssetLadderSection key="BTC" asset="BTC" plan={btcLadder} actionKeys={btcActionKeys} initialView={activeAsset === initialAsset ? initialView : "ladder"} />
+        : <AssetLadderSection key="SOL" asset="SOL" plan={solLadder} actionKeys={solActionKeys} initialView={activeAsset === initialAsset ? initialView : "ladder"} />}
 
       <details className="legacy-growth-history">
         <summary>Histórico financeiro anterior</summary>
