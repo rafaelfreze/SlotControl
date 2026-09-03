@@ -13,11 +13,6 @@ export async function GET(request: Request) {
 
   try {
     const state = await refreshBtcMarketRegime();
-    console.log("[market-regime-cron] refreshed", {
-      source: state.source,
-      effectiveMode: state.effective_mode,
-      changedUsers: state.changedUsers
-    });
     return NextResponse.json({ ok: true, state });
   } catch (error) {
     console.error("[market-regime-cron] failed", {
