@@ -8,37 +8,3 @@ export function getMonthlyGrowthStatus(monthlyGoal: number, realGainsMonth: numb
     label: missing > 0 ? `Faltam ${missing}` : "OK"
   };
 }
-
-type OfficialCycleGrowth = {
-  target: number | null;
-  belowTarget: number;
-  nextProgress: number | null;
-};
-
-type DashboardGrowthStatusInput = {
-  monitoringActive: boolean;
-  officialCycle: OfficialCycleGrowth | null;
-  legacyGoal: number;
-  legacyRealGains: number;
-};
-
-export function getDashboardGrowthStatus({
-  monitoringActive,
-  officialCycle,
-  legacyGoal,
-  legacyRealGains
-}: DashboardGrowthStatusInput) {
-  if (!monitoringActive || !officialCycle) {
-    return getMonthlyGrowthStatus(legacyGoal, legacyRealGains);
-  }
-
-  if (officialCycle.target === null) {
-    return { missing: 0, label: "Meta pausada" };
-  }
-
-  if (officialCycle.belowTarget <= 0) {
-    return { missing: 0, label: "OK" };
-  }
-
-  return getMonthlyGrowthStatus(officialCycle.target, officialCycle.nextProgress ?? 0);
-}

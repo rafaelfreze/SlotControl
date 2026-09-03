@@ -54,3 +54,16 @@ test("plano informa os gains faltantes para ajuste manual", () => {
   assert.equal(plan.cumulativeGoal, 21);
   assert.equal(plan.missingGains, 3);
 });
+
+test("progresso acumulado usa os gains operacionais do líder após o quarto ciclo", () => {
+  const plan = buildProgrammedGrowthPlan(
+    7,
+    new Date("2026-06-01T20:00:00Z"),
+    [slot({ gains: 23 })],
+    new Date("2026-09-03T11:53:00Z")
+  );
+
+  assert.equal(plan.cycleDays, 120);
+  assert.equal(plan.cumulativeGoal, 28);
+  assert.equal(plan.missingGains, 5);
+});

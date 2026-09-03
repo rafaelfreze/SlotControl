@@ -17,7 +17,8 @@ import { useLivePrices } from "@/lib/slotgain/live-prices";
 import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import { formatAccountCreatedDate, getAccountAgeDays } from "@/lib/slotgain/account-age";
 import { getFinancialValueTone } from "@/lib/slotgain/financial-tone";
-import { getDashboardGrowthStatus } from "@/lib/slotgain/growth-status";
+import { getMonthlyGrowthStatus } from "@/lib/slotgain/growth-status";
+import { buildProgrammedGrowthPlan } from "@/lib/slotgain/programmed-growth";
 import { summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import type { BtcMarketState, MarketRegimeSettings as MarketRegimeSettingsType } from "@/lib/slotgain/market-regime";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
@@ -41,6 +42,7 @@ type DashboardClientProps = {
 
 type DashboardAssetLadderPlan = {
   monthly_goal?: number;
+  started_at?: string;
   month_reference?: string;
   real_gains_month?: number | string;
   real_gains_month_source?: string;
@@ -126,7 +128,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
         <strong>{monitoring.strategy?.mode === "DEFENSIVE_POST_ATH" ? "Defensivo" : "Normal"} · {monitoring.cycle?.days_remaining ?? "—"} dias</strong>
       </Link> : null}
 
-      <GrowthPlanStrip btcPlan={btcLadderPlan} monitoring={monitoring} solPlan={solLadderPlan} />
+      <GrowthPlanStrip btcPlan={btcLadderPlan} operationStartedAt={operationStartedAt} slots={slots} solPlan={solLadderPlan} />
 
       <section className="mobile-metrics" aria-label="Resumo principal">
         <div className="portfolio-title">Portfólio</div>
@@ -162,32 +164,35 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
 
 function GrowthPlanStrip({
   btcPlan,
-  monitoring,
+  operationStartedAt,
+  slots,
   solPlan
 }: {
   btcPlan: DashboardAssetLadderPlan | null;
-  monitoring: OfficialMonitoringOverview;
+  operationStartedAt: string | null;
+  slots: SlotView[];
   solPlan: DashboardAssetLadderPlan | null;
 }) {
   return (
     <section className="growth-dashboard-strip" aria-label="Metas mensais de crescimento">
       {(["BTC", "SOL"] as const).map((asset) => {
         const ladderPlan = asset === "BTC" ? btcPlan : solPlan;
-        const monthlyGoal = Number(ladderPlan?.monthly_goal || (asset === "BTC" ? 7 : 1));
-        const realGainsMonth = Number(ladderPlan?.real_gains_month || 0);
-        const officialAsset = monitoring.assets?.[asset];
-        const status = getDashboardGrowthStatus({
-          monitoringActive: monitoring.active,
-          officialCycle: officialAsset
-            ? {
-                target: officialAsset.target,
-                belowTarget: officialAsset.below_target,
-                nextProgress: officialAsset.next_slot?.progress ?? null
-              }
-            : null,
-          legacyGoal: monthlyGoal,
-          legacyRealGains: realGainsMonth
-        });
+        const monthlyGoal = Number(ladderPlan?.monthly_goal || (asset === "BTC" ? 7 : 2));
+        const startedAt = new Date(ladderPlan?.started_at || operationStartedAt || Date.now());
+        const growthPlan = buildProgrammedGrowthPlan(
+          monthlyGoal,
+          Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
+          slots
+            .filter((slot) => (slot.strategy?.asset || "BTC").toUpperCase() === asset)
+            .map((slot) => ({
+              id: slot.id,
+              slotNumber: slot.slot_number,
+              sortOrder: slot.sort_order,
+              status: slot.status,
+              gains: Number(slot.operational_gains || 0)
+            }))
+        );
+        const status = getMonthlyGrowthStatus(growthPlan.cumulativeGoal, growthPlan.leader?.gains ?? 0);
 
         return (
           <Link className={`growth-dashboard-link ${asset.toLowerCase()} ${status.missing > 0 ? "missing" : "ok"}`} href="/plano-crescimento" key={asset}>
