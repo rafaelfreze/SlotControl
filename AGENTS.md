@@ -1,6 +1,6 @@
 # CoinOps / SlotControl — instruções do projeto
 
-Estas regras valem para todo o repositório. Elas complementam as instruções globais carregadas pelo Codex e precisam continuar suficientes no Codex Cloud, que pode não receber configurações locais do computador do proprietário.
+Estas regras valem para todo o repositório. Elas complementam as instruções globais carregadas pelo Codex e precisam continuar suficientes no Codex Desktop Local e também em execuções Cloud solicitadas explicitamente.
 
 ## Precedência e fonte de verdade
 
@@ -34,7 +34,7 @@ Nunca misture schema, tenant, Auth, slots, ganhos, redistribuições, Vercel, se
 
 ## Ambiente de desenvolvimento e modelo
 
-Desenvolvimento normal é Codex Cloud. Use o Cloud para código, migrations versionadas, testes, build, documentação, commit e push. Local é exceção somente quando o backtest/dataset físico realmente exigir, ou para Chrome autenticado/Computer Use local, Corel, LightBurn, impressão/hardware, arquivo físico exclusivo do PC ou recuperação excepcional. Não exija clone local nem sincronização/Apply Cloud -> Local por rotina.
+Desenvolvimento normal ocorre no PC da loja, com o Codex Desktop em modo Local, para código, migrations versionadas, testes, build, documentação, commit e push pelo fluxo Git oficial. O checkout Local pode usar dependências, runtime, worktrees e datasets necessários, preservando o isolamento de backtests. O TeamViewer é o acesso remoto principal para operar este host. Codex Cloud e Codex Remote são opcionais e só devem ser usados quando o usuário os solicitar explicitamente. Task Cloud, URL Cloud e Apply não são requisitos; quando o Cloud for solicitado, qualquer Apply só pode ocorrer após validar task, repositório, branch/HEAD, diff e estado Local, nunca automaticamente.
 
 Preferência do proprietário:
 
@@ -90,7 +90,7 @@ Preserve o harness Playwright, perfis e artefatos de falha existentes. Quando na
 
 - Revise diff e migrations; stage apenas o escopo; nunca inclua .env, secret, node_modules, dataset, relatório grande ou screenshot sensível.
 - Crie commit claro e focado e faça push pela branch apropriada quando a tarefa incluir entrega. main é produção, mas desenvolvimento não precisa ocorrer diretamente nela.
-- Nunca force-push. Se o Cloud não puder fazer push, preserve commit/diff e use PR/Apply; Local continua exceção.
+- Nunca force-push. Se o push não puder ser concluído, preserve commit/diff, reporte o bloqueio e use o fluxo Git/PR suportado e apropriado.
 - Prefira a integração Git da Vercel. Um bloco lógico recebe no máximo um deploy final, salvo falha real.
 - Consulte deployment uma vez no fechamento; logs somente em falha, smoke ou diagnóstico. Não faça polling.
 - O cron market-regime roda a cada 5 minutos; preserve autenticação, lock, idempotência, timeout e custo antes de mudar a frequência.
