@@ -16,8 +16,10 @@ test-results/
 
 .vercel/
 .turbo/
+**/supabase/.temp/
 
 *.log
+__pycache__/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -27,3 +29,13 @@ pnpm-debug.log*
 backtest-data/
 backtest-cache/
 reports/backtests/slot-control-btc-leader/
+reports/backtests/v2-faithful-slot-control/
+reports/backtests/v3-redistribution-target/
+reports/backtests/v4-capped-contributions/
+reports/backtests/v2-calibration-90d/
+reports/backtests/v2-entry-forensics-90d/
+reports/backtests/base-btc-no-contributions/
+reports/backtests/v5-50slots-ath-redistribution/
+reports/backtests/v6-50slots-2pct-monthly-redistribution/
+reports/backtests/v7-open-position-topups-25-vs-50/
+reports/backtests/meta7-equalization-open-donors/
