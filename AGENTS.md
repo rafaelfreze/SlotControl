@@ -34,12 +34,12 @@ Nunca misture schema, tenant, Auth, slots, ganhos, redistribuições, Vercel, se
 
 ## Ambiente de desenvolvimento e modelo
 
-Desenvolvimento normal ocorre no PC da loja, com o Codex Desktop em modo Local, para código, migrations versionadas, testes, build, documentação, commit e push pelo fluxo Git oficial. O checkout Local pode usar dependências, runtime, worktrees e datasets necessários, preservando o isolamento de backtests. O TeamViewer é o acesso remoto principal para operar este host. Codex Cloud e Codex Remote são opcionais e só devem ser usados quando o usuário os solicitar explicitamente. Task Cloud, URL Cloud e Apply não são requisitos; quando o Cloud for solicitado, qualquer Apply só pode ocorrer após validar task, repositório, branch/HEAD, diff e estado Local, nunca automaticamente.
+Desenvolvimento normal ocorre nos checkouts oficiais locais do PC principal e do notebook, com o Codex Desktop em modo Local, para código, migrations versionadas, testes, build, documentação, commit e push pelo fluxo Git oficial. Cada checkout Local pode usar suas próprias dependências, runtime, worktrees e datasets necessários, preservando o isolamento de backtests. O GitHub/main é o único meio de sincronizar código entre computadores: não use OneDrive, cópia direta de arquivos ou espelhamento do checkout. Antes de alinhar main em outro computador, preserve commits e alterações locais legítimas em uma branch/checkpoint recuperável, sem incluir secrets, caches ou artefatos, e nunca sobrescreva trabalho existente. O TeamViewer continua sendo o acesso remoto principal ao PC da loja. Codex Cloud e Codex Remote são opcionais e só devem ser usados quando o usuário os solicitar explicitamente. Task Cloud, URL Cloud e Apply não são requisitos; quando o Cloud for solicitado, qualquer Apply só pode ocorrer após validar task, repositório, branch/HEAD, diff e estado Local, nunca automaticamente.
 
 Preferência do proprietário:
 
-- trabalho diário: GPT-5.6 Sol com esforço Extra alto;
-- arquitetura, migration/RLS crítica, segurança ou fluxo financeiro delicado: GPT-5.6 Sol com Ultra quando o controle da execução oferecer.
+- preferência: GPT-6 Astra com esforço Ultra;
+- fallback: GPT-5.6 Sol com o maior esforço suportado quando o modelo preferencial não estiver disponível.
 
 Texto neste arquivo não troca o modelo. Use somente o seletor/configuração suportado; se Ultra não estiver disponível, use o maior esforço suportado e registre a limitação.
 
