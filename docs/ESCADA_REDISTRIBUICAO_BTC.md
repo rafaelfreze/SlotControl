@@ -1,5 +1,11 @@
 # Escada de Redistribuição BTC e SOL
 
+## Estado atual do painel — 20/09/2026
+
+A redistribuição foi retirada da interface do Plano por decisão do proprietário. BTC e SOL mostram somente **Adicionar gains** e **Aportes**, com gains como entrada padrão; links antigos para `view=ladder` também abrem gains. Não há botões de preparar, confirmar ou cancelar redistribuição, nem indicadores de referência/excedente/elegível no painel desktop.
+
+A edição da meta mensal continua em Adicionar gains, preservando a referência existente exigida pelo contrato atual. O histórico financeiro permanece recolhido e somente leitura, inclusive os registros antigos de redistribuição. Posições, saldos, gains, aportes, migrations, RPCs e ledgers não foram alterados nem apagados. As seções técnicas de redistribuição abaixo documentam o legado preservado, não uma função disponível no painel.
+
 ## 1. Autoridade e escopo
 
 Este documento é a fonte oficial da gestão mensal dos slots BTC e SOL no CoinOps real. Os dois ativos seguem o mesmo fluxo seguro; somente a meta configurada, a taxa da estratégia e a composição financeira de cada slot são diferentes.

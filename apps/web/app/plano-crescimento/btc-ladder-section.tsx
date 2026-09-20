@@ -4,18 +4,15 @@ import { useState, type ReactNode } from "react";
 import { useFormStatus } from "react-dom";
 
 import { SectionCard } from "@/components/app/mobile-ui";
-import { formatDate, formatUsdt } from "@/lib/slotgain/format";
-import { indexCapitalContributionsBySlot, summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
+import { formatDate } from "@/lib/slotgain/format";
+import { summarizeCapitalContributions, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import { getLeaderGrowthTarget } from "@/lib/slotgain/growth-target";
 import {
   applyAssetExternalBalance,
   applyAssetManualOperationalGains,
   cancelAssetManualOperationalGainsBatch,
-  cancelAssetRedistribution,
   confirmAssetManualOperationalGainsBatch,
-  confirmAssetRedistribution,
   prepareAssetManualOperationalGainsBatch,
-  prepareAssetRedistribution,
   saveAssetGrowthConfig,
   type GrowthAsset
 } from "./actions";
@@ -185,23 +182,11 @@ function formatLedgerUsdt(value: Numeric | null | undefined) {
   }).format(numberValue(value))} USDT`;
 }
 
-function formatSignedGain(value: Numeric | null | undefined) {
-  const number = numberValue(value);
-  return `${number > 0 ? "+" : ""}${formatGain(number)}`;
-}
-
 function formatMonth(value?: string) {
   if (!value) return "Mês atual";
   const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" }).format(date);
-}
-
-function formatCycleDate(value?: string) {
-  if (!value) return "data indisponível";
-  const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" }).format(date);
 }
 
 function statusLabel(status: string) {
@@ -224,9 +209,9 @@ function SubmitButton({ children, disabled = false, tone = "gold" }: { children:
   return <button className={`btc-ladder-button ${tone}`} type="submit" disabled={disabled || pending}>{pending ? "Processando..." : children}</button>;
 }
 
-export function AssetLadderSection({ asset, plan, actionKeys, initialView = "ladder" }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys; initialView?: "ladder" | "gains" | "balance" }) {
-  const [activeView, setActiveView] = useState<"ladder" | "gains" | "balance">(initialView);
-  const [editingSetting, setEditingSetting] = useState<"goal" | "reference" | null>(null);
+export function AssetLadderSection({ asset, plan, actionKeys, initialView = "gains" }: { asset: GrowthAsset; plan: AssetLadderPlanResponse; actionKeys: AssetPlanActionKeys; initialView?: "ladder" | "gains" | "balance" }) {
+  const [activeView, setActiveView] = useState<"gains" | "balance">(initialView === "balance" ? "balance" : "gains");
+  const [editingSetting, setEditingSetting] = useState<"goal" | null>(null);
   const [balanceScope, setBalanceScope] = useState<"single" | "all">("single");
   const [balanceAmount, setBalanceAmount] = useState("");
   const [bulkReviewOpen, setBulkReviewOpen] = useState(false);
@@ -242,7 +227,6 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
   const parsedBalanceAmount = Number.parseFloat(balanceAmount.replace(",", "."));
   const validBalanceAmount = Number.isFinite(parsedBalanceAmount) && parsedBalanceAmount > 0;
   const bulkTotalAmount = validBalanceAmount ? parsedBalanceAmount * bulkSlotCount : 0;
-  const preview = plan.preview || plan.active_preview || null;
   const history = plan.history || plan.batches || [];
   const monthlyGoal = Number(plan.monthly_goal ?? (asset === "BTC" ? 7 : 1));
   const referenceCandidate = plan.reference_level ?? plan.suggested_reference_level;
@@ -250,7 +234,6 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
   const referenceLevel = referenceCandidate !== null && referenceCandidate !== undefined && parsedReference > 0
     ? parsedReference
     : null;
-  const hasExactMonthlyRealGains = !plan.real_gains_month_source || plan.real_gains_month_source.toUpperCase() === "LEDGER";
   const cycleNumber = Math.max(1, Math.trunc(Number(plan.cycle_number || 1)));
   const leader = ladder[0] || null;
   const leaderGrowthTarget = getLeaderGrowthTarget(monthlyGoal, cycleNumber, leader ? numberValue(leader.operational_gains) : 0);
@@ -265,7 +248,6 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
     gain_equivalent: contribution.gain_equivalent,
     input_mode: contribution.input_mode
   }));
-  const contributionBySlot = indexCapitalContributionsBySlot(contributionRows);
   const leaderContribution = leader ? summarizeCapitalContributions(contributionRows, { slotId: leader.slot_id }) : { amountUsdt: 0, gains: 0 };
   const manualGainBatch = plan.manual_gain_batch_preview || null;
   const manualGainBatchItems = manualGainBatch?.items || [];
@@ -274,10 +256,11 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
   return (
     <div className="btc-plan-workspace">
       <div className="plan-mode-tabs" role="tablist" aria-label={`Funções do plano ${asset}`}>
-        <button type="button" role="tab" aria-selected={activeView === "ladder"} className={activeView === "ladder" ? "active" : ""} onClick={() => setActiveView("ladder")}>Escada {asset}</button>
         <button type="button" role="tab" aria-selected={activeView === "gains"} className={activeView === "gains" ? "active" : ""} onClick={() => setActiveView("gains")}>Adicionar gains</button>
         <button type="button" role="tab" aria-selected={activeView === "balance"} className={activeView === "balance" ? "active" : ""} onClick={() => setActiveView("balance")}>Aportes</button>
       </div>
+
+      {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || `O plano ${asset} está indisponível.`}</p> : null}
 
       {activeView === "gains" ? <SectionCard className="btc-manual-gains-card" title={`Adicionar gains ${asset}`} subtitle="Complete o líder ou ajuste qualquer slot" tone="green">
         <div className="btc-ladder-summary btc-manual-gains-summary">
@@ -286,11 +269,28 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
           <Metric label="Faltam no líder" value={leader ? `${formatGain(leaderGrowthTarget.missingGains)} gains` : "--"} />
           <Metric label="Aportes no líder" value={leader ? `+${formatGain(leaderContribution.gains)} gains` : "--"} helper={leader ? `+${formatLedgerUsdt(leaderContribution.amountUsdt)}` : undefined} />
         </div>
+        <div className="plan-settings plan-gain-settings" data-testid="plan-settings">
+          <PlanSettingRow
+            label="Meta mensal"
+            value={`${formatGain(monthlyGoal)} ${monthlyGoal === 1 ? "gain" : "gains"}`}
+            editing={editingSetting === "goal"}
+            onEdit={() => setEditingSetting((current) => current === "goal" ? null : "goal")}
+            testId="plan-setting-goal"
+          >
+            <form action={saveAssetGrowthConfig} className="plan-setting-form" data-testid="plan-setting-goal-editor">
+              <input type="hidden" name="asset" value={asset} />
+              <input type="hidden" name="referenceLevel" value={referenceLevel ?? ""} />
+              <label>Nova meta mensal<input name="monthlyGoal" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={monthlyGoal} required /></label>
+              <button className="plan-setting-cancel" type="button" onClick={() => setEditingSetting(null)}>Cancelar</button>
+              <SubmitButton>Salvar</SubmitButton>
+            </form>
+          </PlanSettingRow>
+        </div>
         <div className="contribution-scope-toggle" role="group" aria-label="Modo de adição de gains">
           <button type="button" className={gainScope === "single" ? "active" : ""} aria-pressed={gainScope === "single"} onClick={() => setGainScope("single")}>Um slot</button>
           <button type="button" className={gainScope === "bulk" ? "active" : ""} aria-pressed={gainScope === "bulk"} onClick={() => setGainScope("bulk")}>Em massa</button>
         </div>
-        {gainScope === "single" ? <form action={applyAssetManualOperationalGains} className="btc-contribution-form">
+        {gainScope === "single" ? <form action={applyAssetManualOperationalGains} className="btc-contribution-form btc-manual-gain-form">
           <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="idempotencyKey" value={actionKeys.contribution} />
           <label>Slot
@@ -375,75 +375,7 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
         <p className="btc-ladder-help">Você pode usar qualquer valor positivo por slot. O saldo entra integralmente em BTC ou SOL, inclusive nos OPEN, sem criar gain nem alterar a posição atual.</p>
       </SectionCard> : null}
 
-      {activeView === "ladder" ? <SectionCard className="btc-ladder-main" title={`Escada ${asset}`} subtitle={`Ciclo iniciado em ${formatCycleDate(plan.month_reference)}`} tone={asset === "BTC" ? "gold" : "purple"}>
-        {!plan.ok ? <p className="inline-alert btc-ladder-inline-alert">{plan.message || plan.code || `A escada ${asset} está indisponível.`}</p> : null}
-        <div className="btc-ladder-summary ladder-summary-compact" data-testid="ladder-summary">
-          <Metric
-            label="Reais"
-            value={formatGain(plan.real_gains_month)}
-            helper={hasExactMonthlyRealGains ? undefined : "estimado (histórico legado)"}
-          />
-          <Metric label="Referência" value={referenceLevel === null ? "--" : `${formatGain(referenceLevel)} gains`} />
-          <Metric label="Excedente" value={referenceLevel === null ? "--" : `${formatGain(plan.available_excess_gains)} gains`} />
-          <Metric label="Elegível" value={referenceLevel === null ? "--" : formatUsdt(numberValue(plan.available_excess_usdt))} />
-        </div>
-
-        <div className="plan-settings" data-testid="plan-settings">
-          <PlanSettingRow
-            label="Meta mensal"
-            value={`${formatGain(monthlyGoal)} ${monthlyGoal === 1 ? "gain" : "gains"}`}
-            editing={editingSetting === "goal"}
-            onEdit={() => setEditingSetting((current) => current === "goal" ? null : "goal")}
-            testId="plan-setting-goal"
-          >
-            <form action={saveAssetGrowthConfig} className="plan-setting-form" data-testid="plan-setting-goal-editor">
-              <input type="hidden" name="asset" value={asset} />
-              <input type="hidden" name="referenceLevel" value={referenceLevel ?? ""} />
-              <label>Nova meta mensal<input name="monthlyGoal" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={monthlyGoal} required /></label>
-              <button className="plan-setting-cancel" type="button" onClick={() => setEditingSetting(null)}>Cancelar</button>
-              <SubmitButton>Salvar</SubmitButton>
-            </form>
-          </PlanSettingRow>
-          <PlanSettingRow
-            label="Referência da escada"
-            value={referenceLevel === null ? "Não definida" : `${formatGain(referenceLevel)} gains`}
-            editing={editingSetting === "reference"}
-            onEdit={() => setEditingSetting((current) => current === "reference" ? null : "reference")}
-            testId="plan-setting-reference"
-          >
-            <form action={saveAssetGrowthConfig} className="plan-setting-form" data-testid="plan-setting-reference-editor">
-              <input type="hidden" name="asset" value={asset} />
-              <input type="hidden" name="monthlyGoal" value={monthlyGoal} />
-              <label>Nova referência<input name="referenceLevel" type="number" min="1" step="1" inputMode="numeric" defaultValue={referenceLevel ?? ""} placeholder="Ex.: 14" required /></label>
-              <button className="plan-setting-cancel" type="button" onClick={() => setEditingSetting(null)}>Cancelar</button>
-              <SubmitButton>Salvar</SubmitButton>
-            </form>
-          </PlanSettingRow>
-          <form action={prepareAssetRedistribution} className="redistribution-cta" data-testid="prepare-redistribution">
-            <input type="hidden" name="asset" value={asset} />
-            <input type="hidden" name="idempotencyKey" value={actionKeys.prepare} />
-            <input type="hidden" name="referenceLevel" value={referenceLevel ?? ""} />
-            <SubmitButton disabled={!plan.ok || ladder.length < 2 || referenceLevel === null}>Preparar redistribuição</SubmitButton>
-          </form>
-        </div>
-
-        <details className="btc-ladder-guide">
-          <summary>Como funciona?</summary>
-          <p>A meta de {monthlyGoal} mede a velocidade a cada 30 dias. A referência é o nível operacional escolhido para equilibrar a escada; ela não cria dívida automática para cada slot.</p>
-          <ol>
-            <li>Escolha uma referência operacional, por exemplo 7 ou 14 gains.</li>
-            <li>Toque em Preparar redistribuição. Isso cria somente uma prévia e não altera os slots.</li>
-            <li>Confira doadores, recebedores, USDT transferido e diferença patrimonial zero.</li>
-            <li>Confirme para aplicar tudo em uma única transação; cancele para não alterar nada.</li>
-          </ol>
-          <p>Slots OPEN também podem doar. A posição aberta continua com quantidade, entrada e alvo originais.</p>
-        </details>
-        <LadderList asset={asset} slots={ladder} referenceLevel={referenceLevel} contributionBySlot={contributionBySlot} />
-      </SectionCard> : null}
-
-      {activeView === "ladder" && preview ? <RedistributionPreview asset={asset} preview={preview} confirmIdempotencyKey={actionKeys.confirm} /> : null}
-
-      {activeView === "ladder" ? <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} /> : null}
+      <AssetLadderHistory asset={asset} batches={history} contributions={plan.contributions || []} />
     </div>
   );
 }
@@ -461,100 +393,6 @@ function PlanSettingRow({ label, value, editing, onEdit, testId, children }: { l
       </div>
       {editing ? <div className="plan-setting-editor">{children}</div> : null}
     </div>
-  );
-}
-
-function LadderList({ asset, slots, referenceLevel, contributionBySlot = {} }: { asset: GrowthAsset; slots: AssetLadderSlotItem[]; referenceLevel: number | null; contributionBySlot?: Record<string, { amountUsdt: number; gains: number }> }) {
-  const primarySlots = slots.slice(0, 5);
-  const remainingSlots = slots.slice(5);
-  return (
-    <div className="btc-ladder-table" role="list" aria-label={`Ranking operacional ${asset}`} data-testid="ladder-ranking">
-      <div className="btc-ladder-table-head" aria-hidden="true">
-        <span>Ranking</span><span>Slot</span><span>Nível</span><span>Status</span>
-      </div>
-      {primarySlots.map((slot) => <LadderRow key={slot.slot_id} slot={slot} referenceLevel={referenceLevel} contribution={contributionBySlot[slot.slot_id]} />)}
-      {remainingSlots.length ? <details className="btc-ladder-more"><summary>Ver todos os {slots.length} slots</summary>{remainingSlots.map((slot) => <LadderRow key={slot.slot_id} slot={slot} referenceLevel={referenceLevel} contribution={contributionBySlot[slot.slot_id]} />)}</details> : null}
-      {!slots.length ? <p className="empty-copy padded-empty">Nenhum slot {asset} disponível para montar a escada.</p> : null}
-    </div>
-  );
-}
-
-function LadderRow({ slot, referenceLevel, contribution }: { slot: AssetLadderSlotItem; referenceLevel: number | null; contribution?: { amountUsdt: number; gains: number } }) {
-  const difference = slot.reference_difference_gains === undefined
-    ? referenceLevel === null ? null : numberValue(slot.operational_gains) - referenceLevel
-    : numberValue(slot.reference_difference_gains);
-
-  return (
-    <details className="btc-ladder-row" role="listitem">
-      <summary>
-        <strong>#{slot.rank}</strong>
-        <span>Slot {slot.slot_number}</span>
-        <b>{formatGain(slot.operational_gains)} gains</b>
-        <em className={slot.status.toLowerCase() === "aberto" ? "open" : "free"}>{statusLabel(slot.status)}</em>
-      </summary>
-      <div className="btc-ladder-row-details">
-        <span><small>Gains reais</small><strong>{formatGain(slot.real_gains)}</strong></span>
-        <span><small>Valor operacional</small><strong>{formatUsdt(numberValue(slot.operational_value_usdt))}</strong></span>
-        <span><small>Gains aportados</small><strong>+{formatGain(contribution?.gains || 0)}</strong></span>
-        <span><small>Diferença</small><strong className={difference !== null && difference > 0 ? "positive" : difference !== null && difference < 0 ? "negative" : "neutral"}>{difference === null ? "--" : formatSignedGain(difference)}</strong></span>
-      </div>
-    </details>
-  );
-}
-
-function RedistributionPreview({ asset, preview, confirmIdempotencyKey }: { asset: GrowthAsset; preview: AssetRedistributionPreview; confirmIdempotencyKey: string }) {
-  const parsedDifference = Number(preview.equity_difference_usdt);
-  const hasValidDifference = preview.equity_difference_usdt !== null
-    && preview.equity_difference_usdt !== undefined
-    && Number.isFinite(parsedDifference);
-  const difference = hasValidDifference ? parsedDifference : Number.NaN;
-  const transfers = Array.isArray(preview.transfers) ? preview.transfers : [];
-  const conserved = hasValidDifference && Math.abs(difference) <= 0.00000001;
-  const prepared = preview.status.toUpperCase() === "PREPARED";
-  const canConfirm = prepared && conserved && transfers.length > 0;
-
-  return (
-    <SectionCard className="btc-preview-card" title="Prévia da redistribuição" subtitle={`Referência ${formatGain(preview.reference_level)} gains`} tone="gold">
-      <div className="btc-preview-summary">
-        <Metric label="Patrimônio antes" value={formatUsdt(numberValue(preview.equity_before_usdt))} />
-        <Metric label="Patrimônio depois" value={formatUsdt(numberValue(preview.equity_after_usdt))} />
-        <Metric label="Total transferido" value={formatUsdt(numberValue(preview.total_transferred_usdt))} />
-        <Metric label="Diferença" value={hasValidDifference ? formatLedgerUsdt(difference) : "Inválida"} />
-      </div>
-      <p className={`btc-conservation-status ${conserved ? "ok" : "blocked"}`}>{conserved ? "Conservação financeira confirmada: diferença zero." : "Confirmação bloqueada: o patrimônio não foi conservado."}</p>
-
-      <div className="btc-preview-transfers">
-        {transfers.map((transfer, index) => (
-          <article key={transfer.id || `${transfer.donor_slot_number}-${transfer.receiver_slot_number}-${index}`}>
-            <strong>#{transfer.donor_slot_number} → #{transfer.receiver_slot_number}</strong>
-            <span>{formatGain(transfer.donor_gain_equivalent)} → {formatGain(transfer.receiver_gain_equivalent)} gains equivalentes</span>
-            <b>{formatLedgerUsdt(transfer.amount_usdt)}</b>
-            <small>{statusLabel(transfer.donor_status)} → {statusLabel(transfer.receiver_status)}</small>
-          </article>
-        ))}
-        {!transfers.length ? <p className="empty-copy padded-empty">Nenhuma transferência elegível nesta referência.</p> : null}
-      </div>
-
-      <div className="btc-preview-rankings">
-        <details><summary>Ranking antes</summary><LadderList asset={asset} slots={preview.ranking_before || []} referenceLevel={numberValue(preview.reference_level)} /></details>
-        <details><summary>Ranking depois</summary><LadderList asset={asset} slots={preview.ranking_after || []} referenceLevel={numberValue(preview.reference_level)} /></details>
-      </div>
-
-      <div className="btc-preview-actions">
-        <form action={cancelAssetRedistribution}>
-          <input type="hidden" name="asset" value={asset} />
-          <input type="hidden" name="batchId" value={preview.batch_id} />
-          <SubmitButton tone="neutral" disabled={!prepared}>Cancelar</SubmitButton>
-        </form>
-        <form action={confirmAssetRedistribution}>
-          <input type="hidden" name="asset" value={asset} />
-          <input type="hidden" name="batchId" value={preview.batch_id} />
-          <input type="hidden" name="idempotencyKey" value={confirmIdempotencyKey} />
-          {preview.snapshot_hash ? <input type="hidden" name="snapshotHash" value={preview.snapshot_hash} /> : null}
-          <SubmitButton disabled={!canConfirm}>Confirmar redistribuição</SubmitButton>
-        </form>
-      </div>
-    </SectionCard>
   );
 }
 
@@ -577,7 +415,7 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
 
   return (
     <details className="btc-history-card plan-history-drawer">
-      <summary>Histórico de redistribuições e ajustes {asset}</summary>
+      <summary>Histórico financeiro {asset}</summary>
       <div className="btc-ladder-history">
         {events.map((event) => event.kind === "batch" ? (
           <details key={`batch-${event.batch.batch_id}`}>

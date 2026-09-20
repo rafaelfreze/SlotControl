@@ -262,7 +262,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .growth-start-form label { display: grid; gap: 4px; font-size: .54rem; }
 .growth-start-form input, .growth-start-form button { min-height: 34px; }
 .btc-plan-workspace { display: grid; gap: 9px; }
-.plan-mode-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.plan-mode-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
 .plan-mode-tabs button { min-height: 34px; padding: 4px 5px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface); color: var(--co-muted); font-size: .57rem; font-weight: 750; }
 .plan-mode-tabs button.active { border-color: rgba(213, 168, 47, .45); background: var(--co-gold-soft); color: var(--co-gold); }
 .btc-ladder-summary, .btc-preview-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }

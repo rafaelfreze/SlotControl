@@ -169,13 +169,14 @@
   .desktop-cycle-summary small { color:var(--co-muted); font-size:.47rem; }
   .desktop-cycle-summary strong { color:var(--co-text); font-size:.6rem; }
   .desktop-plan-kpis { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
+  .desktop-plan-active-kpis { grid-template-columns:repeat(3,minmax(0,1fr)); }
   .desktop-plan-layout { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:12px; align-items:start; }
   .desktop-plan-aside { display:grid; gap:12px; }
   .desktop-plan-links { display:grid; }
   .desktop-plan-links > a { display:flex; min-height:36px; align-items:center; justify-content:space-between; padding:0 12px; border-bottom:1px solid var(--co-line); color:var(--co-muted); font-size:.53rem; }
   .desktop-plan-links > a:hover { color:var(--co-gold); }
   .desktop-plan-main .btc-plan-workspace { display:grid; gap:10px; }
-  .desktop-plan-main .plan-mode-tabs { position:static; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; padding:7px; border:1px solid var(--co-line); border-radius:10px; background:rgba(12,21,31,.74); }
+  .desktop-plan-main .plan-mode-tabs { position:static; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; padding:7px; border:1px solid var(--co-line); border-radius:10px; background:rgba(12,21,31,.74); }
   .desktop-plan-main .plan-mode-tabs button { min-height:34px; border:1px solid var(--co-line); border-radius:7px; background:transparent; color:var(--co-muted); font-size:.54rem; }
   .desktop-plan-main .plan-mode-tabs button.active { border-color:rgba(213,168,47,.38); background:var(--co-gold-soft); color:var(--co-gold); }
   .desktop-plan-main .section-card { margin:0; padding:0; border:1px solid var(--co-line); border-radius:11px; background:rgba(12,21,31,.88); }
@@ -184,6 +185,11 @@
   .desktop-plan-main .btc-ladder-summary > div { min-height:58px; padding:8px 10px; border-right:1px solid var(--co-line); }
   .desktop-plan-main .btc-ladder-summary > div:last-child { border-right:0; }
   .desktop-plan-main .plan-settings { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 190px; gap:8px; padding:0 12px 10px; }
+  .desktop-plan-main .plan-settings.plan-gain-settings { grid-template-columns:minmax(0,1fr); }
+  .desktop-plan-main .btc-manual-gain-form { grid-template-columns:minmax(0,1fr) minmax(0,.7fr) minmax(0,1.3fr); padding:0 12px 10px; }
+  .desktop-plan-main .btc-manual-gain-form > label { min-width:0; }
+  .desktop-plan-main .btc-manual-gain-form > .btc-ladder-help,
+  .desktop-plan-main .btc-manual-gain-form > .btc-ladder-button { grid-column:1/-1; }
   .desktop-plan-main .plan-setting-row,.desktop-plan-main .redistribution-cta { min-width:0; margin:0; }
   .desktop-plan-main .btc-ladder-guide { margin:0 12px 10px; }
   .desktop-plan-main .btc-ladder-table { margin:0 12px 12px; }

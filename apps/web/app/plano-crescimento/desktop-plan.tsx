@@ -6,7 +6,7 @@ import { useState } from "react";
 import { DesktopWorkspace } from "@/components/app/desktop-workspace";
 import type { MarketTickerState } from "@/components/app/mobile-ui";
 import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
-import { formatDate, formatUsdt } from "@/lib/slotgain/format";
+import { formatDate } from "@/lib/slotgain/format";
 import { AssetLadderSection, type AssetLadderPlanResponse, type AssetPlanActionKeys } from "./btc-ladder-section";
 import type { ProgrammedGrowthPlanResponse } from "./growth-plan-client";
 
@@ -39,14 +39,12 @@ export function DesktopPlan({
   const ladder = asset === "BTC" ? btcLadder : solLadder;
   const actionKeys = asset === "BTC" ? btcActionKeys : solActionKeys;
   const rows = ladder.ladder || ladder.ranking || [];
-  const reference = Number(ladder.reference_level ?? ladder.suggested_reference_level ?? 0);
   const monitoredAsset = monitoring.assets?.[asset];
   const target = monitoring.active && monitoredAsset ? monitoredAsset.target : Number(ladder.monthly_goal || (asset === "BTC" ? 7 : 2));
   const progress = Number(ladder.real_gains_month || 0);
-  const excess = Number(ladder.available_excess_gains || 0);
   const spacing = monitoring.strategy ? (asset === "BTC" ? monitoring.strategy.btc_spacing : monitoring.strategy.sol_spacing) : null;
 
-  return <DesktopWorkspace title="Plano operacional" subtitle="Metas, escada e redistribuição" livePrices={livePrices} monitoring={monitoring} userLabel={userLabel} actions={<><Link href="/plano-crescimento/regras">Regras atuais</Link><Link href="/plano-crescimento/relatorios">Relatórios</Link></>}>
+  return <DesktopWorkspace title="Plano operacional" subtitle="Metas, gains e aportes" livePrices={livePrices} monitoring={monitoring} userLabel={userLabel} actions={<><Link href="/plano-crescimento/regras">Regras atuais</Link><Link href="/plano-crescimento/relatorios">Relatórios</Link></>}>
     <section className="desktop-plan-heading">
       <div className="desktop-asset-selector" role="tablist" aria-label="Selecionar ativo">
         {(["BTC", "SOL"] as const).map((value) => <button type="button" role="tab" aria-selected={asset === value} className={asset === value ? "active" : ""} key={value} onClick={() => setAsset(value)}>{value}<small>{(value === "BTC" ? btcLadder : solLadder).ladder?.length || 0} slots</small></button>)}
@@ -59,18 +57,15 @@ export function DesktopPlan({
       </div>
     </section>
 
-    <section className="desktop-plan-kpis">
+    <section className="desktop-plan-kpis desktop-plan-active-kpis">
       <PlanKpi label="Meta" value={target === null ? "Pausada" : `${target} gains`} helper="Por slot habilitado" />
       <PlanKpi label="Progresso real" value={`${progress} gains`} helper="No período atual" />
-      <PlanKpi label="Referência" value={reference > 0 ? `${reference} gains` : "Não definida"} helper="Escada operacional" />
-      <PlanKpi label="Excedente" value={`${excess} gains`} helper="Disponível" />
-      <PlanKpi label="Elegível" value={formatUsdt(Number(ladder.available_excess_usdt || 0))} helper="Para redistribuição" />
       <PlanKpi label="Slots" value={String(rows.length)} helper={`${monitoring.assets?.[asset]?.below_target ?? 0} abaixo da meta`} />
     </section>
 
     <section className="desktop-plan-layout">
       <div className="desktop-plan-main">
-        <AssetLadderSection key={asset} asset={asset} plan={ladder} actionKeys={actionKeys} initialView={asset === initialAsset ? initialView : "ladder"} />
+        <AssetLadderSection key={asset} asset={asset} plan={ladder} actionKeys={actionKeys} initialView={asset === initialAsset ? initialView : "gains"} />
       </div>
       <aside className="desktop-plan-aside">
         <article className="desktop-panel"><header className="desktop-panel-header"><div><span>Operação</span><h2>Resumo {asset}</h2></div></header><dl className="desktop-plan-facts">

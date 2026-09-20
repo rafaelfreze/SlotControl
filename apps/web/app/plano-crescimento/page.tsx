@@ -151,7 +151,7 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
       initialNotice={searchParams?.notice || null}
       initialNoticeTone={searchParams?.tone === "error" ? "error" : "success"}
       initialAsset={searchParams?.asset === "SOL" ? "SOL" : "BTC"}
-      initialView={searchParams?.view === "gains" || searchParams?.view === "balance" ? searchParams.view : "ladder"}
+      initialView={searchParams?.view === "balance" ? "balance" : "gains"}
       btcActionKeys={actionKeys()}
       monitoring={monitoring.overview}
       monitoringPreview={monitoring.preview}
