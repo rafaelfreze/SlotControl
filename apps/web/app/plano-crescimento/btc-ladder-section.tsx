@@ -254,6 +254,9 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
   const cycleNumber = Math.max(1, Math.trunc(Number(plan.cycle_number || 1)));
   const leader = ladder[0] || null;
   const leaderGrowthTarget = getLeaderGrowthTarget(monthlyGoal, cycleNumber, leader ? numberValue(leader.operational_gains) : 0);
+  const [manualGainSlotId, setManualGainSlotId] = useState(leader?.slot_id || "");
+  const manualGainSlot = ladder.find((slot) => slot.slot_id === manualGainSlotId) || leader;
+  const manualGainTarget = getLeaderGrowthTarget(monthlyGoal, cycleNumber, manualGainSlot ? numberValue(manualGainSlot.operational_gains) : 0);
   const contributionRows: CapitalContributionView[] = (plan.contributions || []).map((contribution) => ({
     asset,
     slot_id: contribution.slot_id || "",
@@ -291,13 +294,14 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "lad
           <input type="hidden" name="asset" value={asset} />
           <input type="hidden" name="idempotencyKey" value={actionKeys.contribution} />
           <label>Slot
-            <select name="slotId" required defaultValue={leader?.slot_id || ""}>
+            <select name="slotId" required value={manualGainSlot?.slot_id || ""} onChange={(event) => setManualGainSlotId(event.target.value)}>
               <option value="" disabled>Escolha o slot</option>
               {ladder.map((slot) => <option value={slot.slot_id} key={slot.slot_id}>#{slot.slot_number} · {statusLabel(slot.status)} · {formatGain(slot.operational_gains)} gains</option>)}
             </select>
           </label>
-          <label>Gains a adicionar<input name="operationalGains" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={leaderGrowthTarget.suggestedManualGains} required /></label>
+          <label>Gains a adicionar<input key={`${manualGainSlot?.slot_id}:${manualGainTarget.suggestedManualGains}`} name="operationalGains" type="number" min="1" max="1000" step="1" inputMode="numeric" defaultValue={manualGainTarget.suggestedManualGains} required /></label>
           <label className="btc-contribution-reason">Observação opcional<input name="note" type="text" maxLength={500} placeholder="Ex.: completar meta desde 01/04" /></label>
+          <p className="btc-ladder-help">Slots abertos e livres contam para a meta e podem receber gains. {manualGainSlot ? `Faltam ${formatGain(manualGainTarget.missingGains)} gains no Slot #${manualGainSlot.slot_number} para a meta de ${formatGain(manualGainTarget.targetGains)}.` : ""}</p>
           <SubmitButton tone="green" disabled={!plan.ok || !ladder.length}>Adicionar gains</SubmitButton>
         </form> : manualGainBatch ? <div className="manual-gain-batch-preview" data-testid="manual-gain-batch-preview">
           <div className="bulk-contribution-summary" aria-live="polite">

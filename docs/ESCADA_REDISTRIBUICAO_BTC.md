@@ -26,6 +26,8 @@ meta do líder = meta mensal × número do ciclo atual
 
 Exemplo: início em 01/04, quinto ciclo e meta mensal 7 resultam em 35 gains operacionais para o líder. Essa conta orienta somente o slot líder e o ajuste manual; ela não cria dívida de 35 gains para cada um dos 25 slots.
 
+O líder é o slot com mais `operational_gains`, independentemente de estar aberto, em espera ou livre, seguindo o mesmo desempate da escada. Resumo e Plano consideram esses gains mesmo durante uma operação aberta. Com meta 28, um slot aberto em 25 e um livre em 5, faltam apenas 3 gains no líder; um aberto em 28 já atingiu a meta.
+
 ### Data inicial operacional
 
 `growth_plan_settings.started_at` é a única fonte de verdade para o tempo em operação e para os ciclos BTC e SOL. Ela é independente de `auth.users.created_at`, pois uma consolidação ou migração de Auth pode recriar o usuário sem reiniciar a operação financeira.
@@ -232,7 +234,9 @@ O ledger deve permitir reconstruir cada transferência sem consultar estado futu
 
 O Plano permite escolher um slot e informar diretamente quantos gains operacionais inteiros devem ser adicionados. O servidor aplica cada gain sequencialmente sobre o saldo vigente, calcula como aporte exatamente a diferença entre o saldo composto final e o saldo inicial, registra valor, slot, data, motivo e usuário, e mantém a mesma trilha financeira de aportes externos.
 
-O formulário sugere automaticamente a diferença entre a meta orientativa do líder e seu nível atual. O usuário pode alterar tanto o slot quanto a quantidade antes de confirmar. Nenhum ajuste é automático.
+O formulário começa pelo líder e sugere automaticamente a diferença entre a meta orientativa e o nível do slot selecionado. Ao trocar o slot, a sugestão acompanha o novo slot, incluindo os abertos. O usuário pode alterar a quantidade antes de confirmar. Slots que já atingiram a meta mantêm o ajuste manual disponível. Nenhum ajuste é automático.
+
+Gains operacionais manuais podem ser acrescentados também em slots abertos, para BTC e SOL, sem fechar a operação nem alterar quantidade, entrada, alvo, data ou snapshots da posição. Essa permissão já é tratada pela RPC autenticada; o formulário continua usando a mesma autorização e idempotência.
 
 O ajuste por gains:
 

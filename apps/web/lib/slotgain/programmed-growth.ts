@@ -18,13 +18,8 @@ export function getGrowthCycleDays(monthNumber: number) {
   return Math.max(1, monthNumber) * 30;
 }
 
-export function isClosedGrowthSlot(status: GrowthSlotStatus) {
-  return status === "gain" || status === "zerado";
-}
-
 export function selectGrowthLeader(slots: GrowthPlanSlot[]) {
   return slots
-    .filter((slot) => isClosedGrowthSlot(slot.status))
     .toSorted((first, second) => second.gains - first.gains || first.slotNumber - second.slotNumber || first.sortOrder - second.sortOrder || first.id.localeCompare(second.id))[0] || null;
 }
 

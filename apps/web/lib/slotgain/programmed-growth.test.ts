@@ -32,21 +32,55 @@ test("a meta acumulada nunca reinicia e segue ciclos completos de 30 dias", () =
   assert.equal(plan.cumulativeGoal, 21);
 });
 
-test("slot aberto nunca é escolhido para aporte", () => {
+test("slot aberto com mais gains também é o líder da meta", () => {
   const leader = selectGrowthLeader([
     slot({ id: "open", slotNumber: 1, status: "aberto", gains: 99 }),
     slot({ id: "closed", slotNumber: 2, status: "gain", gains: 18 })
   ]);
-  assert.equal(leader?.id, "closed");
+  assert.equal(leader?.id, "open");
 });
 
-test("escolhe o slot fechado com mais gains e desempata pelo menor slot", () => {
+test("escolhe o slot com mais gains e desempata pelo menor slot independentemente do status", () => {
   const leader = selectGrowthLeader([
     slot({ id: "three", slotNumber: 3, gains: 20 }),
-    slot({ id: "two", slotNumber: 2, gains: 20 }),
+    slot({ id: "two", slotNumber: 2, status: "aberto", gains: 20 }),
     slot({ id: "one", slotNumber: 1, gains: 19 })
   ]);
   assert.equal(leader?.id, "two");
+});
+
+test("meta 28 considera o aberto com 25 gains e faltam somente 3, mesmo com fechado em 5", () => {
+  const slots = [
+    slot({ id: "closed", slotNumber: 1, status: "gain", gains: 5 }),
+    slot({ id: "open", slotNumber: 2, status: "aberto", gains: 25 })
+  ];
+  const plan = buildProgrammedGrowthPlan(7, new Date("2026-06-01T20:00:00Z"), slots, new Date("2026-09-20T12:00:00Z"));
+
+  assert.equal(plan.cumulativeGoal, 28);
+  assert.equal(plan.leader?.id, "open");
+  assert.equal(plan.missingGains, 3);
+  assert.deepEqual(slots.map(({ id, status, gains }) => ({ id, status, gains })), [
+    { id: "closed", status: "gain", gains: 5 },
+    { id: "open", status: "aberto", gains: 25 }
+  ]);
+});
+
+test("líder aberto com 28 gains já bateu a meta 28", () => {
+  const plan = buildProgrammedGrowthPlan(7, new Date("2026-06-01T20:00:00Z"), [
+    slot({ status: "aberto", gains: 28 }),
+    slot({ id: "closed", slotNumber: 2, gains: 5 })
+  ], new Date("2026-09-20T12:00:00Z"));
+  assert.equal(plan.missingGains, 0);
+});
+
+test("SOL e slots em espera seguem a mesma contagem sem depender de slot livre", () => {
+  const plan = buildProgrammedGrowthPlan(2, new Date("2026-06-01T20:00:00Z"), [
+    slot({ id: "open", status: "aberto", gains: 6 }),
+    slot({ id: "hold", slotNumber: 2, status: "hold", gains: 7 })
+  ], new Date("2026-09-20T12:00:00Z"));
+  assert.equal(plan.cumulativeGoal, 8);
+  assert.equal(plan.leader?.id, "hold");
+  assert.equal(plan.missingGains, 1);
 });
 
 test("plano informa os gains faltantes para ajuste manual", () => {
