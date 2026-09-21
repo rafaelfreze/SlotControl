@@ -36,6 +36,17 @@ diretamente. Não há botão ou RPC público para reiniciar o marco repetidament
 
 Migration: `20260921120400_add_operational_capital_opening.sql`.
 Alvo oficial: projeto `otdfpmsegjxpqrzisfmi`, schema `coinops`.
+Na produção, a ativação também é uma migration versionada de dados:
+`20260921121058_activate_confirmed_operational_capital_opening.sql`. Ela seleciona
+o único escopo cujo fingerprint completo corresponde ao snapshot aprovado, sem
+embutir IDs de entidades ou dados pessoais. A conexão de consultas do MCP é
+somente leitura; não recebe grants adicionais para contornar essa restrição.
+
+Ativação produtiva confirmada em **21/09/2026 às 12:10:58 UTC (08:10:58 Cuiabá)**.
+Chave idempotente: `55397b36-0f91-4c1c-8c7c-4a41d2b3207f`.
+Fingerprint aprovado: `fcd661d07ebab0ce42f34bba3720eb9d083192c641592b98eac701c1eadfb987`.
+Leitura posterior confirmou igualdade integral dos snapshots de slots/aportes e
+dos hashes de ledger/histórico. Contadores atuais de BTC e SOL: zero.
 
 1. Confirmar ambiente, usuário e vínculo CoinOps ativo por leitura.
 2. Aplicar a migration revisada e testada em PostgreSQL efêmero local.
