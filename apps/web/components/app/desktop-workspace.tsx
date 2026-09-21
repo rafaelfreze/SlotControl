@@ -10,7 +10,7 @@ import { formatPrice } from "@/lib/slotgain/format";
 
 import type { MarketTickerState } from "./mobile-ui";
 
-type DesktopIconName = "dashboard" | "slots" | "plan" | "history" | "reports" | "cycles" | "alerts" | "settings" | "pulse" | "user";
+type DesktopIconName = "dashboard" | "slots" | "plan" | "history" | "reports" | "cycles" | "alerts" | "settings" | "automation" | "pulse" | "user";
 type DesktopNavigationItem = { href: string; label: string; icon: DesktopIconName };
 
 export const desktopNavigation: readonly DesktopNavigationItem[] = [
@@ -21,6 +21,7 @@ export const desktopNavigation: readonly DesktopNavigationItem[] = [
   { href: "/plano-crescimento/relatorios", label: "Relatórios", icon: "reports" },
   { href: "/ciclos", label: "Ciclos", icon: "cycles" },
   { href: "/alertas", label: "Alertas", icon: "alerts" },
+  { href: "/automacao", label: "Automação", icon: "automation" },
   { href: "/config", label: "Configurações", icon: "settings" }
 ] as const;
 
@@ -177,6 +178,7 @@ const desktopIconPaths: Record<DesktopIconName, string> = {
   reports: "M5 3h10l4 4v14H5zM15 3v5h4M8 17v-4M12 17V9M16 17v-6",
   cycles: "M20 7h-5V2M20 7a8 8 0 1 0 1 8",
   alerts: "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4",
+  automation: "M13 2 3 14h7l-1 8 10-12h-7z",
   settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19 12l2-1-2-4-2 1-2-1-1-3h-4L9 7 7 8 5 7l-2 4 2 1v2l-2 1 2 4 2-1 2 1 1 3h4l1-3 2-1 2 1 2-4-2-1Z",
   pulse: "M3 12h4l2-5 4 10 2-5h6",
   user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0"

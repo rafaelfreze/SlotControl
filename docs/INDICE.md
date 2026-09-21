@@ -5,6 +5,7 @@
 - [Marco do capital operacional](./MARCO_CAPITAL_OPERACIONAL.md) — reinício auditável dos contadores de aportes/gains adicionados, preservando saldos, posições, histórico e monitoramento.
 - [Estratégia oficial pós-baseline](./ESTRATEGIA_OFICIAL_2026.md) — corte em 27/08/2026, modos Normal/Defensivo, ciclos de 30 dias, filas, pools 1–25/26–50, relatórios e exportações auditáveis.
 - [Escada de Redistribuição BTC e SOL](./ESCADA_REDISTRIBUICAO_BTC.md) — fonte oficial das metas mensais configuráveis, referência assistida, igualdade funcional entre os ativos, separação entre gains reais e operacionais, conversão financeira, ledger, idempotência e proteção de posições abertas.
+- [Execution Engine Binance — Shadow](./EXECUTION_ENGINE_SHADOW.md) — fronteira estratégia/exchange, persistência de intenções, proteções fail-closed e roteiro de reconciliação para a próxima fase.
 
 ## Visão geral
 

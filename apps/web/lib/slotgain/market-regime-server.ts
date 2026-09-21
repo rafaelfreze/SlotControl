@@ -3,6 +3,7 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase
 import type { OfficialStrategyMode } from "@/lib/coinops-monitoring/domain";
 import { DEFAULT_ASSET_MARKET_SETTINGS, DEFAULT_MARKET_REGIME_SETTINGS, activeBuyDropPercent, applyMarketRegimeHysteresis, asMarketRegime, calculateMarketRegime, distanceFromAthPercent, effectiveMarketRegime, selectOperablePendingSlots, type AssetMarketStrategySettings, type BtcMarketState, type MarketRegime, type MarketRegimeSettings } from "./market-regime";
 import { buildOfficialFutureEntryPlan, type OfficialTriggerSlot } from "./official-entry-triggers";
+import { syncEligibleShadowEntryIntents } from "../execution/shadow-execution-server";
 
 type BinanceKline = [number, string, string, string, string];
 type StateRow = BtcMarketState & { singleton: boolean };
@@ -316,7 +317,15 @@ export async function refreshBtcMarketRegime() {
       officialUsers: officialTriggerContexts.size
     });
   }
-  return { ...state, changedUsers, officialUsers: officialTriggerContexts.size, officialMonitoring };
+  // This bridge only records a SHADOW intent after all existing trigger
+  // calculations have completed. It is fail-closed by its persisted controls
+  // and does not call an exchange adapter or mutate any slot.
+  const shadowExecution = await syncEligibleShadowEntryIntents({
+    BTC: { price: prices.currentPrice, observedAt: now },
+    SOL: { price: prices.solCurrentPrice, observedAt: now }
+  });
+
+  return { ...state, changedUsers, officialUsers: officialTriggerContexts.size, officialMonitoring, shadowExecution };
 }
 
 export async function getBtcMarketState() {
