@@ -49,9 +49,9 @@ export function SlotDetailClient({ slot, contributions, history, setupError, use
           <summary>Detalhes contábeis e da posição</summary>
           <dl>
             <DetailRow label="Lucro realizado" value={formatUsdt(Number(slot.realized_profit || 0))} />
-            <DetailRow label="Legado (adicionados)" value={formatDecimal(slot.added_gains)} />
+            <DetailRow label="Gains legados (histórico)" value={formatDecimal(slot.added_gains)} />
             <DetailRow label="Redistribuição líquida" value={formatSignedUsdt(capital.redistributionNetUsdt)} />
-            <DetailRow label="Capital adicional líquido" value={formatSignedUsdt(capital.additionalCapitalNetUsdt)} />
+            <DetailRow label="Capital adicional líquido (histórico)" value={formatSignedUsdt(capital.additionalCapitalNetUsdt)} />
             <DetailRow label="Preço médio" value={slot.preco_entrada ? formatPrice(Number(slot.preco_entrada)) : "—"} />
             <DetailRow label="Alvo" value={slot.preco_alvo ? formatPrice(Number(slot.preco_alvo)) : "—"} />
             <DetailRow label="Última atualização" value={slot.updated_at ? formatDate(slot.updated_at) : "—"} />

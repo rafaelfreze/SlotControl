@@ -10,7 +10,7 @@ import { useCoinOpsWorkspaceData } from "@/lib/coinops-workspace/client";
 import type { CoinOpsWorkspaceData } from "@/lib/coinops-workspace/server";
 import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import { formatDate, formatDecimal, formatPrice, formatSignedUsdt, formatUsdt, getCurrentValue, getOpenMarketMetrics } from "@/lib/slotgain/format";
-import type { CapitalContributionView } from "@/lib/slotgain/capital-contributions";
+import { summarizeCapitalContributions, type CapitalContributionSummary, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type Asset = "BTC" | "SOL";
@@ -37,7 +37,7 @@ function gainsOf(slot: SlotView) {
   return Number.isFinite(value) ? value : Number(slot.gains || 0);
 }
 
-export function DesktopSlots({ userLabel, strategies, slots, monitoring, livePrices, initialFilter, initialFlow }: DesktopSlotsProps) {
+export function DesktopSlots({ userLabel, strategies, slots, contributions, monitoring, livePrices, initialFilter, initialFlow }: DesktopSlotsProps) {
   const [filter, setFilter] = useState<Filter>(
     initialFilter === "BTC" || initialFilter === "SOL"
       ? initialFilter
@@ -116,18 +116,18 @@ export function DesktopSlots({ userLabel, strategies, slots, monitoring, livePri
         </div>
       </section>
 
-      {selected ? <SlotDrawer slot={selected} livePrice={livePrices.prices[assetOf(selected)]} progress={progressBySlot.get(selected.id)} returnFilter={filter} onClose={() => setSelected(null)} /> : null}
+      {selected ? <SlotDrawer slot={selected} contribution={summarizeCapitalContributions(contributions, { slotId: selected.id })} livePrice={livePrices.prices[assetOf(selected)]} progress={progressBySlot.get(selected.id)} returnFilter={filter} onClose={() => setSelected(null)} /> : null}
     </DesktopWorkspace>
   );
 }
 
-function SlotDrawer({ slot, livePrice, progress, returnFilter, onClose }: { slot: SlotView; livePrice?: number; progress?: CoinOpsWorkspaceData["progress"][number]; returnFilter: Filter; onClose: () => void }) {
+function SlotDrawer({ slot, contribution, livePrice, progress, returnFilter, onClose }: { slot: SlotView; contribution: CapitalContributionSummary; livePrice?: number; progress?: CoinOpsWorkspaceData["progress"][number]; returnFilter: Filter; onClose: () => void }) {
   const asset = assetOf(slot);
   const pnl = slot.status === "aberto" ? getOpenMarketMetrics(slot, livePrice).resultadoAbertoUsdt : Number(slot.realized_profit || 0);
   return <div className="desktop-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside className="desktop-slot-drawer" role="dialog" aria-modal="true" aria-labelledby="desktop-slot-title"><header><div><span className={`desktop-asset-orb ${asset.toLowerCase()}`}>{asset === "BTC" ? "₿" : "S"}</span><span><small>Slot operacional</small><h2 id="desktop-slot-title">#{slot.slot_number} {asset}</h2></span></div><button type="button" onClick={onClose} aria-label="Fechar detalhes">×</button></header>
     <div className="desktop-drawer-kpis"><span><small>Saldo atual</small><strong>{formatUsdt(getCurrentValue(slot))}</strong></span><span><small>Gains</small><strong>{formatDecimal(gainsOf(slot))}</strong></span><span><small>PnL</small><strong className={pnl >= 0 ? "financial-positive" : "financial-negative"}>{formatSignedUsdt(pnl)}</strong></span></div>
     <section><h3>Operação atual</h3><dl><div><dt>Status</dt><dd><StatusBadge status={slot.status} /></dd></div><div><dt>Entrada</dt><dd>{slot.preco_entrada ? formatPrice(Number(slot.preco_entrada)) : "-"}</dd></div><div><dt>Target</dt><dd>{slot.preco_alvo ? formatPrice(Number(slot.preco_alvo)) : "-"}</dd></div><div><dt>Atualizado</dt><dd>{slot.updated_at ? formatDate(slot.updated_at) : "-"}</dd></div></dl></section>
-    <section><h3>Composição e ciclo</h3><dl><div><dt>Gains reais</dt><dd>{formatDecimal(slot.real_gains)}</dd></div><div><dt>Gains adicionados</dt><dd>{formatDecimal(slot.added_gains)}</dd></div><div><dt>Redistribuição recebida</dt><dd>{formatUsdt(Number(slot.redistribution_received_usdt || 0))}</dd></div><div><dt>Redistribuição enviada</dt><dd>{formatUsdt(Number(slot.redistribution_sent_usdt || 0))}</dd></div><div><dt>Progresso do ciclo</dt><dd>{progress ? `${formatDecimal(progress.cycle_progress)} / ${formatDecimal(progress.target)}` : "-"}</dd></div></dl></section>
+    <section><h3>Composição e ciclo</h3><dl><div><dt>Gains reais</dt><dd>{formatDecimal(slot.real_gains)}</dd></div><div><dt>Gains adicionados</dt><dd>{formatDecimal(contribution.gains)}</dd></div><div><dt>Aportes</dt><dd>{formatUsdt(contribution.amountUsdt)}</dd></div><div><dt>Gains legados (histórico)</dt><dd>{formatDecimal(slot.added_gains)}</dd></div><div><dt>Redistribuição recebida</dt><dd>{formatUsdt(Number(slot.redistribution_received_usdt || 0))}</dd></div><div><dt>Redistribuição enviada</dt><dd>{formatUsdt(Number(slot.redistribution_sent_usdt || 0))}</dd></div><div><dt>Progresso do ciclo</dt><dd>{progress ? `${formatDecimal(progress.cycle_progress)} / ${formatDecimal(progress.target)}` : "-"}</dd></div></dl></section>
     <footer><Link className="desktop-secondary-button" href={`/slots/${slot.id}`}>Ver detalhes completos</Link>{slot.status === "aberto" ? <SlotActionForm action={registerGain} slotId={slot.id} label="✓ Registrar gain" pendingLabel="Registrando..." buttonClassName="desktop-primary-button" hidden={{ returnFilter }} /> : <SlotActionForm action={openSlot} slotId={slot.id} label="+ Abrir operação" pendingLabel="Abrindo..." buttonClassName="desktop-primary-button" hidden={livePrice ? { entryPrice: String(Math.round(livePrice)), returnFilter } : { returnFilter }} />}<SlotActionForm action={resetSlot} slotId={slot.id} label="Zerar" pendingLabel="Zerando..." buttonClassName="desktop-danger-button" /></footer>
   </aside></div>;
 }

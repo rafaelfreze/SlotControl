@@ -108,7 +108,9 @@ test("batch header and child rows remain owner-scoped and auditable", () => {
 test("bulk contribution is represented once in plan and global history", () => {
   assert.match(planPage, /asset_external_contribution_batches/);
   assert.match(planPage, /bulk_total_amount_usdt: batch\?\.total_amount_usdt/);
-  assert.match(historyPage, /\.is\("bulk_batch_id", null\)/);
+  assert.match(historyPage, /loadCapitalReportingEntries\(supabase, \{ includeIncorporated: true \}\)/);
+  assert.match(historyPage, /const individualContributions = contributionsResponse\.data\.filter\([\s\S]*?contribution\.bulk_batch_id === null/);
+  assert.match(historyPage, /const contributionEvents: HistoryEvent\[\] = individualContributions\.map/);
   assert.match(historyPage, /action: "Aporte em lote"/);
   assert.match(historyPage, /totalAmount/);
   assert.match(historyClient, /"ID Lote"/);

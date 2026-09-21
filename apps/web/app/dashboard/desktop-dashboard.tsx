@@ -124,7 +124,7 @@ export function DesktopDashboard({ userLabel, slots, monitoring, livePrices }: D
         <aside className="desktop-dashboard-aside">
           <article className="desktop-panel desktop-quick-actions">
             <header className="desktop-panel-header"><div><span>Fluxos existentes</span><h2>Ações rápidas</h2></div></header>
-            <div><QuickAction href="/slots?flow=abrir" label="Abrir operação" icon="plus" /><QuickAction href="/slots?flow=gain" label="Registrar gain" icon="check" /><QuickAction href="/plano-crescimento" label="Redistribuir" icon="swap" /><QuickAction href="/slots" label="Adicionar slot" icon="grid" /><QuickAction href="/plano-crescimento/relatorios" label="Relatórios" icon="report" /><QuickAction href="/config" label="Configurações" icon="settings" /></div>
+            <div><QuickAction href="/slots?flow=abrir" label="Abrir operação" icon="plus" /><QuickAction href="/slots?flow=gain" label="Registrar gain" icon="check" /><QuickAction href="/plano-crescimento" label="Adicionar gains" icon="plus" /><QuickAction href="/slots" label="Adicionar slot" icon="grid" /><QuickAction href="/plano-crescimento/relatorios" label="Relatórios" icon="report" /><QuickAction href="/config" label="Configurações" icon="settings" /></div>
           </article>
           <article className="desktop-panel desktop-cycle-card">
             <header className="desktop-panel-header"><div><span>Monitoramento oficial</span><h2>Ciclo atual</h2></div><Link href="/ciclos">Detalhes</Link></header>

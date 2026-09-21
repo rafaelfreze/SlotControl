@@ -618,7 +618,10 @@ export async function createSlots(formData: FormData) {
     started_once: false
   }));
 
-  await supabase.from("slots").insert(rows);
+  const { error: insertError } = await supabase.from("slots").insert(rows);
+  if (insertError) {
+    throw new Error("Não foi possível confirmar a criação dos slots. Atualize a lista antes de tentar novamente.");
+  }
   await addHistory("Criacao de slots", `${quantity} slot${quantity > 1 ? "s" : ""} adicionado${quantity > 1 ? "s" : ""} em ${strategy.title}.`, {
     userId: user.id,
     strategyId: strategy.id,

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { loadOfficialMonitoring } from "@/lib/coinops-monitoring/server";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { loadCapitalReportingEntries } from "@/lib/slotgain/capital-reporting-server";
 import type { AssetExternalContributionHistory, AssetLadderPlanResponse, AssetPlanActionKeys } from "./btc-ladder-section";
 import { GrowthPlanClient, type GrowthContributionHistoryItem, type ProgrammedGrowthPlanResponse } from "./growth-plan-client";
 
@@ -25,11 +26,7 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
       .limit(30),
     supabase.rpc("get_asset_ladder_plan", { p_asset: "BTC" }),
     supabase.rpc("get_asset_ladder_plan", { p_asset: "SOL" }),
-    supabase
-      .from("btc_external_contributions")
-      .select("id,asset,slot_id,slot_number,amount_usdt,accounting_amount_usdt,gain_equivalent,input_mode,operational_before,operational_after,reason,applied_by,created_at,bulk_batch_id,bulk_sequence,bulk_slot_count")
-      .order("created_at", { ascending: false })
-      .limit(200),
+    loadCapitalReportingEntries(supabase, { includeIncorporated: true }),
     supabase
       .from("asset_external_contribution_batches")
       .select("id,asset,amount_per_slot_usdt,applied_slot_count,open_slot_count,total_amount_usdt")
@@ -127,12 +124,11 @@ export default async function GrowthPlanPage({ searchParams }: { searchParams?: 
         };
       })
       : [];
-    const mergedContributions = new Map<string, AssetExternalContributionHistory>();
-    (plan.contributions || []).forEach((contribution) => mergedContributions.set(contribution.id, contribution));
-    enrichedContributions.forEach((contribution) => mergedContributions.set(contribution.id, contribution));
     return {
       ...plan,
-      contributions: [...mergedContributions.values()].sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime()),
+      // The plan RPC carries legacy lifetime rows without opening classification.
+      // Only the reporting view is authoritative for current counters and history.
+      contributions: enrichedContributions.sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime()),
       bulk_eligible_slot_ids: asset ? eligibleSlotIds(asset) : [],
       manual_gain_batch_preview: asset ? manualGainBatchByAsset.get(asset) || null : null
     } satisfies AssetLadderPlanResponse;

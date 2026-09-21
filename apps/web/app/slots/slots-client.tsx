@@ -213,10 +213,10 @@ function CompactSlotRow({ slot, livePrice, rank, contribution, returnFilter, exp
             <Detail label="Gains operacionais" value={formatDecimal(getOperationalGains(slot))} />
             <Detail label="Gains aportados" value={formatDecimal(contribution.gains)} />
             <Detail label="Lucro realizado" value={formatUsdt(Number(slot.realized_profit || 0))} />
-            <Detail label="Legado (adicionados)" value={formatDecimal(slot.added_gains)} />
+            <Detail label="Gains legados (histórico)" value={formatDecimal(slot.added_gains)} />
             <Detail label="Aporte externo" value={formatUsdt(contribution.amountUsdt)} />
             <Detail label="Redistribuição líquida" value={formatSignedUsdt(capitalFlow.redistributionNetUsdt)} />
-            <Detail label="Capital adicional líquido" value={formatSignedUsdt(capitalFlow.additionalCapitalNetUsdt)} />
+            <Detail label="Capital adicional líquido (histórico)" value={formatSignedUsdt(capitalFlow.additionalCapitalNetUsdt)} />
             <Detail label="Preço médio (entrada)" value={slot.preco_entrada ? formatPrice(Number(slot.preco_entrada)) : "—"} />
             <Detail label="Alvo" value={slot.preco_alvo ? formatPrice(Number(slot.preco_alvo)) : "—"} />
             <Detail label="Última atualização" value={slot.updated_at ? formatDate(slot.updated_at) : "—"} />

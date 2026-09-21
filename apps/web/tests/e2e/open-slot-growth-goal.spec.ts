@@ -107,6 +107,49 @@ function metric(page: Page, label: string) {
   return page.getByText(label, { exact: true }).locator("..").locator("strong");
 }
 
+for (const width of [1280, 390]) {
+  test(`marco de capital preserva historico e conta somente novos lancamentos em ${width}px`, async ({ page }) => {
+    const errors: string[] = [];
+    const requests: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    await page.route("**/*", async (route) => { requests.push(route.request().url()); await route.abort(); });
+    await page.setViewportSize({ width, height: 844 });
+    const historical = {
+      id: "historical-contribution", asset: "BTC" as const, slot_id: "open-leader", slot_number: 1,
+      amount_usdt: 383.96, accounting_amount_usdt: 383.96, gain_equivalent: 24,
+      input_mode: "MANUAL_GAINS" as const, incorporated_in_opening: true,
+      source: "CONTRIBUTION" as const, reason: "Registro histórico preservado", created_at: "2026-08-30T12:00:00Z"
+    };
+    await mountPlan(page, "BTC", 25, { plan: { contributions: [historical] } });
+    await expect(metric(page, "Aportes no líder")).toHaveText("+0 gains");
+    await expect(page.getByText("Aportes no líder", { exact: true }).locator("..")).toContainText("+0,00 USDT");
+    await expect(metric(page, "Líder atual")).toHaveText("Slot #1 · 25");
+    await expect(metric(page, "Faltam no líder")).toHaveText("3 gains");
+
+    await mountPlan(page, "BTC", 25, { plan: { contributions: [historical, {
+      ...historical, id: "new-manual-gain", amount_usdt: 1.25, accounting_amount_usdt: 1.25,
+      gain_equivalent: 2, incorporated_in_opening: false, created_at: "2026-09-21T12:00:00Z"
+    }, {
+      ...historical, id: "new-slot-capital", slot_id: "new-slot", slot_number: 26,
+      amount_usdt: 25, accounting_amount_usdt: 25, gain_equivalent: 0,
+      input_mode: "USDT", incorporated_in_opening: false, source: "SLOT_INITIAL_CAPITAL",
+      created_at: "2026-09-21T12:01:00Z"
+    }] } });
+    await expect(metric(page, "Aportes no líder")).toHaveText("+2 gains");
+    await expect(page.getByText("Aportes no líder", { exact: true }).locator("..")).toContainText("+1,25 USDT");
+    await page.getByText("Histórico financeiro BTC", { exact: true }).click();
+    await expect(page.getByText("Capital inicial do slot · Slot #26", { exact: true })).toBeVisible();
+    await page.locator("details").filter({ has: page.getByText("Registro histórico preservado", { exact: true }) }).last().locator("summary").click();
+    // The historical amounts remain visible only as historical records.
+    await expect(page.getByText("Incorporado ao marco inicial operacional · não entra nos novos aportes ou gains adicionados.", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(errors).toEqual([]);
+    expect(requests).toEqual([]);
+    await expect(page.locator("html")).toHaveAttribute("data-submissions", "0");
+  });
+}
+
 for (const asset of ["BTC", "SOL"] as const) {
   for (const width of [1280, 390]) {
     test(`${asset}: líder aberto e sugestão por slot em ${width}px`, async ({ page }) => {

@@ -4,20 +4,10 @@ import { redirect } from "next/navigation";
 import { loadOfficialMonitoring } from "@/lib/coinops-monitoring/server";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import type { HistoryEvent } from "@/lib/slotgain/types";
+import { loadCapitalReportingEntries, type CapitalReportingEntry } from "@/lib/slotgain/capital-reporting-server";
 import { HistoricoClient } from "./historico-client";
 
 export const metadata: Metadata = { title: "Historico" };
-
-type ExternalContributionRow = {
-  id: string;
-  asset: string;
-  slot_id: string;
-  amount_usdt: number | string;
-  gain_equivalent: number | string;
-  reason: string;
-  created_at: string;
-  bulk_batch_id: string | null;
-};
 
 type ExternalContributionBatchRow = {
   id: string;
@@ -50,12 +40,7 @@ export default async function HistoricoPage() {
       .select("id,user_id,action,detail,event_at,created_at,strategy_id,slot_id,strategy_key,slot_number,strategies(asset,key)")
       .order("event_at", { ascending: false })
       .limit(1000),
-    supabase
-      .from("btc_external_contributions")
-      .select("id,asset,slot_id,amount_usdt,gain_equivalent,reason,created_at,bulk_batch_id")
-      .is("bulk_batch_id", null)
-      .order("created_at", { ascending: false })
-      .limit(500),
+    loadCapitalReportingEntries(supabase, { includeIncorporated: true }),
     supabase
       .from("asset_external_contribution_batches")
       .select("id,asset,amount_per_slot_usdt,applied_slot_count,open_slot_count,total_amount_usdt,reason,created_at")
@@ -73,17 +58,17 @@ export default async function HistoricoPage() {
     })
   );
   const slotNumberById = new Map((slotsResponse.data ?? []).map((slot) => [slot.id, slot.slot_number]));
-  const individualContributions = ((contributionsResponse.data ?? []) as ExternalContributionRow[]).filter(
+  const individualContributions = contributionsResponse.data.filter(
     (contribution) => contribution.bulk_batch_id === null
   );
   const contributionEvents: HistoryEvent[] = individualContributions.map((contribution) => ({
     id: `aporte-${contribution.id}`,
-    action: "Aporte externo",
+    action: contribution.source === "SLOT_INITIAL_CAPITAL" ? "Aporte inicial do slot" : "Aporte externo",
     detail: JSON.stringify({
       asset: contribution.asset,
       eventType: "aporte_externo",
       origin: "PLANO",
-      message: contribution.reason,
+      message: `${contribution.reason}${contribution.incorporated_in_opening ? " · Incorporado ao marco inicial operacional; fora dos novos contadores." : ""}`,
       slotValue: Number(contribution.amount_usdt),
       gains: Number(contribution.gain_equivalent)
     }),
@@ -95,12 +80,21 @@ export default async function HistoricoPage() {
     slot_number: slotNumberById.get(contribution.slot_id) ?? null,
     strategy: { asset: contribution.asset, key: String(contribution.asset || "").toLowerCase() }
   }));
+  const contributionsByBatch = new Map<string, CapitalReportingEntry[]>();
+  contributionsResponse.data.forEach((contribution) => {
+    if (!contribution.bulk_batch_id) return;
+    const group = contributionsByBatch.get(contribution.bulk_batch_id) || [];
+    group.push(contribution);
+    contributionsByBatch.set(contribution.bulk_batch_id, group);
+  });
   const contributionBatchEvents: HistoryEvent[] = ((contributionBatchesResponse.data ?? []) as ExternalContributionBatchRow[]).map((batch) => {
     const slotCount = Number(batch.applied_slot_count);
     const openSlotCount = Number(batch.open_slot_count);
     const amountPerSlot = Number(batch.amount_per_slot_usdt);
     const totalAmount = Number(batch.total_amount_usdt);
     const nonOpenSlotCount = Math.max(slotCount - openSlotCount, 0);
+    const batchItems = contributionsByBatch.get(batch.id) || [];
+    const incorporated = batchItems.length === slotCount && batchItems.every((item) => item.incorporated_in_opening);
 
     return {
       id: `aporte-lote-${batch.id}`,
@@ -109,7 +103,7 @@ export default async function HistoricoPage() {
         asset: batch.asset,
         eventType: "aporte_externo_lote",
         origin: "PLANO",
-        message: `${slotCount} slots receberam ${amountPerSlot} USDT cada; ${openSlotCount} abertos e ${nonOpenSlotCount} demais slots foram incluídos.`,
+        message: `${slotCount} slots receberam ${amountPerSlot} USDT cada; ${openSlotCount} abertos e ${nonOpenSlotCount} demais slots foram incluídos.${incorporated ? " Incorporado ao marco inicial operacional; fora dos novos contadores." : ""}`,
         note: batch.reason,
         slotValue: totalAmount,
         batchId: batch.id,

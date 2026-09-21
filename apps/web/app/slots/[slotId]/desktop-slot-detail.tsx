@@ -102,7 +102,7 @@ export function DesktopSlotDetail({
               <Fact label="Redistribuição recebida" value={formatUsdt(Number(slot.redistribution_received_usdt || 0))} />
               <Fact label="Redistribuição enviada" value={formatUsdt(Number(slot.redistribution_sent_usdt || 0))} />
               <Fact label="Redistribuição líquida" value={formatSignedUsdt(capital.redistributionNetUsdt)} tone={capital.redistributionNetUsdt >= 0 ? "positive" : "negative"} />
-              <Fact label="Capital adicional líquido" value={formatSignedUsdt(capital.additionalCapitalNetUsdt)} tone={capital.additionalCapitalNetUsdt >= 0 ? "positive" : "negative"} />
+              <Fact label="Capital adicional líquido (histórico)" value={formatSignedUsdt(capital.additionalCapitalNetUsdt)} tone={capital.additionalCapitalNetUsdt >= 0 ? "positive" : "negative"} />
               <Fact label="Versão contábil" value={`v${slot.accounting_version}`} />
             </dl>
           </DesktopPanel>
@@ -136,7 +136,7 @@ export function DesktopSlotDetail({
             <dl className={styles.factList}>
               <Fact label="Gains reais" value={formatDecimal(slot.real_gains)} />
               <Fact label="Gains operacionais" value={formatDecimal(operationalGains)} />
-              <Fact label="Legado adicionado" value={formatDecimal(slot.added_gains)} />
+              <Fact label="Gains legados (histórico)" value={formatDecimal(slot.added_gains)} />
               <Fact label="Gains de aporte" value={formatDecimal(contribution.gains)} />
               <Fact label="Lucro realizado" value={formatUsdt(Number(slot.realized_profit || 0))} tone={Number(slot.realized_profit || 0) >= 0 ? "positive" : "negative"} />
             </dl>

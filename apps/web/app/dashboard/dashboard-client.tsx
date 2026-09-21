@@ -107,7 +107,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
     ? Math.trunc(planElapsedDays)
     : getAccountAgeDays(operationStartedAt, new Date(), timeZone);
   const accountCreatedLabel = formatAccountCreatedDate(operationStartedAt, timeZone);
-  const contributedCapital = slots.reduce((sum, slot) => sum + Number(slot.growth_contribution || 0), 0);
+  const contributedCapital = summarizeCapitalContributions(contributions).amountUsdt;
   const btc = useMemo(() => getStrategySummary(strategies, slots, contributions, "BTC", livePrices.prices.BTC), [strategies, slots, contributions, livePrices.prices.BTC]);
   const sol = useMemo(() => getStrategySummary(strategies, slots, contributions, "SOL", livePrices.prices.SOL), [strategies, slots, contributions, livePrices.prices.SOL]);
 
@@ -134,7 +134,7 @@ export function DashboardClient({ userEmail, operationStartedAt, operationElapse
         <div className="portfolio-title">Portfólio</div>
         <MetricRow title="Lucro" value={formatSignedUsdt(realizedProfit)} numericValue={realizedProfit} helper="Vendido" />
         <MetricRow title="Aberto" value={formatSignedUsdt(openResult)} numericValue={openResult} helper="Mercado" />
-        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper={contributedCapital > 0 ? `Aportes ${formatUsdt(contributedCapital)}` : "Total"} />
+        <MetricRow title="Patrimonio" value={formatUsdt(markedEquity)} numericValue={markedEquity} helper={`Aportes ${formatUsdt(contributedCapital)}`} />
         <MetricRow title="Slots" value={`${openSlots} de ${slots.length}`} helper="Ativos" />
       </section>
 

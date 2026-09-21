@@ -89,6 +89,8 @@ export type AssetExternalContributionHistory = {
   accounting_amount_usdt?: Numeric | null;
   gain_equivalent: Numeric;
   input_mode?: "MANUAL_GAINS" | "USDT" | null;
+  incorporated_in_opening?: boolean;
+  source?: "CONTRIBUTION" | "SLOT_INITIAL_CAPITAL";
   operational_before?: Numeric;
   operational_after?: Numeric;
   reason: string;
@@ -246,7 +248,9 @@ export function AssetLadderSection({ asset, plan, actionKeys, initialView = "gai
     amount_usdt: contribution.amount_usdt,
     accounting_amount_usdt: contribution.accounting_amount_usdt,
     gain_equivalent: contribution.gain_equivalent,
-    input_mode: contribution.input_mode
+    input_mode: contribution.input_mode,
+    incorporated_in_opening: contribution.incorporated_in_opening,
+    source: contribution.source
   }));
   const leaderContribution = leader ? summarizeCapitalContributions(contributionRows, { slotId: leader.slot_id }) : { amountUsdt: 0, gains: 0 };
   const manualGainBatch = plan.manual_gain_batch_preview || null;
@@ -450,6 +454,7 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
             </summary>
             <div className="btc-history-details">
               <span>{group.length === reportedCount ? "Lote completo" : `${group.length} de ${reportedCount} itens carregados`} · {asset}</span>
+              {group.every((contribution) => contribution.incorporated_in_opening) ? <span>Incorporado ao marco inicial operacional · não entra nos novos aportes.</span> : null}
               <p>{event.contribution.reason}</p>
               {group.map((contribution) => <p key={contribution.id}>#{contribution.slot_number} · {formatLedgerUsdt(contribution.accounting_amount_usdt ?? contribution.amount_usdt)}</p>)}
             </div>
@@ -457,10 +462,11 @@ function AssetLadderHistory({ asset, batches, contributions }: { asset: GrowthAs
         })() : (
           <details key={`contribution-${event.contribution.id}`}>
             <summary>
-              <span><strong>{event.contribution.input_mode === "USDT" ? "Saldo adicionado" : "Gains adicionados"} · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>
+              <span><strong>{event.contribution.source === "SLOT_INITIAL_CAPITAL" ? "Capital inicial do slot" : event.contribution.input_mode === "USDT" ? "Saldo adicionado" : "Gains adicionados"} · Slot #{event.contribution.slot_number}</strong><small>{formatDate(event.contribution.created_at)}</small></span>
               <b>{formatLedgerUsdt(event.contribution.accounting_amount_usdt ?? event.contribution.amount_usdt)}</b>
             </summary>
             <div className="btc-history-details">
+              {event.contribution.incorporated_in_opening ? <span>Incorporado ao marco inicial operacional · não entra nos novos aportes ou gains adicionados.</span> : null}
               <span>{event.contribution.input_mode === "USDT" ? "Saldo informado" : "Gains operacionais"}: {event.contribution.input_mode === "USDT" ? formatLedgerUsdt(event.contribution.amount_usdt) : formatGain(event.contribution.gain_equivalent)}</span>
               <span>Operacional: {formatGain(event.contribution.operational_before)} → {formatGain(event.contribution.operational_after)}</span>
               {event.contribution.applied_by ? <span>Registrado por: {event.contribution.applied_by}</span> : null}
