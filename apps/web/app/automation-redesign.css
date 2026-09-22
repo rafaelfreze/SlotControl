@@ -156,8 +156,7 @@
   .desktop-workspace-root:has(.coinops-automation) .desktop-topbar-heading p { font-size: 13px; }
   .desktop-workspace-root:has(.coinops-automation) .desktop-workspace-content { padding: 18px clamp(18px, 2vw, 30px) 40px; }
   .desktop-workspace-content .coinops-automation { max-width: 1536px; margin-inline: auto; }
-  .desktop-workspace-content .coinops-automation .av2-intro > div { display: none; }
-  .desktop-workspace-content .coinops-automation .av2-intro { justify-content: flex-end; }
+  .desktop-workspace-content .coinops-automation .av2-intro { display: none; }
 }
 @media (max-width: 1200px) and (min-width: 768px) {
   .av2-slot-panel > header { flex-wrap: wrap; }
@@ -173,33 +172,33 @@
   .av2-mobile-header > div { display: grid; line-height: 1.05; letter-spacing: .13em; }
   .av2-mobile-header strong { font-size: 15px; }
   .av2-mobile-header small { margin-top: 3px; font-size: 9px; letter-spacing: .14em; }
-  .av2-mobile-header > span { margin-left: auto; color: var(--av-muted); font-size: 20px; }
+  .av2-mobile-header > a { display: grid; width: 40px; height: 40px; margin-left: auto; place-items: center; color: var(--av-muted); font-size: 22px; text-decoration: none; }
   .av2-intro { display: block; }
   .av2-intro > div { display: none; }
   .av2-mode { display: flex; width: 100%; min-height: 54px; padding: 9px 12px; background: rgba(18, 62, 52, .25); }
   .av2-mode small { flex-basis: auto; margin-left: 0; font-size: 12px; }
   .av2-asset-grid { gap: 8px; }
   .av2-asset-card { min-height: 170px; padding: 11px; }
-  .av2-asset-heading { gap: 5px; font-size: 12px; }
+  .av2-asset-heading { gap: 5px; font-size: 14px; }
   .av2-asset-heading em { display: none; }
   .av2-asset-icon { width: 27px; height: 27px; font-size: 18px; }
-  .av2-asset-price { margin-top: 6px; font-size: clamp(18px, 6vw, 25px); }
-  .av2-asset-price small { font-size: 11px; }
-  .av2-asset-trend { font-size: 11px; }
-  .av2-asset-balance { max-width: 100%; margin-top: 5px; font-size: 11px; }
-  .av2-asset-balance strong { font-size: 12px; }
+  .av2-asset-price { margin-top: 6px; font-size: clamp(21px, 6vw, 27px); }
+  .av2-asset-price small { font-size: 12px; }
+  .av2-asset-trend { font-size: 12px; }
+  .av2-asset-balance { max-width: 100%; margin-top: 5px; font-size: 12px; }
+  .av2-asset-balance strong { font-size: 13px; }
   .av2-sparkline { right: 6px; bottom: 5px; width: 44%; height: 37px; opacity: .6; }
   .av2-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .av2-kpi-grid article { min-height: 88px; padding: 10px; }
-  .av2-kpi-grid article > span { font-size: 11px; }
-  .av2-kpi-grid article > strong { font-size: 16px; }
-  .av2-kpi-grid article > small { font-size: 11px; }
+  .av2-kpi-grid article > span { font-size: 12px; }
+  .av2-kpi-grid article > strong { font-size: 18px; }
+  .av2-kpi-grid article > small { font-size: 12px; }
   .av2-slot-panel > header { display: grid; gap: 10px; padding: 13px 11px; }
   .av2-section-title { gap: 7px; }
   .av2-section-title h2 { font-size: 16px; }
-  .av2-section-title small { font-size: 11px; }
+  .av2-section-title small { font-size: 12px; }
   .av2-slot-counts { justify-content: space-between; }
-  .av2-slot-counts span { min-width: 0; flex: 1; padding: 0 5px; font-size: 10px; }
+  .av2-slot-counts span { min-width: 0; flex: 1; padding: 0 5px; font-size: 11px; }
   .av2-slot-counts strong { font-size: 17px; }
   .av2-subtle-button { justify-self: end; min-height: 32px; font-size: 12px; }
   .av2-table-wrap { display: none; }
@@ -207,15 +206,15 @@
   .av2-mobile-slot { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; min-height: 55px; padding: 8px 10px; border: 0; border-top: 1px solid var(--av-line); background: transparent; color: var(--av-text); text-align: left; }
   .av2-mobile-slot:nth-child(odd) { background: rgba(255, 255, 255, .018); }
   .av2-mobile-slot > span:nth-child(2) { display: grid; justify-items: start; gap: 3px; min-width: 0; }
-  .av2-mobile-slot small { overflow: hidden; max-width: 100%; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .av2-mobile-slot small { overflow: hidden; max-width: 100%; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .av2-mobile-slot-values { display: grid; justify-items: end; gap: 3px; font-size: 12px; }
-  .av2-status { min-height: 20px; padding: 2px 5px; font-size: 9px; }
+  .av2-status { min-height: 20px; padding: 2px 5px; font-size: 10px; }
   .av2-slot-detail { padding: 14px; }
   .av2-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .av2-bottom-grid { grid-template-columns: 1fr; gap: 12px; }
   .av2-chart-panel, .av2-events-panel { min-height: 0; padding: 13px; }
   .av2-chart-wrap svg { height: 145px; }
-  .av2-chart-axis { font-size: 10px; }
+  .av2-chart-axis { font-size: 11px; }
   .av2-events-panel li { grid-template-columns: auto minmax(0, 1fr); }
   .av2-events-panel li strong { grid-column: 2; justify-self: end; }
   .av2-gains-panel { padding: 13px; }
@@ -229,7 +228,7 @@
   .av2-live-panel { padding: 13px; }
 }
 @media (max-width: 375px) {
-  .av2-asset-balance strong { font-size: 11px; }
-  .av2-kpi-grid article > strong { font-size: 15px; }
-  .av2-slot-counts span { font-size: 9px; }
+  .av2-asset-balance strong { font-size: 12px; }
+  .av2-kpi-grid article > strong { font-size: 16px; }
+  .av2-slot-counts span { font-size: 10px; }
 }

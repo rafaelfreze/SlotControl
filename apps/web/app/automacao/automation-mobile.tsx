@@ -22,7 +22,7 @@ type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; b
 
 const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];
-const n = (value: number | string | null | undefined, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toLocaleString("pt-BR", { maximumFractionDigits: digits }) : "—";
+const n = (value: number | string | null | undefined, digits = 2) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value).toLocaleString("pt-BR", { maximumFractionDigits: digits }) : "—";
 const d = (value?: string | null) => value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: COINOPS_TIME_ZONE }).format(new Date(value)) : "Ainda não disponível";
 const p = (value: number | string | null | undefined) => n(Number(value || 0) * 100, 2);
 const signed = (value: number | string | null | undefined) => `${Number(value || 0) >= 0 ? "+" : ""}${n(value, 4)}`;
@@ -111,7 +111,7 @@ export function AutomationMobile(props: Props) {
       return <button type="button" key={asset} className={`av2-asset-card ${asset.toLowerCase()}`} data-selected={selectedAsset === asset} onClick={() => { setSelectedAsset(asset); setExpandedSlot(null); setShowAll(false); }} aria-pressed={selectedAsset === asset}>
         <span className="av2-asset-heading"><b className="av2-asset-icon">{asset === "BTC" ? "₿" : "≋"}</b><strong>{asset}/USDC</strong><em>{item?.execution_mode || "SEM CONFIG."}</em></span>
         <span className="av2-asset-price">{n(item?.last_market_price, 2)} <small>USDC</small></span>
-        <span className="av2-asset-trend">{trend === null ? "Tendência indisponível" : `${trend >= 0 ? "+" : ""}${n(trend, 2)}% · ${assetCandles.length} velas`}</span>
+        <span className={`av2-asset-trend ${trend !== null && trend < 0 ? "av2-negative" : ""}`}>{trend === null ? "Tendência indisponível" : `${trend >= 0 ? "+" : ""}${n(trend, 2)}% · últimas ${assetCandles.length}m`}</span>
         <span className="av2-asset-balance">Saldo Binance <strong>{n(balance?.total, 8)} {asset}</strong></span>
         <Sparkline candles={assetCandles} asset={asset} />
       </button>;
