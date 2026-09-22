@@ -50,6 +50,13 @@ export class BinanceSpotTestnetAdapter {
     return new BinanceSpotTestnetAdapter({ apiKey, apiSecret });
   }
 
+  static readsFromEnvironment() {
+    const apiKey = process.env.BINANCE_TESTNET_API_KEY?.trim();
+    const apiSecret = process.env.BINANCE_TESTNET_API_SECRET?.trim();
+    if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
+    return new BinanceSpotAdapter({ apiKey, apiSecret }, { baseUrl: BINANCE_SPOT_TESTNET_BASE_URL, marketDataBaseUrl: BINANCE_SPOT_TESTNET_BASE_URL });
+  }
+
   async getOwnedOrder(symbol: string, clientOrderId: string): Promise<TestnetOrder | null> {
     verifyOwned(symbol, clientOrderId);
     const response = await this.signedRequest("GET", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
