@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { runConfiguredBinanceReadOnlyReconciliation } from "@/lib/execution/binance-reconciliation-server";
+import { runConfiguredRobotV1Shadow } from "@/lib/execution/robot-v1-shadow-server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,8 +13,16 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await runConfiguredBinanceReadOnlyReconciliation();
-    return NextResponse.json({ ok: result.status !== "FAILED", status: result.status, processed: result.processed });
+    const [reconciliation, robotV1] = await Promise.all([
+      runConfiguredBinanceReadOnlyReconciliation(),
+      runConfiguredRobotV1Shadow()
+    ]);
+    return NextResponse.json({
+      ok: reconciliation.status !== "FAILED",
+      status: reconciliation.status,
+      processed: reconciliation.processed,
+      robotV1
+    });
   } catch (error) {
     console.error("[exchange-reconciliation-cron] failed", {
       message: error instanceof Error ? error.message : "Erro desconhecido"
