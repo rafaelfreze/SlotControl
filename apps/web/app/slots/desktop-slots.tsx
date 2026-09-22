@@ -11,6 +11,7 @@ import type { CoinOpsWorkspaceData } from "@/lib/coinops-workspace/server";
 import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
 import { formatDate, formatDecimal, formatPrice, formatSignedUsdt, formatUsdt, getCurrentValue, getOpenMarketMetrics } from "@/lib/slotgain/format";
 import { summarizeCapitalContributions, type CapitalContributionSummary, type CapitalContributionView } from "@/lib/slotgain/capital-contributions";
+import { sortSlotsForOperationalList } from "@/lib/slotgain/slot-ranking";
 import type { SlotView, StrategyView } from "@/lib/slotgain/types";
 
 type Asset = "BTC" | "SOL";
@@ -53,6 +54,7 @@ export function DesktopSlots({ userLabel, strategies, slots, contributions, moni
   const { data: workspace, status: workspaceStatus } = useCoinOpsWorkspaceData();
   const workspaceProgress = workspace?.progress ?? EMPTY_PROGRESS;
   const progressBySlot = useMemo(() => new Map(workspaceProgress.map((item) => [item.slot_id, item])), [workspaceProgress]);
+  const operationalOrder = useMemo(() => new Map(sortSlotsForOperationalList(slots).map((slot, index) => [slot.id, index])), [slots]);
   const rows = useMemo(() => slots.map((slot) => {
     const asset = assetOf(slot);
     const livePrice = livePrices.prices[asset];
@@ -75,7 +77,7 @@ export function DesktopSlots({ userLabel, strategies, slots, contributions, moni
     if (filter === "met") return Boolean(row.progress && row.progress.cycle_progress >= row.progress.target);
     if (filter === "zero") return row.gains === 0;
     return true;
-  }).sort((first, second) => sort === "gains" ? second.gains - first.gains : sort === "balance" ? second.balance - first.balance : sort === "pnl" ? second.pnl - first.pnl : first.slot.slot_number - second.slot.slot_number), [filter, livePrices.prices, progressBySlot, search, slots, sort]);
+  }).sort((first, second) => sort === "gains" ? second.gains - first.gains : sort === "balance" ? second.balance - first.balance : sort === "pnl" ? second.pnl - first.pnl : (operationalOrder.get(first.slot.id) || 0) - (operationalOrder.get(second.slot.id) || 0)), [filter, livePrices.prices, operationalOrder, progressBySlot, search, slots, sort]);
 
   return (
     <DesktopWorkspace title="Slots" subtitle={`${rows.length} de ${slots.length} exibidos`} livePrices={livePrices} monitoring={monitoring} userLabel={userLabel} actions={<Link href="/plano-crescimento">Plano operacional</Link>}>

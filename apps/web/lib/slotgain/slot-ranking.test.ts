@@ -16,6 +16,7 @@ const slots = [
   { id: "three", gains: 5, slot_number: 1, sort_order: 3 }
 ];
 const slotsPageSource = readFileSync(new URL("../../app/slots/page.tsx", import.meta.url), "utf8");
+const desktopSlotsSource = readFileSync(new URL("../../app/slots/desktop-slots.tsx", import.meta.url), "utf8");
 
 test("slots são ordenados por gains e desempate estável", () => {
   assert.deepEqual(sortSlotsByGains(slots).map((slot) => slot.id), ["three", "two", "one"]);
@@ -72,4 +73,21 @@ test("lista operacional mantém abertos em FIFO e fechados por gains decrescente
 
 test("consulta da página carrega o timestamp autoritativo de abertura", () => {
   assert.match(slotsPageSource, /position_gain_unit_usdt,position_opened_at,accounting_version/);
+});
+
+test("desktop e mobile usam o mesmo seletor para a lista operacional", () => {
+  const regimes = ["normal", "post-ath", "zero", "gains", "open", "closed", "redistribution"];
+  const representativeSlots = [
+    { id: "btc-open", status: "aberto", gains: 0, operational_gains: 0, slot_number: 5, sort_order: 5, position_opened_at: "2026-09-20T10:00:00.000Z" },
+    { id: "sol-open", status: "aberto", gains: 3, operational_gains: 3, slot_number: 2, sort_order: 2, position_opened_at: "2026-09-20T09:00:00.000Z" },
+    { id: "zero", status: "zerado", gains: 0, operational_gains: 0, slot_number: 1, sort_order: 1, position_opened_at: null },
+    { id: "gains", status: "gain", gains: 7, operational_gains: 8, slot_number: 4, sort_order: 4, position_opened_at: null },
+    { id: "redistributed", status: "hold", gains: 2, operational_gains: 2, slot_number: 3, sort_order: 3, position_opened_at: null }
+  ];
+  const expected = ["sol-open", "btc-open", "gains", "redistributed", "zero"];
+
+  for (const regime of regimes) {
+    assert.deepEqual(sortSlotsForOperationalList(representativeSlots).map((slot) => slot.id), expected, regime);
+  }
+  assert.match(desktopSlotsSource, /sortSlotsForOperationalList\(slots\)/);
 });

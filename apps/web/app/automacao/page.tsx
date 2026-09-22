@@ -2,9 +2,11 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { DesktopEmptyState, DesktopKpiCard, DesktopPanel, DesktopWorkspace } from "@/components/app/desktop-workspace";
+import { MobileScreen } from "@/components/app/mobile-ui";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 import { controlRobotV1Shadow, saveRobotV1Capital } from "./robot-v1-actions";
+import { AutomationMobile } from "./automation-mobile";
 
 export const metadata: Metadata = { title: "Automação" };
 export const dynamic = "force-dynamic";
@@ -44,7 +46,7 @@ export default async function AutomationPage() {
   const balanceFor = (asset: string) => latestRun?.summary?.balances?.find((balance) => balance.asset === asset);
   const globalKillSwitch = engine?.global_kill_switch ?? true;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
-  return <DesktopWorkspace title="Automação / Exchange" subtitle="Binance Spot em leitura segura e CoinOps em Shadow" userLabel={user.email || "Usuário"}>
+  return <MobileScreen desktop={<DesktopWorkspace title="Automação / Exchange" subtitle="Binance Spot em leitura segura e CoinOps em Shadow" userLabel={user.email || "Usuário"}>
     <div className="desktop-kpi-grid">
       <DesktopKpiCard label="Modo CoinOps" value={engine?.execution_mode || "SHADOW"} helper="LIVE bloqueado estruturalmente" tone="info" />
       <DesktopKpiCard label="Binance Spot" value={connection?.connection_status === "READ_ONLY" || connection?.connection_status === "CONNECTED" ? "Conectada" : connection?.connection_status === "ERROR" ? "Erro" : "Desconectada"} helper={connection?.api_key_masked ? `API somente leitura ${connection.api_key_masked}` : "Credenciais apenas no servidor"} tone={connection?.connection_status === "ERROR" ? "negative" : "neutral"} />
@@ -60,5 +62,17 @@ export default async function AutomationPage() {
     </DesktopPanel>
     <DesktopPanel eyebrow="RECONCILIAÇÃO" title="Binance real versus CoinOps Shadow">{!latestRun ? <DesktopEmptyState title="Nenhuma reconciliação executada"><span>A sincronização só é iniciada pelo cron protegido quando uma conexão read-only é configurada no servidor.</span></DesktopEmptyState> : <div className="desktop-kpi-grid"><DesktopKpiCard label="Última execução" value={latestRun.status} helper={displayDate(latestRun.completed_at)} tone={latestRun.status === "COMPLETED" ? "positive" : latestRun.status === "FAILED" ? "negative" : "info"} /><DesktopKpiCard label="Matches" value={String(latestRun.summary?.MATCH || 0)} helper="Somente correlação determinística" /><DesktopKpiCard label="Divergências" value={String(mismatches)} helper="Nunca corrige slots automaticamente" tone={mismatches ? "info" : "positive"} /><DesktopKpiCard label="Não correlacionados" value={String(latestRun.summary?.EXCHANGE_ONLY || 0)} helper="Trades antigos permanecem Exchange-only" /></div>}</DesktopPanel>
     <DesktopPanel eyebrow="AUDITORIA" title="Últimas intenções Shadow">{intentsResponse.error ? <DesktopEmptyState title="Não foi possível carregar as intenções"><span>{intentsResponse.error.message}</span></DesktopEmptyState> : null}{!intentsResponse.error && intentRows.length === 0 ? <DesktopEmptyState title="Nenhuma intenção registrada"><span>O motor permanece fail-closed até uma configuração Shadow explícita e segura.</span></DesktopEmptyState> : null}{intentRows.length ? <div className="desktop-table-wrap"><table><thead><tr><th>Data</th><th>Ativo</th><th>Lado</th><th>Slot</th><th>Preço</th><th>Quantidade</th><th>Motivo</th><th>Status</th></tr></thead><tbody>{intentRows.map((intent) => <tr key={intent.id}><td>{displayDate(intent.created_at)}</td><td>{intent.asset}</td><td>{intent.side}</td><td>{intent.slot_id.slice(0, 8)}</td><td>{displayNumber(intent.observed_market_price, 2)}</td><td>{displayNumber(intent.quantity, 8)}</td><td>{intent.strategy_reason}</td><td>{intent.status}</td></tr>)}</tbody></table></div> : null}</DesktopPanel>
-  </DesktopWorkspace>;
+  </DesktopWorkspace>}>
+    <AutomationMobile
+      connectionStatus={connection?.connection_status}
+      lastSyncedAt={connection?.last_synced_at || connection?.last_reconciled_at}
+      balances={latestRun?.summary?.balances || []}
+      reconciliationStatus={latestRun?.status}
+      reconciliationAt={latestRun?.completed_at}
+      mismatches={mismatches}
+      configs={robotConfigs}
+      cycles={robotCycles}
+      slots={robotSlots}
+    />
+  </MobileScreen>;
 }

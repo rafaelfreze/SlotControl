@@ -81,7 +81,7 @@ const navigation = [
   { href: "/slots", label: "Slots", icon: "▦" },
   { href: "/plano-crescimento", label: "Plano", icon: "↗" },
   { href: "/historico", label: "Histórico", icon: "◷" },
-  { href: "/config", label: "Config", icon: "⚙" }
+  { href: "/mais", label: "Mais", icon: "☰" }
 ];
 
 function isCurrent(pathname: string, href: string) {
