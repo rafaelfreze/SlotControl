@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, findV1LogicalLevel, planV1ShadowCycleRestart, quantityForV1SlotBalance, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey } from "../execution/robot-v1.ts";
+import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, findV1LogicalLevel, planV1NextEntry, planV1ShadowCycleRestart, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1EntryCandidate } from "../execution/robot-v1.ts";
 
 const filters = (symbol: "BTCUSDC" | "SOLUSDC") => ({ symbol, baseAsset: symbol.slice(0, -4), quoteAsset: "USDC", minQuantity: 0.00001, maxQuantity: 100000, minNotional: 5, quantityStep: 0.00001, priceTick: 0.01 });
 
@@ -131,4 +131,24 @@ test("compounded budget remains visible even when the Binance lot step keeps exe
   assert.equal(compounded.notional, initial.notional);
   assert.equal(compounded.notional, 9.9501);
   assert.ok(10.0493 - compounded.notional > 10 - initial.notional);
+});
+
+test("one resident BUY is evaluated while the other 23 levels stay planned", () => {
+  const armedAt = "2026-09-22T20:00:30.000Z";
+  const slots: V1EntryCandidate[] = [
+    { slotNumber: 1, buyPrice: 100, status: "TP_ACTIVE", entryState: "NONE", armedAt: null, missedAt: null },
+    { slotNumber: 2, buyPrice: 99, status: "PENDING", entryState: "ARMED", armedAt, missedAt: null },
+    ...Array.from({ length: 23 }, (_, index) => ({ slotNumber: index + 3, buyPrice: 98 - index, status: "PENDING" as const, entryState: "PLANNED" as const, armedAt: null, missedAt: null }))
+  ];
+  assert.equal(selectV1CandleResidentSlots(slots, "2026-09-22T20:00:00.000Z").length, 1);
+  assert.deepEqual(selectV1CandleResidentSlots(slots, "2026-09-22T20:01:00.000Z").map((slot) => slot.slotNumber), [1, 2]);
+  assert.deepEqual(planV1NextEntry(slots, 99.5), { current: 2, missed: [], next: null });
+  assert.throws(() => planV1NextEntry([...slots, { ...slots[1]!, slotNumber: 3 }], 99), /MULTIPLE_ARMED_BUYS/);
+});
+
+test("fast candle records crossed unarmed levels and selects the next untouched BUY", () => {
+  const planned: V1EntryCandidate[] = [98, 97, 96].map((buyPrice, index) => ({ slotNumber: index + 3, buyPrice, status: "PENDING", entryState: "PLANNED", armedAt: null, missedAt: null }));
+  assert.deepEqual(planV1NextEntry(planned, 97.5), { current: null, missed: [3], next: 4 });
+  assert.deepEqual(planV1NextEntry(planned, 95), { current: null, missed: [3, 4, 5], next: null });
+  assert.deepEqual(planV1NextEntry([{ ...planned[0]!, missedAt: "2026-09-22T20:00:00.000Z" }, ...planned.slice(1)], 97.5), { current: null, missed: [], next: 4 });
 });

@@ -3,17 +3,58 @@ import test from "node:test";
 
 import { BINANCE_SPOT_TESTNET_BASE_URL, BinanceSpotTestnetAdapter } from "../execution/binance-spot-testnet-adapter.ts";
 
-test("testnet writer is isolated from Production and rejects manual pairs before transport", async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
-  const adapter = BinanceSpotTestnetAdapter.forTest("test-key", "test-secret", async (url, init) => {
-    calls.push({ url, init });
-    if (init?.method === "GET") return new Response(JSON.stringify({ code: -2013 }), { status: 400 });
-    return new Response(JSON.stringify({ orderId: 1, clientOrderId: "COV1-BTC-1-BUY-test", status: "NEW", executedQty: "0" }));
-  }, () => 1000);
-  await adapter.createLimitOrder({ symbol: "BTCUSDC", side: "BUY", quantity: 0.001, price: 60000, clientOrderId: "COV1-BTC-1-BUY-test" });
-  assert.equal(calls[0]?.url.startsWith(BINANCE_SPOT_TESTNET_BASE_URL), true);
-  assert.equal(calls[0]?.init?.method, "GET");
-  assert.equal(calls[1]?.init?.method, "POST");
-  await assert.rejects(adapter.createLimitOrder({ symbol: "BTCUSDT" as never, side: "BUY", quantity: 1, price: 1, clientOrderId: "COV1-BTC-1-BUY-test" }), /SYMBOL_NOT_ALLOWED/);
-  assert.equal(calls.length, 2);
+const id = "COV1-BTC-2-BUY-0123456789abcdef01";
+const sellId = "COV1-BTC-2-SELL-0123456789abcdef01";
+const payload = (clientOrderId: string, status = "NEW") => ({ orderId: 42, clientOrderId, symbol: "BTCUSDC", side: clientOrderId.includes("-BUY-") ? "BUY" : "SELL", status, executedQty: "0", cummulativeQuoteQty: "0", price: "60000" });
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+test("testnet order is capped, owned, and sent only to the fictitious-money host", async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
+    calls.push({ url, method: init?.method || "GET" });
+    if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
+    if (init?.method === "GET") return json({ code: -2013 }, 400);
+    return json(payload(id));
+  } });
+  await assert.rejects(adapter.ensureOwnedOrder({ type: "LIMIT", symbol: "BTCUSDT" as never, side: "BUY", quantity: "0.001", price: "60000", clientOrderId: id, maxNotional: 100 }), /NOT_OWNED/);
+  await assert.rejects(adapter.ensureOwnedOrder({ type: "LIMIT", symbol: "BTCUSDC", side: "BUY", quantity: "0.001", price: "60000", clientOrderId: id, maxNotional: 10 }), /NOTIONAL_CAP/);
+  assert.equal(calls.length, 0);
+  const result = await adapter.ensureOwnedOrder({ type: "LIMIT", symbol: "BTCUSDC", side: "BUY", quantity: "0.001", price: "60000", clientOrderId: id, maxNotional: 100 });
+  assert.equal(result.orderId, "42");
+  assert.deepEqual(calls.map((call) => call.method), ["GET", "GET", "POST"]);
+  assert.ok(calls.every((call) => call.url.startsWith(BINANCE_SPOT_TESTNET_BASE_URL)));
+});
+
+test("lost response recovers the same client order without a second POST", async () => {
+  let reads = 0, writes = 0;
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
+    if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
+    if (init?.method === "GET") return ++reads === 1 ? json({ code: -2013 }, 400) : json(payload(id, "FILLED"));
+    writes += 1;
+    throw new Error("network timeout");
+  } });
+  const result = await adapter.ensureOwnedOrder({ type: "LIMIT", symbol: "BTCUSDC", side: "BUY", quantity: "0.001", price: "60000", clientOrderId: id, maxNotional: 100 });
+  assert.equal(result.status, "FILLED");
+  assert.equal(writes, 1);
+});
+
+test("cancel requires the exact owned order ID and leaves other orders untouched", async () => {
+  let deletes = 0;
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
+    if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
+    if (init?.method === "DELETE") { deletes += 1; return json(payload(id, "CANCELED")); }
+    return json(payload(id));
+  } });
+  await assert.rejects(adapter.cancelOwnedOrder("BTCUSDC", "43", id), /OWNED_ORDER_NOT_FOUND/);
+  await assert.rejects(adapter.cancelOwnedOrder("BTCUSDC", "42", sellId), /ORDER_RESPONSE_INVALID/);
+  assert.equal(deletes, 0);
+  const result = await adapter.cancelOwnedOrder("BTCUSDC", "42", id);
+  assert.equal(result?.status, "CANCELED");
+  assert.equal(deletes, 1);
+});
+
+test("environment gate prevents use without dedicated Testnet configuration", () => {
+  const previous = process.env.COINOPS_TESTNET_ENABLED;
+  try { delete process.env.COINOPS_TESTNET_ENABLED; assert.throws(() => BinanceSpotTestnetAdapter.fromEnvironment(), /DISABLED/); }
+  finally { if (previous === undefined) delete process.env.COINOPS_TESTNET_ENABLED; else process.env.COINOPS_TESTNET_ENABLED = previous; }
 });

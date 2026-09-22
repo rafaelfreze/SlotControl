@@ -1,74 +1,112 @@
 import { createHmac } from "node:crypto";
 
-import { assertV1Symbol } from "./robot-v1.ts";
+import { BinanceSpotAdapter } from "./binance-spot-adapter.ts";
 
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export const BINANCE_SPOT_TESTNET_BASE_URL = "https://testnet.binance.vision";
+const TESTNET_SYMBOLS = new Set(["BTCUSDC", "SOLUSDC"]);
+const OWNED_CLIENT_ID = /^COV1-(BTC|SOL)-\d+(?:-\d+)?-(BUY|SELL)-[a-f0-9]{18}$/;
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+type Credentials = { apiKey: string; apiSecret: string };
+type LimitOrder = { type: "LIMIT"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY" | "SELL"; quantity: string; price: string; clientOrderId: string; maxNotional: number };
+type MarketBuy = { type: "MARKET"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY"; quoteOrderQty: string; clientOrderId: string; maxNotional: number };
+export type TestnetOrderRequest = LimitOrder | MarketBuy;
+export type TestnetOrder = { orderId: string; clientOrderId: string; symbol: string; side: "BUY" | "SELL"; status: string; executedQuantity: number; cumulativeQuoteQuantity: number; price: number };
+type OrderPayload = { orderId?: number | string; clientOrderId?: string; symbol?: string; side?: string; status?: string; executedQty?: string; cummulativeQuoteQty?: string; price?: string; code?: number };
 
-export type TestnetLimitOrder = { symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY" | "SELL"; quantity: number; price: number; clientOrderId: string };
-export type TestnetOrderResult = { orderId: string; clientOrderId: string; status: string; executedQuantity: number };
+function decimal(value: string) { return /^\d+(?:\.\d{1,12})?$/.test(value) && Number(value) > 0; }
+function verifyOwned(symbol: string, clientOrderId: string) {
+  if (!TESTNET_SYMBOLS.has(symbol) || !OWNED_CLIENT_ID.test(clientOrderId)) throw new Error("COINOPS_TESTNET_ORDER_NOT_OWNED");
+  const asset = symbol.slice(0, -4);
+  if (!clientOrderId.startsWith(`COV1-${asset}-`)) throw new Error("COINOPS_TESTNET_SYMBOL_MISMATCH");
+}
+function normalizeOrder(payload: OrderPayload, requestedClientId: string): TestnetOrder {
+  if (!payload.orderId || payload.clientOrderId !== requestedClientId || !payload.symbol || !payload.status || (payload.side !== "BUY" && payload.side !== "SELL")) throw new Error("COINOPS_TESTNET_ORDER_RESPONSE_INVALID");
+  return { orderId: String(payload.orderId), clientOrderId: payload.clientOrderId, symbol: payload.symbol, side: payload.side, status: payload.status, executedQuantity: Number(payload.executedQty || 0), cumulativeQuoteQuantity: Number(payload.cummulativeQuoteQty || 0), price: Number(payload.price || 0) };
+}
 
-/** Separate write capability for Binance Spot Testnet only. It never reads
- * Production credentials or accepts manual USDT pairs. */
+/** Separate fictitious-money transport. Its origin cannot be configured to
+ * Production; Production credentials are never read by this class. */
 export class BinanceSpotTestnetAdapter {
-  private readonly apiKey: string;
-  private readonly apiSecret: string;
+  readonly reads: BinanceSpotAdapter;
   private readonly fetcher: FetchLike;
+  private readonly credentials: Credentials;
   private readonly now: () => number;
+  private serverTimeOffsetMs = 0;
+  private hasServerTime = false;
 
-  private constructor(apiKey: string, apiSecret: string, fetcher: FetchLike = fetch, now: () => number = Date.now) {
-    this.apiKey = apiKey;
-    this.apiSecret = apiSecret;
-    this.fetcher = fetcher;
-    this.now = now;
+  constructor(credentials: Credentials, options: { fetcher?: FetchLike; now?: () => number } = {}) {
+    if (!credentials.apiKey || !credentials.apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
+    this.credentials = credentials;
+    this.fetcher = options.fetcher || fetch;
+    this.now = options.now || Date.now;
+    this.reads = new BinanceSpotAdapter(credentials, { fetcher: this.fetcher, now: this.now, baseUrl: BINANCE_SPOT_TESTNET_BASE_URL, marketDataBaseUrl: BINANCE_SPOT_TESTNET_BASE_URL });
   }
 
   static fromEnvironment() {
+    if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
     const apiKey = process.env.BINANCE_TESTNET_API_KEY?.trim();
     const apiSecret = process.env.BINANCE_TESTNET_API_SECRET?.trim();
-    if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_NOT_CONFIGURED");
-    return new BinanceSpotTestnetAdapter(apiKey, apiSecret);
+    if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
+    return new BinanceSpotTestnetAdapter({ apiKey, apiSecret });
   }
 
-  static forTest(apiKey: string, apiSecret: string, fetcher: FetchLike, now: () => number = Date.now) {
-    return new BinanceSpotTestnetAdapter(apiKey, apiSecret, fetcher, now);
+  async getOwnedOrder(symbol: string, clientOrderId: string): Promise<TestnetOrder | null> {
+    verifyOwned(symbol, clientOrderId);
+    const response = await this.signedRequest("GET", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
+    if (response.code === -2013) return null;
+    if (!response.ok) throw new Error(`COINOPS_TESTNET_ORDER_QUERY_HTTP_${response.status}`);
+    return normalizeOrder(response.payload, clientOrderId);
   }
 
-  async createLimitOrder(input: TestnetLimitOrder): Promise<TestnetOrderResult> {
-    assertV1Symbol(input.symbol);
-    if (![input.quantity, input.price].every(Number.isFinite) || input.quantity <= 0 || input.price <= 0 || !input.clientOrderId.startsWith("COV1-")) throw new Error("COINOPS_TESTNET_ORDER_INVALID");
+  async ensureOwnedOrder(input: TestnetOrderRequest): Promise<TestnetOrder> {
+    verifyOwned(input.symbol, input.clientOrderId);
+    if ((input.side === "BUY") !== input.clientOrderId.includes("-BUY-")) throw new Error("COINOPS_TESTNET_SIDE_MISMATCH");
+    if (input.type === "LIMIT" && (!decimal(input.quantity) || !decimal(input.price))) throw new Error("COINOPS_TESTNET_ORDER_INVALID");
+    const amount = input.type === "MARKET" ? Number(input.quoteOrderQty) : Number(input.quantity) * Number(input.price);
+    if ((input.type === "MARKET" && !decimal(input.quoteOrderQty)) || !Number.isFinite(amount) || !Number.isFinite(input.maxNotional) || input.maxNotional <= 0 || amount <= 0 || amount > input.maxNotional + 1e-9) throw new Error("COINOPS_TESTNET_NOTIONAL_CAP");
     const existing = await this.getOwnedOrder(input.symbol, input.clientOrderId);
     if (existing) return existing;
-    return this.signedWrite("POST", "/api/v3/order", { symbol: input.symbol, side: input.side, type: "LIMIT", timeInForce: "GTC", quantity: String(input.quantity), price: String(input.price), newClientOrderId: input.clientOrderId });
+    const params: Record<string, string> = input.type === "MARKET"
+      ? { symbol: input.symbol, side: "BUY", type: "MARKET", quoteOrderQty: input.quoteOrderQty, newClientOrderId: input.clientOrderId, newOrderRespType: "FULL" }
+      : { symbol: input.symbol, side: input.side, type: "LIMIT", timeInForce: "GTC", quantity: input.quantity, price: input.price, newClientOrderId: input.clientOrderId, newOrderRespType: "FULL" };
+    try {
+      const response = await this.signedRequest("POST", "/api/v3/order", params);
+      if (response.ok) return normalizeOrder(response.payload, input.clientOrderId);
+      // A timeout or duplicate-client-id response is not permission to send a
+      // second order. Read the matching engine state before deciding.
+      const recovered = await this.getOwnedOrder(input.symbol, input.clientOrderId);
+      if (recovered) return recovered;
+      throw new Error(`COINOPS_TESTNET_ORDER_POST_HTTP_${response.status}`);
+    } catch (error) {
+      const recovered = await this.getOwnedOrder(input.symbol, input.clientOrderId).catch(() => null);
+      if (recovered) return recovered;
+      throw error;
+    }
   }
 
-  async cancelOwnedOrder(symbol: string, orderId: string, clientOrderId: string): Promise<TestnetOrderResult> {
-    assertV1Symbol(symbol);
-    if (!orderId || !clientOrderId.startsWith("COV1-")) throw new Error("COINOPS_TESTNET_OWNERSHIP_REQUIRED");
-    const existing = await this.getOwnedOrder(symbol, clientOrderId);
-    if (!existing || existing.orderId !== orderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
-    return this.signedWrite("DELETE", "/api/v3/order", { symbol, orderId, origClientOrderId: clientOrderId });
+  async cancelOwnedOrder(symbol: string, expectedOrderId: string, clientOrderId: string): Promise<TestnetOrder | null> {
+    const current = await this.getOwnedOrder(symbol, clientOrderId);
+    if (!current || current.orderId !== expectedOrderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
+    if (!["NEW", "PARTIALLY_FILLED"].includes(current.status)) return current;
+    const response = await this.signedRequest("DELETE", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
+    if (response.ok) return normalizeOrder(response.payload, clientOrderId);
+    const recovered = await this.getOwnedOrder(symbol, clientOrderId);
+    if (recovered && !["NEW", "PARTIALLY_FILLED"].includes(recovered.status)) return recovered;
+    throw new Error(`COINOPS_TESTNET_CANCEL_HTTP_${response.status}`);
   }
 
-  /** Reconciliation before mutation is mandatory even on Testnet. */
-  async getOwnedOrder(symbol: string, clientOrderId: string): Promise<TestnetOrderResult | null> {
-    assertV1Symbol(symbol);
-    if (!clientOrderId.startsWith("COV1-")) throw new Error("COINOPS_TESTNET_OWNERSHIP_REQUIRED");
-    const query = new URLSearchParams({ symbol, origClientOrderId: clientOrderId, recvWindow: "5000", timestamp: String(this.now()) });
-    query.set("signature", createHmac("sha256", this.apiSecret).update(query.toString()).digest("hex"));
-    const response = await this.fetcher(`${BINANCE_SPOT_TESTNET_BASE_URL}/api/v3/order?${query.toString()}`, { method: "GET", headers: { "X-MBX-APIKEY": this.apiKey, accept: "application/json" } });
-    const payload = await response.json().catch(() => ({})) as { orderId?: number | string; clientOrderId?: string; status?: string; executedQty?: string };
-    if (response.status === 400 || response.status === 404) return null;
-    if (!response.ok || !payload.orderId || payload.clientOrderId !== clientOrderId || !payload.status) throw new Error("COINOPS_TESTNET_ORDER_RECOVERY_FAILED");
-    return { orderId: String(payload.orderId), clientOrderId: payload.clientOrderId, status: payload.status, executedQuantity: Number(payload.executedQty || 0) };
-  }
-
-  private async signedWrite(method: "POST" | "DELETE", path: string, params: Record<string, string>): Promise<TestnetOrderResult> {
-    const query = new URLSearchParams({ ...params, recvWindow: "5000", timestamp: String(this.now()) });
-    query.set("signature", createHmac("sha256", this.apiSecret).update(query.toString()).digest("hex"));
-    const response = await this.fetcher(`${BINANCE_SPOT_TESTNET_BASE_URL}${path}?${query.toString()}`, { method, headers: { "X-MBX-APIKEY": this.apiKey, accept: "application/json" } });
-    const payload = await response.json().catch(() => ({})) as { orderId?: number | string; clientOrderId?: string; status?: string; executedQty?: string; code?: number };
-    if (!response.ok || !payload.orderId || !payload.clientOrderId || !payload.status) throw new Error("COINOPS_TESTNET_ORDER_FAILED");
-    return { orderId: String(payload.orderId), clientOrderId: payload.clientOrderId, status: payload.status, executedQuantity: Number(payload.executedQty || 0) };
+  private async signedRequest(method: "GET" | "POST" | "DELETE", path: string, params: Record<string, string>) {
+    if (!this.hasServerTime) {
+      this.serverTimeOffsetMs = (await this.reads.getServerTime()) - this.now();
+      this.hasServerTime = true;
+    }
+    const payload = new URLSearchParams({ ...params, recvWindow: "5000", timestamp: String(this.now() + this.serverTimeOffsetMs) });
+    payload.set("signature", createHmac("sha256", this.credentials.apiSecret).update(payload.toString()).digest("hex"));
+    const url = `${BINANCE_SPOT_TESTNET_BASE_URL}${path}${method === "GET" ? `?${payload.toString()}` : ""}`;
+    let response: Response;
+    try { response = await this.fetcher(url, { method, cache: "no-store", headers: { accept: "application/json", "X-MBX-APIKEY": this.credentials.apiKey, ...(method === "GET" ? {} : { "content-type": "application/x-www-form-urlencoded" }) }, ...(method === "GET" ? {} : { body: payload.toString() }) }); }
+    catch { throw new Error("COINOPS_TESTNET_NETWORK_UNKNOWN_RESULT"); }
+    const body = await response.json().catch(() => ({})) as OrderPayload;
+    return { ok: response.ok, status: response.status, code: body.code, payload: body };
   }
 }

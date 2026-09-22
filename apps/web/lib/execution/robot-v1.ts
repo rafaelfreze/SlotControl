@@ -42,6 +42,31 @@ export type V1InitialShadowPosition = Pick<V1GridSlot, "slotNumber" | "quantity"
 export type V1RecycledEntry = Pick<V1GridSlot, "slotNumber" | "quantity" | "buyPrice" | "notional">;
 export type V1ActiveGridSlot = { slotNumber: number; logicalLevel: number; buyPrice: number; status: V1SlotStatus };
 export type V1ActiveGridValidation = { valid: boolean; errors: string[]; logicalLevels: Map<number, number> };
+export type V1EntryCandidate = { slotNumber: number; buyPrice: number; status: V1SlotStatus; entryState: "NONE" | "ARMED" | "PLANNED"; armedAt: string | null; missedAt: string | null };
+
+/** A planned level is never evaluated as a resident BUY. The arm timestamp
+ * also excludes a candle that began before the order could exist. */
+export function selectV1CandleResidentSlots<T extends V1EntryCandidate>(slots: T[], candleOpenAt: string): T[] {
+  const candleTime = Date.parse(candleOpenAt);
+  if (!Number.isFinite(candleTime)) throw new Error("COINOPS_V1_CANDLE_INVALID");
+  return slots.filter((slot) => slot.status !== "PENDING" || (slot.entryState === "ARMED" && slot.armedAt !== null && Date.parse(slot.armedAt) <= candleTime));
+}
+
+/** During rearm, prices already reached while no BUY was resident are marked
+ * missed. The next order is the highest untouched level below the observed
+ * floor, so a fast candle cannot fabricate retroactive fills. */
+export function planV1NextEntry(slots: V1EntryCandidate[], observedFloor: number) {
+  if (!Number.isFinite(observedFloor) || observedFloor <= 0) throw new Error("COINOPS_V1_MARKET_INVALID");
+  const armed = slots.filter((slot) => slot.status === "PENDING" && slot.entryState === "ARMED");
+  if (armed.length > 1) throw new Error("COINOPS_V1_MULTIPLE_ARMED_BUYS");
+  if (armed.length) return { current: armed[0]!.slotNumber, missed: [] as number[], next: null as number | null };
+  const eligible = slots.filter((slot) => slot.status === "PENDING" && slot.missedAt === null).sort((a, b) => b.buyPrice - a.buyPrice || a.slotNumber - b.slotNumber);
+  return {
+    current: null,
+    missed: eligible.filter((slot) => slot.buyPrice >= observedFloor).map((slot) => slot.slotNumber),
+    next: eligible.find((slot) => slot.buyPrice < observedFloor)?.slotNumber ?? null
+  };
+}
 
 function normalizeV1TargetPrice(value: number, priceTick: number) {
   const steps = value / priceTick;

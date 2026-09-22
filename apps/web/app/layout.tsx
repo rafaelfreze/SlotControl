@@ -8,6 +8,7 @@ import "./official-slots.css";
 import "./official-dashboard.css";
 import "./desktop-workspace.css";
 import "./desktop-modules.css";
+import "./automation-redesign.css";
 
 const appName = "CoinOps";
 const description = "Operacoes inteligentes em criptomoedas";
