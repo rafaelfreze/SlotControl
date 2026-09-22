@@ -71,3 +71,34 @@ export function calculateV1TakeProfit(asset: V1Asset, averageFillPrice: number, 
 export function canResetV1Cycle(slots: Array<{ status: V1SlotStatus; ownedPendingBuy: boolean }>) {
   return slots.length === V1_SLOT_COUNT && slots.every((slot) => slot.status === "CLOSED" || (slot.status === "PENDING" && !slot.ownedPendingBuy));
 }
+
+export type V1Candle = { openTime: string; closeTime: string; high: number; low: number; close: number };
+export type V1CandleSlot = { slotNumber: number; status: V1SlotStatus; buyPrice: number; averageFillPrice: number | null; takeProfitPrice: number | null };
+export type V1CandleTransition =
+  | { kind: "BUY_TRIGGERED"; slotNumber: number; fillPrice: number; takeProfitPrice: number; observedPrice: number; ambiguous: boolean }
+  | { kind: "TP_TRIGGERED"; slotNumber: number; observedPrice: number }
+  | { kind: "AMBIGUOUS"; slotNumber: number; observedPrice: number };
+
+/**
+ * Candle-only Shadow evaluation. Exits already active at the start of a candle
+ * can use its high; an entry first observed through that candle cannot also
+ * close in it because their order cannot be proven from OHLC alone.
+ */
+export function evaluateV1Candle(asset: V1Asset, candle: V1Candle, slots: V1CandleSlot[], filters: ExchangeSymbolInfo): V1CandleTransition[] {
+  if (![candle.high, candle.low, candle.close].every(Number.isFinite) || candle.low <= 0 || candle.high < candle.low) throw new Error("COINOPS_V1_CANDLE_INVALID");
+  const transitions: V1CandleTransition[] = [];
+  for (const slot of slots) {
+    if (slot.status === "TP_ACTIVE" && slot.takeProfitPrice && candle.high >= slot.takeProfitPrice) {
+      transitions.push({ kind: "TP_TRIGGERED", slotNumber: slot.slotNumber, observedPrice: candle.high });
+    }
+  }
+  for (const slot of slots) {
+    if (slot.status !== "PENDING" || candle.low > slot.buyPrice) continue;
+    const fillPrice = slot.buyPrice;
+    const takeProfitPrice = calculateV1TakeProfit(asset, fillPrice, filters);
+    const ambiguous = candle.high >= takeProfitPrice;
+    transitions.push({ kind: "BUY_TRIGGERED", slotNumber: slot.slotNumber, fillPrice, takeProfitPrice, observedPrice: candle.low, ambiguous });
+    if (ambiguous) transitions.push({ kind: "AMBIGUOUS", slotNumber: slot.slotNumber, observedPrice: candle.high });
+  }
+  return transitions;
+}

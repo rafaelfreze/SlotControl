@@ -15,7 +15,7 @@
     },
     {
       "path": "/api/cron/exchange-reconciliation",
-      "schedule": "*/10 * * * *"
+      "schedule": "*/5 * * * *"
     }
   ]
 }

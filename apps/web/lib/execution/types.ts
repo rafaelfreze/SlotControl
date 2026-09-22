@@ -21,6 +21,15 @@ export type ExchangeMarketPrice = {
   observedAt: string;
 };
 
+export type ExchangeCandle = {
+  openTime: string;
+  closeTime: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
 export type ExchangeBalance = {
   asset: string;
   free: number;
@@ -85,6 +94,7 @@ export interface ReadOnlyExchangeAdapter {
   getServerTime(): Promise<number>;
   getSymbolInfo(symbol: string): Promise<ExchangeSymbolInfo>;
   getMarketPrice(symbol: string): Promise<ExchangeMarketPrice>;
+  getCandles(symbol: string, interval: "1m", startTime?: number): Promise<ExchangeCandle[]>;
   getOpenOrders(symbol?: string): Promise<ExchangeOrder[]>;
   getOrder(symbol: string, orderId: string): Promise<ExchangeOrder | null>;
   getTrades(symbol: string): Promise<ExchangeTrade[]>;
@@ -97,6 +107,7 @@ export interface ExchangeAdapter {
   getServerTime(): Promise<number>;
   getSymbolInfo(symbol: string): Promise<ExchangeSymbolInfo>;
   getMarketPrice(symbol: string): Promise<ExchangeMarketPrice>;
+  getCandles(symbol: string, interval: "1m", startTime?: number): Promise<ExchangeCandle[]>;
   getOpenOrders(symbol?: string): Promise<ExchangeOrder[]>;
   getOrder(symbol: string, orderId: string): Promise<ExchangeOrder | null>;
   createOrder(input: ExchangeOrderRequest): Promise<ExchangeOrder>;

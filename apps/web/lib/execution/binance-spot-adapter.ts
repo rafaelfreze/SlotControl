@@ -5,6 +5,7 @@ import {
   type ExchangeAdapter,
   type ExchangeApiCapabilities,
   type ExchangeBalance,
+  type ExchangeCandle,
   type ExchangeMarketPrice,
   type ExchangeOrder,
   type ExchangeOrderRequest,
@@ -131,6 +132,29 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
     const price = finiteNumber(payload.price, "BINANCE_MARKET_PRICE_INVALID");
     if (payload.symbol !== symbol || price <= 0) throw new BinanceReadOnlyError("BINANCE_MARKET_PRICE_INVALID");
     return { symbol, price, observedAt: new Date(this.now() + this.serverTimeOffsetMs).toISOString() };
+  }
+
+  async getCandles(symbol: string, interval: "1m", startTime?: number): Promise<ExchangeCandle[]> {
+    const payload = await this.readJson<unknown[]>("/api/v3/klines", {
+      symbol,
+      interval,
+      limit: "1000",
+      ...(typeof startTime === "number" ? { startTime: String(startTime) } : {})
+    });
+    return payload.map((row) => {
+      if (!Array.isArray(row) || row.length < 7) throw new BinanceReadOnlyError("BINANCE_CANDLE_INVALID");
+      const [openTime, open, high, low, close, , closeTime] = row;
+      const normalized = {
+        openTime: optionalIso(finiteNumber(openTime as number, "BINANCE_CANDLE_INVALID")),
+        closeTime: optionalIso(finiteNumber(closeTime as number, "BINANCE_CANDLE_INVALID")),
+        open: finiteNumber(open as string, "BINANCE_CANDLE_INVALID"),
+        high: finiteNumber(high as string, "BINANCE_CANDLE_INVALID"),
+        low: finiteNumber(low as string, "BINANCE_CANDLE_INVALID"),
+        close: finiteNumber(close as string, "BINANCE_CANDLE_INVALID")
+      };
+      if (!normalized.openTime || !normalized.closeTime || normalized.low <= 0 || normalized.high < normalized.low || normalized.open <= 0 || normalized.close <= 0) throw new BinanceReadOnlyError("BINANCE_CANDLE_INVALID");
+      return { ...normalized, openTime: normalized.openTime, closeTime: normalized.closeTime };
+    });
   }
 
   async getSymbolInfo(symbol: string): Promise<ExchangeSymbolInfo> {

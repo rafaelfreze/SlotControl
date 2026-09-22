@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALLOWED_V1_SYMBOLS, buildV1Grid, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, v1ClientOrderId } from "../execution/robot-v1.ts";
+import { ALLOWED_V1_SYMBOLS, buildV1Grid, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, v1ClientOrderId } from "../execution/robot-v1.ts";
 
 const filters = (symbol: "BTCUSDC" | "SOLUSDC") => ({ symbol, baseAsset: symbol.slice(0, -4), quoteAsset: "USDC", minQuantity: 0.00001, maxQuantity: 100000, minNotional: 5, quantityStep: 0.00001, priceTick: 0.01 });
 
@@ -30,4 +30,12 @@ test("V1 ownership is deterministic, manual USDT symbols are excluded and reset 
   assert.equal(v1ClientOrderId("BTC", "cycle", 1, "BUY"), v1ClientOrderId("BTC", "cycle", 1, "BUY"));
   assert.equal(canResetV1Cycle(Array.from({ length: 25 }, () => ({ status: "CLOSED" as const, ownedPendingBuy: false }))), true);
   assert.equal(canResetV1Cycle(Array.from({ length: 25 }, () => ({ status: "PENDING" as const, ownedPendingBuy: true }))), false);
+});
+
+test("one-minute candle detects crossed buys without inventing an intrabar TP", () => {
+  const crossed = evaluateV1Candle("BTC", { openTime: "2026-01-01T00:00:00.000Z", closeTime: "2026-01-01T00:00:59.000Z", low: 98, high: 102, close: 101 }, [{ slotNumber: 1, status: "PENDING", buyPrice: 100, averageFillPrice: null, takeProfitPrice: null }], filters("BTCUSDC"));
+  assert.deepEqual(crossed.map((item) => item.kind), ["BUY_TRIGGERED", "AMBIGUOUS"]);
+  assert.equal(crossed[0]?.kind === "BUY_TRIGGERED" && crossed[0].fillPrice, 100);
+  const exit = evaluateV1Candle("BTC", { openTime: "2026-01-01T00:01:00.000Z", closeTime: "2026-01-01T00:01:59.000Z", low: 100, high: 101.2, close: 101 }, [{ slotNumber: 1, status: "TP_ACTIVE", buyPrice: 100, averageFillPrice: 100, takeProfitPrice: 101.2 }], filters("BTCUSDC"));
+  assert.deepEqual(exit.map((item) => item.kind), ["TP_TRIGGERED"]);
 });
