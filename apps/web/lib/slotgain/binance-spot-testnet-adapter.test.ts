@@ -42,7 +42,7 @@ test("cancel requires the exact owned order ID and leaves other orders untouched
   let deletes = 0;
   const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
     if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
-    if (init?.method === "DELETE") { deletes += 1; return json(payload(id, "CANCELED")); }
+    if (init?.method === "DELETE") { deletes += 1; const cancelId = new URLSearchParams(String(init.body)).get("newClientOrderId"); return json({ ...payload(id, "CANCELED"), origClientOrderId: id, clientOrderId: cancelId }); }
     return json(payload(id));
   } });
   await assert.rejects(adapter.cancelOwnedOrder("BTCUSDC", "43", id), /OWNED_ORDER_NOT_FOUND/);
@@ -50,6 +50,21 @@ test("cancel requires the exact owned order ID and leaves other orders untouched
   assert.equal(deletes, 0);
   const result = await adapter.cancelOwnedOrder("BTCUSDC", "42", id);
   assert.equal(result?.status, "CANCELED");
+  assert.equal(result?.clientOrderId, id);
+  assert.equal(deletes, 1);
+});
+
+test("cancel lost response recovers the same owned order after Binance replaces its client ID", async () => {
+  let canceled = false, cancelId = "", deletes = 0;
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
+    if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
+    if (init?.method === "DELETE") { canceled = true; deletes += 1; cancelId = new URLSearchParams(String(init.body)).get("newClientOrderId") || ""; throw new Error("lost cancel response"); }
+    if (new URL(url).searchParams.has("orderId")) return json({ ...payload(id, "CANCELED"), clientOrderId: cancelId });
+    return canceled ? json({ code: -2013 }, 400) : json(payload(id));
+  } });
+  const result = await adapter.cancelOwnedOrder("BTCUSDC", "42", id);
+  assert.equal(result?.status, "CANCELED");
+  assert.equal(result?.clientOrderId, id);
   assert.equal(deletes, 1);
 });
 

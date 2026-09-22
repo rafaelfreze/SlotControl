@@ -11,7 +11,7 @@ type LimitOrder = { type: "LIMIT"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY" | 
 type MarketBuy = { type: "MARKET"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY"; quoteOrderQty: string; clientOrderId: string; maxNotional: number };
 export type TestnetOrderRequest = LimitOrder | MarketBuy;
 export type TestnetOrder = { orderId: string; clientOrderId: string; symbol: string; side: "BUY" | "SELL"; status: string; executedQuantity: number; cumulativeQuoteQuantity: number; price: number };
-type OrderPayload = { orderId?: number | string; clientOrderId?: string; symbol?: string; side?: string; status?: string; executedQty?: string; cummulativeQuoteQty?: string; price?: string; code?: number };
+type OrderPayload = { orderId?: number | string; clientOrderId?: string; origClientOrderId?: string; symbol?: string; side?: string; status?: string; executedQty?: string; cummulativeQuoteQty?: string; price?: string; code?: number };
 type TradePayload = { id?: number | string; orderId?: number | string; qty?: string; quoteQty?: string; commission?: string; commissionAsset?: string; isBuyer?: boolean };
 export type TestnetTrade = { id: string; quantity: number; quoteQuantity: number; commission: number; commissionAsset: string; isBuyer: boolean };
 
@@ -25,6 +25,7 @@ function normalizeOrder(payload: OrderPayload, requestedClientId: string): Testn
   if (!payload.orderId || payload.clientOrderId !== requestedClientId || !payload.symbol || !payload.status || (payload.side !== "BUY" && payload.side !== "SELL")) throw new Error("COINOPS_TESTNET_ORDER_RESPONSE_INVALID");
   return { orderId: String(payload.orderId), clientOrderId: payload.clientOrderId, symbol: payload.symbol, side: payload.side, status: payload.status, executedQuantity: Number(payload.executedQty || 0), cumulativeQuoteQuantity: Number(payload.cummulativeQuoteQty || 0), price: Number(payload.price || 0) };
 }
+function cancelClientId(originalClientId: string) { return `COV1-C-${createHmac("sha256", "coinops-testnet-cancel-id").update(originalClientId).digest("hex").slice(0, 18)}`; }
 
 /** Separate fictitious-money transport. Its origin cannot be configured to
  * Production; Production credentials are never read by this class. */
@@ -109,6 +110,18 @@ export class BinanceSpotTestnetAdapter {
     return normalizeOrder(response.payload as OrderPayload, clientOrderId);
   }
 
+  /** Recover a previously persisted owned exchange ID after Binance changes its client ID on cancel. */
+  async getKnownOrderById(symbol: string, clientOrderId: string, expectedOrderId: string): Promise<TestnetOrder | null> {
+    verifyOwned(symbol, clientOrderId);
+    if (!/^\d+$/.test(expectedOrderId)) throw new Error("COINOPS_TESTNET_ORDER_ID_INVALID");
+    const response = await this.signedRequest("GET", "/api/v3/order", { symbol, orderId: expectedOrderId });
+    if (response.code === -2013) return null;
+    if (!response.ok) throw new Error(`COINOPS_TESTNET_ORDER_QUERY_HTTP_${response.status}`);
+    const payload = response.payload as OrderPayload;
+    if (String(payload.orderId) !== expectedOrderId || payload.symbol !== symbol || (payload.clientOrderId !== clientOrderId && payload.status !== "CANCELED")) throw new Error("COINOPS_TESTNET_KNOWN_ORDER_MISMATCH");
+    return normalizeOrder({ ...payload, clientOrderId }, clientOrderId);
+  }
+
   async getOwnedTrades(symbol: string, clientOrderId: string, orderId: string): Promise<TestnetTrade[]> {
     const owned = await this.getOwnedOrder(symbol, clientOrderId);
     if (!owned || owned.orderId !== orderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
@@ -148,14 +161,23 @@ export class BinanceSpotTestnetAdapter {
   }
 
   async cancelOwnedOrder(symbol: string, expectedOrderId: string, clientOrderId: string): Promise<TestnetOrder | null> {
-    const current = await this.getOwnedOrder(symbol, clientOrderId);
+    const current = await this.getOwnedOrder(symbol, clientOrderId) || await this.getKnownOrderById(symbol, clientOrderId, expectedOrderId);
     if (!current || current.orderId !== expectedOrderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
-    if (!["NEW", "PARTIALLY_FILLED"].includes(current.status)) return current;
-    const response = await this.signedRequest("DELETE", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
-    if (response.ok) return normalizeOrder(response.payload as OrderPayload, clientOrderId);
-    const recovered = await this.getOwnedOrder(symbol, clientOrderId);
-    if (recovered && !["NEW", "PARTIALLY_FILLED"].includes(recovered.status)) return recovered;
-    throw new Error(`COINOPS_TESTNET_CANCEL_HTTP_${response.status}`);
+    if (current.status !== "NEW") return current;
+    try {
+      const response = await this.signedRequest("DELETE", "/api/v3/order", { symbol, orderId: expectedOrderId, origClientOrderId: clientOrderId, newClientOrderId: cancelClientId(clientOrderId), cancelRestrictions: "ONLY_NEW" });
+      if (response.ok) {
+        const payload = response.payload as OrderPayload;
+        if (payload.origClientOrderId === clientOrderId && payload.clientOrderId === cancelClientId(clientOrderId) && String(payload.orderId) === expectedOrderId && payload.status === "CANCELED") return normalizeOrder({ ...payload, clientOrderId }, clientOrderId);
+      }
+      const recovered = await this.getKnownOrderById(symbol, clientOrderId, expectedOrderId);
+      if (recovered && recovered.status !== "NEW") return recovered;
+      throw new Error(`COINOPS_TESTNET_CANCEL_HTTP_${response.status}`);
+    } catch (error) {
+      const recovered = await this.getKnownOrderById(symbol, clientOrderId, expectedOrderId).catch(() => null);
+      if (recovered && recovered.status !== "NEW") return recovered;
+      throw error;
+    }
   }
 
   private async signedRequest(method: "GET" | "POST" | "DELETE", path: string, params: Record<string, string>) {

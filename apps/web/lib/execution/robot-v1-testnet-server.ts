@@ -153,9 +153,10 @@ function feeTotals(trades: TestnetTrade[]) {
 
 async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, adapter: BinanceSpotTestnetAdapter) {
   if (terminal.has(order.status) && (order.status !== "FILLED" || order.trades_reconciled)) return;
-  const actual: TestnetOrder | null = order.status === "PREPARED"
+  let actual: TestnetOrder | null = order.status === "PREPARED"
     ? await adapter.ensureOwnedOrder(orderRequest(run, order, slot))
     : await adapter.getOwnedOrder(SYMBOL, order.client_order_id);
+  if (!actual && order.exchange_order_id) actual = await adapter.getKnownOrderById(SYMBOL, order.client_order_id, order.exchange_order_id);
   if (!actual) throw new Error("COINOPS_TESTNET_PREPARED_ORDER_MISSING");
   if (order.exchange_order_id && order.exchange_order_id !== actual.orderId) throw new Error("COINOPS_TESTNET_ORDER_ID_MISMATCH");
   if (actual.symbol !== SYMBOL || actual.side !== order.side) throw new Error("COINOPS_TESTNET_ORDER_SCOPE_MISMATCH");
