@@ -28,23 +28,23 @@ async function ownedRun(formData: FormData) {
 export async function startCoinOpsTestnet() {
   const userId = await currentUserId();
   try { await startTestnetRun(userId); }
-  catch (error) { redirect(`/automacao?testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_START_FAILED"}`); }
+  catch (error) { redirect(`/automacao?view=testnet&testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_START_FAILED"}`); }
   revalidatePath("/automacao");
-  redirect("/automacao?testnet=check");
+  redirect("/automacao?view=testnet&testnet=check");
 }
 
 export async function reconcileCoinOpsTestnet(formData: FormData) {
   const runId = await ownedRun(formData);
   try { await advanceTestnetRun(runId); }
-  catch (error) { redirect(`/automacao?testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_RECONCILIATION_FAILED"}`); }
+  catch (error) { redirect(`/automacao?view=testnet&testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_RECONCILIATION_FAILED"}`); }
   revalidatePath("/automacao");
-  redirect("/automacao?testnet=check");
+  redirect("/automacao?view=testnet&testnet=check");
 }
 
 export async function replaceCoinOpsTestnetBuy(formData: FormData) {
   const runId = await ownedRun(formData);
   try { await replaceOwnedTestnetBuy(runId); }
-  catch (error) { redirect(`/automacao?testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_REPLACE_FAILED"}`); }
+  catch (error) { redirect(`/automacao?view=testnet&testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_REPLACE_FAILED"}`); }
   revalidatePath("/automacao");
-  redirect("/automacao?testnet=check");
+  redirect("/automacao?view=testnet&testnet=check");
 }

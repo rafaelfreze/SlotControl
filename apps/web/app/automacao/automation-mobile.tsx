@@ -18,14 +18,14 @@ type Slot = { id: string; cycle_id: string; slot_number: number; logical_level: 
 type Operation = { id: string; cycle_id: string; slot_id: string; physical_slot_number: number; logical_level: number; operation_sequence: number; allocation_usdc: number | string; entry_price: number | string; executed_quantity: number | string; take_profit_price: number | string; gross_quote_pnl: number | string; estimated_quote_fees: number | string; net_quote_pnl: number | string; opened_at: string | null; closed_at: string };
 type SlotAccount = { config_id: string; slot_number: number; initial_balance_usdc: number | string; balance_usdc: number | string; gain_count: number; gross_profit_usdc: number | string; fees_usdc: number | string; net_profit_usdc: number | string; last_operation_id: string | null };
 type Event = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
-type Candle = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
+export type Candle = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 type Balance = { asset: string; free: number; locked: number; total: number };
 type TestnetRun = { id: string; status: string; symbol: string; last_reconciled_at: string | null; last_error: string | null; created_at: string } | null;
 type TestnetSlot = { slot_number: number; entry_state: string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string; missed_at: string | null };
-type TestnetOrderRow = { slot_number: number; side: string; purpose: string; revision: number; client_order_id: string; status: string; requested_quantity: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string };
+type TestnetOrderRow = { slot_number: number; side: string; purpose: string; revision: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; created_at: string };
 type TestnetEvent = { event_type: string; slot_number: number | null; observed_at: string; details: Record<string, unknown> };
 type TestnetDiagnostic = Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>>;
-type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[] };
+export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; embedded?: boolean };
 
 const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];
@@ -59,7 +59,7 @@ function Sparkline({ candles, asset }: { candles: Candle[]; asset: Asset }) {
   return <svg className={`av2-sparkline ${asset.toLowerCase()}`} viewBox="0 0 180 52" preserveAspectRatio="none" role="img" aria-label={`Tendência real das últimas ${values.length} velas de ${asset}/USDC`}><polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
-function CandleChart({ candles, asset, windowSize }: { candles: Candle[]; asset: Asset; windowSize: number }) {
+export function CandleChart({ candles, asset, windowSize }: { candles: Candle[]; asset: Asset; windowSize: number }) {
   const rows = candles.slice(-windowSize);
   if (rows.length < 2) return <p className="av2-empty">Gráfico diário temporariamente indisponível.</p>;
   const low = Math.min(...rows.map((row) => Number(row.low_price)));
@@ -117,7 +117,7 @@ export function AutomationMobile(props: Props) {
   const testnetProfit = props.testnetSlots.reduce((sum, item) => sum + Number(item.net_profit_usdc), 0);
   const testnetMissed = props.testnetSlots.filter((item) => item.missed_at).length;
 
-  return <div className="coinops-automation">
+  return <div className={`coinops-automation ${props.embedded ? "ac-shadow" : ""}`}>
     <header className="av2-mobile-header"><Image src="/icon-96x96.png" alt="" width={36} height={36} priority /><div><strong>COINOPS</strong><small>AUTOMAÇÃO CRIPTO</small></div><a href="/mais" aria-label="Abrir menu">☰</a></header>
     <div className="av2-intro"><div><span className="av2-eyebrow">AUTOMAÇÃO</span><h1>Seu robô CoinOps</h1><p>Disciplina hoje. Resultado amanhã.</p></div><span className="av2-mode"><i /> SHADOW {props.configs.some((item) => !item.kill_switch && !item.pause_new_entries) ? "ATIVO" : "PAUSADO"}<small>Mercado real · dinheiro virtual</small></span></div>
     <div className="av2-asset-grid">{(["BTC", "SOL"] as const).map((asset) => {

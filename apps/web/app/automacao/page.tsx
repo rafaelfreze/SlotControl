@@ -10,7 +10,7 @@ import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
-import { AutomationMobile } from "./automation-mobile";
+import { AutomationCenter, type AutomationView } from "./automation-center";
 
 export const metadata: Metadata = { title: "Automação" };
 export const dynamic = "force-dynamic";
@@ -26,14 +26,15 @@ type RobotV1SlotAccountRow = { config_id: string; slot_number: number; initial_b
 type RobotV1EventRow = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type RobotV1CandleRow = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 
-export default async function AutomationPage({ searchParams }: { searchParams?: { testnet?: string; testnetError?: string } }) {
+export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
   let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
-  if (searchParams?.testnet === "check") {
+  const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "overview";
+  if (view === "testnet" || searchParams?.testnet === "check") {
     const tenantId = getCoinOpsServiceTenantId();
     const { data: scope, error: scopeError } = await createServiceRoleClient().from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
     if (scopeError || !scope) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
@@ -62,38 +63,38 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (testnetRunError) throw testnetRunError;
   const [testnetSlots, testnetOrders, testnetEvents] = testnetRun ? await Promise.all([
     supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,balance_usdc,gain_count,net_profit_usdc,missed_at").eq("run_id", testnetRun.id).order("slot_number"),
-    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote").eq("run_id", testnetRun.id).order("created_at"),
+    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,created_at").eq("run_id", testnetRun.id).order("created_at"),
     supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", testnetRun.id).order("observed_at", { ascending: false }).limit(20)
   ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
   if (testnetSlots.error || testnetOrders.error || testnetEvents.error) throw testnetSlots.error || testnetOrders.error || testnetEvents.error;
 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
-  const dashboard = <AutomationMobile
-    connectionStatus={connectionResponse.data?.connection_status}
-    lastSyncedAt={connectionResponse.data?.last_synced_at || connectionResponse.data?.last_reconciled_at}
-    balances={latestRun?.summary?.balances || []}
-    reconciliationStatus={latestRun?.status}
-    reconciliationAt={latestRun?.completed_at}
-    mismatches={mismatches}
-    configs={(robotConfigsResponse.data || []) as RobotV1ConfigRow[]}
-    cycles={(robotCyclesResponse.data || []) as RobotV1CycleRow[]}
-    slots={(robotSlotsResponse.data || []) as RobotV1SlotRow[]}
-    operations={(operationsResponse.data || []) as RobotV1OperationRow[]}
-    slotAccounts={(accountsResponse.data || []) as RobotV1SlotAccountRow[]}
-    events={(eventsResponse.data || []) as RobotV1EventRow[]}
-    candles={(candlesResponse.data || []) as RobotV1CandleRow[]}
-    dailyCandles={dailyCandles}
-    intentCount={(intentsResponse.data as IntentRow[] | null)?.length || 0}
-    solBrlPilot={{ ...assessSolBrlPilot(SOL_BRL_PUBLIC_SNAPSHOT.filters, SOL_BRL_PUBLIC_SNAPSHOT.priceBrl), observedAt: SOL_BRL_PUBLIC_SNAPSHOT.observedAt, status: SOL_BRL_PUBLIC_SNAPSHOT.status, priceBrl: SOL_BRL_PUBLIC_SNAPSHOT.priceBrl, priceTick: SOL_BRL_PUBLIC_SNAPSHOT.filters.priceTick, quantityStep: SOL_BRL_PUBLIC_SNAPSHOT.filters.quantityStep, minQuantity: SOL_BRL_PUBLIC_SNAPSHOT.filters.minQuantity, minNotional: SOL_BRL_PUBLIC_SNAPSHOT.filters.minNotional, orderTypes: SOL_BRL_PUBLIC_SNAPSHOT.orderTypes }}
-    testnet={testnet}
-    testnetActionError={searchParams?.testnetError && /^COINOPS_TESTNET_[A-Z_]+$/.test(searchParams.testnetError) ? searchParams.testnetError : null}
-    testnetEnabled={process.env.COINOPS_TESTNET_ENABLED === "true"}
-    testnetRun={testnetRun}
-    testnetSlots={testnetSlots.data || []}
-    testnetOrders={testnetOrders.data || []}
-    testnetEvents={testnetEvents.data || []}
-  />;
+  const dashboard = <AutomationCenter view={view} data={{
+    connectionStatus: connectionResponse.data?.connection_status,
+    lastSyncedAt: connectionResponse.data?.last_synced_at || connectionResponse.data?.last_reconciled_at,
+    balances: latestRun?.summary?.balances || [],
+    reconciliationStatus: latestRun?.status,
+    reconciliationAt: latestRun?.completed_at,
+    mismatches,
+    configs: (robotConfigsResponse.data || []) as RobotV1ConfigRow[],
+    cycles: (robotCyclesResponse.data || []) as RobotV1CycleRow[],
+    slots: (robotSlotsResponse.data || []) as RobotV1SlotRow[],
+    operations: (operationsResponse.data || []) as RobotV1OperationRow[],
+    slotAccounts: (accountsResponse.data || []) as RobotV1SlotAccountRow[],
+    events: (eventsResponse.data || []) as RobotV1EventRow[],
+    candles: (candlesResponse.data || []) as RobotV1CandleRow[],
+    dailyCandles,
+    intentCount: (intentsResponse.data as IntentRow[] | null)?.length || 0,
+    solBrlPilot: { ...assessSolBrlPilot(SOL_BRL_PUBLIC_SNAPSHOT.filters, SOL_BRL_PUBLIC_SNAPSHOT.priceBrl), observedAt: SOL_BRL_PUBLIC_SNAPSHOT.observedAt, status: SOL_BRL_PUBLIC_SNAPSHOT.status, priceBrl: SOL_BRL_PUBLIC_SNAPSHOT.priceBrl, priceTick: SOL_BRL_PUBLIC_SNAPSHOT.filters.priceTick, quantityStep: SOL_BRL_PUBLIC_SNAPSHOT.filters.quantityStep, minQuantity: SOL_BRL_PUBLIC_SNAPSHOT.filters.minQuantity, minNotional: SOL_BRL_PUBLIC_SNAPSHOT.filters.minNotional, orderTypes: SOL_BRL_PUBLIC_SNAPSHOT.orderTypes },
+    testnet,
+    testnetActionError: searchParams?.testnetError && /^COINOPS_TESTNET_[A-Z_]+$/.test(searchParams.testnetError) ? searchParams.testnetError : null,
+    testnetEnabled: process.env.COINOPS_TESTNET_ENABLED === "true",
+    testnetRun,
+    testnetSlots: testnetSlots.data || [],
+    testnetOrders: testnetOrders.data || [],
+    testnetEvents: testnetEvents.data || []
+  }} />;
 
-  return <MobileScreen desktop={<DesktopWorkspace title="Seu robô CoinOps" subtitle="Disciplina hoje. Resultado amanhã." userLabel={user.email || "Usuário"} actions={<span className="automation-topbar-status">● SHADOW ATIVO</span>}>{dashboard}</DesktopWorkspace>}>{dashboard}</MobileScreen>;
+  return <MobileScreen desktop={<DesktopWorkspace title="Automação — Seu robô CoinOps" subtitle="Mercado real e simulado, com execução segura em etapas." userLabel={user.email || "Usuário"}>{dashboard}</DesktopWorkspace>}>{dashboard}</MobileScreen>;
 }
