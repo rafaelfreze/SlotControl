@@ -3,8 +3,11 @@ import { redirect } from "next/navigation";
 
 import { DesktopWorkspace } from "@/components/app/desktop-workspace";
 import { MobileScreen } from "@/components/app/mobile-ui";
+import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
+import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 import { AutomationMobile } from "./automation-mobile";
 
@@ -21,11 +24,19 @@ type RobotV1SlotAccountRow = { config_id: string; slot_number: number; initial_b
 type RobotV1EventRow = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type RobotV1CandleRow = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 
-export default async function AutomationPage() {
+export default async function AutomationPage({ searchParams }: { searchParams?: { testnet?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
+
+  let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
+  if (searchParams?.testnet === "check") {
+    const tenantId = getCoinOpsServiceTenantId();
+    const { data: scope, error: scopeError } = await createServiceRoleClient().from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
+    if (scopeError || !scope) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
+    testnet = await diagnoseBinanceSpotTestnet().then((result) => ({ ok: true as const, ...result })).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : "TESTNET_DIAGNOSTIC_FAILED" }));
+  }
 
   const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse] = await Promise.all([
     supabase.from("exchange_connections").select("connection_status,last_reconciled_at,last_synced_at").eq("exchange", "BINANCE_SPOT").maybeSingle(),
@@ -60,6 +71,7 @@ export default async function AutomationPage() {
     candles={(candlesResponse.data || []) as RobotV1CandleRow[]}
     intentCount={(intentsResponse.data as IntentRow[] | null)?.length || 0}
     solBrlPilot={{ ...assessSolBrlPilot(SOL_BRL_PUBLIC_SNAPSHOT.filters, SOL_BRL_PUBLIC_SNAPSHOT.priceBrl), observedAt: SOL_BRL_PUBLIC_SNAPSHOT.observedAt, status: SOL_BRL_PUBLIC_SNAPSHOT.status, priceBrl: SOL_BRL_PUBLIC_SNAPSHOT.priceBrl, priceTick: SOL_BRL_PUBLIC_SNAPSHOT.filters.priceTick, quantityStep: SOL_BRL_PUBLIC_SNAPSHOT.filters.quantityStep, minQuantity: SOL_BRL_PUBLIC_SNAPSHOT.filters.minQuantity, minNotional: SOL_BRL_PUBLIC_SNAPSHOT.filters.minNotional, orderTypes: SOL_BRL_PUBLIC_SNAPSHOT.orderTypes }}
+    testnet={testnet}
   />;
 
   return <MobileScreen desktop={<DesktopWorkspace title="Seu robô CoinOps" subtitle="Disciplina hoje. Resultado amanhã." userLabel={user.email || "Usuário"} actions={<span className="automation-topbar-status">● SHADOW ATIVO</span>}>{dashboard}</DesktopWorkspace>}>{dashboard}</MobileScreen>;

@@ -146,6 +146,12 @@
 .av2-live-panel p, .av2-live-panel li { color: var(--av-muted); font-size: 13px; }
 .av2-live-panel ul { display: grid; gap: 5px; margin: 4px 0; padding-left: 20px; }
 .av2-live-panel > strong { color: var(--av-gold); font-size: 13px; }
+.av2-testnet-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 17px; }
+.av2-testnet-panel h2 { color: var(--av-purple); }
+.av2-testnet-panel p { margin-top: 4px; color: var(--av-muted); }
+.av2-testnet-panel > a { align-self: start; padding: 9px 12px; border: 1px solid var(--av-line); border-radius: 8px; color: var(--av-text); text-decoration: none; }
+.av2-testnet-results { display: grid; grid-column: 1/-1; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; padding-top: 10px; border-top: 1px solid var(--av-line); }
+.av2-testnet-results small { grid-column: 1/-1; }
 .av2-empty { padding: 12px 0; color: var(--av-muted); }
 
 @media (min-width: 1024px) {
@@ -226,6 +232,8 @@
   .av2-parameters, .av2-control-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .av2-restart { grid-column: 1/-1; }
   .av2-live-panel { padding: 13px; }
+  .av2-testnet-panel { grid-template-columns: 1fr; padding: 13px; }
+  .av2-testnet-results { grid-template-columns: 1fr; }
 }
 @media (max-width: 375px) {
   .av2-asset-balance strong { font-size: 12px; }

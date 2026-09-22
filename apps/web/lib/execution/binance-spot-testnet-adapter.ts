@@ -117,3 +117,18 @@ export class BinanceSpotTestnetAdapter {
     return { ok: response.ok, status: response.status, code: body.code, payload: body };
   }
 }
+
+/** Explicit, authenticated read probe; no order mutation or /sapi call. */
+export async function diagnoseBinanceSpotTestnet() {
+  const adapter = BinanceSpotTestnetAdapter.readsFromEnvironment();
+  const account = await adapter.getAccount();
+  const balances = account.balances.filter((item) => ["USDT", "USDC", "BTC", "SOL"].includes(item.asset));
+  const symbols = ["SOLUSDC", "BTCUSDC", "SOLUSDT", "BTCUSDT"];
+  const probes = await Promise.all(symbols.map(async (symbol) => {
+    try {
+      const [filters, market, orders] = await Promise.all([adapter.getSymbolInfo(symbol), adapter.getMarketPrice(symbol), adapter.getOpenOrders(symbol)]);
+      return { symbol, available: true as const, filters, market, openOrderCount: orders.length, ownedOpenOrderCount: orders.filter((order) => order.clientOrderId?.startsWith("COV1-")).length };
+    } catch (error) { return { symbol, available: false as const, error: error instanceof Error ? error.message : "UNKNOWN" }; }
+  }));
+  return { account: { canTrade: account.canTrade, canWithdraw: account.canWithdraw, canDeposit: account.canDeposit, updateTime: account.updateTime }, balances, probes, observedAt: new Date().toISOString() };
+}
