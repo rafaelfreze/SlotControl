@@ -57,6 +57,48 @@ export class BinanceSpotTestnetAdapter {
     return new BinanceSpotAdapter({ apiKey, apiSecret }, { baseUrl: BINANCE_SPOT_TESTNET_BASE_URL, marketDataBaseUrl: BINANCE_SPOT_TESTNET_BASE_URL });
   }
 
+  static diagnosticFromEnvironment() {
+    const apiKey = process.env.BINANCE_TESTNET_API_KEY?.trim();
+    const apiSecret = process.env.BINANCE_TESTNET_API_SECRET?.trim();
+    if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
+    return new BinanceSpotTestnetAdapter({ apiKey, apiSecret });
+  }
+
+  /** Binance validates TRADE permission and filters without entering an order. */
+  async checkTradePermission() {
+    const response = await this.signedRequest("POST", "/api/v3/order/test", { symbol: "SOLUSDC", side: "BUY", type: "MARKET", quoteOrderQty: "10" });
+    return { ok: response.ok, error: response.ok ? null : `BINANCE_TEST_ORDER_HTTP_${response.status}_${response.code ?? "UNKNOWN"}` };
+  }
+
+  /** Short-lived subscription probe. Persistent order events need a separate worker. */
+  async checkUserStreamPermission(): Promise<{ ok: boolean; error: string | null }> {
+    if (typeof WebSocket === "undefined") return { ok: false, error: "TESTNET_WEBSOCKET_RUNTIME_UNAVAILABLE" };
+    const timestamp = await this.reads.getServerTime();
+    const signature = createHmac("sha256", this.credentials.apiSecret).update(`apiKey=${this.credentials.apiKey}&timestamp=${timestamp}`).digest("hex");
+    return new Promise((resolve) => {
+      let settled = false;
+      const socket = new WebSocket("wss://ws-api.testnet.binance.vision/ws-api/v3");
+      const finish = (result: { ok: boolean; error: string | null }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        socket.close();
+        resolve(result);
+      };
+      const timeout = setTimeout(() => finish({ ok: false, error: "TESTNET_USER_STREAM_TIMEOUT" }), 8000);
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ id: "coinops-stream-probe", method: "userDataStream.subscribe.signature", params: { apiKey: this.credentials.apiKey, timestamp, signature } })));
+      socket.addEventListener("message", (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as { id?: string; status?: number; error?: { code?: number } };
+          if (message.id !== "coinops-stream-probe") return;
+          finish({ ok: message.status === 200, error: message.status === 200 ? null : `TESTNET_USER_STREAM_${message.status ?? "UNKNOWN"}_${message.error?.code ?? "UNKNOWN"}` });
+        } catch { finish({ ok: false, error: "TESTNET_USER_STREAM_INVALID_RESPONSE" }); }
+      });
+      socket.addEventListener("error", () => finish({ ok: false, error: "TESTNET_USER_STREAM_NETWORK_ERROR" }));
+      socket.addEventListener("close", () => finish({ ok: false, error: "TESTNET_USER_STREAM_CLOSED" }));
+    });
+  }
+
   async getOwnedOrder(symbol: string, clientOrderId: string): Promise<TestnetOrder | null> {
     verifyOwned(symbol, clientOrderId);
     const response = await this.signedRequest("GET", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
@@ -120,7 +162,8 @@ export class BinanceSpotTestnetAdapter {
 
 /** Explicit, authenticated read probe; no order mutation or /sapi call. */
 export async function diagnoseBinanceSpotTestnet() {
-  const adapter = BinanceSpotTestnetAdapter.readsFromEnvironment();
+  const testnet = BinanceSpotTestnetAdapter.diagnosticFromEnvironment();
+  const adapter = testnet.reads;
   const account = await adapter.getAccount();
   const balances = account.balances.filter((item) => ["USDT", "USDC", "BTC", "SOL"].includes(item.asset));
   const symbols = ["SOLUSDC", "BTCUSDC", "SOLUSDT", "BTCUSDT"];
@@ -130,5 +173,6 @@ export async function diagnoseBinanceSpotTestnet() {
       return { symbol, available: true as const, filters, market, openOrderCount: orders.length, ownedOpenOrderCount: orders.filter((order) => order.clientOrderId?.startsWith("COV1-")).length };
     } catch (error) { return { symbol, available: false as const, error: error instanceof Error ? error.message : "UNKNOWN" }; }
   }));
-  return { account: { canTrade: account.canTrade, canWithdraw: account.canWithdraw, canDeposit: account.canDeposit, updateTime: account.updateTime }, balances, probes, observedAt: new Date().toISOString() };
+  const [tradePermission, userStreamPermission] = await Promise.all([testnet.checkTradePermission(), testnet.checkUserStreamPermission()]);
+  return { account: { canTrade: account.canTrade, canWithdraw: account.canWithdraw, canDeposit: account.canDeposit, updateTime: account.updateTime }, balances, probes, tradePermission, userStreamPermission, observedAt: new Date().toISOString() };
 }
