@@ -3,6 +3,11 @@
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
   "installCommand": "npm install",
+  "functions": {
+    "app/api/cron/exchange-reconciliation/route.ts": {
+      "regions": ["gru1"]
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/market-regime",
