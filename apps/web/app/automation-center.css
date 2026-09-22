@@ -184,6 +184,9 @@
   .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-overview-lower { grid-template-columns: minmax(0, 1.4fr) minmax(280px, .6fr); }
   .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-testnet-main:not(.ac-testnet-main--orders):not(.ac-testnet-main--footer) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.13fr); }
 }
+@media (min-width: 1024px) and (max-width: 1180px) {
+  .desktop-workspace-root:has(.ac-center) .desktop-topbar-prices { display: flex; }
+}
 @media (max-width: 1280px) {
   .ac-global-status { max-width: 340px; }
   .ac-status { min-width: 145px; }
@@ -194,6 +197,8 @@
   .ac-execution-step { grid-template-columns: 28px minmax(100px,1fr) 120px minmax(130px,1fr) auto; }
 }
 @media (max-width: 1023px) {
+  .ac-mobile-live-prices { position: sticky; z-index: 20; top: 0; padding: 3px 0; background: rgba(10, 20, 30, .96); }
+  .ac-mobile-live-prices .market-ticker { margin: 0; }
   .ac-intro { display: grid; }
   .ac-global-status { max-width: none; justify-content: flex-start; }
   .ac-environments { grid-template-columns: repeat(2,minmax(0,1fr)); }

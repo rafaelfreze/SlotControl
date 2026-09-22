@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { DesktopWorkspace } from "@/components/app/desktop-workspace";
-import { MobileScreen } from "@/components/app/mobile-ui";
 import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import { getDailyMarketCandles } from "@/lib/execution/market-daily-candles";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
@@ -11,6 +9,7 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 import { AutomationCenter, type AutomationView } from "./automation-center";
+import { AutomationPageShell } from "./automation-page-shell";
 
 export const metadata: Metadata = { title: "Automação" };
 export const dynamic = "force-dynamic";
@@ -96,5 +95,5 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetEvents: testnetEvents.data || []
   }} />;
 
-  return <MobileScreen desktop={<DesktopWorkspace title="Automação — Seu robô CoinOps" subtitle="Mercado real e simulado, com execução segura em etapas." userLabel={user.email || "Usuário"}>{dashboard}</DesktopWorkspace>}>{dashboard}</MobileScreen>;
+  return <AutomationPageShell userLabel={user.email || "Usuário"}>{dashboard}</AutomationPageShell>;
 }

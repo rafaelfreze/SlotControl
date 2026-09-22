@@ -130,7 +130,7 @@ export function DesktopTopbar({ title, subtitle, livePrices, monitoring, actions
       </div>
       <div className="desktop-topbar-context">
         {livePrices ? (
-          <div className="desktop-topbar-prices" aria-label="Cotações atuais">
+          <div className="desktop-topbar-prices" data-status={livePrices.status} aria-label={livePrices.status === "online" ? "Cotações em tempo real" : "Cotações indisponíveis ou desatualizadas"}>
             <span>BTC <strong>{formatPrice(livePrices.prices.BTC)}</strong></span>
             <span>SOL <strong>{formatPrice(livePrices.prices.SOL)}</strong></span>
           </div>

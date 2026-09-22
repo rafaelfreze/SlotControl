@@ -136,6 +136,8 @@
   .desktop-topbar-heading p { overflow: hidden; margin: 0; color: var(--co-muted); font-size: var(--desktop-font-label); text-overflow: ellipsis; white-space: nowrap; }
   .desktop-topbar-context { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; }
   .desktop-topbar-prices { display: flex; align-items: center; gap: 10px; padding-right: 10px; border-right: 1px solid var(--co-line); }
+  .desktop-topbar-prices::before { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--co-gold); content: ""; }
+  .desktop-topbar-prices[data-status="online"]::before { background: var(--co-green); box-shadow: 0 0 9px var(--co-green); }
   .desktop-topbar-prices span { color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 760; white-space: nowrap; }
   .desktop-topbar-prices strong { margin-left: 3px; color: var(--co-text); font-size: var(--desktop-font-control); font-variant-numeric: tabular-nums; }
   .desktop-context-chip { display: inline-flex; min-height: 30px; align-items: center; padding: 0 9px; border: 1px solid var(--co-line); border-radius: 8px; background: rgba(255, 255, 255, .018); color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 740; white-space: nowrap; }
