@@ -81,6 +81,36 @@ test("Binance symbol filters and all read history representations remain GET-onl
   assert.equal(methods.every((method) => method === "GET"), true);
 });
 
+test("Binance symbol filters fall back to LOT_SIZE when MARKET_LOT_SIZE is disabled", async () => {
+  const adapter = new BinanceSpotAdapter(null, {
+    maxReadRetries: 0,
+    fetcher: async () => response({
+      symbols: [{
+        symbol: "BTCUSDT",
+        baseAsset: "BTC",
+        quoteAsset: "USDT",
+        filters: [
+          { filterType: "LOT_SIZE", minQty: "0.00001", maxQty: "9000", stepSize: "0.00001" },
+          { filterType: "MARKET_LOT_SIZE", minQty: "0", maxQty: "104.35988283", stepSize: "0" },
+          { filterType: "PRICE_FILTER", tickSize: "0.01" },
+          { filterType: "NOTIONAL", minNotional: "5" }
+        ]
+      }]
+    })
+  });
+
+  assert.deepEqual(await adapter.getSymbolInfo("BTCUSDT"), {
+    symbol: "BTCUSDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    minQuantity: 0.00001,
+    maxQuantity: 9000,
+    minNotional: 5,
+    quantityStep: 0.00001,
+    priceTick: 0.01
+  });
+});
+
 test("Binance signed reads resync clock once after a safe clock-drift response", async () => {
   let timeCalls = 0;
   const adapter = new BinanceSpotAdapter({ apiKey: "key", apiSecret: "secret" }, {
