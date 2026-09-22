@@ -121,3 +121,14 @@ test("recycled physical slot keeps its compounded balance at a new logical level
   assert.equal(recycled!.quantity, quantityForV1SlotBalance(10.0493, recycled!.buyPrice, symbolFilters).quantity);
   assert.ok(recycled!.notional > buildV1RecycledEntries("SOL", 250, [2], activePrices, symbolFilters, parameters)[0]!.notional);
 });
+
+test("compounded budget remains visible even when the Binance lot step keeps executable quantity unchanged", () => {
+  const symbolFilters = { ...filters("SOLUSDC"), quantityStep: 0.001 };
+  const initial = quantityForV1SlotBalance(10, 117.06, symbolFilters);
+  const compounded = quantityForV1SlotBalance(10.0493, 117.06, symbolFilters);
+  assert.equal(initial.quantity, 0.085);
+  assert.equal(compounded.quantity, initial.quantity);
+  assert.equal(compounded.notional, initial.notional);
+  assert.equal(compounded.notional, 9.9501);
+  assert.ok(10.0493 - compounded.notional > 10 - initial.notional);
+});
