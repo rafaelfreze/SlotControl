@@ -1,4 +1,4 @@
-# Execution Engine Binance — Shadow (Fase 1)
+# Execution Engine Binance — Shadow e Reconciliação Read-only (Fases 1 e 2)
 
 ## Estado e limites
 
@@ -23,8 +23,20 @@ O tamanho inicial de slot é `capital da estratégia / 25`; não há valor fixo 
 
 O motor valida idade de cotação, notional por ordem/dia, saldo simulado insuficiente, duplicidade e estado do slot. O adaptador expõe leitura futura de `getAccount`, `getBalances`, `getSymbolInfo`, `getMarketPrice`, `getOpenOrders`, `getOrder` e `getTrades`; `getSymbolInfo` prepara `minQty`, `minNotional` e `stepSize`. Fills parciais são classificados em `PENDING`, `PARTIALLY_FILLED` ou `FILLED` somente para reconciliação simulada.
 
-Na Fase 2, antes de qualquer modo LIVE, a Binance deve ser a fonte de verdade de saldo, ordens abertas, ordens executadas, fills parciais e trades. O CoinOps continuará sendo a fonte de verdade para estratégia. Todo restart deverá executar reconciliação antes de qualquer executor; qualquer erro, preço obsoleto, timeout ou limite tende a não operar.
+## Fase 2 — Binance somente leitura
+
+`BinanceSpotAdapter` agora assina apenas requisições `GET` para os endpoints Spot de conta, permissões, saldos, `exchangeInfo`, preços, ordens abertas, consulta de ordem e `myTrades`. O relógio é sincronizado pelo endpoint público de tempo antes da primeira consulta assinada; `recvWindow` é 5 segundos e falhas transitórias de rede, 429 e 5xx têm somente um retry seguro. Nenhum método HTTP `POST`, `PUT` ou `DELETE` é usado pelo adaptador.
+
+As únicas variáveis de ambiente aceitas são `BINANCE_API_KEY`, `BINANCE_API_SECRET` e `COINOPS_BINANCE_CONNECTION_ID`. A chave e o secret nunca entram no banco, browser, localStorage, URL, logs ou payload de rota. A tabela de conexão conserva somente um sufixo mascarado da chave e a referência textual `SERVER_ENV:BINANCE_READ_ONLY`.
+
+O cron protegido `/api/cron/exchange-reconciliation` executa no máximo uma reconciliação por conexão a cada janela de cinco minutos. A execução lê dados da exchange, registra um snapshot e itens em `exchange_reconciliation_runs` e `exchange_reconciliation_items`, e não modifica slots, gains, saldos internos nem status de estratégia. Se a conexão, credenciais ou variáveis não estiverem configuradas, ele falha fechado sem chamar a Binance.
+
+Binance é a fonte de verdade para saldos, ordens e fills. CoinOps é a fonte de verdade para regras e intenções Shadow. Um trade ou ordem histórica só é associado quando houver o `clientOrderId` determinístico de uma intenção; sem isso, permanece `EXCHANGE_ONLY`. O sistema nunca adivinha que um trade antigo pertence a um slot.
+
+## Recuperação e limites
+
+Após restart, a reconciliação idempotente ocorre antes de qualquer futura capacidade de execução. Estados `MATCH`, `EXPECTED_ONLY`, `EXCHANGE_ONLY`, `QUANTITY_MISMATCH`, `PRICE_MISMATCH` e `STATUS_MISMATCH` são auditáveis e não geram correção financeira automática. A tela `/automacao` mostra apenas o status, saldos BTC/SOL/USDT, última reconciliação e intenções Shadow do escopo autenticado.
 
 ## Próximo passo permitido
 
-Conectar somente leitura com credenciais criptografadas e referência a secret manager, implementar reconciliador de saldos/ordens/fills e validar Shadow com dados reais de leitura. `LIVE` exige decisão explícita posterior, revisão de segurança, reconciliação íntegra e uma migration própria; não faz parte desta fase.
+Para habilitar a leitura da conta do Rafael, crie uma chave Binance com leitura e restrição IP adequadas, configure as três variáveis exclusivamente no ambiente server-side e crie o registro de conexão no escopo CoinOps correto. Isso é a única dependência humana: o CoinOps não cria, revela nem persiste credenciais. `LIVE` exige decisão explícita posterior, revisão de segurança, reconciliação íntegra e uma migration própria; não faz parte desta fase.
