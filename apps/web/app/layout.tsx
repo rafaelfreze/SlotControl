@@ -10,6 +10,7 @@ import "./desktop-workspace.css";
 import "./desktop-modules.css";
 import "./automation-redesign.css";
 import "./automation-center.css";
+import "./automation-cockpit.css";
 
 const appName = "CoinOps";
 const description = "Operacoes inteligentes em criptomoedas";

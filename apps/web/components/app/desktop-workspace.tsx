@@ -33,10 +33,11 @@ export type DesktopWorkspaceProps = {
   monitoring?: OfficialMonitoringOverview;
   userLabel?: string;
   actions?: ReactNode;
+  center?: ReactNode;
   children: ReactNode;
 };
 
-export function DesktopWorkspace({ title, subtitle, livePrices, monitoring, userLabel, actions, children }: DesktopWorkspaceProps) {
+export function DesktopWorkspace({ title, subtitle, livePrices, monitoring, userLabel, actions, center, children }: DesktopWorkspaceProps) {
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -63,7 +64,7 @@ export function DesktopWorkspace({ title, subtitle, livePrices, monitoring, user
     <div className="desktop-workspace-root" data-sidebar-collapsed={String(sidebarCollapsed)}>
       <DesktopSidebar livePrices={livePrices} monitoring={monitoring} userLabel={userLabel} />
       <div className="desktop-workspace-main">
-        <DesktopTopbar title={title} subtitle={subtitle} livePrices={livePrices} monitoring={monitoring} actions={actions} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+        <DesktopTopbar title={title} subtitle={subtitle} livePrices={livePrices} monitoring={monitoring} actions={actions} center={center} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
         <main className="desktop-workspace-content">{children}</main>
       </div>
     </div>
@@ -115,7 +116,7 @@ export function DesktopSidebar({ livePrices, monitoring, userLabel }: Pick<Deskt
   );
 }
 
-export function DesktopTopbar({ title, subtitle, livePrices, monitoring, actions, sidebarCollapsed, onToggleSidebar }: Pick<DesktopWorkspaceProps, "title" | "subtitle" | "livePrices" | "monitoring" | "actions"> & { sidebarCollapsed?: boolean; onToggleSidebar?: () => void }) {
+export function DesktopTopbar({ title, subtitle, livePrices, monitoring, actions, center, sidebarCollapsed, onToggleSidebar }: Pick<DesktopWorkspaceProps, "title" | "subtitle" | "livePrices" | "monitoring" | "actions" | "center"> & { sidebarCollapsed?: boolean; onToggleSidebar?: () => void }) {
   const mode = getModePresentation(monitoring);
   return (
     <header className="desktop-workspace-topbar">
@@ -128,6 +129,7 @@ export function DesktopTopbar({ title, subtitle, livePrices, monitoring, actions
         <h1>{title}</h1>
         {subtitle ? <p>{subtitle}</p> : null}
       </div>
+      {center ? <div className="desktop-topbar-center">{center}</div> : null}
       <div className="desktop-topbar-context">
         {livePrices ? (
           <div className="desktop-topbar-prices" data-status={livePrices.status} aria-label={livePrices.status === "online" ? "Cotações em tempo real" : "Cotações indisponíveis ou desatualizadas"}>

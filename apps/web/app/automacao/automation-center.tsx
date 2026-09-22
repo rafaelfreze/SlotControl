@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
@@ -20,15 +19,11 @@ const marketPrice = (data: Props, symbol: string) => Number(data.configs.find((c
 const orderQuantity = (order: Order) => Number(order.executed_quantity) || Number(order.requested_quantity) || 0;
 const orderPrice = (order: Order) => Number(order.price) || (Number(order.executed_quantity) > 0 ? Number(order.cumulative_quote) / Number(order.executed_quantity) : 0);
 
-function StatusPill({ tone, title, detail }: { tone: "green" | "purple" | "slate"; title: string; detail: string }) {
-  return <span className={`ac-status ac-status--${tone}`}><span className="ac-status-dot" /><span><strong>{title}</strong><small>{detail}</small></span></span>;
-}
-
 function MetricCard({ label, value, note, tone = "slate" }: { label: string; value: string; note?: string; tone?: "green" | "purple" | "gold" | "slate" }) {
   return <article className={`ac-metric ac-metric--${tone}`}><span>{label}</span><strong>{value}</strong>{note ? <small>{note}</small> : null}</article>;
 }
 
-function EnvironmentTabs({ view }: { view: AutomationView }) {
+export function EnvironmentTabs({ view }: { view: AutomationView }) {
   const tabs: Array<{ value: AutomationView; label: string; mobile: string }> = [
     { value: "overview", label: "Visão Geral", mobile: "Geral" },
     { value: "shadow", label: "Shadow", mobile: "Shadow" },
@@ -173,8 +168,16 @@ function Live({ data }: { data: Props }) {
   return <div className="ac-stack"><section className="ac-panel ac-live-hero"><div><span className="ac-kicker">PREPARAÇÃO FUTURA</span><h2>Operação Real <span className="ac-badge ac-badge--slate">LIVE BLOQUEADO</span></h2><p>Nenhuma ordem real pode ser enviada nesta fase. O adaptador Production aceita somente consultas.</p></div><strong>0 operações financeiras reais enviadas pelo CoinOps nesta fase</strong></section><div className="ac-live-grid"><section className="ac-panel"><div className="ac-panel-heading"><h2>Binance Production</h2><span className="ac-badge ac-badge--green">READ-ONLY</span></div><div className="ac-facts"><span>Conexão <strong>{data.connectionStatus === "READ_ONLY" || data.connectionStatus === "CONNECTED" ? "Conectada" : "A verificar"}</strong></span><span>Última sincronização <strong>{time(data.reconciliationAt || data.lastSyncedAt)}</strong></span><span>Reconciliação <strong>{data.reconciliationStatus === "COMPLETED" ? "Concluída" : "Em acompanhamento"}</strong></span><span>Ordens/trades reais CoinOps <strong>0 enviados nesta fase</strong></span></div><small>Permissões da chave Production não são alteradas por esta central. createOrder e cancelOrder seguem bloqueados no adaptador.</small></section><section className="ac-panel"><div className="ac-panel-heading"><h2>Piloto planejado · SOL/BRL</h2><span>Dados públicos observados {time(pilot.observedAt)}</span></div><div className="ac-facts"><span>Mercado <strong>{pilot.status}</strong></span><span>tickSize <strong>{format(pilot.priceTick, 4)} BRL</strong></span><span>stepSize <strong>{format(pilot.quantityStep, 4)} SOL</strong></span><span>minQty <strong>{format(pilot.minQuantity, 4)} SOL</strong></span><span>minNotional <strong>{format(pilot.minNotional, 2)} BRL</strong></span><span>Capital mínimo estimado · 25 slots <strong>R$ {format(pilot.minimumCapitalFor25SlotsBrl, 2)}</strong></span><span>Capital desejado <strong>{data.configs.find((config) => config.asset === "SOL")?.configured_live_capital_brl ? `R$ ${format(data.configs.find((config) => config.asset === "SOL")?.configured_live_capital_brl, 2)}` : "Não configurado"}</strong></span></div><small>Snapshot público, sujeito a mudança; filtros, preço e mínimo devem ser revalidados antes de qualquer piloto futuro.</small></section></div><section className="ac-panel ac-checklist"><div className="ac-panel-heading"><h2>Checklist antes de um futuro LIVE</h2><span>Sem botão de ativação</span></div><div className="ac-check-grid">{checks.map((item) => <div key={item.label}><span className={item.done ? "is-done" : ""}>{item.done ? "✓" : "○"}</span><strong>{item.label}</strong><small>{item.done ? "Verificado no snapshot" : "Pendente"}</small></div>)}</div><p>Quando os gates forem aprovados futuramente, a UX poderá orientar a separação de BRL na Binance e a conferência do par SOL/BRL. Nenhuma ação financeira é solicitada agora.</p></section></div>;
 }
 
-export function AutomationCenter({ view, data }: { view: AutomationView; data: Props }) {
-  const shadowActive = data.configs.some((config) => !config.kill_switch && !config.pause_new_entries);
-  const testnetOperating = data.testnetRun?.status === "ACTIVE" && !data.testnetRun.last_error;
-  return <div className="coinops-automation ac-center"><header className="ac-mobile-header"><Image src="/icon-96x96.png" alt="" width={34} height={34} priority /><span><strong>COINOPS</strong><small>AUTOMAÇÃO CRIPTO</small></span><a href="/mais" aria-label="Abrir menu">☰</a></header><div className="ac-intro"><div><h1>Automação — Seu robô CoinOps</h1><p>Mercado real e simulado, com execução segura em etapas.</p></div><div className="ac-global-status"><StatusPill tone="green" title={`SHADOW ${shadowActive ? "ATIVO" : "PAUSADO"}`} detail="Mercado real · sem ordens" /><StatusPill tone="purple" title={testnetOperating ? "TESTNET OPERANDO" : "TESTNET EM ESPERA"} detail="Binance Spot Testnet" /><StatusPill tone="slate" title="LIVE BLOQUEADO" detail="Preparação futura" /></div></div><EnvironmentTabs view={view} />{view === "overview" ? <Overview data={data} /> : view === "shadow" ? <AutomationMobile {...data} embedded /> : view === "testnet" ? <Testnet data={data} /> : <Live data={data} />}</div>;
+export type AutomationDetail = "all" | "orders" | "events" | "market" | "balances" | "slots" | "gains" | "controls";
+
+export function AutomationDetails({ view, data, section, asset }: { view: AutomationView; data: Props; section: AutomationDetail; asset: "BTC" | "SOL" }) {
+  let content;
+  if (section === "market") content = <div className="ac-stack"><h2>{asset}/USDC · diário · 30 dias</h2><CandleChart candles={data.dailyCandles.filter((item) => item.symbol === `${asset}USDC`)} asset={asset} windowSize={30} /><small>Velas públicas da Binance. Os preços do topo usam os pares USDT da tela inicial.</small></div>;
+  else if (view === "shadow") content = <AutomationMobile {...data} embedded initialAsset={asset} detailSection={section} />;
+  else if (view === "testnet" && section === "orders") content = <OrdersTable data={data} />;
+  else if (view === "testnet" && section === "events") content = <TestnetEvents data={data} />;
+  else if (view === "testnet" && section === "balances") content = <BalanceCards data={data} />;
+  else if (section === "events") content = <GlobalEvents data={data} />;
+  else content = view === "overview" ? <Overview data={data} /> : view === "testnet" ? <Testnet data={data} /> : <Live data={data} />;
+  return <div className="coinops-automation ac-center ac-detail-content">{content}</div>;
 }

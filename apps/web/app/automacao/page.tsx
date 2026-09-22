@@ -8,7 +8,8 @@ import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
-import { AutomationCenter, type AutomationView } from "./automation-center";
+import type { AutomationView } from "./automation-center";
+import { AutomationCenter } from "./automation-cockpit";
 import { AutomationPageShell } from "./automation-page-shell";
 
 export const metadata: Metadata = { title: "Automação" };
@@ -95,5 +96,9 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetEvents: testnetEvents.data || []
   }} />;
 
-  return <AutomationPageShell userLabel={user.email || "Usuário"}>{dashboard}</AutomationPageShell>;
+  return <AutomationPageShell userLabel={user.email || "Usuário"} status={{
+    shadowActive: (robotConfigsResponse.data || []).some((config) => !config.kill_switch && !config.pause_new_entries),
+    testnetOperating: testnetRun?.status === "ACTIVE" && !testnetRun.last_error,
+    testnetError: Boolean(testnetRun?.last_error || searchParams?.testnetError || (testnet && !testnet.ok))
+  }}>{dashboard}</AutomationPageShell>;
 }

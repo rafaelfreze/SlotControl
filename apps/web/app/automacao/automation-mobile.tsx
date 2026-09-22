@@ -73,9 +73,9 @@ export function CandleChart({ candles, asset, windowSize }: { candles: Candle[];
   </svg><div className="av2-chart-axis"><span>{day(rows[0]?.candle_open_at)}</span><span>{n(rows.at(-1)?.close_price, 4)} USDC</span><span>{day(rows.at(-1)?.candle_open_at)}</span></div></div>;
 }
 
-export function AutomationMobile(props: Props) {
-  const [selectedAsset, setSelectedAsset] = useState<Asset>("SOL");
-  const [showAll, setShowAll] = useState(false);
+export function AutomationMobile(props: Props & { initialAsset?: Asset; detailSection?: string }) {
+  const [selectedAsset, setSelectedAsset] = useState<Asset>(props.initialAsset || "SOL");
+  const [showAll, setShowAll] = useState(props.detailSection === "slots");
   const [expandedSlot, setExpandedSlot] = useState<string | null>(null);
   const config = props.configs.find((item) => item.asset === selectedAsset);
   const assetCycles = props.cycles.filter((item) => item.asset === selectedAsset);
@@ -117,7 +117,7 @@ export function AutomationMobile(props: Props) {
   const testnetProfit = props.testnetSlots.reduce((sum, item) => sum + Number(item.net_profit_usdc), 0);
   const testnetMissed = props.testnetSlots.filter((item) => item.missed_at).length;
 
-  return <div className={`coinops-automation ${props.embedded ? "ac-shadow" : ""}`}>
+  return <div className={`coinops-automation ${props.embedded ? "ac-shadow" : ""}`} data-detail-section={props.detailSection}>
     <header className="av2-mobile-header"><Image src="/icon-96x96.png" alt="" width={36} height={36} priority /><div><strong>COINOPS</strong><small>AUTOMAÇÃO CRIPTO</small></div><a href="/mais" aria-label="Abrir menu">☰</a></header>
     <div className="av2-intro"><div><span className="av2-eyebrow">AUTOMAÇÃO</span><h1>Seu robô CoinOps</h1><p>Disciplina hoje. Resultado amanhã.</p></div><span className="av2-mode"><i /> SHADOW {props.configs.some((item) => !item.kill_switch && !item.pause_new_entries) ? "ATIVO" : "PAUSADO"}<small>Mercado real · dinheiro virtual</small></span></div>
     <div className="av2-asset-grid">{(["BTC", "SOL"] as const).map((asset) => {
