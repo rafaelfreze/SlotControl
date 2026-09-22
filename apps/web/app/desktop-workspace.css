@@ -44,6 +44,9 @@
     line-height: 1.4;
   }
 
+  .desktop-workspace-root[data-sidebar-collapsed="true"] { grid-template-columns: minmax(0, 1fr); }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .desktop-workspace-sidebar { display: none; }
+
   .desktop-workspace-sidebar {
     display: flex;
     min-width: 0;
@@ -123,11 +126,15 @@
   .desktop-feed-status[data-tone="offline"] { color: var(--co-red); }
 
   .desktop-workspace-main { display: grid; grid-template-rows: var(--desktop-topbar-height) minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
-  .desktop-workspace-topbar { position: relative; z-index: 5; display: flex; min-width: 0; min-height: var(--desktop-topbar-height); align-items: center; justify-content: space-between; gap: 20px; padding: 10px clamp(16px, 2vw, 28px); border-bottom: 1px solid var(--co-line); background: rgba(7, 14, 23, .97); }
+  .desktop-workspace-topbar { position: relative; z-index: 5; display: flex; min-width: 0; min-height: var(--desktop-topbar-height); align-items: center; gap: 12px; padding: 10px clamp(16px, 2vw, 28px); border-bottom: 1px solid var(--co-line); background: rgba(7, 14, 23, .97); }
+  .desktop-sidebar-toggle { display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; padding: 0; border: 1px solid var(--co-line); border-radius: 10px; background: #132434; color: var(--co-muted); cursor: pointer; }
+  .desktop-sidebar-toggle:hover { border-color: #6ba9ce; color: var(--co-text); }
+  .desktop-sidebar-toggle:focus-visible { outline: 2px solid #80c5ff; outline-offset: 2px; }
+  .desktop-sidebar-toggle svg { width: 21px; height: 21px; }
   .desktop-topbar-heading { display: grid; min-width: 0; gap: 2px; }
   .desktop-topbar-heading h1 { overflow: hidden; margin: 0; color: var(--co-text); font-size: var(--desktop-font-value); font-weight: 790; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
   .desktop-topbar-heading p { overflow: hidden; margin: 0; color: var(--co-muted); font-size: var(--desktop-font-label); text-overflow: ellipsis; white-space: nowrap; }
-  .desktop-topbar-context { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 8px; }
+  .desktop-topbar-context { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; }
   .desktop-topbar-prices { display: flex; align-items: center; gap: 10px; padding-right: 10px; border-right: 1px solid var(--co-line); }
   .desktop-topbar-prices span { color: var(--co-muted); font-size: var(--desktop-font-label); font-weight: 760; white-space: nowrap; }
   .desktop-topbar-prices strong { margin-left: 3px; color: var(--co-text); font-size: var(--desktop-font-control); font-variant-numeric: tabular-nums; }

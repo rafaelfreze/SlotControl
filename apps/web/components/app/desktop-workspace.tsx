@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import type { OfficialMonitoringOverview } from "@/lib/coinops-monitoring/server";
@@ -36,11 +37,33 @@ export type DesktopWorkspaceProps = {
 };
 
 export function DesktopWorkspace({ title, subtitle, livePrices, monitoring, userLabel, actions, children }: DesktopWorkspaceProps) {
+  const pathname = usePathname();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("coinops:desktop-sidebar-collapsed");
+      setSidebarCollapsed(saved === null ? pathname === "/automacao" : saved === "true");
+    } catch {
+      setSidebarCollapsed(pathname === "/automacao");
+    }
+  }, [pathname]);
+
+  function toggleSidebar() {
+    const next = !sidebarCollapsed;
+    setSidebarCollapsed(next);
+    try {
+      window.localStorage.setItem("coinops:desktop-sidebar-collapsed", String(next));
+    } catch {
+      // The control remains usable when browser storage is unavailable.
+    }
+  }
+
   return (
-    <div className="desktop-workspace-root">
+    <div className="desktop-workspace-root" data-sidebar-collapsed={String(sidebarCollapsed)}>
       <DesktopSidebar livePrices={livePrices} monitoring={monitoring} userLabel={userLabel} />
       <div className="desktop-workspace-main">
-        <DesktopTopbar title={title} subtitle={subtitle} livePrices={livePrices} monitoring={monitoring} actions={actions} />
+        <DesktopTopbar title={title} subtitle={subtitle} livePrices={livePrices} monitoring={monitoring} actions={actions} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
         <main className="desktop-workspace-content">{children}</main>
       </div>
     </div>
@@ -54,7 +77,7 @@ export function DesktopSidebar({ livePrices, monitoring, userLabel }: Pick<Deskt
   const mode = getModePresentation(monitoring);
 
   return (
-    <aside className="desktop-workspace-sidebar" aria-label="Navegação principal do CoinOps">
+    <aside id="coinops-desktop-sidebar" className="desktop-workspace-sidebar" aria-label="Navegação principal do CoinOps">
       <Link className="desktop-sidebar-brand" href="/dashboard" aria-label="CoinOps - Resumo">
         <Image src="/icon-96x96.png" alt="" width={34} height={34} priority />
         <span>COINOPS</span>
@@ -92,10 +115,15 @@ export function DesktopSidebar({ livePrices, monitoring, userLabel }: Pick<Deskt
   );
 }
 
-export function DesktopTopbar({ title, subtitle, livePrices, monitoring, actions }: Pick<DesktopWorkspaceProps, "title" | "subtitle" | "livePrices" | "monitoring" | "actions">) {
+export function DesktopTopbar({ title, subtitle, livePrices, monitoring, actions, sidebarCollapsed, onToggleSidebar }: Pick<DesktopWorkspaceProps, "title" | "subtitle" | "livePrices" | "monitoring" | "actions"> & { sidebarCollapsed?: boolean; onToggleSidebar?: () => void }) {
   const mode = getModePresentation(monitoring);
   return (
     <header className="desktop-workspace-topbar">
+      {onToggleSidebar ? (
+        <button className="desktop-sidebar-toggle" type="button" onClick={onToggleSidebar} aria-label={sidebarCollapsed ? "Mostrar menu lateral" : "Recolher menu lateral"} aria-controls="coinops-desktop-sidebar" aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Mostrar menu lateral" : "Recolher menu lateral"}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d={sidebarCollapsed ? "m14 9 3 3-3 3" : "m16 9-3 3 3 3"}/></svg>
+        </button>
+      ) : null}
       <div className="desktop-topbar-heading">
         <h1>{title}</h1>
         {subtitle ? <p>{subtitle}</p> : null}

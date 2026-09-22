@@ -170,6 +170,19 @@
   .desktop-workspace-content .ac-center .ac-intro { display: flex; }
   .desktop-workspace-content .ac-center .ac-intro > div:first-child { display: none; }
   .desktop-workspace-content .ac-center .ac-global-status { width: 100%; max-width: none; justify-content: flex-end; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"]:has(.ac-center) .desktop-workspace-content { padding: 14px clamp(16px, 1.7vw, 24px) 24px; scrollbar-gutter: auto; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .coinops-automation { max-width: none; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-center { gap: 12px; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-center .ac-stack { gap: 12px; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-panel { padding: 15px; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-environment { padding: 15px; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-balance-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-balance { min-height: 86px; padding: 11px; }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-cycle-grid .ac-metric { min-height: 82px; }
+}
+@media (min-width: 1160px) and (max-width: 1280px) {
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-overview-lower { grid-template-columns: minmax(0, 1.4fr) minmax(280px, .6fr); }
+  .desktop-workspace-root[data-sidebar-collapsed="true"] .ac-testnet-main:not(.ac-testnet-main--orders):not(.ac-testnet-main--footer) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.13fr); }
 }
 @media (max-width: 1280px) {
   .ac-global-status { max-width: 340px; }
