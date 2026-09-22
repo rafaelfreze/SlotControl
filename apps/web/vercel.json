@@ -6,6 +6,12 @@
   "functions": {
     "app/api/cron/exchange-reconciliation/route.ts": {
       "regions": ["gru1"]
+    },
+    "app/api/coinops-testnet/diagnostic/route.ts": {
+      "regions": ["gru1"]
+    },
+    "app/automacao/page.tsx": {
+      "regions": ["gru1"]
     }
   },
   "crons": [

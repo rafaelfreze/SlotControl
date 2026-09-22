@@ -20,12 +20,13 @@ type Event = { cycle_id: string; slot_id: string | null; event_type: string; nex
 type Candle = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 type Balance = { asset: string; free: number; locked: number; total: number };
 type TestnetDiagnostic = Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>>;
-type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null };
+type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null };
 
 const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];
 const n = (value: number | string | null | undefined, digits = 2) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value).toLocaleString("pt-BR", { maximumFractionDigits: digits }) : "—";
 const d = (value?: string | null) => value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: COINOPS_TIME_ZONE }).format(new Date(value)) : "Ainda não disponível";
+const day = (value?: string | null) => value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeZone: "UTC" }).format(new Date(value)) : "—";
 const p = (value: number | string | null | undefined) => n(Number(value || 0) * 100, 2);
 const signed = (value: number | string | null | undefined) => `${Number(value || 0) >= 0 ? "+" : ""}${n(value, 4)}`;
 const shortId = (value?: string | null) => value ? value.slice(0, 8) : "—";
@@ -55,23 +56,22 @@ function Sparkline({ candles, asset }: { candles: Candle[]; asset: Asset }) {
 
 function CandleChart({ candles, asset, windowSize }: { candles: Candle[]; asset: Asset; windowSize: number }) {
   const rows = candles.slice(-windowSize);
-  if (rows.length < 2) return <p className="av2-empty">Aguardando velas reais para o gráfico.</p>;
+  if (rows.length < 2) return <p className="av2-empty">Gráfico diário temporariamente indisponível.</p>;
   const low = Math.min(...rows.map((row) => Number(row.low_price)));
   const high = Math.max(...rows.map((row) => Number(row.high_price)));
   const range = high - low || 1;
   const y = (price: number) => 190 - (price - low) / range * 170;
   const step = 680 / rows.length;
-  return <div className="av2-chart-wrap"><svg viewBox="0 0 720 220" preserveAspectRatio="none" role="img" aria-label={`Candles reais de ${asset}/USDC de ${d(rows[0]?.candle_open_at)} até ${d(rows.at(-1)?.candle_open_at)}`}>
+  return <div className="av2-chart-wrap"><svg viewBox="0 0 720 220" preserveAspectRatio="none" role="img" aria-label={`Velas diárias de ${asset}/USDC de ${day(rows[0]?.candle_open_at)} até ${day(rows.at(-1)?.candle_open_at)}`}>
     {[30, 80, 130, 180].map((line) => <line key={line} x1="18" x2="700" y1={line} y2={line} className="av2-chart-grid" />)}
     {rows.map((row, index) => { const open = Number(row.open_price), close = Number(row.close_price); const center = 22 + index * step + step / 2; const top = Math.min(y(open), y(close)); return <g key={row.candle_open_at} className={close >= open ? "av2-up" : "av2-down"}><line x1={center} x2={center} y1={y(Number(row.high_price))} y2={y(Number(row.low_price))} /><rect x={center - Math.max(2, step * .28)} y={top} width={Math.max(4, step * .56)} height={Math.max(2, Math.abs(y(open) - y(close)))} rx="1" /></g>; })}
-  </svg><div className="av2-chart-axis"><span>{d(rows[0]?.candle_open_at)}</span><span>{n(rows.at(-1)?.close_price, 4)} USDC</span><span>{d(rows.at(-1)?.candle_open_at)}</span></div></div>;
+  </svg><div className="av2-chart-axis"><span>{day(rows[0]?.candle_open_at)}</span><span>{n(rows.at(-1)?.close_price, 4)} USDC</span><span>{day(rows.at(-1)?.candle_open_at)}</span></div></div>;
 }
 
 export function AutomationMobile(props: Props) {
   const [selectedAsset, setSelectedAsset] = useState<Asset>("SOL");
   const [showAll, setShowAll] = useState(false);
   const [expandedSlot, setExpandedSlot] = useState<string | null>(null);
-  const [chartWindow, setChartWindow] = useState(60);
   const config = props.configs.find((item) => item.asset === selectedAsset);
   const assetCycles = props.cycles.filter((item) => item.asset === selectedAsset);
   const cycle = assetCycles.find((item) => ACTIVE_CYCLES.includes(item.status));
@@ -84,6 +84,7 @@ export function AutomationMobile(props: Props) {
   const slotNumberById = new Map(props.slots.map((item) => [item.id, item.slot_number]));
   const describeEvent = (event: Event) => eventLabel(event, event.slot_id ? slotNumberById.get(event.slot_id) : undefined);
   const candles = [...props.candles.filter((item) => item.symbol === `${selectedAsset}USDC`)].reverse();
+  const dailyCandles = props.dailyCandles.filter((item) => item.symbol === `${selectedAsset}USDC`);
   const open = slots.filter((item) => OPEN_SLOTS.includes(item.status));
   const armed = slots.filter((item) => item.status === "PENDING" && item.entry_state === "ARMED").length;
   const planned = slots.filter((item) => item.status === "PENDING" && item.entry_state !== "ARMED" && !item.missed_at).length;
@@ -136,7 +137,7 @@ export function AutomationMobile(props: Props) {
       </div><details><summary>Histórico deste slot ({detailHistory.length})</summary>{detailHistory.length ? detailHistory.map((item) => <p key={item.id}>Operação {shortId(item.id)} · ciclo {shortId(item.cycle_id)} · nível {item.logical_level} · saldo destinado {n(item.allocation_usdc, 8)} · BUY {n(item.entry_price, 4)} → TP {n(item.take_profit_price, 4)} · líquido {signed(item.net_quote_pnl)} USDC · {d(item.closed_at)}</p>) : <p>Nenhum gain concluído.</p>}</details><details><summary>Eventos deste slot ({detailEvents.length})</summary>{detailEvents.map((item, index) => <p key={`${item.observed_at}:${index}`}>{d(item.observed_at)} · {describeEvent(item)}</p>)}</details></div> : null}
       {!slots.length ? <p className="av2-empty">O ciclo Shadow ainda não criou slots para este ativo.</p> : null}
     </section>
-    <div className="av2-bottom-grid"><section className="av2-chart-panel"><header><h2>Gráfico {selectedAsset}/USDC</h2><div className="av2-chart-options">{[30, 60, 90].map((size) => <button type="button" key={size} data-active={chartWindow === size} onClick={() => setChartWindow(size)}>{size}m</button>)}</div></header><CandleChart candles={candles} asset={selectedAsset} windowSize={chartWindow} /><small>Velas reais registradas pelo Shadow · sem ordens na Binance.</small></section>
+    <div className="av2-bottom-grid"><section className="av2-chart-panel"><header><h2>Gráfico {selectedAsset}/USDC</h2><div className="av2-chart-options"><span>Diário · 30 dias</span></div></header><CandleChart candles={dailyCandles} asset={selectedAsset} windowSize={30} /><small>Velas diárias de mercado da Binance · somente consulta.</small></section>
       <section className="av2-events-panel"><header><h2>Últimos eventos {selectedAsset}</h2><small>{events.length} recentes</small></header>{events.length ? <ol>{events.slice(0, 6).map((event, index) => <li key={`${event.cycle_id}:${event.observed_at}:${index}`}><time>{d(event.observed_at)}</time><span>{describeEvent(event)}</span><strong>{typeof event.next_state?.netProfit === "number" ? `${signed(event.next_state.netProfit)} USDC` : ""}</strong></li>)}</ol> : <p className="av2-empty">Nenhum evento registrado neste teste.</p>}<details><summary>Ver histórico de eventos</summary>{events.slice(6).map((event, index) => <p key={`${event.observed_at}:${index}`}>{d(event.observed_at)} · {describeEvent(event)}</p>)}</details></section></div>
     <section className="av2-gains-panel"><header><h2>Histórico de ganhos</h2><strong>{gains} ganhos · {signed(realized)} USDC</strong></header>{operations.length ? <div className="av2-gain-list">{operations.slice(0, 4).map((item) => <p key={item.id}><span>Slot #{item.physical_slot_number} · {d(item.closed_at)}</span><strong>{signed(item.net_quote_pnl)} USDC</strong></p>)}</div> : <p className="av2-empty">Nenhum gain Shadow concluído neste teste.</p>}<details><summary>Ver todos os ganhos</summary>{operations.map((item) => <p key={item.id}>Operação {shortId(item.id)} · slot #{item.physical_slot_number} · ciclo {shortId(item.cycle_id)} · bruto {signed(item.gross_quote_pnl)} · taxas {n(item.estimated_quote_fees, 4)} · líquido {signed(item.net_quote_pnl)} USDC</p>)}</details></section>
     <section className="av2-connection-panel"><div><strong>{props.connectionStatus === "READ_ONLY" || props.connectionStatus === "CONNECTED" ? "Binance conectada · somente leitura" : "Binance aguardando conexão"}</strong><small>Consulta de saldos e mercado via GET. Production sem ordens, cancelamentos, transferências ou saques.</small></div><div><strong>{props.reconciliationStatus === "COMPLETED" ? "Reconciliação concluída" : "Reconciliação em acompanhamento"}</strong><small>Última sincronização {d(props.reconciliationAt || props.lastSyncedAt)} · {props.mismatches} itens para revisão · {props.intentCount} intenções Shadow</small></div><div><strong>Resultado Shadow total</strong><small>Realizado {signed(realized)} + P&L aberto {signed(openPnl)} = {signed(realized + openPnl)} USDC · capital comprometido {n(committed, 4)} / livre {n(Math.max(0, capital - committed), 4)} USDC</small></div></section>

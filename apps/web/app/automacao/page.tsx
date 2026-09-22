@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { DesktopWorkspace } from "@/components/app/desktop-workspace";
 import { MobileScreen } from "@/components/app/mobile-ui";
 import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
+import { getDailyMarketCandles } from "@/lib/execution/market-daily-candles";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
@@ -53,6 +54,9 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   ]);
   const shadowReadError = robotConfigsResponse.error || robotCyclesResponse.error || robotSlotsResponse.error || operationsResponse.error || accountsResponse.error || candlesResponse.error;
   if (shadowReadError) throw shadowReadError;
+  const dailyCandles = (await Promise.all(["BTCUSDC", "SOLUSDC"].map(async (symbol) =>
+    getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
+  ))).flat();
 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
@@ -70,6 +74,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     slotAccounts={(accountsResponse.data || []) as RobotV1SlotAccountRow[]}
     events={(eventsResponse.data || []) as RobotV1EventRow[]}
     candles={(candlesResponse.data || []) as RobotV1CandleRow[]}
+    dailyCandles={dailyCandles}
     intentCount={(intentsResponse.data as IntentRow[] | null)?.length || 0}
     solBrlPilot={{ ...assessSolBrlPilot(SOL_BRL_PUBLIC_SNAPSHOT.filters, SOL_BRL_PUBLIC_SNAPSHOT.priceBrl), observedAt: SOL_BRL_PUBLIC_SNAPSHOT.observedAt, status: SOL_BRL_PUBLIC_SNAPSHOT.status, priceBrl: SOL_BRL_PUBLIC_SNAPSHOT.priceBrl, priceTick: SOL_BRL_PUBLIC_SNAPSHOT.filters.priceTick, quantityStep: SOL_BRL_PUBLIC_SNAPSHOT.filters.quantityStep, minQuantity: SOL_BRL_PUBLIC_SNAPSHOT.filters.minQuantity, minNotional: SOL_BRL_PUBLIC_SNAPSHOT.filters.minNotional, orderTypes: SOL_BRL_PUBLIC_SNAPSHOT.orderTypes }}
     testnet={testnet}
