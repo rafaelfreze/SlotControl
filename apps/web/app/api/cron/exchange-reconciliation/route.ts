@@ -13,10 +13,8 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [reconciliation, robotV1] = await Promise.all([
-      runConfiguredBinanceReadOnlyReconciliation(),
-      runConfiguredRobotV1Shadow()
-    ]);
+    const reconciliation = await runConfiguredBinanceReadOnlyReconciliation();
+    const robotV1 = await runConfiguredRobotV1Shadow();
     return NextResponse.json({
       ok: reconciliation.status !== "FAILED",
       status: reconciliation.status,

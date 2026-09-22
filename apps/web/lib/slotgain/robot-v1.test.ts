@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, v1ClientOrderId } from "../execution/robot-v1.ts";
+import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, planV1ShadowCycleRestart, v1ClientOrderId, v1IdempotencyKey } from "../execution/robot-v1.ts";
 
 const filters = (symbol: "BTCUSDC" | "SOLUSDC") => ({ symbol, baseAsset: symbol.slice(0, -4), quoteAsset: "USDC", minQuantity: 0.00001, maxQuantity: 100000, minNotional: 5, quantityStep: 0.00001, priceTick: 0.01 });
 
@@ -49,4 +49,31 @@ test("one-minute candle detects crossed buys without inventing an intrabar TP", 
   assert.equal(crossed[0]?.kind === "BUY_TRIGGERED" && crossed[0].fillPrice, 100);
   const exit = evaluateV1Candle("BTC", { openTime: "2026-01-01T00:01:00.000Z", closeTime: "2026-01-01T00:01:59.000Z", low: 100, high: 101.2, close: 101 }, [{ slotNumber: 1, status: "TP_ACTIVE", buyPrice: 100, averageFillPrice: 100, takeProfitPrice: 101.2 }], filters("BTCUSDC"));
   assert.deepEqual(exit.map((item) => item.kind), ["TP_TRIGGERED"]);
+});
+
+test("only resets an exhausted Shadow cycle and invalidates pending entries without touching open positions", () => {
+  const isolatedSlotOneExit = [{ slotNumber: 1, status: "CLOSED" as const }, ...Array.from({ length: 24 }, (_, index) => ({ slotNumber: index + 2, status: "PENDING" as const }))];
+  assert.deepEqual(planV1ShadowCycleRestart(isolatedSlotOneExit), { shouldRestart: true, pendingSlotNumbers: Array.from({ length: 24 }, (_, index) => index + 2) });
+  const withAnotherPosition = [...isolatedSlotOneExit.slice(0, 1), { slotNumber: 2, status: "TP_ACTIVE" as const }, ...isolatedSlotOneExit.slice(2)];
+  assert.deepEqual(planV1ShadowCycleRestart(withAnotherPosition), { shouldRestart: false, pendingSlotNumbers: Array.from({ length: 23 }, (_, index) => index + 3) });
+  assert.deepEqual(planV1ShadowCycleRestart(Array.from({ length: 25 }, (_, index) => ({ slotNumber: index + 1, status: "CLOSED" as const }))), { shouldRestart: true, pendingSlotNumbers: [] });
+});
+
+test("recycles closed Shadow slots below the current ladder without changing active positions", () => {
+  const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
+  const grid = buildV1Grid("BTC", 250, 100000, filters("BTCUSDC"), parameters);
+  const afterThreeGains = [
+    ...grid.slice(0, 3).map((slot) => ({ slotNumber: slot.slotNumber, status: "CLOSED" as const })),
+    ...grid.slice(3, 5).map((slot) => ({ slotNumber: slot.slotNumber, status: "TP_ACTIVE" as const })),
+    ...grid.slice(5).map((slot) => ({ slotNumber: slot.slotNumber, status: "PENDING" as const }))
+  ];
+  assert.deepEqual(planV1ShadowCycleRestart(afterThreeGains), { shouldRestart: false, pendingSlotNumbers: Array.from({ length: 20 }, (_, index) => index + 6) });
+  const remainingActiveLevels = grid.slice(3).map((slot) => slot.buyPrice);
+  const recycled = buildV1RecycledEntries("BTC", 250, [1, 2, 3], remainingActiveLevels, filters("BTCUSDC"), parameters);
+  assert.equal(recycled.length, 3);
+  assert.equal(new Set([...remainingActiveLevels, ...recycled.map((slot) => slot.buyPrice)]).size, 25);
+  assert.ok(recycled.every((slot) => slot.buyPrice < Math.min(...remainingActiveLevels)));
+  assert.deepEqual(buildV1RecycledEntries("BTC", 250, [1, 2, 3], remainingActiveLevels, filters("BTCUSDC"), parameters), recycled);
+  assert.equal(v1IdempotencyKey("cycle", 1, "BUY", 2) === v1IdempotencyKey("cycle", 1, "BUY", 3), false);
+  assert.equal(v1ClientOrderId("BTC", "cycle", 1, "BUY", 2) === v1ClientOrderId("BTC", "cycle", 1, "BUY", 3), false);
 });

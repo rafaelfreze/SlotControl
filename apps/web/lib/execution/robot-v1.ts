@@ -8,7 +8,7 @@ export const ALLOWED_V1_SYMBOLS = ["BTCUSDC", "SOLUSDC"] as const;
 export type V1Symbol = typeof ALLOWED_V1_SYMBOLS[number];
 export type V1Asset = "BTC" | "SOL";
 export type V1ExecutionMode = "SHADOW" | "TESTNET";
-export type V1SlotStatus = "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED";
+export type V1SlotStatus = "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" | "CANCELLED";
 
 export const V1_RULES: Record<V1Asset, { symbol: V1Symbol; entrySpacing: number; gainRate: number }> = {
   BTC: { symbol: "BTCUSDC", entrySpacing: 0.02, gainRate: 0.012 },
@@ -39,6 +39,7 @@ export function calculateV1SlotNotional(capitalUsdc: number) {
 
 export type V1GridSlot = { slotNumber: number; buyPrice: number; quantity: number; notional: number; takeProfitPrice: number };
 export type V1InitialShadowPosition = Pick<V1GridSlot, "slotNumber" | "quantity" | "buyPrice" | "takeProfitPrice">;
+export type V1RecycledEntry = Pick<V1GridSlot, "slotNumber" | "quantity" | "buyPrice" | "notional">;
 
 function normalizeV1TargetPrice(value: number, priceTick: number) {
   const steps = value / priceTick;
@@ -73,14 +74,38 @@ export function buildV1InitialShadowPosition(grid: V1GridSlot[]): V1InitialShado
   return { slotNumber: firstSlot.slotNumber, quantity: firstSlot.quantity, buyPrice: firstSlot.buyPrice, takeProfitPrice: firstSlot.takeProfitPrice };
 }
 
-export function v1ClientOrderId(asset: V1Asset, cycleId: string, slotNumber: number, side: "BUY" | "SELL") {
-  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > V1_SLOT_COUNT) throw new Error("COINOPS_V1_SLOT_INVALID");
-  const suffix = createHash("sha256").update(`${cycleId}|${asset}|${slotNumber}|${side}`).digest("hex").slice(0, 18);
-  return `COV1-${asset}-${slotNumber}-${side}-${suffix}`;
+/** Extends the existing V1 ladder below its current lowest active level. This
+ * never reanchors a cycle and leaves active positions and their TPs untouched. */
+export function buildV1RecycledEntries(asset: V1Asset, capitalUsdc: number, slotNumbers: number[], activeBuyPrices: number[], filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset]): V1RecycledEntry[] {
+  const rule = assertV1ShadowParameters(parameters);
+  const slotNotional = calculateV1SlotNotional(capitalUsdc);
+  if (!slotNumbers.length || !activeBuyPrices.length || slotNotional < filters.minNotional) throw new Error("COINOPS_V1_RECYCLE_INPUT_INVALID");
+  const knownPrices = new Set(activeBuyPrices.map((price) => normalizePriceToTick(price, filters.priceTick)));
+  let lowerBound = Math.min(...activeBuyPrices);
+  return [...slotNumbers].sort((a, b) => a - b).map((slotNumber) => {
+    let buyPrice = normalizePriceToTick(lowerBound * (1 - rule.entrySpacing), filters.priceTick);
+    while (knownPrices.has(buyPrice)) buyPrice = normalizePriceToTick(buyPrice * (1 - rule.entrySpacing), filters.priceTick);
+    const quantity = normalizeToStep(slotNotional / buyPrice, filters.quantityStep);
+    const notional = Number((buyPrice * quantity).toFixed(12));
+    if (quantity < filters.minQuantity || quantity > filters.maxQuantity || notional < filters.minNotional) throw new Error("COINOPS_V1_FILTER_REJECTED");
+    knownPrices.add(buyPrice);
+    lowerBound = buyPrice;
+    return { slotNumber, buyPrice, quantity, notional };
+  });
 }
 
-export function v1IdempotencyKey(cycleId: string, slotNumber: number, side: "BUY" | "SELL") {
-  return createHash("sha256").update(`coinops-v1|${cycleId}|${slotNumber}|${side}`).digest("hex");
+export function v1ClientOrderId(asset: V1Asset, cycleId: string, slotNumber: number, side: "BUY" | "SELL", operationSequence = 1) {
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > V1_SLOT_COUNT) throw new Error("COINOPS_V1_SLOT_INVALID");
+  if (!Number.isInteger(operationSequence) || operationSequence < 1) throw new Error("COINOPS_V1_OPERATION_INVALID");
+  const sequence = operationSequence === 1 ? "" : `-${operationSequence}`;
+  const suffixSource = operationSequence === 1 ? `${cycleId}|${asset}|${slotNumber}|${side}` : `${cycleId}|${asset}|${slotNumber}|${side}|${operationSequence}`;
+  const suffix = createHash("sha256").update(suffixSource).digest("hex").slice(0, 18);
+  return `COV1-${asset}-${slotNumber}${sequence}-${side}-${suffix}`;
+}
+
+export function v1IdempotencyKey(cycleId: string, slotNumber: number, side: "BUY" | "SELL", operationSequence = 1) {
+  const source = operationSequence === 1 ? `coinops-v1|${cycleId}|${slotNumber}|${side}` : `coinops-v1|${cycleId}|${slotNumber}|${side}|${operationSequence}`;
+  return createHash("sha256").update(source).digest("hex");
 }
 
 export function classifyV1Fill(requestedQuantity: number, executedQuantity: number): V1SlotStatus {
@@ -96,6 +121,17 @@ export function calculateV1TakeProfit(asset: V1Asset, averageFillPrice: number, 
 
 export function canResetV1Cycle(slots: Array<{ status: V1SlotStatus; ownedPendingBuy: boolean }>) {
   return slots.length === V1_SLOT_COUNT && slots.every((slot) => slot.status === "CLOSED" || (slot.status === "PENDING" && !slot.ownedPendingBuy));
+}
+
+/** Determines whether a reconciled Shadow cycle can safely start a new grid.
+ * Pending entries are virtual only and are cancelled only after every position
+ * and TP has closed; an active position always keeps the current cycle alive. */
+export function planV1ShadowCycleRestart(slots: Array<{ slotNumber: number; status: V1SlotStatus }>) {
+  if (slots.length !== V1_SLOT_COUNT) return { shouldRestart: false, pendingSlotNumbers: [] as number[] };
+  const hasOpenPosition = slots.some((slot) => slot.status === "TP_ACTIVE" || slot.status === "OPEN" || slot.status === "PARTIALLY_FILLED");
+  const hasInvalidState = slots.some((slot) => !["PENDING", "TP_ACTIVE", "OPEN", "PARTIALLY_FILLED", "CLOSED", "CANCELLED"].includes(slot.status));
+  const pendingSlotNumbers = slots.filter((slot) => slot.status === "PENDING").map((slot) => slot.slotNumber);
+  return { shouldRestart: !hasOpenPosition && !hasInvalidState, pendingSlotNumbers };
 }
 
 export type V1Candle = { openTime: string; closeTime: string; high: number; low: number; close: number };
