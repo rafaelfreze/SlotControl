@@ -37,9 +37,11 @@ export function calculateV1SlotNotional(capitalUsdc: number) {
   return capitalUsdc / V1_SLOT_COUNT;
 }
 
-export type V1GridSlot = { slotNumber: number; buyPrice: number; quantity: number; notional: number; takeProfitPrice: number };
+export type V1GridSlot = { slotNumber: number; logicalLevel: number; buyPrice: number; quantity: number; notional: number; takeProfitPrice: number };
 export type V1InitialShadowPosition = Pick<V1GridSlot, "slotNumber" | "quantity" | "buyPrice" | "takeProfitPrice">;
 export type V1RecycledEntry = Pick<V1GridSlot, "slotNumber" | "quantity" | "buyPrice" | "notional">;
+export type V1ActiveGridSlot = { slotNumber: number; logicalLevel: number; buyPrice: number; status: V1SlotStatus };
+export type V1ActiveGridValidation = { valid: boolean; errors: string[]; logicalLevels: Map<number, number> };
 
 function normalizeV1TargetPrice(value: number, priceTick: number) {
   const steps = value / priceTick;
@@ -63,8 +65,53 @@ export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: nu
     const quantity = normalizeToStep(slotNotional / buyPrice, filters.quantityStep);
     const notional = Number((buyPrice * quantity).toFixed(12));
     if (quantity < filters.minQuantity || quantity > filters.maxQuantity || notional < filters.minNotional) throw new Error("COINOPS_V1_FILTER_REJECTED");
-    return { slotNumber: index + 1, buyPrice, quantity, notional, takeProfitPrice: normalizeV1TargetPrice(buyPrice * (1 + rule.gainRate), filters.priceTick) };
+    return { slotNumber: index + 1, logicalLevel: index + 1, buyPrice, quantity, notional, takeProfitPrice: normalizeV1TargetPrice(buyPrice * (1 + rule.gainRate), filters.priceTick) };
   });
+}
+
+/** Returns the immutable position in the compounded ladder for one price.
+ * Physical slot numbers may be reused after a realised Shadow gain; their
+ * logical level therefore intentionally differs from the physical number. */
+export function findV1LogicalLevel(anchorPrice: number, buyPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters): number | null {
+  const rule = assertV1ShadowParameters(parameters);
+  if (![anchorPrice, buyPrice, filters.priceTick].every(Number.isFinite) || anchorPrice <= 0 || buyPrice <= 0 || filters.priceTick <= 0) return null;
+  const rawIndex = Math.log(buyPrice / anchorPrice) / Math.log(1 - rule.entrySpacing);
+  const index = Math.round(rawIndex);
+  if (!Number.isFinite(index) || index < 0) return null;
+  const expected = normalizePriceToTick(anchorPrice * Math.pow(1 - rule.entrySpacing, index), filters.priceTick);
+  return Math.abs(expected - buyPrice) <= (filters.priceTick / 2) + 1e-9 ? index + 1 : null;
+}
+
+/**
+ * Validates the active Shadow ladder before the worker creates another BUY.
+ * A recycled physical slot can occupy a later logical level, so gaps in
+ * physical slot numbers are valid; each price must still be on the frozen
+ * compounded ladder and every live logical level must be unique.
+ */
+export function validateActiveGrid(anchorPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters, slots: V1ActiveGridSlot[]): V1ActiveGridValidation {
+  const errors: string[] = [];
+  const logicalLevels = new Map<number, number>();
+  const activeStatuses: V1SlotStatus[] = ["PENDING", "PARTIALLY_FILLED", "OPEN", "TP_ACTIVE"];
+  if (slots.length !== V1_SLOT_COUNT) errors.push("SLOT_COUNT_INVALID");
+  const slotNumbers = new Set<number>();
+  const prices = new Set<number>();
+  for (const slot of slots) {
+    if (!Number.isInteger(slot.slotNumber) || slot.slotNumber < 1 || slot.slotNumber > V1_SLOT_COUNT || slotNumbers.has(slot.slotNumber)) errors.push("PHYSICAL_SLOT_INVALID");
+    slotNumbers.add(slot.slotNumber);
+    if (!activeStatuses.includes(slot.status)) errors.push("ACTIVE_STATUS_INVALID");
+    if (!Number.isFinite(slot.buyPrice) || slot.buyPrice <= 0 || prices.has(slot.buyPrice)) errors.push("BUY_PRICE_DUPLICATE_OR_INVALID");
+    prices.add(slot.buyPrice);
+    const inferredLevel = findV1LogicalLevel(anchorPrice, slot.buyPrice, filters, parameters);
+    if (inferredLevel === null) errors.push(`PRICE_OFF_LADDER_${slot.slotNumber}`);
+    else {
+      if (slot.logicalLevel !== inferredLevel) errors.push(`LOGICAL_LEVEL_MISMATCH_${slot.slotNumber}`);
+      if (logicalLevels.has(inferredLevel)) errors.push(`LOGICAL_LEVEL_DUPLICATE_${inferredLevel}`);
+      logicalLevels.set(inferredLevel, slot.slotNumber);
+    }
+  }
+  const descending = [...slots].sort((a, b) => b.buyPrice - a.buyPrice);
+  for (let index = 1; index < descending.length; index += 1) if (descending[index - 1]!.buyPrice <= descending[index]!.buyPrice) errors.push("LADDER_NOT_DESCENDING");
+  return { valid: errors.length === 0, errors: [...new Set(errors)], logicalLevels };
 }
 
 /** Describes the initial virtual Shadow position. It never creates an exchange order. */

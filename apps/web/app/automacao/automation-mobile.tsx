@@ -2,109 +2,62 @@
 
 import type { FormEvent } from "react";
 
+import { summarizeV1ShadowOperations } from "@/lib/execution/robot-v1-audit";
+
 import { controlRobotV1Shadow, saveRobotV1Parameters } from "./robot-v1-actions";
 
-type Config = { id: string; asset: "BTC" | "SOL"; symbol: string; execution_mode: "SHADOW" | "TESTNET"; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; slot_count: number; kill_switch: boolean; pause_new_entries: boolean; shadow_test_started_at: string | null; shadow_test_target_end_at: string | null };
-type Cycle = { id: string; config_id: string; asset: "BTC" | "SOL"; status: string; slot_notional_usdc: number | string; capital_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; started_at: string };
-type Slot = { id: string; cycle_id: string; slot_number: number; buy_price: number | string; buy_status: string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; take_profit_status: string; status: string; realized_quote_pnl: number | string | null };
+type Config = { id: string; asset: "BTC" | "SOL"; symbol: string; execution_mode: "SHADOW" | "TESTNET"; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; slot_count: number; kill_switch: boolean; pause_new_entries: boolean; shadow_test_started_at: string | null; shadow_test_target_end_at: string | null; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
+type Cycle = { id: string; config_id: string; asset: "BTC" | "SOL"; status: string; anchor_price: number | string; slot_notional_usdc: number | string; capital_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; started_at: string; completed_at: string | null; completion_reason: string | null };
+type Slot = { id: string; cycle_id: string; slot_number: number; logical_level: number; operation_sequence: number; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; status: string; buy_triggered_at: string | null };
+type Operation = { id: string; cycle_id: string; slot_id: string; logical_level: number; operation_sequence: number; entry_price: number | string; take_profit_price: number | string; gross_quote_pnl: number | string; estimated_quote_fees: number | string; net_quote_pnl: number | string; closed_at: string };
+type Event = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type Balance = { asset: string; free: number; locked: number; total: number };
+type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; events: Event[]; intentCount: number };
 
-type Props = {
-  connectionStatus?: string | null;
-  lastSyncedAt?: string | null;
-  balances: Balance[];
-  reconciliationStatus?: string | null;
-  reconciliationAt?: string | null;
-  mismatches: number;
-  configs: Config[];
-  cycles: Cycle[];
-  slots: Slot[];
-  intentCount: number;
-};
-
-function number(value: number | string | null | undefined, digits = 2) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed.toLocaleString("pt-BR", { maximumFractionDigits: digits }) : "—";
-}
-
-function date(value?: string | null) {
-  return value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value)) : "Ainda não disponível";
-}
-
-function connectionLabel(value?: string | null) {
-  return value === "READ_ONLY" || value === "CONNECTED" ? "Binance conectada" : value === "ERROR" ? "Conexão precisa de atenção" : "Conexão aguardando leitura";
-}
-
-function slotPresentation(slot: Slot) {
-  if (slot.status === "TP_ACTIVE" || slot.status === "OPEN" || slot.status === "PARTIALLY_FILLED") return { state: "ABERTO", badge: "VENDA ATIVA", priceLabel: "Entrada Shadow", price: slot.average_fill_price, target: slot.take_profit_price };
-  if (slot.status === "PENDING") return { state: "AGUARDANDO COMPRA", badge: null, priceLabel: "Compra programada", price: slot.buy_price, target: null };
-  if (slot.status === "CLOSED") return { state: "FINALIZADO", badge: null, priceLabel: "Entrada Shadow", price: slot.average_fill_price || slot.buy_price, target: slot.take_profit_price };
-  if (slot.status === "CANCELLED") return { state: "FINALIZADO", badge: "ENTRADA INVALIDADA", priceLabel: "Compra programada", price: slot.buy_price, target: null };
-  return { state: "ERRO", badge: null, priceLabel: "Preço", price: slot.buy_price, target: null };
-}
-function percent(value: number | string | null | undefined) { return number(Number(value || 0) * 100, 2); }
-
-function confirmKill(event: FormEvent<HTMLFormElement>) {
-  if (!window.confirm("Ativar o kill switch pausa novas entradas deste robô Shadow. O ciclo e o histórico serão preservados. Continuar?")) event.preventDefault();
-}
+const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
+const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];
+const n = (value: number | string | null | undefined, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toLocaleString("pt-BR", { maximumFractionDigits: digits }) : "—";
+const d = (value?: string | null) => value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value)) : "Ainda não disponível";
+const p = (value: number | string | null | undefined) => n(Number(value || 0) * 100, 2);
+const signed = (value: number | string | null | undefined) => `${Number(value || 0) >= 0 ? "+" : ""}${n(value, 4)}`;
+const shortId = (value?: string | null) => value ? value.slice(0, 8) : "—";
+function connectionLabel(value?: string | null) { return value === "READ_ONLY" || value === "CONNECTED" ? "Binance conectada" : value === "ERROR" ? "Conexão precisa de atenção" : "Conexão aguardando leitura"; }
+function state(slot: Slot) { if (OPEN_SLOTS.includes(slot.status)) return { label: "ABERTO", badge: "VENDA ATIVA", price: slot.average_fill_price, target: slot.take_profit_price }; if (slot.status === "PENDING") return { label: "AGUARDANDO COMPRA", badge: null, price: slot.buy_price, target: null }; return { label: "FINALIZADO", badge: slot.status === "CANCELLED" ? "ENTRADA INVALIDADA" : null, price: slot.average_fill_price || slot.buy_price, target: slot.take_profit_price }; }
+function distance(current: number, target: number, up: boolean) { if (!current || !target) return "Cotação indisponível"; const percent = (up ? target / current - 1 : current / target - 1) * 100; return percent <= 0 ? up ? "TP alcançado; aguardando vela confirmada" : "Compra atingida; aguardando vela confirmada" : `Falta ${up ? "+" : "-"}${n(percent, 2)}%`; }
+function eventLabel(event: Event) { const slot = typeof event.next_state?.slotNumber === "number" ? `Slot #${event.next_state.slotNumber} ` : ""; const labels: Record<string, string> = { INITIAL_POSITION_OPENED: "posição inicial aberta", BUY_TRIGGERED: "compra Shadow confirmada", TP_TRIGGERED: "TP atingido", SLOT_RECYCLED: "slot reciclado", CYCLE_STARTED: "novo ciclo", CYCLE_COMPLETED: "ciclo concluído", CYCLE_RESTARTED: "ciclo reiniciado", INTRABAR_AMBIGUOUS: "vela ambígua", GRID_INVALID: "grade inválida" }; return `${slot}${labels[event.event_type] || event.event_type}`; }
+function confirmKill(event: FormEvent<HTMLFormElement>) { if (!window.confirm("Ativar o kill switch pausa novas entradas deste robô Shadow. O ciclo e o histórico serão preservados. Continuar?")) event.preventDefault(); }
 
 export function AutomationMobile(props: Props) {
-  return (
-    <div className="automation-mobile-page">
-      <header className="automation-mobile-hero">
-        <span className="automation-eyebrow">AUTOMAÇÃO</span>
-        <h1>Seu robô CoinOps</h1>
-        <strong>SIMULAÇÃO ATIVA</strong>
-        <p>Acompanha o mercado real sem movimentar dinheiro.</p>
-      </header>
-
-      <section className="automation-connection-card" aria-label="Conexão Binance">
-        <div><span className="automation-dot" aria-hidden="true" /><p><strong>{connectionLabel(props.connectionStatus)}</strong><small>Somente consultas GET. Ordens, cancelamentos, transferências e saques permanecem bloqueados.</small></p></div>
-        <small>Atualizado: {date(props.lastSyncedAt)}</small>
-      </section>
-
-      <section className="automation-balance-grid" aria-label="Saldos reconciliados">
-        {(["BTC", "SOL", "USDT"] as const).map((asset) => {
-          const balance = props.balances.find((item) => item.asset === asset);
-          return <article key={asset}><span>{asset}</span><strong>{number(balance?.total, 8)}</strong><small>Saldo lido da Binance</small></article>;
-        })}
-      </section>
-
-      <section className="automation-reconciliation-card">
-        <span>RECONCILIAÇÃO</span>
-        <strong>{props.reconciliationStatus === "COMPLETED" ? "Sincronização concluída" : "Sincronização em acompanhamento"}</strong>
-        <p>{props.mismatches ? `${props.mismatches} item(ns) para revisar, sem correção automática.` : "CoinOps e Binance foram comparados sem alterar suas operações."} {props.intentCount} intenção(ões) Shadow auditada(s).</p>
-        <small>Última verificação: {date(props.reconciliationAt)}</small>
-      </section>
-
-      {(["BTC", "SOL"] as const).map((asset) => {
-        const config = props.configs.find((item) => item.asset === asset);
-        const cycle = config ? props.cycles.find((item) => item.config_id === config.id) : undefined;
-        const slots = cycle ? props.slots.filter((item) => item.cycle_id === cycle.id) : [];
-        const pending = slots.filter((item) => item.status === "PENDING").length;
-        const open = slots.filter((item) => item.status === "TP_ACTIVE" || item.status === "OPEN" || item.status === "PARTIALLY_FILLED").length;
-        const closed = slots.filter((item) => item.status === "CLOSED").length;
-        const pnl = slots.reduce((total, item) => total + Number(item.realized_quote_pnl || 0), 0);
-        const capital = Number(cycle?.capital_usdc || config?.capital_usdc || 250);
-        const slotNotional = Number(cycle?.slot_notional_usdc || capital / 25);
-        const isActive = Boolean(cycle) && !config?.kill_switch && !config?.pause_new_entries;
-        return (
-          <section className={`robot-shadow-card ${asset.toLowerCase()}`} key={asset}>
-            <header><div><span>{asset}/USDC</span><h2>{config?.kill_switch ? "Kill switch ativo" : config?.pause_new_entries ? "Novas entradas pausadas" : isActive ? "Shadow ativo" : "Pronto para Shadow"}</h2></div><b>{asset === "BTC" ? "₿" : "S"}</b></header>
-            <p className="robot-explainer">Simulação com mercado real. Nenhuma ordem é enviada à Binance.</p>
-            <div className="robot-stat-grid"><span><small>Capital do ciclo</small><strong>{number(capital)} USDC</strong></span><span><small>Por slot</small><strong>{number(slotNotional)} USDC</strong></span><span><small>Resumo</small><strong>{open} aberto{open === 1 ? "" : "s"} · {pending} aguardando · {closed} finalizado{closed === 1 ? "" : "s"}</strong></span><span><small>Capital comprometido</small><strong>{number(open * slotNotional)} USDC</strong></span><span><small>Capital livre</small><strong>{number(Math.max(0, capital - open * slotNotional))} USDC</strong></span><span><small>Resultado líquido Shadow</small><strong>{number(pnl, 4)} USDC</strong></span><span><small>Parâmetros atuais</small><strong>{percent(cycle?.gain_rate || config?.gain_rate)}% · {percent(cycle?.entry_spacing || config?.entry_spacing)}%</strong></span></div>
-            <form className="robot-capital-form robot-parameters-form" action={saveRobotV1Parameters}><input type="hidden" name="asset" value={asset} /><p>Parâmetros de teste do robô — afetam somente a simulação V1; a estratégia principal não é alterada.</p><label>Capital para {cycle ? "o próximo ciclo" : "este ciclo"}<input name="capital_usdc" type="number" min="0.01" step="0.01" defaultValue={config ? Number(config.next_capital_usdc || config.capital_usdc) : 250} required /></label><label>Gain %<input name="gain_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={percent(config?.next_gain_rate || config?.gain_rate)} required /></label><label>Queda entre compras %<input name="spacing_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={percent(config?.next_entry_spacing || config?.entry_spacing)} required /></label><span className="robot-fixed-slots">25 slots fixos</span><button type="submit">Salvar próximo ciclo</button></form>
-            {cycle ? <p className="robot-cycle-note">Ciclo iniciado em {date(cycle.started_at)}. Capital, âncora e histórico deste ciclo estão preservados.</p> : null}
-            <div className="robot-control-grid">
-              <form action={controlRobotV1Shadow}><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="start" /><button type="submit" disabled={Boolean(cycle)}>Iniciar Shadow</button></form>
-              <form action={controlRobotV1Shadow}><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value={config?.pause_new_entries ? "resume" : "pause"} /><button type="submit">{config?.pause_new_entries ? "Retomar entradas" : "Pausar entradas"}</button></form>
-              <form action={controlRobotV1Shadow} onSubmit={confirmKill}><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="kill" /><button type="submit" className="danger">Kill switch</button></form>
-              <form action={controlRobotV1Shadow} className="robot-restart-form"><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="restart" /><label><input type="checkbox" name="restart_confirmed" value="yes" required /> Confirmo o reinício virtual e a preservação do histórico.</label><button type="submit">Reiniciar simulação</button></form>
-            </div>
-            <details className="robot-slots-details"><summary>Ver os {slots.length || 25} slots deste ciclo</summary>{slots.length ? <ol>{slots.map((slot) => { const view = slotPresentation(slot); return <li className={`robot-slot-${slot.status.toLowerCase()}`} key={slot.id}><span>#{slot.slot_number}</span><div><strong>{view.state}</strong>{view.badge ? <em>{view.badge}</em> : null}<small>{view.priceLabel}: {number(view.price, 4)}</small>{view.target !== null ? <small>Venda programada: {number(view.target, 4)} (+{percent(cycle?.gain_rate || config?.gain_rate)}%)</small> : null}<small>Valor alocado: {number(slotNotional)} USDC</small>{slot.status === "CLOSED" ? <small>Resultado líquido: {number(slot.realized_quote_pnl, 4)} USDC</small> : null}</div></li>; })}</ol> : <p>Os slots aparecerão quando o ciclo Shadow iniciar.</p>}</details>
-          </section>
-        );
-      })}
-    </div>
-  );
+  return <div className="automation-mobile-page">
+    <header className="automation-mobile-hero"><span className="automation-eyebrow">AUTOMAÇÃO</span><h1>Seu robô CoinOps</h1><strong>SIMULAÇÃO ATIVA</strong><p>Acompanha o mercado real sem movimentar dinheiro.</p></header>
+    <section className="automation-connection-card" aria-label="Conexão Binance"><div><span className="automation-dot" aria-hidden="true" /><p><strong>{connectionLabel(props.connectionStatus)}</strong><small>Somente consultas GET. Ordens, cancelamentos, transferências e saques permanecem bloqueados.</small></p></div><small>Atualizado: {d(props.lastSyncedAt)}</small></section>
+    <section className="automation-balance-grid" aria-label="Saldos reconciliados">{(["BTC", "SOL", "USDT"] as const).map((asset) => { const balance = props.balances.find((item) => item.asset === asset); return <article key={asset}><span>{asset}</span><strong>{n(balance?.total, 8)}</strong><small>Saldo lido da Binance</small></article>; })}</section>
+    <section className="automation-reconciliation-card"><span>RECONCILIAÇÃO</span><strong>{props.reconciliationStatus === "COMPLETED" ? "Sincronização concluída" : "Sincronização em acompanhamento"}</strong><p>{props.mismatches ? `${props.mismatches} item(ns) para revisar, sem correção automática.` : "CoinOps e Binance foram comparados sem alterar suas operações."} {props.intentCount} intenção(ões) Shadow auditada(s).</p><small>Última verificação: {d(props.reconciliationAt)}</small></section>
+    {(["BTC", "SOL"] as const).map((asset) => {
+      const config = props.configs.find((item) => item.asset === asset);
+      const assetCycles = props.cycles.filter((item) => item.asset === asset);
+      const cycle = assetCycles.find((item) => ACTIVE_CYCLES.includes(item.status));
+      const slots = cycle ? props.slots.filter((item) => item.cycle_id === cycle.id) : [];
+      const ordered = [...slots].sort((a, b) => a.logical_level - b.logical_level || a.slot_number - b.slot_number);
+      const testCycles = new Set(assetCycles.filter((item) => !config?.shadow_test_started_at || Date.parse(item.started_at) >= Date.parse(config.shadow_test_started_at)).map((item) => item.id));
+      const operations = props.operations.filter((item) => testCycles.has(item.cycle_id));
+      const events = props.events.filter((item) => testCycles.has(item.cycle_id)).slice(0, 10);
+      const openRows = slots.filter((item) => OPEN_SLOTS.includes(item.status));
+      const pending = slots.filter((item) => item.status === "PENDING").length;
+      const capital = Number(cycle?.capital_usdc || config?.capital_usdc || 250), slotNotional = Number(cycle?.slot_notional_usdc || capital / 25), current = Number(config?.last_market_price || 0);
+      const accounting = summarizeV1ShadowOperations(operations.map((item) => ({ grossQuotePnl: item.gross_quote_pnl, estimatedQuoteFees: item.estimated_quote_fees, netQuotePnl: item.net_quote_pnl })));
+      const openPnl = openRows.reduce((sum, item) => sum + (current - Number(item.average_fill_price || 0)) * Number(item.executed_quantity || 0), 0);
+      const cyclesDone = assetCycles.filter((item) => item.status === "CYCLE_COMPLETE").length;
+      const health = config?.grid_status === "VALID" && !config.last_engine_error ? "Motor OK" : "Atenção";
+      const active = Boolean(cycle) && !config?.kill_switch && !config?.pause_new_entries;
+      return <section className={`robot-shadow-card ${asset.toLowerCase()}`} key={asset}>
+        <header><div><span>{asset}/USDC · SHADOW/VIRTUAL</span><h2>{config?.kill_switch ? "Kill switch ativo" : config?.pause_new_entries ? "Novas entradas pausadas" : active ? "Shadow ativo" : "Pronto para Shadow"}</h2></div><b>{asset === "BTC" ? "₿" : "S"}</b></header><p className="robot-explainer">Simulação com mercado real. Nenhuma ordem é enviada à Binance.</p>
+        <div className="robot-stat-grid"><span><small>Saúde do motor</small><strong>{health}</strong><small>{config?.grid_error || `Motor: ${d(config?.last_engine_at)}`}</small></span><span><small>Preço atual Shadow</small><strong>{n(current, 4)} USDC</strong><small>Vela: {d(config?.last_candle_open_at)}</small></span><span><small>Âncora / ciclo</small><strong>{n(cycle?.anchor_price, 4)} · {shortId(cycle?.id)}</strong><small>Início: {d(cycle?.started_at)}</small></span><span><small>Capital / por slot</small><strong>{n(capital)} / {n(slotNotional)} USDC</strong><small>{n(openRows.length * slotNotional)} comprometido · {n(Math.max(0, capital - openRows.length * slotNotional))} livre</small></span><span><small>Estratégia</small><strong>Gain {p(cycle?.gain_rate || config?.gain_rate)}% · spacing {p(cycle?.entry_spacing || config?.entry_spacing)}%</strong><small>{slots.length || 25} slots físicos</small></span><span><small>Operação atual</small><strong>{openRows.length} aberto{openRows.length === 1 ? "" : "s"} · {pending} aguardando</strong><small>{openRows.length + pending === 25 ? "Capacidade operacional: 25/25" : "Capacidade requer atenção"}</small></span><span><small>Gains / operações</small><strong>{accounting.operations} gain{accounting.operations === 1 ? "" : "s"} · {cyclesDone} ciclo{cyclesDone === 1 ? "" : "s"}</strong><small>Histórico preservado por slot</small></span><span><small>Resultado total do teste</small><strong>{signed(accounting.netProfit)} USDC</strong><small>Bruto {signed(accounting.grossProfit)} · taxas {n(accounting.estimatedFees, 4)} · P&L aberto {signed(openPnl)}</small></span></div>
+        <form className="robot-capital-form robot-parameters-form" action={saveRobotV1Parameters}><input type="hidden" name="asset" value={asset} /><p>Parâmetros de teste do robô — afetam somente a simulação V1; a estratégia principal não é alterada.</p><label>Capital para {cycle ? "o próximo ciclo" : "este ciclo"}<input name="capital_usdc" type="number" min="0.01" step="0.01" defaultValue={config ? Number(config.next_capital_usdc || config.capital_usdc) : 250} required /></label><label>Gain %<input name="gain_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={p(config?.next_gain_rate || config?.gain_rate)} required /></label><label>Queda entre compras %<input name="spacing_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={p(config?.next_entry_spacing || config?.entry_spacing)} required /></label><span className="robot-fixed-slots">25 slots fixos</span><button type="submit">Salvar próximo ciclo</button></form>
+        <div className="robot-control-grid"><form action={controlRobotV1Shadow}><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="start" /><button type="submit" disabled={Boolean(cycle)}>Iniciar Shadow</button></form><form action={controlRobotV1Shadow}><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value={config?.pause_new_entries ? "resume" : "pause"} /><button type="submit">{config?.pause_new_entries ? "Retomar entradas" : "Pausar entradas"}</button></form><form action={controlRobotV1Shadow} onSubmit={confirmKill}><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="kill" /><button type="submit" className="danger">Kill switch</button></form><form action={controlRobotV1Shadow} className="robot-restart-form"><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="restart" /><label><input type="checkbox" name="restart_confirmed" value="yes" required /> Confirmo o reinício virtual e a preservação do histórico.</label><button type="submit">Reiniciar simulação</button></form></div>
+        <details className="robot-slots-details"><summary>Ver os {slots.length || 25} slots — ordenados pelo nível lógico</summary>{ordered.length ? <ol>{ordered.map((slot) => { const view = state(slot), history = operations.filter((item) => item.slot_id === slot.id), fill = Number(slot.average_fill_price || 0); return <li className={`robot-slot-${slot.status.toLowerCase()}`} key={slot.id}><span>#{slot.slot_number}</span><div><strong>{view.label}</strong>{view.badge ? <em>{view.badge}</em> : null}<small>Slot físico #{slot.slot_number} · nível lógico {slot.logical_level} · operação {slot.operation_sequence}</small><small>{slot.status === "PENDING" ? "Compra programada" : "Entrada Shadow"}: {n(view.price, 4)} USDC</small>{view.target !== null ? <small>TP: {n(view.target, 4)} USDC · {distance(current, Number(view.target), true)}</small> : <small>{distance(current, Number(slot.buy_price), false)}</small>}<small>Quantidade virtual: {n(slot.executed_quantity || slot.requested_quantity, 8)} · notional: {n(slotNotional)} USDC</small>{OPEN_SLOTS.includes(slot.status) ? <small>P&L aberto: {signed((current - fill) * Number(slot.executed_quantity || 0))} USDC · aberto em {d(slot.buy_triggered_at)}</small> : null}<small>Gains: {history.length}</small>{history.length ? <details className="robot-operation-history"><summary>Histórico deste slot</summary>{history.map((item) => <small key={item.id}>Nível {item.logical_level} · BUY {n(item.entry_price, 4)} · TP {n(item.take_profit_price, 4)} · líquido {signed(item.net_quote_pnl)} USDC · {d(item.closed_at)}</small>)}</details> : null}</div></li>; })}</ol> : <p>Os slots aparecerão quando o ciclo Shadow iniciar.</p>}</details>
+        <details className="robot-events-details"><summary>Últimos eventos Shadow</summary>{events.length ? <ol>{events.map((event, index) => <li key={`${event.cycle_id}:${event.observed_at}:${index}`}><strong>{d(event.observed_at)}</strong><span>{eventLabel(event)}</span></li>)}</ol> : <p>Ainda não há eventos neste teste.</p>}</details>
+      </section>;
+    })}
+  </div>;
 }
