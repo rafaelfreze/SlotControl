@@ -81,6 +81,23 @@ test("Binance symbol filters and all read history representations remain GET-onl
   assert.equal(methods.every((method) => method === "GET"), true);
 });
 
+test("Binance public market data uses the dedicated official endpoint while private reads retain the authenticated endpoint", async () => {
+  const urls: string[] = [];
+  const adapter = new BinanceSpotAdapter(null, {
+    maxReadRetries: 0,
+    baseUrl: "https://private.example",
+    marketDataBaseUrl: "https://market.example",
+    fetcher: async (url) => {
+      urls.push(url);
+      if (url.includes("ticker/price")) return response({ symbol: "BTCUSDC", price: "65000" });
+      return response({ symbols: [{ symbol: "BTCUSDC", baseAsset: "BTC", quoteAsset: "USDC", filters: [{ filterType: "LOT_SIZE", minQty: "0.00001", maxQty: "9000", stepSize: "0.00001" }, { filterType: "PRICE_FILTER", tickSize: "0.01" }, { filterType: "NOTIONAL", minNotional: "5" }] }] });
+    }
+  });
+  await adapter.getMarketPrice("BTCUSDC");
+  await adapter.getSymbolInfo("BTCUSDC");
+  assert.equal(urls.every((url) => url.startsWith("https://market.example")), true);
+});
+
 test("Binance symbol filters fall back to LOT_SIZE when MARKET_LOT_SIZE is disabled", async () => {
   const adapter = new BinanceSpotAdapter(null, {
     maxReadRetries: 0,

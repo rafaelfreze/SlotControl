@@ -36,10 +36,12 @@ export class BinanceReadOnlyError extends Error {
 }
 
 export type BinanceReadOnlyCredentials = { apiKey: string; apiSecret: string };
-export type BinanceSpotAdapterOptions = { fetcher?: FetchLike; now?: () => number; sleep?: Sleep; baseUrl?: string; maxReadRetries?: number };
+export type BinanceSpotAdapterOptions = { fetcher?: FetchLike; now?: () => number; sleep?: Sleep; baseUrl?: string; marketDataBaseUrl?: string; maxReadRetries?: number };
 
 const defaultSleep: Sleep = async (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const BINANCE_BASE_URL = "https://api.binance.com";
+/** Official endpoint limited to Binance public market-data routes. */
+const BINANCE_MARKET_DATA_BASE_URL = "https://data-api.binance.vision";
 const READ_RECV_WINDOW_MS = 5_000;
 
 function finiteNumber(value: string | number | undefined, code: string) {
@@ -77,6 +79,7 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
   private readonly now: () => number;
   private readonly sleep: Sleep;
   private readonly baseUrl: string;
+  private readonly marketDataBaseUrl: string;
   private readonly maxReadRetries: number;
   private readonly credentials: BinanceReadOnlyCredentials | null;
   private serverTimeOffsetMs = 0;
@@ -93,6 +96,7 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
     this.now = options.now || Date.now;
     this.sleep = options.sleep || defaultSleep;
     this.baseUrl = options.baseUrl || BINANCE_BASE_URL;
+    this.marketDataBaseUrl = options.marketDataBaseUrl || BINANCE_MARKET_DATA_BASE_URL;
     this.maxReadRetries = options.maxReadRetries ?? 1;
   }
 
@@ -128,14 +132,14 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
   }
 
   async getMarketPrice(symbol: string): Promise<ExchangeMarketPrice> {
-    const payload = await this.readJson<{ symbol?: string; price?: string }>("/api/v3/ticker/price", { symbol });
+    const payload = await this.readMarketJson<{ symbol?: string; price?: string }>("/api/v3/ticker/price", { symbol });
     const price = finiteNumber(payload.price, "BINANCE_MARKET_PRICE_INVALID");
     if (payload.symbol !== symbol || price <= 0) throw new BinanceReadOnlyError("BINANCE_MARKET_PRICE_INVALID");
     return { symbol, price, observedAt: new Date(this.now() + this.serverTimeOffsetMs).toISOString() };
   }
 
   async getCandles(symbol: string, interval: "1m", startTime?: number): Promise<ExchangeCandle[]> {
-    const payload = await this.readJson<unknown[]>("/api/v3/klines", {
+    const payload = await this.readMarketJson<unknown[]>("/api/v3/klines", {
       symbol,
       interval,
       limit: "1000",
@@ -158,7 +162,7 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
   }
 
   async getSymbolInfo(symbol: string): Promise<ExchangeSymbolInfo> {
-    const payload = await this.readJson<BinanceExchangeInfo>("/api/v3/exchangeInfo", { symbol });
+    const payload = await this.readMarketJson<BinanceExchangeInfo>("/api/v3/exchangeInfo", { symbol });
     const item = payload.symbols?.find((candidate) => candidate.symbol === symbol);
     const marketLot = item?.filters?.find((filter) => filter.filterType === "MARKET_LOT_SIZE");
     const standardLot = item?.filters?.find((filter) => filter.filterType === "LOT_SIZE");
@@ -221,9 +225,13 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
     }
   }
 
-  private async readJson<T>(path: string, params: Record<string, string> = {}, headers?: Record<string, string>) {
+  private async readMarketJson<T>(path: string, params: Record<string, string> = {}) {
+    return this.readJson<T>(path, params, undefined, this.marketDataBaseUrl);
+  }
+
+  private async readJson<T>(path: string, params: Record<string, string> = {}, headers?: Record<string, string>, baseUrl = this.baseUrl) {
     const query = new URLSearchParams(params);
-    const url = `${this.baseUrl}${path}${query.size ? `?${query.toString()}` : ""}`;
+    const url = `${baseUrl}${path}${query.size ? `?${query.toString()}` : ""}`;
     for (let attempt = 0; attempt <= this.maxReadRetries; attempt += 1) {
       let response: Response;
       try { response = await this.fetcher(url, { method: "GET", cache: "no-store", headers: { accept: "application/json", ...headers } }); }
