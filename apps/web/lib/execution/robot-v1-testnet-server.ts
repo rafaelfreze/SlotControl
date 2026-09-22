@@ -155,7 +155,10 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
   if (terminal.has(order.status) && (order.status !== "FILLED" || order.trades_reconciled)) return;
   let actual: TestnetOrder | null = order.status === "PREPARED"
     ? await adapter.ensureOwnedOrder(orderRequest(run, order, slot))
-    : await adapter.getOwnedOrder(SYMBOL, order.client_order_id);
+    : await adapter.getOwnedOrder(SYMBOL, order.client_order_id).catch((error) => {
+      if (error instanceof Error && error.message === "COINOPS_TESTNET_ORDER_RESPONSE_INVALID" && order.exchange_order_id) return null;
+      throw error;
+    });
   if (!actual && order.exchange_order_id) actual = await adapter.getKnownOrderById(SYMBOL, order.client_order_id, order.exchange_order_id);
   if (!actual) throw new Error("COINOPS_TESTNET_PREPARED_ORDER_MISSING");
   if (order.exchange_order_id && order.exchange_order_id !== actual.orderId) throw new Error("COINOPS_TESTNET_ORDER_ID_MISMATCH");

@@ -46,7 +46,7 @@ test("cancel requires the exact owned order ID and leaves other orders untouched
     return json(payload(id));
   } });
   await assert.rejects(adapter.cancelOwnedOrder("BTCUSDC", "43", id), /OWNED_ORDER_NOT_FOUND/);
-  await assert.rejects(adapter.cancelOwnedOrder("BTCUSDC", "42", sellId), /ORDER_RESPONSE_INVALID/);
+  await assert.rejects(adapter.cancelOwnedOrder("BTCUSDC", "42", sellId), /KNOWN_ORDER_MISMATCH/);
   assert.equal(deletes, 0);
   const result = await adapter.cancelOwnedOrder("BTCUSDC", "42", id);
   assert.equal(result?.status, "CANCELED");
@@ -60,11 +60,13 @@ test("cancel lost response recovers the same owned order after Binance replaces 
     if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
     if (init?.method === "DELETE") { canceled = true; deletes += 1; cancelId = new URLSearchParams(String(init.body)).get("newClientOrderId") || ""; throw new Error("lost cancel response"); }
     if (new URL(url).searchParams.has("orderId")) return json({ ...payload(id, "CANCELED"), clientOrderId: cancelId });
-    return canceled ? json({ code: -2013 }, 400) : json(payload(id));
+    return canceled ? json({ ...payload(id, "CANCELED"), clientOrderId: cancelId }) : json(payload(id));
   } });
   const result = await adapter.cancelOwnedOrder("BTCUSDC", "42", id);
   assert.equal(result?.status, "CANCELED");
   assert.equal(result?.clientOrderId, id);
+  assert.equal(deletes, 1);
+  assert.equal((await adapter.cancelOwnedOrder("BTCUSDC", "42", id))?.status, "CANCELED");
   assert.equal(deletes, 1);
 });
 

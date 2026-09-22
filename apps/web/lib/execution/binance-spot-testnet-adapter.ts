@@ -161,7 +161,11 @@ export class BinanceSpotTestnetAdapter {
   }
 
   async cancelOwnedOrder(symbol: string, expectedOrderId: string, clientOrderId: string): Promise<TestnetOrder | null> {
-    const current = await this.getOwnedOrder(symbol, clientOrderId) || await this.getKnownOrderById(symbol, clientOrderId, expectedOrderId);
+    const original = await this.getOwnedOrder(symbol, clientOrderId).catch((error) => {
+      if (error instanceof Error && error.message === "COINOPS_TESTNET_ORDER_RESPONSE_INVALID") return null;
+      throw error;
+    });
+    const current = original || await this.getKnownOrderById(symbol, clientOrderId, expectedOrderId);
     if (!current || current.orderId !== expectedOrderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
     if (current.status !== "NEW") return current;
     try {
