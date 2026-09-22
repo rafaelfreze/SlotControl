@@ -6,15 +6,18 @@ import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
-import { V1_RULES, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, evaluateV1Candle, findV1LogicalLevel, planV1ShadowCycleRestart, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
+import { sumV1DecimalAmounts } from "./robot-v1-audit";
+import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, evaluateV1Candle, findV1LogicalLevel, planV1ShadowCycleRestart, quantityForV1SlotBalance, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
 
 type Config = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
 type Cycle = { id: string; status: string; asset: V1Asset; symbol: string; anchor_price: number | string; started_at: string; gain_rate: number | string; entry_spacing: number | string };
-type Slot = { id: string; slot_number: number; logical_level: number; operation_sequence: number; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; realized_quote_pnl: number | string | null; sell_fee: number | string; buy_client_order_id: string; sell_client_order_id: string | null; buy_triggered_at: string | null; status: "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" | "CANCELLED" };
-const SLOT_COLUMNS = "id,slot_number,logical_level,operation_sequence,buy_price,requested_quantity,executed_quantity,average_fill_price,take_profit_price,realized_quote_pnl,sell_fee,buy_client_order_id,sell_client_order_id,buy_triggered_at,status";
+type Slot = { id: string; slot_number: number; logical_level: number; operation_sequence: number; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; realized_quote_pnl: number | string | null; sell_fee: number | string; buy_client_order_id: string; sell_client_order_id: string | null; buy_triggered_at: string | null; tp_triggered_at: string | null; status: "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" | "CANCELLED" };
+type SlotAccount = { slot_number: number; initial_balance_usdc: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string };
+const SLOT_COLUMNS = "id,slot_number,logical_level,operation_sequence,buy_price,requested_quantity,executed_quantity,average_fill_price,take_profit_price,realized_quote_pnl,sell_fee,buy_client_order_id,sell_client_order_id,buy_triggered_at,tp_triggered_at,status";
 const ACTIVE = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 
 function asNumber(value: number | string | null, code: string) { const result = Number(value); if (!Number.isFinite(result) || result < 0) throw new Error(code); return result; }
+function asSignedNumber(value: number | string | null, code: string) { const result = Number(value); if (!Number.isFinite(result)) throw new Error(code); return result; }
 function eventKey(configId: string, type: string, reference: string) { return createHash("sha256").update(`coinops-v1-shadow|${configId}|${type}|${reference}`).digest("hex"); }
 
 async function audit(supabase: ReturnType<typeof createServiceRoleClient>, config: Config, type: string, reference: string, values: { cycleId?: string | null; slotId?: string | null; previous?: Record<string, unknown>; next?: Record<string, unknown>; observedAt?: string }) {
@@ -27,7 +30,7 @@ async function audit(supabase: ReturnType<typeof createServiceRoleClient>, confi
 
 async function archiveClosedShadowOperation(supabase: ReturnType<typeof createServiceRoleClient>, config: Config, cycle: Cycle, slot: Slot, values: { closedAt: string; grossProfit: number; estimatedFees: number }) {
   const { error } = await supabase.from("robot_v1_slot_operations").upsert({
-    product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle.id, slot_id: slot.id, operation_sequence: slot.operation_sequence, logical_level: slot.logical_level,
+    product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle.id, slot_id: slot.id, physical_slot_number: slot.slot_number, operation_sequence: slot.operation_sequence, logical_level: slot.logical_level,
     symbol: cycle.symbol, entry_price: slot.average_fill_price, executed_quantity: slot.executed_quantity, take_profit_price: slot.take_profit_price,
     buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id, opened_at: slot.buy_triggered_at, closed_at: values.closedAt,
     gross_quote_pnl: values.grossProfit, estimated_quote_fees: values.estimatedFees, net_quote_pnl: values.grossProfit - values.estimatedFees
@@ -35,15 +38,41 @@ async function archiveClosedShadowOperation(supabase: ReturnType<typeof createSe
   if (error) throw error;
 }
 
+async function loadSlotAccounts(supabase: ReturnType<typeof createServiceRoleClient>, config: Config) {
+  const read = async () => {
+    const { data, error } = await supabase.from("robot_v1_slot_accounts")
+      .select("slot_number,initial_balance_usdc,balance_usdc,gain_count,net_profit_usdc")
+      .eq("config_id", config.id).eq("product_id", config.product_id).eq("tenant_id", config.tenant_id).eq("user_id", config.user_id).order("slot_number");
+    if (error) throw error;
+    return (data || []) as SlotAccount[];
+  };
+  let accounts = await read();
+  if (accounts.length === 0) {
+    const opening = asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID") / V1_SLOT_COUNT;
+    const { error: seedError } = await supabase.from("robot_v1_slot_accounts").upsert(Array.from({ length: V1_SLOT_COUNT }, (_, index) => ({
+      config_id: config.id, slot_number: index + 1, product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id,
+      initial_balance_usdc: opening, balance_usdc: opening
+    })), { onConflict: "config_id,slot_number", ignoreDuplicates: true });
+    if (seedError) throw seedError;
+    accounts = await read();
+  }
+  if (accounts.length !== V1_SLOT_COUNT || accounts.some((account, index) => account.slot_number !== index + 1
+    || asNumber(account.initial_balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID") <= 0
+    || asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID") <= 0)) throw new Error("COINOPS_V1_SLOT_ACCOUNT_INVALID");
+  return accounts;
+}
+
 async function startInitialShadowCycle(supabase: ReturnType<typeof createServiceRoleClient>, adapter: BinanceSpotAdapter, config: Config, now: Date) {
   const rule = V1_RULES[config.asset];
   const parameters = assertV1ShadowParameters({ gainRate: asNumber(config.gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
   const [filters, market] = await Promise.all([adapter.getSymbolInfo(rule.symbol), adapter.getMarketPrice(rule.symbol)]);
-  const capital = asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
-  const grid = buildV1Grid(config.asset, capital, market.price, filters, parameters);
+  const accounts = await loadSlotAccounts(supabase, config);
+  const slotBalances = accounts.map((account) => asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID"));
+  const capital = sumV1DecimalAmounts(accounts.map((account) => account.balance_usdc));
+  const grid = buildV1Grid(config.asset, Number(capital), market.price, filters, parameters, slotBalances);
   const { data: created, error: createError } = await supabase.from("robot_v1_cycles").insert({
     product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, config_id: config.id, asset: config.asset, symbol: rule.symbol,
-    execution_mode: "SHADOW", status: "STARTING", anchor_price: market.price, slot_notional_usdc: capital / grid.length, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, started_at: now.toISOString()
+    execution_mode: "SHADOW", status: "STARTING", anchor_price: market.price, slot_notional_usdc: Number(capital) / grid.length, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, started_at: now.toISOString()
   }).select("id,status,asset,symbol,anchor_price,started_at,gain_rate,entry_spacing").single();
   if (createError?.code === "23505") return null;
   if (createError) throw createError;
@@ -118,6 +147,21 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
     if (healthUpdateError) throw healthUpdateError;
     if (!gridValidation.valid) await audit(supabase, config, "GRID_INVALID", `${cycle.id}:${gridValidation.errors.join("|")}`, { cycleId: cycle.id, next: { errors: gridValidation.errors, action: "NEW_ENTRIES_PAUSED" }, observedAt: now.toISOString() });
 
+    const accounts = await loadSlotAccounts(supabase, config);
+    for (const slot of healthSlots.filter((item) => item.status === "PENDING")) {
+      const account = accounts[slot.slot_number - 1];
+      if (!account) throw new Error("COINOPS_V1_SLOT_ACCOUNT_INVALID");
+      const { quantity } = quantityForV1SlotBalance(asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID"), asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), filters);
+      if (quantity === asNumber(slot.requested_quantity, "COINOPS_V1_SLOT_INVALID")) continue;
+      const { error: quantityError } = await supabase.from("robot_v1_slots").update({ requested_quantity: quantity })
+        .eq("id", slot.id).eq("status", "PENDING").eq("operation_sequence", slot.operation_sequence);
+      if (quantityError) throw quantityError;
+      await audit(supabase, config, "SLOT_BALANCE_UPDATED", `${cycle.id}:${slot.id}:${slot.operation_sequence}:${account.balance_usdc}`, {
+        cycleId: cycle.id, slotId: slot.id, previous: { requestedQuantity: slot.requested_quantity },
+        next: { requestedQuantity: quantity, slotBalanceUsdc: account.balance_usdc, reason: "PENDING_SHADOW_NOTIONAL_RECONCILED" }, observedAt: now.toISOString()
+      });
+    }
+
     const startAt = config.last_candle_open_at ? Date.parse(config.last_candle_open_at) + 60_000 : Date.parse(cycle.started_at);
     const candles = (await adapter.getCandles(rule.symbol, "1m", startAt)).filter((candle) => Date.parse(candle.closeTime) <= now.getTime()).sort((a, b) => Date.parse(a.openTime) - Date.parse(b.openTime));
     if (candles.length === 1000 && startAt < Date.parse(candles[0].openTime)) await audit(supabase, config, "DATA_GAP", `${cycle.id}:${candles[0].openTime}`, { cycleId: cycle.id, previous: { requestedStart: new Date(startAt).toISOString() }, next: { firstAvailable: candles[0].openTime } });
@@ -165,15 +209,23 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
     const { data: reconciledRows, error: remainingError } = await supabase.from("robot_v1_slots").select(SLOT_COLUMNS).eq("cycle_id", cycle.id).order("slot_number");
     if (remainingError) throw remainingError;
     const reconciledSlots = (reconciledRows || []) as Slot[];
+    for (const slot of reconciledSlots.filter((item) => item.status === "CLOSED")) {
+      await archiveClosedShadowOperation(supabase, config, cycle, slot, {
+        closedAt: slot.tp_triggered_at || now.toISOString(),
+        grossProfit: Number((asSignedNumber(slot.realized_quote_pnl, "COINOPS_V1_SLOT_INVALID") + asNumber(slot.sell_fee, "COINOPS_V1_SLOT_INVALID")).toFixed(12)),
+        estimatedFees: asNumber(slot.sell_fee, "COINOPS_V1_SLOT_INVALID")
+      });
+    }
     const restartPlan = planV1ShadowCycleRestart(reconciledSlots.map((slot) => ({ slotNumber: slot.slot_number, status: slot.status })));
     const closedSlots = reconciledSlots.filter((slot) => slot.status === "CLOSED");
     if (gridValidation.valid && !restartPlan.shouldRestart && closedSlots.length) {
       const activePrices = reconciledSlots.filter((slot) => slot.status === "PENDING" || slot.status === "TP_ACTIVE" || slot.status === "OPEN" || slot.status === "PARTIALLY_FILLED").map((slot) => asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"));
-      const recycledEntries = buildV1RecycledEntries(config.asset, asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID"), closedSlots.map((slot) => slot.slot_number), activePrices, await adapter.getSymbolInfo(rule.symbol), cycleParameters);
+      const currentAccounts = await loadSlotAccounts(supabase, config);
+      const balances = new Map(currentAccounts.map((account) => [account.slot_number, asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID")]));
+      const recycledEntries = buildV1RecycledEntries(config.asset, asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID"), closedSlots.map((slot) => slot.slot_number), activePrices, filters, cycleParameters, balances);
       for (const entry of recycledEntries) {
         const closedSlot = closedSlots.find((slot) => slot.slot_number === entry.slotNumber);
         if (!closedSlot) continue;
-        await archiveClosedShadowOperation(supabase, config, cycle, closedSlot, { closedAt: now.toISOString(), grossProfit: asNumber(closedSlot.realized_quote_pnl, "COINOPS_V1_SLOT_INVALID"), estimatedFees: asNumber(closedSlot.sell_fee, "COINOPS_V1_SLOT_INVALID") });
         const nextSequence = closedSlot.operation_sequence + 1;
         const logicalLevel = findV1LogicalLevel(asNumber(cycle.anchor_price, "COINOPS_V1_GRID_INPUT_INVALID"), entry.buyPrice, filters, cycleParameters);
         if (logicalLevel === null) throw new Error("COINOPS_V1_RECYCLED_LEVEL_INVALID");
@@ -194,11 +246,12 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
         if (cancelError) throw cancelError;
       }
       const nextCapital = config.next_capital_usdc === null ? null : asNumber(config.next_capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
+      if (nextCapital !== null && nextCapital !== asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID")) throw new Error("COINOPS_V1_CAPITAL_CHANGE_UNSUPPORTED");
       const nextParameters = config.next_gain_rate === null || config.next_entry_spacing === null ? null : assertV1ShadowParameters({ gainRate: asNumber(config.next_gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.next_entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
       const { data: completed, error: finishError } = await supabase.from("robot_v1_cycles").update({ status: "CYCLE_COMPLETE", completed_at: now.toISOString(), completion_reason: "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS" }).eq("id", cycle.id).in("status", ACTIVE).select("id").maybeSingle();
       if (finishError) throw finishError;
       if (!completed?.id) continue;
-      const configUpdate = { last_candle_open_at: null, ...(nextCapital ? { capital_usdc: nextCapital, next_capital_usdc: null } : {}), ...(nextParameters ? { gain_rate: nextParameters.gainRate, entry_spacing: nextParameters.entrySpacing, next_gain_rate: null, next_entry_spacing: null } : {}) };
+      const configUpdate = { last_candle_open_at: null, next_capital_usdc: null, ...(nextParameters ? { gain_rate: nextParameters.gainRate, entry_spacing: nextParameters.entrySpacing, next_gain_rate: null, next_entry_spacing: null } : {}) };
       const { error: capitalError } = await supabase.from("robot_v1_configs").update(configUpdate).eq("id", config.id);
       if (capitalError) throw capitalError;
       await audit(supabase, config, "CYCLE_COMPLETED", cycle.id, { cycleId: cycle.id, previous: { capital: config.capital_usdc }, next: { reason: "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS", invalidatedPendingSlots: restartPlan.pendingSlotNumbers, nextCapitalApplied: nextCapital }, observedAt: now.toISOString() });

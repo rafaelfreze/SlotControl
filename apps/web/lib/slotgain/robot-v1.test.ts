@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, findV1LogicalLevel, planV1ShadowCycleRestart, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey } from "../execution/robot-v1.ts";
+import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, findV1LogicalLevel, planV1ShadowCycleRestart, quantityForV1SlotBalance, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey } from "../execution/robot-v1.ts";
 
 const filters = (symbol: "BTCUSDC" | "SOLUSDC") => ({ symbol, baseAsset: symbol.slice(0, -4), quoteAsset: "USDC", minQuantity: 0.00001, maxQuantity: 100000, minNotional: 5, quantityStep: 0.00001, priceTick: 0.01 });
 
@@ -94,4 +94,30 @@ test("SOL recycled physical Slot #2 keeps the historical level #2 and becomes lo
   assert.equal(validateActiveGrid(anchor, filters("SOLUSDC"), parameters, activeGrid).valid, true);
   assert.equal(validateActiveGrid(anchor, filters("SOLUSDC"), parameters, activeGrid.map((slot) => slot.slotNumber === 2 ? { ...slot, logicalLevel: 2 } : slot)).valid, false);
   assert.equal(validateActiveGrid(anchor, filters("SOLUSDC"), parameters, activeGrid.map((slot) => slot.slotNumber === 2 ? { ...slot, buyPrice: 91.6 } : slot)).valid, false);
+});
+
+test("a physical slot compounds its next virtual BUY without changing other slots or the ladder", () => {
+  const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
+  const symbolFilters = filters("SOLUSDC");
+  const first = buildV1Grid("SOL", 250, 100, symbolFilters, parameters);
+  const balances = [10.05, ...Array.from({ length: 24 }, () => 10)];
+  const second = buildV1Grid("SOL", 250.05, 100, symbolFilters, parameters, balances);
+  assert.equal(second[0]?.quantity, quantityForV1SlotBalance(10.05, 100, symbolFilters).quantity);
+  assert.equal(second[0]?.notional, 10.05);
+  assert.equal(second[1]?.quantity, first[1]?.quantity);
+  assert.deepEqual(second.map((slot) => slot.buyPrice), first.map((slot) => slot.buyPrice));
+  const third = buildV1Grid("SOL", 250.10025, 100, symbolFilters, parameters, [10.10025, ...balances.slice(1)]);
+  assert.equal(third[0]?.quantity, quantityForV1SlotBalance(10.10025, 100, symbolFilters).quantity);
+  assert.ok(third[0]!.notional > second[0]!.notional);
+});
+
+test("recycled physical slot keeps its compounded balance at a new logical level", () => {
+  const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
+  const symbolFilters = filters("SOLUSDC");
+  const grid = buildV1Grid("SOL", 250, 117.79, symbolFilters, parameters);
+  const activePrices = grid.filter((slot) => slot.slotNumber !== 2).map((slot) => slot.buyPrice);
+  const [recycled] = buildV1RecycledEntries("SOL", 250, [2], activePrices, symbolFilters, parameters, new Map([[2, 10.0493]]));
+  assert.equal(findV1LogicalLevel(117.79, recycled!.buyPrice, symbolFilters, parameters), 26);
+  assert.equal(recycled!.quantity, quantityForV1SlotBalance(10.0493, recycled!.buyPrice, symbolFilters).quantity);
+  assert.ok(recycled!.notional > buildV1RecycledEntries("SOL", 250, [2], activePrices, symbolFilters, parameters)[0]!.notional);
 });

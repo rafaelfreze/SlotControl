@@ -53,18 +53,25 @@ function normalizeV1TargetPrice(value: number, priceTick: number) {
 
 /** V1 grids compound each lower entry from the preceding level. This is isolated
  * from the main CoinOps strategy and never changes its BTC/SOL rules. */
-export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset]): V1GridSlot[] {
+export function quantityForV1SlotBalance(balanceUsdc: number, buyPrice: number, filters: ExchangeSymbolInfo) {
+  if (!Number.isFinite(balanceUsdc) || balanceUsdc <= 0 || !Number.isFinite(buyPrice) || buyPrice <= 0 || balanceUsdc < filters.minNotional) throw new Error("COINOPS_V1_SLOT_BALANCE_INVALID");
+  const quantity = normalizeToStep(balanceUsdc / buyPrice, filters.quantityStep);
+  const notional = Number((buyPrice * quantity).toFixed(12));
+  if (quantity < filters.minQuantity || quantity > filters.maxQuantity || notional < filters.minNotional) throw new Error("COINOPS_V1_FILTER_REJECTED");
+  return { quantity, notional };
+}
+
+export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset], slotBalances?: readonly number[]): V1GridSlot[] {
   const assetRule = V1_RULES[asset];
   const rule = assertV1ShadowParameters(parameters);
   assertV1Symbol(filters.symbol);
   if (filters.symbol !== assetRule.symbol || !Number.isFinite(anchorPrice) || anchorPrice <= 0) throw new Error("COINOPS_V1_GRID_INPUT_INVALID");
   const slotNotional = calculateV1SlotNotional(capitalUsdc);
   if (slotNotional < filters.minNotional) throw new Error("COINOPS_V1_MIN_NOTIONAL");
+  if (slotBalances && (slotBalances.length !== V1_SLOT_COUNT || slotBalances.some((balance) => !Number.isFinite(balance) || balance <= 0))) throw new Error("COINOPS_V1_SLOT_BALANCE_INVALID");
   return Array.from({ length: V1_SLOT_COUNT }, (_, index) => {
     const buyPrice = normalizePriceToTick(anchorPrice * Math.pow(1 - rule.entrySpacing, index), filters.priceTick);
-    const quantity = normalizeToStep(slotNotional / buyPrice, filters.quantityStep);
-    const notional = Number((buyPrice * quantity).toFixed(12));
-    if (quantity < filters.minQuantity || quantity > filters.maxQuantity || notional < filters.minNotional) throw new Error("COINOPS_V1_FILTER_REJECTED");
+    const { quantity, notional } = quantityForV1SlotBalance(slotBalances?.[index] ?? slotNotional, buyPrice, filters);
     return { slotNumber: index + 1, logicalLevel: index + 1, buyPrice, quantity, notional, takeProfitPrice: normalizeV1TargetPrice(buyPrice * (1 + rule.gainRate), filters.priceTick) };
   });
 }
@@ -123,7 +130,7 @@ export function buildV1InitialShadowPosition(grid: V1GridSlot[]): V1InitialShado
 
 /** Extends the existing V1 ladder below its current lowest active level. This
  * never reanchors a cycle and leaves active positions and their TPs untouched. */
-export function buildV1RecycledEntries(asset: V1Asset, capitalUsdc: number, slotNumbers: number[], activeBuyPrices: number[], filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset]): V1RecycledEntry[] {
+export function buildV1RecycledEntries(asset: V1Asset, capitalUsdc: number, slotNumbers: number[], activeBuyPrices: number[], filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset], slotBalances?: ReadonlyMap<number, number>): V1RecycledEntry[] {
   const rule = assertV1ShadowParameters(parameters);
   const slotNotional = calculateV1SlotNotional(capitalUsdc);
   if (!slotNumbers.length || !activeBuyPrices.length || slotNotional < filters.minNotional) throw new Error("COINOPS_V1_RECYCLE_INPUT_INVALID");
@@ -132,9 +139,7 @@ export function buildV1RecycledEntries(asset: V1Asset, capitalUsdc: number, slot
   return [...slotNumbers].sort((a, b) => a - b).map((slotNumber) => {
     let buyPrice = normalizePriceToTick(lowerBound * (1 - rule.entrySpacing), filters.priceTick);
     while (knownPrices.has(buyPrice)) buyPrice = normalizePriceToTick(buyPrice * (1 - rule.entrySpacing), filters.priceTick);
-    const quantity = normalizeToStep(slotNotional / buyPrice, filters.quantityStep);
-    const notional = Number((buyPrice * quantity).toFixed(12));
-    if (quantity < filters.minQuantity || quantity > filters.maxQuantity || notional < filters.minNotional) throw new Error("COINOPS_V1_FILTER_REJECTED");
+    const { quantity, notional } = quantityForV1SlotBalance(slotBalances?.get(slotNumber) ?? slotNotional, buyPrice, filters);
     knownPrices.add(buyPrice);
     lowerBound = buyPrice;
     return { slotNumber, buyPrice, quantity, notional };
