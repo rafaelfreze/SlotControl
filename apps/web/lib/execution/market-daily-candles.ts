@@ -1,9 +1,9 @@
 type DailyCandle = { symbol: string; candle_open_at: string; open_price: number; high_price: number; low_price: number; close_price: number };
 
-/** Public market data for the dashboard, cached for one hour. Never uses account credentials. */
+/** Public market data for the dashboard, cached for five minutes. Never uses account credentials. */
 export async function getDailyMarketCandles(symbol: "BTCUSDC" | "SOLUSDC"): Promise<DailyCandle[]> {
   const url = `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=1d&limit=30`;
-  const response = await fetch(url, { next: { revalidate: 3600 } });
+  const response = await fetch(url, { next: { revalidate: 300 } });
   if (!response.ok) throw new Error(`BINANCE_DAILY_CANDLES_HTTP_${response.status}`);
   const rows: unknown = await response.json();
   if (!Array.isArray(rows)) throw new Error("BINANCE_DAILY_CANDLES_INVALID");

@@ -63,7 +63,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (testnetRunError) throw testnetRunError;
   const [testnetSlots, testnetOrders, testnetEvents] = testnetRun ? await Promise.all([
     supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,balance_usdc,gain_count,net_profit_usdc,missed_at").eq("run_id", testnetRun.id).order("slot_number"),
-    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,created_at").eq("run_id", testnetRun.id).order("created_at"),
+    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,created_at,updated_at").eq("run_id", testnetRun.id).order("created_at"),
     supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", testnetRun.id).order("observed_at", { ascending: false }).limit(20)
   ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
   if (testnetSlots.error || testnetOrders.error || testnetEvents.error) throw testnetSlots.error || testnetOrders.error || testnetEvents.error;
