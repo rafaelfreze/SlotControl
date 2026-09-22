@@ -13,6 +13,7 @@ import { AutomationMobile } from "./automation-mobile";
 
 export const metadata: Metadata = { title: "Automação" };
 export const dynamic = "force-dynamic";
+export const preferredRegion = "gru1";
 
 type IntentRow = { id: string };
 type ReconciliationRunRow = { status: string; completed_at: string | null; summary: { MATCH?: number; EXPECTED_ONLY?: number; EXCHANGE_ONLY?: number; QUANTITY_MISMATCH?: number; PRICE_MISMATCH?: number; STATUS_MISMATCH?: number; balances?: Array<{ asset: string; free: number; locked: number; total: number }> } | null };

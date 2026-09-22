@@ -7,6 +7,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const preferredRegion = "gru1";
 
 export async function GET() {
   try {
