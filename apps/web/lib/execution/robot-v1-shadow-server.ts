@@ -69,7 +69,11 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
           take_profit_status: "PENDING", status: "TP_ACTIVE", sell_client_order_id: v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "SELL")
         } : {})
       })));
-      if (slotError) { await supabase.from("robot_v1_cycles").update({ status: "FAILED" }).eq("id", cycle.id); throw slotError; }
+      if (slotError) {
+        const failureCode = /^[A-Z0-9_]{1,48}$/i.test(slotError.code || "") ? slotError.code : "UNKNOWN";
+        await supabase.from("robot_v1_cycles").update({ status: "FAILED", completion_reason: `GRID_SLOT_INSERT_${failureCode}` }).eq("id", cycle.id);
+        throw slotError;
+      }
       const { error: activateError } = await supabase.from("robot_v1_cycles").update({ status: "GRID_ACTIVE" }).eq("id", cycle.id);
       if (activateError) throw activateError;
       await audit(supabase, config, "CYCLE_STARTED", cycle.id, { cycleId: cycle.id, next: { asset: config.asset, symbol: rule.symbol, capital, slots: grid.length, anchorPrice: market.price, gainRate: parameters.gainRate, entrySpacing: parameters.entrySpacing } });
