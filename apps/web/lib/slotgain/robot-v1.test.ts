@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALLOWED_V1_SYMBOLS, buildV1Grid, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, v1ClientOrderId } from "../execution/robot-v1.ts";
+import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, v1ClientOrderId } from "../execution/robot-v1.ts";
 
 const filters = (symbol: "BTCUSDC" | "SOLUSDC") => ({ symbol, baseAsset: symbol.slice(0, -4), quoteAsset: "USDC", minQuantity: 0.00001, maxQuantity: 100000, minNotional: 5, quantityStep: 0.00001, priceTick: 0.01 });
 
@@ -22,6 +22,17 @@ test("V1 creates SOLUSDC targets from actual fill price and handles partial fill
   assert.equal(calculateV1TakeProfit("SOL", 100, filters("SOLUSDC")), 105.5);
   assert.equal(classifyV1Fill(1, 0.4), "PARTIALLY_FILLED");
   assert.equal(classifyV1Fill(1, 1), "OPEN");
+});
+
+test("V1 test parameters create the initial virtual fill and 0.5% take profit without changing official rules", () => {
+  const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
+  const grid = buildV1Grid("BTC", 250, 100000, filters("BTCUSDC"), parameters);
+  const initial = buildV1InitialShadowPosition(grid);
+  assert.equal(grid.length, 25);
+  assert.equal(grid[1]?.buyPrice, 99000);
+  assert.deepEqual(initial, { slotNumber: 1, quantity: grid[0]?.quantity, buyPrice: 100000, takeProfitPrice: 100500 });
+  assert.equal(calculateV1TakeProfit("BTC", initial.buyPrice, filters("BTCUSDC"), parameters), 100500);
+  assert.throws(() => assertV1ShadowParameters({ entrySpacing: 0, gainRate: 0.005 }), /PARAMETERS_INVALID/);
 });
 
 test("V1 ownership is deterministic, manual USDT symbols are excluded and reset requires no owned pending buy", () => {

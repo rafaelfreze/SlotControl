@@ -149,6 +149,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .robot-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }.robot-stat-grid span { display: grid; gap: 3px; padding: 8px; border-radius: 8px; background: var(--co-surface-2); }.robot-stat-grid small { color: var(--co-muted); font-size: .5rem; }.robot-stat-grid strong { font-size: .64rem; font-variant-numeric: tabular-nums; }
 .robot-capital-form { display: flex; align-items: end; gap: 7px; }.robot-capital-form label { display: grid; flex: 1; gap: 4px; color: var(--co-muted); font-size: .57rem; }.robot-capital-form input { width: 100%; min-height: 34px; padding: 0 8px; border: 1px solid var(--co-line); border-radius: 8px; background: var(--co-surface-3); color: var(--co-text); }.robot-capital-form button, .robot-control-grid button { min-height: 34px; border: 1px solid rgba(213, 168, 47, .36); border-radius: 8px; background: var(--co-gold-soft); color: var(--co-gold); font-size: .59rem; font-weight: 780; }.robot-capital-form button { padding: 0 11px; }
 .robot-control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }.robot-control-grid form, .robot-control-grid button { width: 100%; }.robot-control-grid button { padding: 5px; line-height: 1.2; }.robot-control-grid .danger { border-color: rgba(255, 92, 112, .38); background: rgba(255, 92, 112, .09); color: var(--co-red); }.robot-control-grid button:disabled { opacity: .45; cursor: not-allowed; }
+.robot-parameters-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 7px; }
+.robot-parameters-form > p { grid-column: 1/-1; margin: 0; color: var(--co-muted); font-size: .55rem; line-height: 1.45; }
+.robot-parameters-form button { grid-column: 1/-1; }
+.robot-fixed-slots { display: flex; min-height: 34px; align-items: center; padding: 6px 8px; border: 1px solid var(--co-line); border-radius: 8px; color: var(--co-muted); font-size: .54rem; }
 .robot-slots-details { border-top: 1px solid var(--co-line); padding-top: 9px; }.robot-slots-details summary { color: var(--co-muted); font-size: .62rem; font-weight: 730; cursor: pointer; }.robot-slots-details ol { display: grid; gap: 4px; margin: 9px 0 0; padding: 0; list-style: none; }.robot-slots-details li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; padding: 7px; border-radius: 7px; background: var(--co-surface-2); font-size: .6rem; }.robot-slots-details li span { grid-row: span 2; color: var(--co-gold); font-weight: 820; }.robot-slots-details li small { color: var(--co-muted); }
 
 @media (min-width: 600px) and (max-width: 1023px) { .automation-mobile-page { grid-template-columns: repeat(2, minmax(0, 1fr)); }.automation-mobile-hero, .automation-connection-card, .automation-reconciliation-card { grid-column: 1 / -1; }.robot-shadow-card { min-width: 0; } }
@@ -518,4 +522,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btc-ladder-main, .btc-preview-card, .btc-history-card, .btc-manual-gains-card { grid-column: 1/-1; }
   .settings-page { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .settings-account-card, .settings-page > .native-settings-group, .settings-signout { grid-column: 1/-1; }
+  .desktop-workspace-content .automation-mobile-page { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 1500px; gap: 16px; }
+  .desktop-workspace-content .automation-mobile-hero, .desktop-workspace-content .automation-connection-card, .desktop-workspace-content .automation-balance-grid, .desktop-workspace-content .automation-reconciliation-card { grid-column: 1/-1; }
+  .desktop-workspace-content .automation-mobile-hero { padding: 22px; }
+  .desktop-workspace-content .automation-mobile-hero h1 { font-size: 1.4rem; }
+  .desktop-workspace-content .automation-balance-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .desktop-workspace-content .robot-parameters-form { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .desktop-workspace-content .robot-parameters-form > p { grid-column: 1/-1; }
+  .desktop-workspace-content .robot-parameters-form button { grid-column: auto; }
+  .desktop-workspace-content .robot-control-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }

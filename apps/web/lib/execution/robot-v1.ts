@@ -15,6 +15,15 @@ export const V1_RULES: Record<V1Asset, { symbol: V1Symbol; entrySpacing: number;
   SOL: { symbol: "SOLUSDC", entrySpacing: 0.03, gainRate: 0.055 }
 };
 
+export type V1ShadowParameters = { entrySpacing: number; gainRate: number };
+
+export function assertV1ShadowParameters(parameters: V1ShadowParameters) {
+  if (!Number.isFinite(parameters.entrySpacing) || !Number.isFinite(parameters.gainRate)
+    || parameters.entrySpacing < 0.001 || parameters.entrySpacing > 0.20
+    || parameters.gainRate < 0.001 || parameters.gainRate > 0.20) throw new Error("COINOPS_V1_PARAMETERS_INVALID");
+  return parameters;
+}
+
 export function assertV1Symbol(symbol: string): asserts symbol is V1Symbol {
   if (!(ALLOWED_V1_SYMBOLS as readonly string[]).includes(symbol)) throw new Error("COINOPS_V1_SYMBOL_NOT_ALLOWED");
 }
@@ -29,13 +38,23 @@ export function calculateV1SlotNotional(capitalUsdc: number) {
 }
 
 export type V1GridSlot = { slotNumber: number; buyPrice: number; quantity: number; notional: number; takeProfitPrice: number };
+export type V1InitialShadowPosition = Pick<V1GridSlot, "slotNumber" | "quantity" | "buyPrice" | "takeProfitPrice">;
+
+function normalizeV1TargetPrice(value: number, priceTick: number) {
+  const steps = value / priceTick;
+  const roundedSteps = Math.round(steps);
+  const safeSteps = Math.abs(steps - roundedSteps) < 1e-7 ? roundedSteps : Math.floor(steps);
+  const decimals = Math.max(0, (String(priceTick).split(".")[1] || "").length);
+  return Number((safeSteps * priceTick).toFixed(decimals));
+}
 
 /** V1 grids compound each lower entry from the preceding level. This is isolated
  * from the main CoinOps strategy and never changes its BTC/SOL rules. */
-export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: number, filters: ExchangeSymbolInfo): V1GridSlot[] {
-  const rule = V1_RULES[asset];
+export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset]): V1GridSlot[] {
+  const assetRule = V1_RULES[asset];
+  const rule = assertV1ShadowParameters(parameters);
   assertV1Symbol(filters.symbol);
-  if (filters.symbol !== rule.symbol || !Number.isFinite(anchorPrice) || anchorPrice <= 0) throw new Error("COINOPS_V1_GRID_INPUT_INVALID");
+  if (filters.symbol !== assetRule.symbol || !Number.isFinite(anchorPrice) || anchorPrice <= 0) throw new Error("COINOPS_V1_GRID_INPUT_INVALID");
   const slotNotional = calculateV1SlotNotional(capitalUsdc);
   if (slotNotional < filters.minNotional) throw new Error("COINOPS_V1_MIN_NOTIONAL");
   return Array.from({ length: V1_SLOT_COUNT }, (_, index) => {
@@ -43,8 +62,15 @@ export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: nu
     const quantity = normalizeToStep(slotNotional / buyPrice, filters.quantityStep);
     const notional = Number((buyPrice * quantity).toFixed(12));
     if (quantity < filters.minQuantity || quantity > filters.maxQuantity || notional < filters.minNotional) throw new Error("COINOPS_V1_FILTER_REJECTED");
-    return { slotNumber: index + 1, buyPrice, quantity, notional, takeProfitPrice: normalizePriceToTick(buyPrice * (1 + rule.gainRate), filters.priceTick) };
+    return { slotNumber: index + 1, buyPrice, quantity, notional, takeProfitPrice: normalizeV1TargetPrice(buyPrice * (1 + rule.gainRate), filters.priceTick) };
   });
+}
+
+/** Describes the initial virtual Shadow position. It never creates an exchange order. */
+export function buildV1InitialShadowPosition(grid: V1GridSlot[]): V1InitialShadowPosition {
+  const firstSlot = grid[0];
+  if (!firstSlot || firstSlot.slotNumber !== 1) throw new Error("COINOPS_V1_GRID_EMPTY");
+  return { slotNumber: firstSlot.slotNumber, quantity: firstSlot.quantity, buyPrice: firstSlot.buyPrice, takeProfitPrice: firstSlot.takeProfitPrice };
 }
 
 export function v1ClientOrderId(asset: V1Asset, cycleId: string, slotNumber: number, side: "BUY" | "SELL") {
@@ -63,9 +89,9 @@ export function classifyV1Fill(requestedQuantity: number, executedQuantity: numb
   return executedQuantity < requestedQuantity ? "PARTIALLY_FILLED" : "OPEN";
 }
 
-export function calculateV1TakeProfit(asset: V1Asset, averageFillPrice: number, filters: ExchangeSymbolInfo) {
+export function calculateV1TakeProfit(asset: V1Asset, averageFillPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset]) {
   if (!Number.isFinite(averageFillPrice) || averageFillPrice <= 0) throw new Error("COINOPS_V1_FILL_INVALID");
-  return normalizePriceToTick(averageFillPrice * (1 + V1_RULES[asset].gainRate), filters.priceTick);
+  return normalizeV1TargetPrice(averageFillPrice * (1 + assertV1ShadowParameters(parameters).gainRate), filters.priceTick);
 }
 
 export function canResetV1Cycle(slots: Array<{ status: V1SlotStatus; ownedPendingBuy: boolean }>) {
@@ -84,7 +110,7 @@ export type V1CandleTransition =
  * can use its high; an entry first observed through that candle cannot also
  * close in it because their order cannot be proven from OHLC alone.
  */
-export function evaluateV1Candle(asset: V1Asset, candle: V1Candle, slots: V1CandleSlot[], filters: ExchangeSymbolInfo): V1CandleTransition[] {
+export function evaluateV1Candle(asset: V1Asset, candle: V1Candle, slots: V1CandleSlot[], filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset]): V1CandleTransition[] {
   if (![candle.high, candle.low, candle.close].every(Number.isFinite) || candle.low <= 0 || candle.high < candle.low) throw new Error("COINOPS_V1_CANDLE_INVALID");
   const transitions: V1CandleTransition[] = [];
   for (const slot of slots) {
@@ -95,7 +121,7 @@ export function evaluateV1Candle(asset: V1Asset, candle: V1Candle, slots: V1Cand
   for (const slot of slots) {
     if (slot.status !== "PENDING" || candle.low > slot.buyPrice) continue;
     const fillPrice = slot.buyPrice;
-    const takeProfitPrice = calculateV1TakeProfit(asset, fillPrice, filters);
+    const takeProfitPrice = calculateV1TakeProfit(asset, fillPrice, filters, parameters);
     const ambiguous = candle.high >= takeProfitPrice;
     transitions.push({ kind: "BUY_TRIGGERED", slotNumber: slot.slotNumber, fillPrice, takeProfitPrice, observedPrice: candle.low, ambiguous });
     if (ambiguous) transitions.push({ kind: "AMBIGUOUS", slotNumber: slot.slotNumber, observedPrice: candle.high });

@@ -6,10 +6,10 @@ import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
-import { V1_RULES, buildV1Grid, evaluateV1Candle, v1ClientOrderId, v1IdempotencyKey, type V1Asset } from "./robot-v1";
+import { V1_RULES, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, evaluateV1Candle, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
 
-type Config = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null };
-type Cycle = { id: string; status: string; asset: V1Asset; symbol: string; started_at: string };
+type Config = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null };
+type Cycle = { id: string; status: string; asset: V1Asset; symbol: string; started_at: string; gain_rate: number | string; entry_spacing: number | string };
 type Slot = { id: string; slot_number: number; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; status: "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" };
 const ACTIVE = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 
@@ -33,7 +33,7 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
   const supabase = createServiceRoleClient();
   const tenantId = getCoinOpsServiceTenantId();
   const { data, error } = await supabase.from("robot_v1_configs")
-    .select("id,product_id,tenant_id,user_id,asset,symbol,capital_usdc,next_capital_usdc,kill_switch,pause_new_entries,last_candle_open_at")
+    .select("id,product_id,tenant_id,user_id,asset,symbol,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,kill_switch,pause_new_entries,last_candle_open_at")
     .eq("tenant_id", tenantId).eq("execution_mode", "SHADOW").order("asset");
   if (error) throw error;
   const configs = (data || []) as Config[];
@@ -43,29 +43,37 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
   let cyclesStarted = 0, slotsUpdated = 0, candlesProcessed = 0;
   for (const config of configs) {
     const rule = V1_RULES[config.asset];
+    const parameters = assertV1ShadowParameters({ gainRate: asNumber(config.gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
     if (config.symbol !== rule.symbol) throw new Error("COINOPS_V1_CONFIG_SYMBOL_INVALID");
-    const { data: cycleData, error: cycleError } = await supabase.from("robot_v1_cycles").select("id,status,asset,symbol,started_at").eq("config_id", config.id).in("status", ACTIVE).maybeSingle();
+    const { data: cycleData, error: cycleError } = await supabase.from("robot_v1_cycles").select("id,status,asset,symbol,started_at,gain_rate,entry_spacing").eq("config_id", config.id).in("status", ACTIVE).maybeSingle();
     if (cycleError) throw cycleError;
     let cycle = cycleData as Cycle | null;
     if (!cycle && !config.kill_switch && !config.pause_new_entries) {
       const [filters, market] = await Promise.all([adapter.getSymbolInfo(rule.symbol), adapter.getMarketPrice(rule.symbol)]);
       const capital = asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
-      const grid = buildV1Grid(config.asset, capital, market.price, filters);
+      const grid = buildV1Grid(config.asset, capital, market.price, filters, parameters);
       const { data: created, error: createError } = await supabase.from("robot_v1_cycles").insert({
         product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, config_id: config.id, asset: config.asset, symbol: rule.symbol,
-        execution_mode: "SHADOW", status: "STARTING", anchor_price: market.price, slot_notional_usdc: capital / grid.length, capital_usdc: capital, started_at: now.toISOString()
-      }).select("id,status,asset,symbol,started_at").single();
+        execution_mode: "SHADOW", status: "STARTING", anchor_price: market.price, slot_notional_usdc: capital / grid.length, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, started_at: now.toISOString()
+      }).select("id,status,asset,symbol,started_at,gain_rate,entry_spacing").single();
       if (createError) throw createError;
       cycle = created as Cycle;
+      const initialPosition = buildV1InitialShadowPosition(grid);
       const { error: slotError } = await supabase.from("robot_v1_slots").insert(grid.map((slot) => ({
         product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle!.id, slot_number: slot.slotNumber, symbol: rule.symbol,
         buy_price: slot.buyPrice, requested_quantity: slot.quantity, buy_client_order_id: v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "BUY"),
-        idempotency_key: v1IdempotencyKey(cycle!.id, slot.slotNumber, "BUY"), observed_at: market.observedAt
+        idempotency_key: v1IdempotencyKey(cycle!.id, slot.slotNumber, "BUY"), observed_at: market.observedAt,
+        ...(slot.slotNumber === 1 ? {
+          executed_quantity: initialPosition.quantity, average_fill_price: initialPosition.buyPrice, buy_status: "FILLED", buy_trigger_price: initialPosition.buyPrice,
+          buy_trigger_observed_price: market.price, buy_triggered_at: market.observedAt, take_profit_price: initialPosition.takeProfitPrice,
+          take_profit_status: "PENDING", status: "TP_ACTIVE", sell_client_order_id: v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "SELL")
+        } : {})
       })));
       if (slotError) { await supabase.from("robot_v1_cycles").update({ status: "FAILED" }).eq("id", cycle.id); throw slotError; }
       const { error: activateError } = await supabase.from("robot_v1_cycles").update({ status: "GRID_ACTIVE" }).eq("id", cycle.id);
       if (activateError) throw activateError;
-      await audit(supabase, config, "CYCLE_STARTED", cycle.id, { cycleId: cycle.id, next: { asset: config.asset, symbol: rule.symbol, capital, slots: grid.length, anchorPrice: market.price } });
+      await audit(supabase, config, "CYCLE_STARTED", cycle.id, { cycleId: cycle.id, next: { asset: config.asset, symbol: rule.symbol, capital, slots: grid.length, anchorPrice: market.price, gainRate: parameters.gainRate, entrySpacing: parameters.entrySpacing } });
+      await audit(supabase, config, "INITIAL_POSITION_OPENED", `${cycle.id}:1`, { cycleId: cycle.id, next: { slotNumber: initialPosition.slotNumber, fillPrice: initialPosition.buyPrice, observedPrice: market.price, takeProfitPrice: initialPosition.takeProfitPrice }, observedAt: market.observedAt });
       cyclesStarted += 1;
     }
     if (!cycle) continue;
@@ -85,7 +93,8 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       const { data: rows, error: slotReadError } = await supabase.from("robot_v1_slots").select("id,slot_number,buy_price,requested_quantity,executed_quantity,average_fill_price,take_profit_price,status").eq("cycle_id", cycle.id).order("slot_number");
       if (slotReadError) throw slotReadError;
       const slots = (rows || []) as Slot[];
-      const transitions = evaluateV1Candle(config.asset, candle, slots.map((slot) => ({ slotNumber: slot.slot_number, status: slot.status, buyPrice: asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), averageFillPrice: slot.average_fill_price === null ? null : asNumber(slot.average_fill_price, "COINOPS_V1_SLOT_INVALID"), takeProfitPrice: slot.take_profit_price === null ? null : asNumber(slot.take_profit_price, "COINOPS_V1_SLOT_INVALID") })), filters);
+      const cycleParameters: V1ShadowParameters = assertV1ShadowParameters({ gainRate: asNumber(cycle.gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(cycle.entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
+      const transitions = evaluateV1Candle(config.asset, candle, slots.map((slot) => ({ slotNumber: slot.slot_number, status: slot.status, buyPrice: asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), averageFillPrice: slot.average_fill_price === null ? null : asNumber(slot.average_fill_price, "COINOPS_V1_SLOT_INVALID"), takeProfitPrice: slot.take_profit_price === null ? null : asNumber(slot.take_profit_price, "COINOPS_V1_SLOT_INVALID") })), filters, cycleParameters);
       for (const transition of transitions) {
         const slot = slots.find((candidate) => candidate.slot_number === transition.slotNumber);
         if (!slot) continue;
@@ -116,7 +125,8 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       const nextCapital = config.next_capital_usdc === null ? null : asNumber(config.next_capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
       const { error: finishError } = await supabase.from("robot_v1_cycles").update({ status: "CYCLE_COMPLETE", completed_at: now.toISOString() }).eq("id", cycle.id);
       if (finishError) throw finishError;
-      const configUpdate = nextCapital ? { capital_usdc: nextCapital, next_capital_usdc: null, last_candle_open_at: null } : { last_candle_open_at: null };
+      const nextParameters = config.next_gain_rate === null || config.next_entry_spacing === null ? null : assertV1ShadowParameters({ gainRate: asNumber(config.next_gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.next_entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
+      const configUpdate = { last_candle_open_at: null, ...(nextCapital ? { capital_usdc: nextCapital, next_capital_usdc: null } : {}), ...(nextParameters ? { gain_rate: nextParameters.gainRate, entry_spacing: nextParameters.entrySpacing, next_gain_rate: null, next_entry_spacing: null } : {}) };
       const { error: capitalError } = await supabase.from("robot_v1_configs").update(configUpdate).eq("id", config.id);
       if (capitalError) throw capitalError;
       await audit(supabase, config, "CYCLE_COMPLETED", cycle.id, { cycleId: cycle.id, previous: { capital: config.capital_usdc }, next: { nextCapitalApplied: nextCapital }, observedAt: now.toISOString() });
