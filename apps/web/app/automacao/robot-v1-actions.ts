@@ -119,6 +119,7 @@ export async function controlRobotV1Shadow(formData: FormData) {
     if (active) throw new Error("COINOPS_V1_RESET_ACTIVE_CYCLE_BLOCKED");
     await addAudit(service, scope, config.id, "RESET_ALLOWED", {}, { reset: "NO_ACTIVE_CYCLE" });
   } else if (command === "restart") {
+    if (formData.get("restart_confirmed") !== "yes") throw new Error("COINOPS_V1_RESTART_CONFIRMATION_REQUIRED");
     const { data: active, error: activeError } = await service.from("robot_v1_cycles").select("id").eq("config_id", config.id).in("status", ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"]).maybeSingle();
     if (activeError) throw activeError;
     const nextCapital = config.next_capital_usdc === null ? Number(config.capital_usdc) : Number(config.next_capital_usdc);
