@@ -1,0 +1,341 @@
+import { createHash, randomUUID } from "node:crypto";
+
+import { BinanceSpotTestnetAdapter, type TestnetOrder, type TestnetTrade } from "./binance-spot-testnet-adapter";
+import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
+import { createServiceRoleClient } from "../supabase/service-role";
+
+type Scope = { productId: string; tenantId: string; userId: string };
+type Service = ReturnType<typeof createServiceRoleClient>;
+type Run = { id: string; product_id: string; tenant_id: string; user_id: string; status: string; symbol: "SOLUSDC"; anchor_price: number | string; slot_notional_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; lease_owner: string | null; lease_until: string | null };
+type Slot = { id: string; run_id: string; slot_number: number; entry_state: string; target_buy_price: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string; missed_at: string | null };
+type Order = { id: string; run_id: string; slot_id: string; slot_number: number; side: "BUY" | "SELL"; purpose: "INITIAL" | "ENTRY" | "TP"; revision: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; requested_quote: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; fee_base: number | string; fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>; trades_reconciled: boolean };
+type SymbolFilters = { minQuantity: number; maxQuantity: number; minNotional: number; quantityStep: number; priceTick: number };
+
+const SYMBOL = "SOLUSDC" as const;
+const ACTIVE_ORDER = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
+const terminal = new Set(["FILLED", "CANCELED", "EXPIRED", "REJECTED"]);
+const amount = (value: number | string | null) => Number(value || 0);
+const rounded = (value: number) => Number(value.toFixed(8));
+const floorStep = (value: number, step: number) => rounded(Math.floor((value + 1e-10) / step) * step);
+const ceilStep = (value: number, step: number) => rounded(Math.ceil((value - 1e-10) / step) * step);
+const clientId = (runId: string, slot: number, side: "BUY" | "SELL", revision: number) =>
+  `COV1-SOL-${slot}-${revision}-${side}-${createHash("sha256").update(`coinops-testnet|${runId}|${slot}|${side}|${revision}`).digest("hex").slice(0, 18)}`;
+const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id });
+
+function assertTestnetEnvironment() {
+  if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId()) throw new Error("COINOPS_TESTNET_SCHEMA_SCOPE_INVALID");
+  if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
+}
+
+async function queryRun(service: Service, runId: string): Promise<Run> {
+  const tenantId = getCoinOpsServiceTenantId();
+  const { data, error } = await service.from("robot_v1_testnet_runs").select("*").eq("id", runId).eq("tenant_id", tenantId).single();
+  if (error || !data) throw new Error("COINOPS_TESTNET_RUN_UNAVAILABLE");
+  return data as Run;
+}
+
+async function rows(service: Service, run: Run) {
+  const [slotResult, orderResult] = await Promise.all([
+    service.from("robot_v1_testnet_slots").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id).order("slot_number"),
+    service.from("robot_v1_testnet_orders").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id).order("created_at")
+  ]);
+  if (slotResult.error || orderResult.error) throw new Error("COINOPS_TESTNET_LEDGER_UNAVAILABLE");
+  return { slots: (slotResult.data || []) as Slot[], orders: (orderResult.data || []) as Order[] };
+}
+
+async function event(service: Service, run: Run, key: string, type: string, slotNumber: number | null, details: Record<string, string | number | boolean | null> = {}) {
+  const { error } = await service.from("robot_v1_testnet_events").upsert({ run_id: run.id, ...owned(run), event_key: key, event_type: type, slot_number: slotNumber, details }, { onConflict: "run_id,event_key", ignoreDuplicates: true });
+  if (error) throw new Error("COINOPS_TESTNET_EVENT_PERSIST_FAILED");
+}
+
+async function updateOrder(service: Service, run: Run, order: Order, values: Record<string, unknown>) {
+  const { error } = await service.from("robot_v1_testnet_orders").update(values).eq("id", order.id).eq("run_id", run.id).eq("tenant_id", run.tenant_id);
+  if (error) throw new Error("COINOPS_TESTNET_ORDER_PERSIST_FAILED");
+  Object.assign(order, values);
+}
+
+async function updateSlot(service: Service, run: Run, slot: Slot, values: Record<string, unknown>) {
+  const { error } = await service.from("robot_v1_testnet_slots").update(values).eq("id", slot.id).eq("run_id", run.id).eq("tenant_id", run.tenant_id);
+  if (error) throw new Error("COINOPS_TESTNET_SLOT_PERSIST_FAILED");
+  Object.assign(slot, values);
+}
+
+async function prepareOrder(service: Service, run: Run, slot: Slot, side: "BUY" | "SELL", purpose: Order["purpose"], revision: number, requestedQuantity: number | null, requestedQuote: number | null, price: number | null): Promise<Order> {
+  const id = clientId(run.id, slot.slot_number, side, revision);
+  const { data, error } = await service.from("robot_v1_testnet_orders").upsert({
+    run_id: run.id, slot_id: slot.id, ...owned(run), slot_number: slot.slot_number, side, purpose, revision,
+    client_order_id: id, requested_quantity: requestedQuantity, requested_quote: requestedQuote, price
+  }, { onConflict: "client_order_id", ignoreDuplicates: true }).select("*").maybeSingle();
+  if (error) throw new Error("COINOPS_TESTNET_ORDER_PREPARE_FAILED");
+  if (data) return data as Order;
+  const { data: existing, error: existingError } = await service.from("robot_v1_testnet_orders").select("*").eq("client_order_id", id).eq("run_id", run.id).single();
+  if (existingError || !existing) throw new Error("COINOPS_TESTNET_ORDER_PREPARE_UNKNOWN");
+  return existing as Order;
+}
+
+async function claim(service: Service, runId: string) {
+  const leaseOwner = randomUUID();
+  const now = new Date();
+  const until = new Date(now.getTime() + 90_000).toISOString();
+  const { data, error } = await service.from("robot_v1_testnet_runs").update({ lease_owner: leaseOwner, lease_until: until })
+    .eq("id", runId).eq("tenant_id", getCoinOpsServiceTenantId()).eq("status", "ACTIVE")
+    .or(`lease_until.is.null,lease_until.lt.${now.toISOString()}`).select("*").maybeSingle();
+  if (error) throw new Error("COINOPS_TESTNET_LEASE_FAILED");
+  return data ? { run: data as Run, leaseOwner } : null;
+}
+
+async function release(service: Service, run: Run, leaseOwner: string, error: string | null) {
+  await service.from("robot_v1_testnet_runs").update({ lease_owner: null, lease_until: null, last_reconciled_at: new Date().toISOString(), last_error: error })
+    .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", leaseOwner);
+}
+
+async function ensurePlan(service: Service, run: Run, filters: SymbolFilters) {
+  const slotPayload = Array.from({ length: 25 }, (_, index) => ({
+    run_id: run.id, ...owned(run), slot_number: index + 1,
+    target_buy_price: floorStep(amount(run.anchor_price) * Math.pow(1 - amount(run.entry_spacing), index), filters.priceTick),
+    balance_usdc: amount(run.slot_notional_usdc)
+  }));
+  const { error } = await service.from("robot_v1_testnet_slots").upsert(slotPayload, { onConflict: "run_id,slot_number", ignoreDuplicates: true });
+  if (error) throw new Error("COINOPS_TESTNET_PLAN_CREATE_FAILED");
+}
+
+/** Starts a separate fictitious-money cycle. Shadow configuration is read, never changed. */
+export async function startTestnetRun(userId: string) {
+  assertTestnetEnvironment();
+  const service = createServiceRoleClient();
+  const tenantId = getCoinOpsServiceTenantId();
+  const { data: strategy, error: scopeError } = await service.from("strategies").select("product_id,tenant_id,user_id").eq("tenant_id", tenantId).eq("user_id", userId).limit(1).maybeSingle();
+  if (scopeError || !strategy) throw new Error("COINOPS_TESTNET_SCOPE_UNAVAILABLE");
+  const scope: Scope = { productId: strategy.product_id, tenantId: strategy.tenant_id, userId: strategy.user_id };
+  const { data: active, error: activeError } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", "SOL").in("status", ["ACTIVE", "PAUSED"]).maybeSingle();
+  if (activeError) throw new Error("COINOPS_TESTNET_RUN_LOOKUP_FAILED");
+  if (active) {
+    const run = await queryRun(service, active.id);
+    const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+    await ensurePlan(service, run, await adapter.reads.getSymbolInfo(SYMBOL));
+    await advanceTestnetRun(active.id);
+    return active.id as string;
+  }
+  const { data: config, error: configError } = await service.from("robot_v1_configs").select("capital_usdc,gain_rate,entry_spacing,slot_count,execution_mode").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", "SOL").single();
+  if (configError || !config || config.execution_mode !== "SHADOW" || config.slot_count !== 25) throw new Error("COINOPS_TESTNET_SHADOW_CONFIG_REQUIRED");
+  const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+  const [account, filters, market, openOrders] = await Promise.all([adapter.reads.getAccount(), adapter.reads.getSymbolInfo(SYMBOL), adapter.reads.getMarketPrice(SYMBOL), adapter.reads.getOpenOrders(SYMBOL)]);
+  const notional = amount(config.capital_usdc) / 25;
+  const freeUsdc = account.balances.find((balance) => balance.asset === "USDC")?.free ?? 0;
+  if (!account.canTrade || !Number.isFinite(notional) || notional < filters.minNotional || freeUsdc < amount(config.capital_usdc)) throw new Error("COINOPS_TESTNET_FUNDS_OR_FILTERS_INVALID");
+  if (openOrders.some((order) => order.clientOrderId?.startsWith("COV1-"))) throw new Error("COINOPS_TESTNET_UNRECONCILED_OWNED_ORDER");
+  const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, asset: "SOL", symbol: SYMBOL, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: config.gain_rate, entry_spacing: config.entry_spacing }).select("*").single();
+  if (insertError?.code === "23505") {
+    const { data: concurrent } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", "SOL").eq("status", "ACTIVE").maybeSingle();
+    if (concurrent) { await advanceTestnetRun(concurrent.id); return concurrent.id as string; }
+  }
+  if (insertError || !created) throw new Error("COINOPS_TESTNET_RUN_CREATE_FAILED");
+  const run = created as Run;
+  await ensurePlan(service, run, filters);
+  await event(service, run, "RUN_STARTED", "RUN_STARTED", null, { symbol: SYMBOL, slotCount: 25, anchorPrice: market.price, slotNotional: notional });
+  await advanceTestnetRun(run.id);
+  return run.id;
+}
+
+function orderRequest(run: Run, order: Order, slot: Slot) {
+  if (order.purpose === "INITIAL") return { type: "MARKET" as const, symbol: SYMBOL, side: "BUY" as const, quoteOrderQty: String(order.requested_quote), clientOrderId: order.client_order_id, maxNotional: amount(slot.balance_usdc) };
+  return { type: "LIMIT" as const, symbol: SYMBOL, side: order.side, quantity: String(order.requested_quantity), price: String(order.price), clientOrderId: order.client_order_id, maxNotional: amount(order.requested_quantity) * amount(order.price) + 0.00000001 };
+}
+
+function feeTotals(trades: TestnetTrade[]) {
+  return {
+    quantity: trades.reduce((sum, trade) => sum + trade.quantity, 0),
+    base: trades.filter((trade) => trade.commissionAsset === "SOL").reduce((sum, trade) => sum + trade.commission, 0),
+    quote: trades.filter((trade) => trade.commissionAsset === "USDC").reduce((sum, trade) => sum + trade.commission, 0),
+    other: trades.filter((trade) => !["SOL", "USDC"].includes(trade.commissionAsset) && trade.commission > 0).map((trade) => ({ asset: trade.commissionAsset, amount: trade.commission }))
+  };
+}
+
+async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, adapter: BinanceSpotTestnetAdapter) {
+  if (terminal.has(order.status) && (order.status !== "FILLED" || order.trades_reconciled)) return;
+  const actual: TestnetOrder | null = order.status === "PREPARED"
+    ? await adapter.ensureOwnedOrder(orderRequest(run, order, slot))
+    : await adapter.getOwnedOrder(SYMBOL, order.client_order_id);
+  if (!actual) throw new Error("COINOPS_TESTNET_PREPARED_ORDER_MISSING");
+  if (order.exchange_order_id && order.exchange_order_id !== actual.orderId) throw new Error("COINOPS_TESTNET_ORDER_ID_MISMATCH");
+  if (actual.symbol !== SYMBOL || actual.side !== order.side) throw new Error("COINOPS_TESTNET_ORDER_SCOPE_MISMATCH");
+  let fees = { base: amount(order.fee_base), quote: amount(order.fee_quote), quantity: 0, other: order.fee_other || [] };
+  if (actual.executedQuantity > 0) {
+    fees = feeTotals(await adapter.getOwnedTrades(SYMBOL, order.client_order_id, actual.orderId));
+    if (fees.quantity + 1e-9 < actual.executedQuantity) throw new Error("COINOPS_TESTNET_TRADES_PENDING");
+  }
+  const previousStatus = order.status;
+  if (previousStatus !== actual.status) await event(service, run, `${order.client_order_id}:${actual.status}`, `${order.side}_${actual.status}`, slot.slot_number,
+    { clientOrderId: order.client_order_id, exchangeOrderId: actual.orderId, executedQuantity: actual.executedQuantity, cumulativeQuote: actual.cumulativeQuoteQuantity });
+  await updateOrder(service, run, order, {
+    exchange_order_id: actual.orderId, status: actual.status, executed_quantity: actual.executedQuantity,
+    cumulative_quote: actual.cumulativeQuoteQuantity, fee_base: fees.base, fee_quote: fees.quote, fee_other: fees.other,
+    trades_reconciled: actual.status === "FILLED"
+  });
+}
+
+function buysFor(orders: Order[], slot: Slot) { return orders.filter((order) => order.slot_id === slot.id && order.side === "BUY"); }
+function sellsFor(orders: Order[], slot: Slot) { return orders.filter((order) => order.slot_id === slot.id && order.side === "SELL"); }
+function netBought(buys: Order[]) { return buys.reduce((sum, order) => sum + amount(order.executed_quantity) - amount(order.fee_base), 0); }
+function soldOrCovered(sells: Order[]) {
+  return sells.reduce((sum, order) => sum + amount(order.executed_quantity) + (ACTIVE_ORDER.has(order.status) ? Math.max(0, amount(order.requested_quantity) - amount(order.executed_quantity)) : 0), 0);
+}
+
+async function ensureTakeProfits(service: Service, run: Run, slots: Slot[], orders: Order[], filters: SymbolFilters, adapter: BinanceSpotTestnetAdapter) {
+  for (const slot of slots) {
+    const buys = buysFor(orders, slot);
+    if (!buys.some((order) => amount(order.executed_quantity) > 0)) continue;
+    const sells = sellsFor(orders, slot);
+    const bought = netBought(buys);
+    const uncovered = floorStep(bought - soldOrCovered(sells), filters.quantityStep);
+    const buyQuantity = buys.reduce((sum, order) => sum + amount(order.executed_quantity), 0);
+    const buyQuote = buys.reduce((sum, order) => sum + amount(order.cumulative_quote) + amount(order.fee_quote), 0);
+    const tpPrice = ceilStep((buyQuote / buyQuantity) * (1 + amount(run.gain_rate)), filters.priceTick);
+    if (uncovered >= filters.minQuantity && uncovered * tpPrice >= filters.minNotional) {
+      const revision = Math.max(0, ...sells.map((order) => order.revision)) + 1;
+      const prepared = await prepareOrder(service, run, slot, "SELL", "TP", revision, uncovered, null, tpPrice);
+      await event(service, run, `${prepared.client_order_id}:PREPARED`, "TP_PREPARED", slot.slot_number, { clientOrderId: prepared.client_order_id, quantity: uncovered, price: tpPrice });
+      await syncOrder(service, run, slot, prepared, adapter);
+      orders.push(prepared);
+    }
+    if (buys.every((order) => terminal.has(order.status)) && bought - soldOrCovered(sellsFor(orders, slot)) < filters.quantityStep && slot.entry_state !== "CLOSED") {
+      await updateSlot(service, run, slot, { entry_state: "OPEN" });
+    }
+  }
+}
+
+async function creditClosedSlots(service: Service, run: Run, slots: Slot[], orders: Order[], filters: SymbolFilters) {
+  for (const slot of slots) {
+    if (slot.entry_state !== "OPEN") continue;
+    const buys = buysFor(orders, slot), sells = sellsFor(orders, slot);
+    if (!buys.length || buys.some((order) => order.status !== "FILLED") || !sells.length || sells.some((order) => ACTIVE_ORDER.has(order.status))) continue;
+    if (netBought(buys) - sells.reduce((sum, order) => sum + amount(order.executed_quantity), 0) >= filters.quantityStep) continue;
+    if ([...buys, ...sells].some((order) => order.fee_other?.length)) throw new Error("COINOPS_TESTNET_UNPRICED_FEE_ASSET");
+    const buyCost = buys.reduce((sum, order) => sum + amount(order.cumulative_quote) + amount(order.fee_quote), 0);
+    const sellProceeds = sells.reduce((sum, order) => sum + amount(order.cumulative_quote) - amount(order.fee_quote), 0);
+    const profit = rounded(sellProceeds - buyCost);
+    const nextBalance = rounded(amount(slot.balance_usdc) + profit);
+    if (nextBalance <= 0) throw new Error("COINOPS_TESTNET_SLOT_BALANCE_INVALID");
+    await event(service, run, `SLOT_${slot.slot_number}_CLOSED`, "SLOT_CLOSED", slot.slot_number, { profitUsdc: profit, balanceUsdc: nextBalance, gainCount: slot.gain_count + (profit > 0 ? 1 : 0) });
+    await updateSlot(service, run, slot, { entry_state: "CLOSED", balance_usdc: nextBalance, gain_count: slot.gain_count + (profit > 0 ? 1 : 0), net_profit_usdc: rounded(amount(slot.net_profit_usdc) + profit) });
+  }
+}
+
+async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Order[], filters: SymbolFilters, adapter: BinanceSpotTestnetAdapter) {
+  if (orders.some((order) => order.side === "BUY" && ACTIVE_ORDER.has(order.status))) return false;
+  if (!orders.some((order) => order.side === "BUY")) {
+    const slot = slots[0];
+    if (!slot) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
+    const prepared = await prepareOrder(service, run, slot, "BUY", "INITIAL", 1, null, amount(slot.balance_usdc), null);
+    await event(service, run, `${prepared.client_order_id}:PREPARED`, "INITIAL_BUY_PREPARED", 1, { clientOrderId: prepared.client_order_id });
+    await updateSlot(service, run, slot, { entry_state: "ARMED" });
+    await syncOrder(service, run, slot, prepared, adapter);
+    orders.push(prepared);
+    return true;
+  }
+  const lastBuy = orders.filter((order) => order.side === "BUY").sort((a, b) => b.slot_number - a.slot_number || b.revision - a.revision)[0];
+  if (lastBuy.status === "CANCELED" && lastBuy.purpose === "ENTRY" && amount(lastBuy.executed_quantity) === 0) {
+    const slot = slots.find((item) => item.id === lastBuy.slot_id);
+    if (!slot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
+    const market = await adapter.reads.getMarketPrice(SYMBOL);
+    if (market.price > amount(slot.target_buy_price)) {
+      const replacement = await prepareOrder(service, run, slot, "BUY", "ENTRY", lastBuy.revision + 1, amount(lastBuy.requested_quantity), null, amount(lastBuy.price));
+      await syncOrder(service, run, slot, replacement, adapter);
+      await event(service, run, `${replacement.client_order_id}:RECOVERED`, "OWNED_BUY_REPLACED_AFTER_RESTART", slot.slot_number, { clientOrderId: replacement.client_order_id });
+      orders.push(replacement);
+      return true;
+    }
+    await updateSlot(service, run, slot, { entry_state: "MISSED", missed_at: new Date().toISOString() });
+    await event(service, run, `SLOT_${slot.slot_number}_MISSED`, "MISSED_LEVEL_DURING_REARM", slot.slot_number, { marketPrice: market.price, targetPrice: amount(slot.target_buy_price) });
+  }
+  const filledBuys = orders.filter((order) => order.side === "BUY" && order.status === "FILLED").sort((a, b) => b.slot_number - a.slot_number);
+  const completedBuy = filledBuys[0];
+  if (!completedBuy) return false;
+  const lastSlot = slots.find((slot) => slot.id === completedBuy.slot_id);
+  if (!lastSlot || lastSlot.entry_state === "ARMED") return false;
+  const lastSells = sellsFor(orders, lastSlot);
+  if (!lastSells.length || netBought(buysFor(orders, lastSlot)) - soldOrCovered(lastSells) >= filters.quantityStep) return false;
+  const market = await adapter.reads.getMarketPrice(SYMBOL);
+  for (const slot of slots.filter((candidate) => candidate.slot_number > completedBuy.slot_number && candidate.entry_state === "PLANNED")) {
+    if (market.price <= amount(slot.target_buy_price)) {
+      await updateSlot(service, run, slot, { entry_state: "MISSED", missed_at: new Date().toISOString() });
+      await event(service, run, `SLOT_${slot.slot_number}_MISSED`, "MISSED_LEVEL_DURING_REARM", slot.slot_number, { marketPrice: market.price, targetPrice: amount(slot.target_buy_price) });
+      continue;
+    }
+    const price = amount(slot.target_buy_price);
+    const quantity = floorStep(amount(slot.balance_usdc) / price, filters.quantityStep);
+    if (quantity < filters.minQuantity || quantity > filters.maxQuantity || quantity * price < filters.minNotional) throw new Error("COINOPS_TESTNET_ENTRY_FILTER_INVALID");
+    const prepared = await prepareOrder(service, run, slot, "BUY", "ENTRY", 1, quantity, null, price);
+    await event(service, run, `${prepared.client_order_id}:PREPARED`, "NEXT_BUY_PREPARED", slot.slot_number, { clientOrderId: prepared.client_order_id, quantity, price });
+    await updateSlot(service, run, slot, { entry_state: "ARMED" });
+    await syncOrder(service, run, slot, prepared, adapter);
+    orders.push(prepared);
+    return true;
+  }
+  return false;
+}
+
+/** Query-before-write reconciliation; safe to call again after restart or timeout. */
+export async function advanceTestnetRun(runId: string) {
+  assertTestnetEnvironment();
+  const service = createServiceRoleClient();
+  const lock = await claim(service, runId);
+  if (!lock) return { status: "BUSY_OR_INACTIVE" };
+  const { run, leaseOwner } = lock;
+  let errorCode: string | null = null;
+  try {
+    const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+    const filters = await adapter.reads.getSymbolInfo(SYMBOL);
+    for (let iteration = 0; iteration < 4; iteration++) {
+      const { slots, orders } = await rows(service, run);
+      if (slots.length !== 25) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
+      for (const order of orders) {
+        const slot = slots.find((item) => item.id === order.slot_id);
+        if (!slot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
+        await syncOrder(service, run, slot, order, adapter);
+      }
+      await ensureTakeProfits(service, run, slots, orders, filters, adapter);
+      await creditClosedSlots(service, run, slots, orders, filters);
+      const armed = await armNextBuy(service, run, slots, orders, filters, adapter);
+      if (!armed) break;
+    }
+    await event(service, run, `RECONCILED_${new Date().toISOString().slice(0, 16)}`, "RECONCILED", null, { mode: "TESTNET" });
+    return { status: "OK" };
+  } catch (error) {
+    errorCode = error instanceof Error && /^[A-Z][A-Z0-9_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_RECONCILIATION_FAILED";
+    throw new Error(errorCode);
+  } finally { await release(service, run, leaseOwner, errorCode); }
+}
+
+/** Cancels only the exact persisted CoinOps BUY, then replaces it at the same strategy level. */
+export async function replaceOwnedTestnetBuy(runId: string) {
+  assertTestnetEnvironment();
+  const service = createServiceRoleClient();
+  const lock = await claim(service, runId);
+  if (!lock) throw new Error("COINOPS_TESTNET_RUN_BUSY");
+  const { run, leaseOwner } = lock;
+  let errorCode: string | null = null;
+  try {
+    const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+    const { slots, orders } = await rows(service, run);
+    const current = orders.find((order) => order.side === "BUY" && order.purpose === "ENTRY" && ACTIVE_ORDER.has(order.status));
+    if (!current || !current.exchange_order_id) throw new Error("COINOPS_TESTNET_NO_OWNED_ENTRY_TO_REPLACE");
+    if (current.revision > 1) return { status: "ALREADY_REPLACED", clientOrderId: current.client_order_id };
+    if (current.status !== "NEW" || amount(current.executed_quantity) > 0) throw new Error("COINOPS_TESTNET_BUY_NOT_UNFILLED");
+    const slot = slots.find((item) => item.id === current.slot_id);
+    if (!slot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
+    if ((await adapter.reads.getMarketPrice(SYMBOL)).price <= amount(current.price)) throw new Error("COINOPS_TESTNET_LEVEL_CROSSED_BEFORE_REPLACE");
+    const canceled = await adapter.cancelOwnedOrder(SYMBOL, current.exchange_order_id, current.client_order_id);
+    if (!canceled) throw new Error("COINOPS_TESTNET_CANCEL_UNCERTAIN");
+    await updateOrder(service, run, current, { status: canceled.status, executed_quantity: canceled.executedQuantity, cumulative_quote: canceled.cumulativeQuoteQuantity });
+    await event(service, run, `${current.client_order_id}:CANCEL_RESULT`, "OWNED_BUY_CANCEL_RESULT", slot.slot_number, { clientOrderId: current.client_order_id, status: canceled.status });
+    if (canceled.status !== "CANCELED" || canceled.executedQuantity > 0) return { status: "FILLED_OR_PARTIAL_RECONCILE_REQUIRED" };
+    const next = await prepareOrder(service, run, slot, "BUY", "ENTRY", current.revision + 1, amount(current.requested_quantity), null, amount(current.price));
+    await syncOrder(service, run, slot, next, adapter);
+    await event(service, run, `${next.client_order_id}:REPLACED`, "OWNED_BUY_REPLACED", slot.slot_number, { canceledClientOrderId: current.client_order_id, replacementClientOrderId: next.client_order_id });
+    return { status: "REPLACED", clientOrderId: next.client_order_id };
+  } catch (error) {
+    errorCode = error instanceof Error && /^[A-Z][A-Z0-9_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_REPLACE_FAILED";
+    throw new Error(errorCode);
+  } finally { await release(service, run, leaseOwner, errorCode); }
+}

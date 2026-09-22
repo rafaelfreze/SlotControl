@@ -26,7 +26,7 @@ type RobotV1SlotAccountRow = { config_id: string; slot_number: number; initial_b
 type RobotV1EventRow = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type RobotV1CandleRow = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 
-export default async function AutomationPage({ searchParams }: { searchParams?: { testnet?: string } }) {
+export default async function AutomationPage({ searchParams }: { searchParams?: { testnet?: string; testnetError?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -57,6 +57,15 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const dailyCandles = (await Promise.all(["BTCUSDC", "SOLUSDC"].map(async (symbol) =>
     getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
   ))).flat();
+  const { data: testnetRun, error: testnetRunError } = await supabase.from("robot_v1_testnet_runs")
+    .select("id,status,symbol,last_reconciled_at,last_error,created_at").eq("asset", "SOL").order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (testnetRunError) throw testnetRunError;
+  const [testnetSlots, testnetOrders, testnetEvents] = testnetRun ? await Promise.all([
+    supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,balance_usdc,gain_count,net_profit_usdc,missed_at").eq("run_id", testnetRun.id).order("slot_number"),
+    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote").eq("run_id", testnetRun.id).order("created_at"),
+    supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", testnetRun.id).order("observed_at", { ascending: false }).limit(20)
+  ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
+  if (testnetSlots.error || testnetOrders.error || testnetEvents.error) throw testnetSlots.error || testnetOrders.error || testnetEvents.error;
 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
@@ -78,6 +87,12 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     intentCount={(intentsResponse.data as IntentRow[] | null)?.length || 0}
     solBrlPilot={{ ...assessSolBrlPilot(SOL_BRL_PUBLIC_SNAPSHOT.filters, SOL_BRL_PUBLIC_SNAPSHOT.priceBrl), observedAt: SOL_BRL_PUBLIC_SNAPSHOT.observedAt, status: SOL_BRL_PUBLIC_SNAPSHOT.status, priceBrl: SOL_BRL_PUBLIC_SNAPSHOT.priceBrl, priceTick: SOL_BRL_PUBLIC_SNAPSHOT.filters.priceTick, quantityStep: SOL_BRL_PUBLIC_SNAPSHOT.filters.quantityStep, minQuantity: SOL_BRL_PUBLIC_SNAPSHOT.filters.minQuantity, minNotional: SOL_BRL_PUBLIC_SNAPSHOT.filters.minNotional, orderTypes: SOL_BRL_PUBLIC_SNAPSHOT.orderTypes }}
     testnet={testnet}
+    testnetActionError={searchParams?.testnetError && /^COINOPS_TESTNET_[A-Z_]+$/.test(searchParams.testnetError) ? searchParams.testnetError : null}
+    testnetEnabled={process.env.COINOPS_TESTNET_ENABLED === "true"}
+    testnetRun={testnetRun}
+    testnetSlots={testnetSlots.data || []}
+    testnetOrders={testnetOrders.data || []}
+    testnetEvents={testnetEvents.data || []}
   />;
 
   return <MobileScreen desktop={<DesktopWorkspace title="Seu robô CoinOps" subtitle="Disciplina hoje. Resultado amanhã." userLabel={user.email || "Usuário"} actions={<span className="automation-topbar-status">● SHADOW ATIVO</span>}>{dashboard}</DesktopWorkspace>}>{dashboard}</MobileScreen>;

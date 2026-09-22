@@ -12,6 +12,8 @@ type MarketBuy = { type: "MARKET"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY"; q
 export type TestnetOrderRequest = LimitOrder | MarketBuy;
 export type TestnetOrder = { orderId: string; clientOrderId: string; symbol: string; side: "BUY" | "SELL"; status: string; executedQuantity: number; cumulativeQuoteQuantity: number; price: number };
 type OrderPayload = { orderId?: number | string; clientOrderId?: string; symbol?: string; side?: string; status?: string; executedQty?: string; cummulativeQuoteQty?: string; price?: string; code?: number };
+type TradePayload = { id?: number | string; orderId?: number | string; qty?: string; quoteQty?: string; commission?: string; commissionAsset?: string; isBuyer?: boolean };
+export type TestnetTrade = { id: string; quantity: number; quoteQuantity: number; commission: number; commissionAsset: string; isBuyer: boolean };
 
 function decimal(value: string) { return /^\d+(?:\.\d{1,12})?$/.test(value) && Number(value) > 0; }
 function verifyOwned(symbol: string, clientOrderId: string) {
@@ -104,7 +106,19 @@ export class BinanceSpotTestnetAdapter {
     const response = await this.signedRequest("GET", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
     if (response.code === -2013) return null;
     if (!response.ok) throw new Error(`COINOPS_TESTNET_ORDER_QUERY_HTTP_${response.status}`);
-    return normalizeOrder(response.payload, clientOrderId);
+    return normalizeOrder(response.payload as OrderPayload, clientOrderId);
+  }
+
+  async getOwnedTrades(symbol: string, clientOrderId: string, orderId: string): Promise<TestnetTrade[]> {
+    const owned = await this.getOwnedOrder(symbol, clientOrderId);
+    if (!owned || owned.orderId !== orderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
+    const response = await this.signedRequest("GET", "/api/v3/myTrades", { symbol, orderId, limit: "100" });
+    if (!response.ok || !Array.isArray(response.payload)) throw new Error(`COINOPS_TESTNET_TRADES_HTTP_${response.status}`);
+    return (response.payload as TradePayload[]).map((trade) => {
+      const quantity = Number(trade.qty), quoteQuantity = Number(trade.quoteQty), commission = Number(trade.commission);
+      if (String(trade.orderId) !== orderId || !trade.id || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(quoteQuantity) || quoteQuantity <= 0 || !Number.isFinite(commission) || commission < 0 || !trade.commissionAsset) throw new Error("COINOPS_TESTNET_TRADE_INVALID");
+      return { id: String(trade.id), quantity, quoteQuantity, commission, commissionAsset: trade.commissionAsset, isBuyer: Boolean(trade.isBuyer) };
+    });
   }
 
   async ensureOwnedOrder(input: TestnetOrderRequest): Promise<TestnetOrder> {
@@ -120,7 +134,7 @@ export class BinanceSpotTestnetAdapter {
       : { symbol: input.symbol, side: input.side, type: "LIMIT", timeInForce: "GTC", quantity: input.quantity, price: input.price, newClientOrderId: input.clientOrderId, newOrderRespType: "FULL" };
     try {
       const response = await this.signedRequest("POST", "/api/v3/order", params);
-      if (response.ok) return normalizeOrder(response.payload, input.clientOrderId);
+      if (response.ok) return normalizeOrder(response.payload as OrderPayload, input.clientOrderId);
       // A timeout or duplicate-client-id response is not permission to send a
       // second order. Read the matching engine state before deciding.
       const recovered = await this.getOwnedOrder(input.symbol, input.clientOrderId);
@@ -138,7 +152,7 @@ export class BinanceSpotTestnetAdapter {
     if (!current || current.orderId !== expectedOrderId) throw new Error("COINOPS_TESTNET_OWNED_ORDER_NOT_FOUND");
     if (!["NEW", "PARTIALLY_FILLED"].includes(current.status)) return current;
     const response = await this.signedRequest("DELETE", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
-    if (response.ok) return normalizeOrder(response.payload, clientOrderId);
+    if (response.ok) return normalizeOrder(response.payload as OrderPayload, clientOrderId);
     const recovered = await this.getOwnedOrder(symbol, clientOrderId);
     if (recovered && !["NEW", "PARTIALLY_FILLED"].includes(recovered.status)) return recovered;
     throw new Error(`COINOPS_TESTNET_CANCEL_HTTP_${response.status}`);
@@ -155,8 +169,8 @@ export class BinanceSpotTestnetAdapter {
     let response: Response;
     try { response = await this.fetcher(url, { method, cache: "no-store", headers: { accept: "application/json", "X-MBX-APIKEY": this.credentials.apiKey, ...(method === "GET" ? {} : { "content-type": "application/x-www-form-urlencoded" }) }, ...(method === "GET" ? {} : { body: payload.toString() }) }); }
     catch { throw new Error("COINOPS_TESTNET_NETWORK_UNKNOWN_RESULT"); }
-    const body = await response.json().catch(() => ({})) as OrderPayload;
-    return { ok: response.ok, status: response.status, code: body.code, payload: body };
+    const body = await response.json().catch(() => ({})) as OrderPayload | TradePayload[];
+    return { ok: response.ok, status: response.status, code: Array.isArray(body) ? undefined : body.code, payload: body };
   }
 }
 

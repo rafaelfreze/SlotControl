@@ -58,3 +58,25 @@ test("environment gate prevents use without dedicated Testnet configuration", ()
   try { delete process.env.COINOPS_TESTNET_ENABLED; assert.throws(() => BinanceSpotTestnetAdapter.fromEnvironment(), /DISABLED/); }
   finally { if (previous === undefined) delete process.env.COINOPS_TESTNET_ENABLED; else process.env.COINOPS_TESTNET_ENABLED = previous; }
 });
+
+test("TRADE probe validates without placing an exchange order", async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
+    calls.push({ url, method: init?.method || "GET" });
+    return url.endsWith("/api/v3/time") ? json({ serverTime: 1000 }) : json({});
+  } });
+  assert.deepEqual(await adapter.checkTradePermission(), { ok: true, error: null });
+  assert.deepEqual(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`), ["GET /api/v3/time", "POST /api/v3/order/test"]);
+  assert.ok(calls.every((call) => call.url.startsWith(BINANCE_SPOT_TESTNET_BASE_URL)));
+});
+
+test("owned trades preserve base and quote commissions for partial-fill accounting", async () => {
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url) => {
+    if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
+    if (new URL(url).pathname === "/api/v3/order") return json(payload(id, "PARTIALLY_FILLED"));
+    return json([{ id: 9, orderId: 42, qty: "0.08", quoteQty: "9.6", commission: "0.00008", commissionAsset: "BTC", isBuyer: true }]);
+  } });
+  const trades = await adapter.getOwnedTrades("BTCUSDC", id, "42");
+  assert.deepEqual(trades, [{ id: "9", quantity: 0.08, quoteQuantity: 9.6, commission: 0.00008, commissionAsset: "BTC", isBuyer: true }]);
+  await assert.rejects(adapter.getOwnedTrades("BTCUSDC", id, "43"), /OWNED_ORDER_NOT_FOUND/);
+});
