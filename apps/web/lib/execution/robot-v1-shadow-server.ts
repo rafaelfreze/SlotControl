@@ -59,16 +59,18 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       if (createError) throw createError;
       cycle = created as Cycle;
       const initialPosition = buildV1InitialShadowPosition(grid);
-      const { error: slotError } = await supabase.from("robot_v1_slots").insert(grid.map((slot) => ({
-        product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle!.id, slot_number: slot.slotNumber, symbol: rule.symbol,
-        buy_price: slot.buyPrice, requested_quantity: slot.quantity, buy_client_order_id: v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "BUY"),
-        idempotency_key: v1IdempotencyKey(cycle!.id, slot.slotNumber, "BUY"), observed_at: market.observedAt,
-        ...(slot.slotNumber === 1 ? {
-          executed_quantity: initialPosition.quantity, average_fill_price: initialPosition.buyPrice, buy_status: "FILLED", buy_trigger_price: initialPosition.buyPrice,
-          buy_trigger_observed_price: market.price, buy_triggered_at: market.observedAt, take_profit_price: initialPosition.takeProfitPrice,
-          take_profit_status: "PENDING", status: "TP_ACTIVE", sell_client_order_id: v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "SELL")
-        } : {})
-      })));
+      const { error: slotError } = await supabase.from("robot_v1_slots").insert(grid.map((slot) => {
+        const isInitial = slot.slotNumber === initialPosition.slotNumber;
+        return {
+          product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle!.id, slot_number: slot.slotNumber, symbol: rule.symbol,
+          buy_price: slot.buyPrice, requested_quantity: slot.quantity, executed_quantity: isInitial ? initialPosition.quantity : 0,
+          average_fill_price: isInitial ? initialPosition.buyPrice : null, buy_status: isInitial ? "FILLED" : "PENDING",
+          buy_trigger_price: isInitial ? initialPosition.buyPrice : null, buy_trigger_observed_price: isInitial ? market.price : null, buy_triggered_at: isInitial ? market.observedAt : null,
+          take_profit_price: isInitial ? initialPosition.takeProfitPrice : null, take_profit_status: isInitial ? "PENDING" : "NONE", status: isInitial ? "TP_ACTIVE" : "PENDING",
+          buy_client_order_id: v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "BUY"), sell_client_order_id: isInitial ? v1ClientOrderId(config.asset, cycle!.id, slot.slotNumber, "SELL") : null,
+          idempotency_key: v1IdempotencyKey(cycle!.id, slot.slotNumber, "BUY"), observed_at: market.observedAt
+        };
+      }));
       if (slotError) {
         const failureCode = /^[A-Z0-9_]{1,48}$/i.test(slotError.code || "") ? slotError.code : "UNKNOWN";
         await supabase.from("robot_v1_cycles").update({ status: "FAILED", completion_reason: `GRID_SLOT_INSERT_${failureCode}` }).eq("id", cycle.id);
