@@ -5,6 +5,10 @@ import { runConfiguredRobotV1Shadow } from "@/lib/execution/robot-v1-shadow-serv
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// Reconciliation precedes the two independent Shadow ladders. Reserve enough
+// time for both READ-ONLY Binance scans so one asset cannot be skipped after
+// the first finishes its health check.
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
   const authorization = request.headers.get("authorization");
