@@ -44,11 +44,12 @@ export function buildStrategyAuditChecks(data: AuditDatasets, context: Context):
     add("STRATEGY_DECISION_IDEMPOTENCY", !decisions.length || missing ? "WARNING" : ids.some((id) => !id) || new Set(ids).size !== ids.length ? "FAIL" : "PASS", "Uma identidade por decisão, ambiente, ativo e escopo.", scope);
     const expired = decisions.filter((row) => time(context.generatedAt) - time(row.created_at) > 120_000);
     const undispatched = expired.filter((row) => !row.dispatched_at && row.action_type !== "WAIT");
+    const recoveredUndispatched = undispatched.filter((row) => row.result === "COMPLETED" && object(row.observed_next_state).recovered_from_ledger === true);
     const unacknowledged = expired.filter((row) => environment === "TESTNET" && external(row) && row.dispatched_at && !row.exchange_ack_at);
     const failures = decisions.filter((row) => row.result === "FAILED" || row.error);
-    const pendingDispatch = decisions.some((row) => !row.dispatched_at && row.action_type !== "WAIT");
+    const pendingDispatch = decisions.some((row) => !row.dispatched_at && row.action_type !== "WAIT" && row.result !== "COMPLETED");
     const pendingAck = decisions.some((row) => external(row) && !row.exchange_ack_at);
-    add("STRATEGY_DECISION_DISPATCH", undispatched.length || failures.length ? "FAIL" : missing || !decisions.length || pendingDispatch ? "WARNING" : "PASS", `${undispatched.length} decisão(ões) há mais de 120s sem despacho; ${failures.length} falha(s) persistida(s). Pendências dentro da janela ainda não são sucesso.`, scope);
+    add("STRATEGY_DECISION_DISPATCH", undispatched.length || failures.length ? "FAIL" : missing || !decisions.length || pendingDispatch ? "WARNING" : "PASS", `${undispatched.length} decisão(ões) sem despacho original após 120s; ${recoveredUndispatched.length} já recuperada(s) por pós-condição comprovada, sem apagar a falha histórica. ${undispatched.length - recoveredUndispatched.length} ainda não recuperada(s); ${failures.length} falha(s) persistida(s). Pendências recentes não são sucesso.`, scope);
     add("STRATEGY_DECISION_ACK", unacknowledged.length ? "FAIL" : environment === "SHADOW" || missing || !decisions.some(external) || pendingAck ? "WARNING" : "PASS", environment === "SHADOW" ? "Shadow não possui ACK de exchange; conclusão simulada é evidência distinta." : `${unacknowledged.length} decisão(ões) enviada(s) há mais de 120s sem ACK Testnet.`, scope);
     for (const cycle of cycles) {
       // An existing cycle may have started before this audit window. Its actual
@@ -80,7 +81,8 @@ export function buildStrategyAuditChecks(data: AuditDatasets, context: Context):
         const regression = occurrences.filter((row) => row.temporal_classification === "POST_4_1_REGRESSION");
         const unresolved = occurrences.filter((row) => row.temporal_classification === "UNRESOLVED" || row.temporal_classification === "POST_4_1_EXTERNAL" && row.is_active_issue !== false);
         const evidenceMissing = !currentSnapshot || !slots.length || !classifiedSnapshot || context.incompleteSources.some((name) => /^(robot_v1_testnet_events|robot_v1_testnet_slots|robot_v1_testnet_runs)/.test(name))
-          || !decisions.some((row) => row.cycle_id === cycle.cycle_id && row.strategy_version === "4.1.0" && time(row.created_at) >= time(STRATEGY_4_1_EFFECTIVE_AT));
+          || !decisions.some((row) => row.cycle_id === cycle.cycle_id && /^4\.1\.(0|[1-9]\d*)$/.test(string(row.strategy_version))
+            && row.strategy_version === cycle.strategy_version && time(row.created_at) >= time(STRATEGY_4_1_EFFECTIVE_AT));
         add("NO_NEW_ENGINE_MISSED_LEVELS", regression.length ? "FAIL" : unresolved.length || evidenceMissing ? "WARNING" : "PASS", `${regression.length} regressão(ões) comprovada(s) após 4.1; ${historical.length} histórico(s) não contam como falha nova. Falta de evidência não comprova ausência.`, { ...scope, cycle_id: cycle.cycle_id, strategy_effective_at: STRATEGY_4_1_EFFECTIVE_AT });
         const wronglyActive = historical.filter((row) => row.is_active_issue !== false);
         add("HISTORICAL_MISSED_NOT_ACTIVE", wronglyActive.length || evidenceMissing ? "WARNING" : "PASS", `${historical.length} histórico(s) preservado(s); ${wronglyActive.length} ainda sem remediação comprovada. Histórico resolvido não entra no contador de erro ativo.`, { ...scope, cycle_id: cycle.cycle_id });

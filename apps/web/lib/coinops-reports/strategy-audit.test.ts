@@ -4,16 +4,17 @@ import { buildAuditReport, REPORT_DATASET_KEYS, type AuditDatasets } from "./rep
 import { buildStrategyAuditChecks, normalizeStrategyDecisions } from "./strategy-audit.ts";
 import { missedLevelCauseLabel, missedLevelEvidence, TESTNET_MISSED_EVENT_TYPES } from "./missed-level-evidence.ts";
 import { buildReportPackage } from "./report-package.ts";
+import { STRATEGY_VERSION } from "../execution/strategy-engine.ts";
 
 const now = "2026-09-23T13:00:00Z";
 const context = { generatedAt: now, incompleteSources: [] as string[], filters: { start: "2026-09-23T00:00:00Z", end: "2026-09-24T00:00:00Z", assets: ["SOL" as const], environments: ["TESTNET" as const] } };
 const empty = (): AuditDatasets => Object.fromEntries(REPORT_DATASET_KEYS.map((key) => [key, []])) as unknown as AuditDatasets;
-const decision = { environment: "TESTNET", asset: "SOL", cycle_id: "run", decision_id: "decision-1", strategy_version: "4.1.0", slot_id: "slot-2", operation_id: "op", action_type: "ARM_NEXT_BUY", target_price: 117.78, created_at: "2026-09-23T12:59:00Z", dispatched_at: "2026-09-23T12:59:01Z", exchange_ack_at: "2026-09-23T12:59:02Z", completed_at: "2026-09-23T12:59:02Z", result: "COMPLETED", expected_next_state: "ARMED", observed_next_state: { market_price: 120 } };
+const decision = { environment: "TESTNET", asset: "SOL", cycle_id: "run", decision_id: "decision-1", strategy_version: STRATEGY_VERSION, slot_id: "slot-2", operation_id: "op", action_type: "ARM_NEXT_BUY", target_price: 117.78, created_at: "2026-09-23T12:59:00Z", dispatched_at: "2026-09-23T12:59:01Z", exchange_ack_at: "2026-09-23T12:59:02Z", completed_at: "2026-09-23T12:59:02Z", result: "COMPLETED", expected_next_state: "ARMED", observed_next_state: { market_price: 120 } };
 const get = (data: AuditDatasets, code: string) => buildStrategyAuditChecks(data, context).find((row) => row.code === code);
 
 test("decision evidence preserves timestamps, strategy and latency without secrets or fabricated history", () => {
   const result = normalizeStrategyDecisions([{ ...decision, target_notional: 10.09996, root_cause: "STALE_CACHED_RUN_DISCOVERY", observed_next_state: { first_cross_at: null, token: "private", order_resident_at: decision.exchange_ack_at } }])[0]!;
-  assert.equal(result.decision_latency_ms, 2000); assert.equal(result.strategy_version, "4.1.0"); assert.equal(result.target_notional, 10.09996);
+  assert.equal(result.decision_latency_ms, 2000); assert.equal(result.strategy_version, STRATEGY_VERSION); assert.equal(result.target_notional, 10.09996);
   assert.equal(result.first_cross_at, null); assert.equal(result.root_cause, "STALE_CACHED_RUN_DISCOVERY"); assert.ok(!JSON.stringify(result).includes("private"));
   assert.equal(normalizeStrategyDecisions([]).length, 0);
 });
@@ -25,6 +26,26 @@ test("missing evidence, legacy versions and absent four-engine coverage cannot m
   assert.equal(get(data, "STRATEGY_VERSION_PARITY")?.status, "WARNING"); assert.notEqual(get(data, "LIVE_STRATEGY_PARITY_READY")?.status, "PASS");
 });
 
+test("4.1 patch adoption accepts current proof without rewriting historical decisions or hiding runtime version mismatch", () => {
+  const data = empty();
+  const postContext = { ...context, generatedAt: "2026-09-23T16:10:00Z", filters: { ...context.filters, start: "2026-09-23T14:32:20.558Z", temporalWindow: "SINCE_STRATEGY_4_1" as const } };
+  data.cycles = [{ environment: "TESTNET", asset: "SOL", cycle_id: "run", status: "ACTIVE", strategy_version: STRATEGY_VERSION }];
+  data.slots = Array.from({ length: 25 }, (_, index) => ({ environment: "TESTNET", asset: "SOL", cycle_id: "run", physical_slot_number: index + 1, entry_state: "PLANNED", operational_state: "PLANNED", missed_at: null }));
+  data.decisions = normalizeStrategyDecisions([
+    { ...decision, decision_id: "legacy-completed", strategy_version: "4.1.0", action_type: "WAIT", created_at: "2026-09-23T14:34:00Z" },
+    { ...decision, decision_id: "current-completed", action_type: "WAIT", created_at: "2026-09-23T16:09:00Z" },
+  ]);
+  const status = (code: string) => buildStrategyAuditChecks(data, postContext).find((row) => row.code === code)?.status;
+  assert.equal(status("STRATEGY_VERSION_PARITY"), "PASS"); assert.equal(status("NO_NEW_ENGINE_MISSED_LEVELS"), "PASS");
+  assert.equal(data.decisions[0]!.strategy_version, "4.1.0");
+  data.cycles[0]!.strategy_version = "4.1.2"; data.decisions[1]!.strategy_version = "4.1.2";
+  assert.equal(status("NO_NEW_ENGINE_MISSED_LEVELS"), "PASS");
+  data.cycles[0]!.strategy_version = STRATEGY_VERSION;
+  assert.equal(status("STRATEGY_VERSION_PARITY"), "FAIL"); assert.equal(status("NO_NEW_ENGINE_MISSED_LEVELS"), "WARNING");
+  data.cycles[0]!.strategy_version = "4.0.9"; data.decisions[1]!.strategy_version = "4.0.9";
+  assert.equal(status("NO_NEW_ENGINE_MISSED_LEVELS"), "WARNING");
+});
+
 test("dispatch omissions, missing acknowledgements and duplicate decisions are detected", () => {
   const data = empty();
   data.decisions = normalizeStrategyDecisions([{ ...decision, created_at: "2026-09-23T12:00:00Z", dispatched_at: null, exchange_ack_at: null }]);
@@ -34,8 +55,16 @@ test("dispatch omissions, missing acknowledgements and duplicate decisions are d
   data.decisions.push({ ...data.decisions[0] }); assert.equal(get(data, "STRATEGY_DECISION_IDEMPOTENCY")?.status, "FAIL");
 });
 
+test("recovered legacy TP keeps the original dispatch failure visible instead of fabricating dispatch history", () => {
+  const data = empty();
+  data.decisions = normalizeStrategyDecisions([{ ...decision, action_type: "CREATE_TP", strategy_version: "4.1.0", created_at: "2026-09-23T12:00:00Z", dispatched_at: null, result: "COMPLETED", observed_next_state: { recovered_from_ledger: true, matched_by: "EXACT_SLOT_SEQUENCE_PURPOSE_PRICE", order_status: "NEW" } }]);
+  const check = get(data, "STRATEGY_DECISION_DISPATCH")!;
+  assert.equal(check.status, "FAIL"); assert.match(String(check.explanation), /1 já recuperada/); assert.match(String(check.explanation), /0 ainda não recuperada/);
+  assert.equal(data.decisions[0]!.dispatched_at, null); assert.equal(data.decisions[0]!.strategy_version, "4.1.0");
+});
+
 test("SOL reentry118.97 has priority over117.78 and116.6; missed history is preserved", () => {
-  const data = empty(); data.cycles = [{ environment: "TESTNET", asset: "SOL", cycle_id: "run", status: "ACTIVE", strategy_version: "4.1.0" }];
+  const data = empty(); data.cycles = [{ environment: "TESTNET", asset: "SOL", cycle_id: "run", status: "ACTIVE", strategy_version: STRATEGY_VERSION }];
   data.decisions = normalizeStrategyDecisions([decision]);
   data.slots = [118.97, 117.78, 116.6].map((price, i) => ({ environment: "TESTNET", asset: "SOL", cycle_id: "run", slot_id: `slot-${i + 1}`, buy_price: price, entry_state: i === 1 ? "ARMED" : "PLANNED", status: "PENDING" }));
   assert.equal(get(data, "PRIORITY_REENTRY_MUST_BE_ARMED_BEFORE_LOWER_LEVEL")?.status, "FAIL");
@@ -50,7 +79,7 @@ test("SOL reentry118.97 has priority over117.78 and116.6; missed history is pres
 });
 
 test("initial MARKET fill requires positive executed quantity, not a completed decision alone", () => {
-  const data = empty(); data.cycles = [{ environment: "TESTNET", asset: "SOL", cycle_id: "run", status: "ACTIVE", started_at: "2026-09-23T12:00:00Z", strategy_version: "4.1.0" }];
+  const data = empty(); data.cycles = [{ environment: "TESTNET", asset: "SOL", cycle_id: "run", status: "ACTIVE", started_at: "2026-09-23T12:00:00Z", strategy_version: STRATEGY_VERSION }];
   data.decisions = normalizeStrategyDecisions([{ ...decision, action_type: "OPEN_INITIAL_MARKET" }]);
   assert.notEqual(get(data, "NEW_CYCLE_MUST_HAVE_INITIAL_MARKET_FILL")?.status, "PASS");
   data.orders = [{ environment: "TESTNET", cycle_id: "run", purpose: "INITIAL", side: "BUY", status: "FILLED", executed_quantity: .084 }];

@@ -2,9 +2,9 @@
 
 ## Conclusão
 
-As duas ocorrências originais MISSED_LEVEL encontradas nos runs Testnet BTC/SOL são **HISTORICAL_PRE_4_1**. BTC #1 foi detectado depois da implantação, mas já havia perdido a oportunidade antes dela. SOL #1 é a ocorrência histórica da reconciliação atrasada. A Strategy Engine permanece **4.1.0**, sem mudança de decisão/adapter nesta entrega. A versão do relatório passa a 3.
+As duas ocorrências originais MISSED_LEVEL encontradas nos runs Testnet BTC/SOL são **HISTORICAL_PRE_4_1**. BTC #1 foi detectado depois da implantação, mas já havia perdido a oportunidade antes dela. SOL #1 é a ocorrência histórica da reconciliação atrasada. A classificação desses fatos não exigiu alterar a engine; o relatório passa a versão 3. Durante o smoke, a reentrada SOL #5 preencheu e expôs uma **falha distinta de TP no adaptador**, descrita abaixo e corrigida no patch **4.1.1**. Não é um terceiro MISSED_LEVEL nem motivo para reclassificar os dois históricos.
 
-Produto CoinOps; backend OnPlay Platform `otdfpmsegjxpqrzisfmi`; schema `coinops`. Escopo verificado: produto `162a3e3f-d994-4e74-90db-ae666924c77f`, tenant `371dbf6e-2ce4-4bfe-9e15-3a25f2905607`. Somente metadados aditivos de auditoria; nenhum slot, saldo, gain, ordem ou histórico original é alterado. Binance Production READ-ONLY; LIVE bloqueado; Testnet usa fundos fictícios.
+Produto CoinOps; backend OnPlay Platform `otdfpmsegjxpqrzisfmi`; schema `coinops`. Escopo verificado: produto `162a3e3f-d994-4e74-90db-ae666924c77f`, tenant `371dbf6e-2ce4-4bfe-9e15-3a25f2905607`. A migration acrescenta somente metadados de auditoria; nenhum slot, saldo, gain, ordem ou histórico original é alterado por ela. O reparo posterior do adaptador permite ao reactor criar o TP faltante exclusivamente Testnet. Binance Production READ-ONLY; LIVE bloqueado; Testnet usa fundos fictícios.
 
 ## Marco exato da versão
 
@@ -93,3 +93,17 @@ Publicação principal: commit `4418cd4`, GitHub/main, deployment `dpl_G5k5nwnr3
 O smoke identificou um defeito anterior a esta fase (`0798dcd` já o continha): o resumo visual somava apenas slots atualmente CLOSED e omitia gains/lucros de slots já reciclados. A correção complementar é somente de leitura: somar acumulados persistidos por ciclo/slot, sem filtrar pelo estado atual; apresentar a lista como resultados acumulados, não como operações individuais reconstruídas. Nenhum saldo/ledger/engine é modificado por essa correção.
 
 Após o ajuste complementar: 327 testes aprovados, lint/typecheck direcionados e novo build aprovados. Não houve segunda migration; uma publicação adicional foi necessária pela falha visual descoberta no smoke.
+
+## Falha nova comprovada no smoke: TP após reentrada
+
+A BUY de reentrada SOL #5, sequência 2, ordem 697438, foi preenchida às **15:47:13.660 UTC**, trade 35780, quantidade 0,087 SOL a 114,28 USDC, notional 9,94236 USDC. Coleta às 15:47:23.135 UTC: 9,475 segundos. A decisão CREATE_TP sequência 2 nasceu às 15:47:23.364642 UTC e ficou PENDING; nenhuma SELL dessa operação foi criada, enquanto a BUY #6 já estava residente. O painel acusou corretamente DIVERGÊNCIA ATIVA/posição sem TP, em vez de esconder o problema atrás dos históricos resolvidos.
+
+Causa: a revisão SELL era calculada apenas dentro da operação atual. Uma nova operação sem SELL voltava à revisão 1, mas o clientOrderId legado é composto por run/slot/lado/revisão, sem a sequência da operação. O upsert idempotente encontrava a SELL revisão 1 da operação anterior já FILLED; o dispatcher retornava sem enviar novo TP, deixando a decisão nova pendente. O cron continuar reconciliando não comprovava posição protegida.
+
+Correção 4.1.1: revisões SELL monotônicas em todo o histórico do mesmo slot/lado, preservando clientOrderIds existentes, e validação da identidade recuperada por idempotência. O próximo reactor pode criar o TP faltante a partir da BUY real Testnet já preenchida; não cria BUY retroativa nem novo gain. A recuperação de decisões exige a pós-condição persistida da mesma sequência/preço, conserva intenção/versão/timestamp antigos e registra a nova evidência. O incremento de versão é auditável; o marco original 4.1.0 e os dois diagnósticos históricos não mudam.
+
+O caso passa a exigir teste de integração com serviço/adapter simulados, cobrindo TP antigo FILLED → BUY da reentrada FILLED → uma nova SELL residente, retry sem duplicação e rejeição de colisão de identidade. Nenhum teste usa credencial ou ordem de produção. Nenhuma alteração de schema é necessária para esse reparo do adaptador.
+
+O relatório desde a 4.1 conserva o FAIL do despacho original ausente, mesmo quando a pós-condição recupera a decisão. `dispatched_at` não é inventado retroativamente; a descrição distingue falha histórica recuperada de pendência ainda ativa. Isso é diferente da saúde operacional atual: depois de confirmar o novo TP, a posição pode estar protegida sem apagar a regressão ocorrida nesta janela. Não há liberação do gate LIVE.
+
+Validação local do patch 4.1.1: 337 testes aprovados, lint completo sem avisos/erros, typecheck e build aprovados. O harness executa as funções reais privadas do adaptador com todas as dependências de banco/exchange simuladas: NEW, PARTIALLY_FILLED, FILLED, substituição cancelada, retry, preservação da operação anterior e colisões de escopo/valores. Revisão independente sem bloqueadores. A evidência remota posterior à publicação pertence ao fechamento da tarefa; o build não a substitui.

@@ -15,7 +15,7 @@ type Scope = { productId: string; tenantId: string; userId: string };
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Run = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; status: string; symbol: V1Symbol; anchor_price: number | string; slot_notional_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; next_capital_usdc: number | string | null; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; lease_owner: string | null; lease_until: string | null; previous_run_id: string | null; reset_started_at: string | null; reset_completed_at: string | null; recovery_source: string | null };
 type Slot = { id: string; run_id: string; slot_number: number; entry_state: string; target_buy_price: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string; missed_at: string | null; operation_sequence: number; entry_origin: "GRID" | "REENTRY"; entry_reference_price: number | string; last_take_profit_price: number | string | null; last_credited_sell_client_order_id: string | null };
-type Order = { id: string; run_id: string; slot_id: string; slot_number: number; side: "BUY" | "SELL"; purpose: "INITIAL" | "ENTRY" | "TP"; revision: number; operation_sequence: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; requested_quote: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; fee_base: number | string; fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>; trades_reconciled: boolean };
+type Order = ReturnType<typeof owned> & { id: string; run_id: string; slot_id: string; slot_number: number; side: "BUY" | "SELL"; purpose: "INITIAL" | "ENTRY" | "TP"; revision: number; operation_sequence: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; requested_quote: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; fee_base: number | string; fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>; trades_reconciled: boolean };
 type SymbolFilters = ExchangeSymbolInfo;
 
 const ACTIVE_ORDER = TESTNET_ACTIVE_ORDER_STATUSES;
@@ -86,10 +86,21 @@ async function prepareOrder(service: Service, run: Run, slot: Slot, side: "BUY" 
     operation_sequence: slot.operation_sequence, client_order_id: id, requested_quantity: requestedQuantity, requested_quote: requestedQuote, price, strategy_decision_id: decisionId ?? null
   }, { onConflict: "client_order_id", ignoreDuplicates: true }).select("*").maybeSingle();
   if (error) throw new Error("COINOPS_TESTNET_ORDER_PREPARE_FAILED");
-  if (data) return data as Order;
-  const { data: existing, error: existingError } = await service.from("robot_v1_testnet_orders").select("*").eq("client_order_id", id).eq("run_id", run.id).single();
+  const validateIdentity = (order: Order) => {
+    if (order.product_id !== run.product_id || order.tenant_id !== run.tenant_id || order.user_id !== run.user_id
+      || order.run_id !== run.id || order.slot_id !== slot.id || order.slot_number !== slot.slot_number
+      || order.side !== side || order.purpose !== purpose || order.revision !== revision
+      || order.operation_sequence !== slot.operation_sequence || order.client_order_id !== id
+      || amount(order.requested_quantity) !== amount(requestedQuantity)
+      || amount(order.requested_quote) !== amount(requestedQuote) || amount(order.price) !== amount(price)) {
+      throw new Error("COINOPS_TESTNET_ORDER_IDENTITY_COLLISION");
+    }
+    return order;
+  };
+  if (data) return validateIdentity(data as Order);
+  const { data: existing, error: existingError } = await service.from("robot_v1_testnet_orders").select("*").eq("client_order_id", id).eq("run_id", run.id).eq("tenant_id", run.tenant_id).single();
   if (existingError || !existing) throw new Error("COINOPS_TESTNET_ORDER_PREPARE_UNKNOWN");
-  return existing as Order;
+  return validateIdentity(existing as Order);
 }
 
 async function claim(service: Service, runId: string) {
@@ -266,7 +277,9 @@ async function ensureTakeProfits(service: Service, run: Run, slots: Slot[], orde
     const uncovered = floorStep(bought - soldOrCovered(sells), filters.quantityStep);
     const buyQuantity = buys.reduce((sum, order) => sum + amount(order.executed_quantity), 0);
     const buyQuote = buys.reduce((sum, order) => sum + amount(order.cumulative_quote) + amount(order.fee_quote), 0);
-    const revision = Math.max(0, ...sells.map((order) => order.revision)) + 1;
+    // Client IDs are scoped to cycle/physical slot/side/revision, not operation
+    // sequence. Reentry must advance across all earlier SELLs for this slot.
+    const revision = Math.max(0, ...orders.filter((order) => order.run_id === run.id && order.slot_id === slot.id && order.side === "SELL").map((order) => order.revision)) + 1;
     const tpDecision = planStrategyTakeProfit({ ...context(run), transitionKey: `TP:${revision}` }, { ...candidate(slot), state: "OPEN" }, buyQuote / buyQuantity, filters,
       { gainRate: amount(run.gain_rate), entrySpacing: amount(run.entry_spacing) });
     const tpPrice = tpDecision.target_price!;

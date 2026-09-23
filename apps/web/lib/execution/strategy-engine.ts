@@ -5,7 +5,7 @@ import type { ExchangeSymbolInfo } from "./types.ts";
 
 /** The same decision contract is consumed by the Shadow and Testnet adapters.
  * Transport, exchange credentials and execution environment never enter it. */
-export const STRATEGY_VERSION = "4.1.0" as const;
+export const STRATEGY_VERSION = "4.1.1" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";

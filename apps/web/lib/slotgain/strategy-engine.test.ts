@@ -16,7 +16,7 @@ const filters: ExchangeSymbolInfo = { symbol: "SOLUSDC", baseAsset: "SOL", quote
 test("initial MARKET is confined to the first operation of Slot 1; recovery never duplicates it", () => {
   const initial = planStrategyInitialEntry(context, candidate(1, 120));
   assert.equal(initial.action_type, "OPEN_INITIAL_MARKET");
-  assert.equal(initial.strategy_version, "4.1.0");
+  assert.equal(initial.strategy_version, STRATEGY_VERSION);
   assert.equal(initial.target_notional, 10);
   assert.equal(planStrategyInitialEntry(context, candidate(1, 120, { state: "OPEN" })).action_type, "WAIT");
   assert.equal(planStrategyInitialEntry(context, candidate(1, 120, { state: "ARMED" })).action_type, "WAIT");
@@ -195,6 +195,6 @@ test("Shadow and Testnet representations produce identical initial/TP/local/prio
     assert.deepEqual(planStrategyNextEntry(runContext, shadow, 121 * scale), planStrategyNextEntry(runContext, testnet, 121 * scale));
     for (const adapterSlots of [shadow, testnet]) { adapterSlots[0]!.state = "CLOSED"; adapterSlots[2]!.state = "CLOSED"; }
     assert.deepEqual(planStrategyClosedSlot(runContext, shadow, "physical-1"), planStrategyClosedSlot(runContext, testnet, "physical-1"));
-    assert.equal(STRATEGY_VERSION, "4.1.0");
+    assert.equal(STRATEGY_VERSION, "4.1.1");
   }
 });

@@ -80,9 +80,10 @@ preenchida ou com cancelamento incerto. Não há MARKET de recuperação local.
 
 ## Auditoria, verificação e rollback
 
-Relatórios versão 2 incluem decisões, estratégia, latência, causa de missed e
+Relatórios versão 3 incluem decisões, estratégia, latência, causa de missed e
 checks de prioridade, inicial MARKET, duplicação e paridade. Evidência ausente
-é WARNING; falha interna/missed não aparece como Motor OK. O gate
+é WARNING; falha interna ativa não aparece como Motor OK. Histórico anterior
+com causa resolvida é separado do estado atual. O gate
 `LIVE_STRATEGY_PARITY_READY` é informativo e não habilita LIVE.
 
 Quando TP/BUY e reciclagem têm o mesmo timestamp de candle, o detector de
@@ -108,3 +109,14 @@ usado como banco de testes financeiros.
 Rollback de aplicação preserva as colunas/tabela e toda a trilha; não executar
 DROP nem apagar decisões. Retornar ao código anterior reintroduz o bug de cache:
 preferir correção à frente, mantendo no-store e os bloqueios Production/LIVE.
+
+## Patch 4.1.1 — TP na reentrada Testnet
+
+O smoke temporal comprovou uma colisão de clientOrderId na primeira reentrada
+SOL #5 preenchida: revisão SELL 1 era reutilizada na operação 2 e recuperava o
+TP FILLED da operação 1. A revisão deve ser monotônica por run/slot/lado em todo
+o histórico, como já ocorre nas BUY, e a recuperação idempotente deve validar
+identidade/operação. O patch corrige o adaptador, sem nova fórmula estratégica
+nem escrita Production. A versão compartilhada passa a 4.1.1 para registrar a
+adoção; intenções históricas não são reversionadas. Evidência detalhada na
+[auditoria temporal 4.1.1](./COINOPS_PHASE_4_1_1_TEMPORAL_AUDIT.md).
