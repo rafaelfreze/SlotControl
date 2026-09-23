@@ -68,11 +68,11 @@ test("texto livre com Basic, cookies ou segredo entre aspas não conserva sufixo
 });
 
 const sample: PackagedAudit = { datasets: { summary: [{ environment: "SHADOW", asset: "SOL", symbol: "SOLUSDC", gains: 2, operations: 2, cycles: 1, realized_pnl: .1, capital_start: 250, capital_end: 250.1, missed_levels: 0, errors: 0, health: "WARNING", new_audit_field: "evidência" }], checks: [{ code: "SOURCE_GAP", status: "WARNING", explanation: "Fonte histórica não registrada." }] }, warnings: ["Snapshot atual não é histórico."], incompleteSources: ["cron_history"] };
-test("pacote v3 contém 20 arquivos, contagens e hashes correspondem ao conteúdo descompactado", () => {
+test("pacote v4 contém 21 arquivos, contagens e hashes correspondem ao conteúdo descompactado", () => {
   const packaged = buildReportPackage(sample, filters, now.toISOString(), "abc123");
   const files = unzip(packaged.zip()), manifest = JSON.parse(files.get("manifest.json")!);
-  assert.equal(files.size, 20); assert.equal(manifest.report_version, 3); assert.equal(manifest.timezone, "America/Campo_Grande"); assert.equal(manifest.app_commit_sha, "abc123");
-  assert.equal(manifest.schema_version, "coinops/robot-v1/reports-v3"); assert.ok(files.has("16_MISSED_TEMPORAL.csv"));
+  assert.equal(files.size, 21); assert.equal(manifest.report_version, 4); assert.equal(manifest.timezone, "America/Campo_Grande"); assert.equal(manifest.app_commit_sha, "abc123");
+  assert.equal(manifest.schema_version, "coinops/robot-v1/reports-v4"); assert.ok(files.has("16_MISSED_TEMPORAL.csv")); assert.ok(files.has("17_METAS_MENSAIS.csv"));
   for (const file of REPORT_FILES) assert.equal(manifest.row_counts[file.name], sample.datasets[file.key]?.length || 0);
   assert.deepEqual([...files.keys()].sort(), manifest.included_files.sort());
   for (const [name, metadata] of Object.entries(manifest.file_metadata) as Array<[string, { bytes: number; sha256: string }]>) { assert.equal(Buffer.byteLength(files.get(name)!), metadata.bytes); assert.equal(sha256(files.get(name)!), metadata.sha256); }

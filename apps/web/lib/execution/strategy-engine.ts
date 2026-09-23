@@ -5,7 +5,7 @@ import type { ExchangeSymbolInfo } from "./types.ts";
 
 /** The same decision contract is consumed by the Shadow and Testnet adapters.
  * Transport, exchange credentials and execution environment never enter it. */
-export const STRATEGY_VERSION = "4.1.1" as const;
+export const STRATEGY_VERSION = "4.2" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
@@ -16,6 +16,8 @@ export type StrategyCandidate = {
   operationSequence: number;
   buyPrice: number;
   balanceUsdc: number;
+  operationalRank?: number | null;
+  monthlyTargetReached?: boolean;
   state: "PLANNED" | "ARMED" | "PARTIALLY_FILLED" | "OPEN" | "CLOSED" | "MISSED";
 };
 export type StrategyResidentBuy = { candidateId: string; executedQuantity: number };
@@ -127,11 +129,13 @@ function wait(context: StrategyContext, candidate: StrategyCandidate | null, rea
   return decision(context, candidate, "WAIT", candidate?.buyPrice ?? null, candidate?.balanceUsdc ?? null, 0, reason, candidate?.state ?? "UNCHANGED");
 }
 
-/** MARKET is allowed only for the first operation of physical Slot #1 in a
- * newly anchored cycle. Recycled slots always return to the LIMIT queue. */
+/** MARKET is allowed only for the highest-ranked eligible first operation in
+ * a newly anchored cycle. Recycled slots always return to the LIMIT queue. */
 export function planStrategyInitialEntry(context: StrategyContext, slot: StrategyCandidate): StrategyDecision {
   assertCandidates([slot]);
-  if (slot.slotNumber !== 1 || slot.operationSequence !== 1) throw new Error("COINOPS_STRATEGY_INITIAL_SLOT_INVALID");
+  if (slot.operationSequence !== 1 || slot.monthlyTargetReached
+    || (slot.operationalRank === undefined ? slot.slotNumber !== 1 : slot.operationalRank !== 1))
+    throw new Error("COINOPS_STRATEGY_INITIAL_SLOT_INVALID");
   if (slot.state !== "PLANNED") return wait(context, slot, "INITIAL_ENTRY_ALREADY_STARTED");
   return decision(context, slot, "OPEN_INITIAL_MARKET", slot.buyPrice, slot.balanceUsdc, 100, "FIRST_ENTRY_OF_NEW_CYCLE", "OPEN");
 }
@@ -174,8 +178,10 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
   if (residentBuy && (!current || !["ARMED", "PARTIALLY_FILLED"].includes(current.state)
     || !Number.isFinite(residentBuy.executedQuantity) || residentBuy.executedQuantity < 0
     || (armed[0] && armed[0].id !== current.id))) throw new Error("COINOPS_STRATEGY_RESIDENT_BUY_INVALID");
-  const ranked = [...candidates].filter((candidate) => candidate.state === "PLANNED" || candidate.state === "ARMED")
-    .sort((left, right) => right.buyPrice - left.buyPrice || left.slotNumber - right.slotNumber);
+  const ranked = [...candidates].filter((candidate) => !candidate.monthlyTargetReached
+    && candidate.operationalRank !== null && (candidate.state === "PLANNED" || candidate.state === "ARMED"))
+    .sort((left, right) => right.buyPrice - left.buyPrice
+      || (left.operationalRank ?? left.slotNumber) - (right.operationalRank ?? right.slotNumber) || left.slotNumber - right.slotNumber);
   const missedCandidateIds = ranked.filter((candidate) => candidate.state === "PLANNED" && candidate.buyPrice >= observedFloor).map((candidate) => candidate.id);
   if (current && (current.state === "PARTIALLY_FILLED" || (residentBuy?.executedQuantity ?? 0) > 0)) {
     return { decision: wait(context, current, "RESIDENT_BUY_PARTIAL_FILL_PROTECTED"), missedCandidateIds, nextCandidateId: current.id };
@@ -197,7 +203,7 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
 /** Adapter must persist the realised P&L/compounded balance first, and pass the
  * resulting CLOSED physical slot. The decision never mutates that history. */
 export function planStrategyClosedSlot(context: StrategyContext, candidates: readonly StrategyCandidate[], closedCandidateId: string): {
-  mode: "LOCAL_REENTRY" | "GLOBAL_RESET"; otherOpenPositions: number; decisions: StrategyDecision[];
+  mode: "LOCAL_REENTRY" | "GLOBAL_RESET" | "MONTHLY_HOLD"; otherOpenPositions: number; decisions: StrategyDecision[];
 } {
   assertContext(context);
   assertCandidates(candidates);
@@ -206,6 +212,10 @@ export function planStrategyClosedSlot(context: StrategyContext, candidates: rea
   if (!closed || closed.state !== "CLOSED") throw new Error("COINOPS_STRATEGY_CLOSED_SLOT_INVALID");
   const otherOpenPositions = candidates.filter((candidate) => candidate.state === "OPEN" || candidate.state === "PARTIALLY_FILLED").length;
   if (otherOpenPositions) {
+    if (closed.monthlyTargetReached || closed.operationalRank === null) return {
+      mode: "MONTHLY_HOLD", otherOpenPositions, decisions: [wait(context, closed,
+        closed.monthlyTargetReached ? "MONTHLY_TARGET_REACHED" : "GAIN_EVIDENCE_INCOMPLETE")]
+    };
     const recycled = { ...closed, operationSequence: closed.operationSequence + 1 };
     return { mode: "LOCAL_REENTRY", otherOpenPositions, decisions: [
       decision(context, recycled, "PLAN_LOCAL_REENTRY", closed.buyPrice, closed.balanceUsdc, 60, "OTHER_POSITION_REMAINS_OPEN", "PLANNED")

@@ -10,6 +10,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 import { TESTNET_MISSED_EVENT_TYPES } from "@/lib/coinops-reports/missed-level-evidence";
 import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "@/lib/slotgain/testnet-results";
+import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
 
 import type { AutomationView } from "./automation-center";
 import { AutomationCenter } from "./automation-cockpit";
@@ -54,7 +55,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     });
   }
 
-  const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse] = await Promise.all([
+  const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse, scopeResponse, monthlyResponse] = await Promise.all([
     supabase.from("exchange_connections").select("connection_status,last_reconciled_at,last_synced_at").eq("exchange", "BINANCE_SPOT").maybeSingle(),
     supabase.from("exchange_reconciliation_runs").select("status,completed_at,summary").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("robot_v1_configs").select("id,strategy_version,asset,symbol,execution_mode,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,slot_count,kill_switch,pause_new_entries,shadow_test_started_at,shadow_test_target_end_at,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl").order("asset"),
@@ -64,10 +65,15 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     supabase.from("robot_v1_slot_accounts").select("config_id,slot_number,initial_balance_usdc,balance_usdc,gain_count,gross_profit_usdc,fees_usdc,net_profit_usdc,last_operation_id").order("slot_number"),
     supabase.from("robot_v1_audit_events").select("cycle_id,slot_id,event_type,next_state,observed_at").order("observed_at", { ascending: false }).limit(40),
     supabase.from("robot_v1_market_candles").select("symbol,candle_open_at,open_price,high_price,low_price,close_price").in("symbol", ["BTCUSDC", "SOLUSDC"]).order("candle_open_at", { ascending: false }).limit(180),
-    supabase.from("exchange_order_intents").select("id").limit(12)
+    supabase.from("exchange_order_intents").select("id").limit(12),
+    supabase.from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle(),
+    supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key")
+      .eq("tenant_id", tenantId).eq("user_id", user.id)
   ]);
   const shadowReadError = robotConfigsResponse.error || robotCyclesResponse.error || robotSlotsResponse.error || operationsResponse.error || accountsResponse.error || candlesResponse.error;
   if (shadowReadError) throw shadowReadError;
+  if (scopeResponse.error || !scopeResponse.data || monthlyResponse.error) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE");
+  const productId = scopeResponse.data.product_id;
   const dailyCandles = (await Promise.all(["BTCUSDC", "SOLUSDC"].map(async (symbol) =>
     getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
   ))).flat();
@@ -103,6 +109,31 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     };
   }));
   const testnetRun = testnetAssetData.SOL?.run || null;
+  const monthlyGoals: Array<MonthlySlotStatus & { environment: "SHADOW" | "TESTNET"; asset: "BTC" | "SOL" }> = [];
+  const monthlyNow = new Date().toISOString(), periodKey = monthlyPeriodKey(monthlyNow);
+  for (const asset of ["BTC", "SOL"] as const) for (const environment of ["SHADOW", "TESTNET"] as const) {
+    const config = (robotConfigsResponse.data || []).find((item) => item.asset === asset);
+    const cycle = (robotCyclesResponse.data || []).find((item) => item.config_id === config?.id && ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"].includes(item.status));
+    const run = testnetAssetData[asset]?.run;
+    const physical = environment === "SHADOW" ? (accountsResponse.data || []).filter((item) => item.config_id === config?.id)
+      : testnetAssetData[asset]?.slots || [];
+    if (!(environment === "SHADOW" ? config : run) || physical.length !== 25) continue;
+    const inputs = physical.map((item) => {
+      const slotNumber = item.slot_number;
+      const id = physicalSlotIdentity(environment, { productId, tenantId,
+        userId: user.id, asset, configId: config?.id }, slotNumber);
+      const total = (monthlyResponse.data || []).find((row) => row.environment === environment && row.asset === asset && row.slot_number === slotNumber);
+      const lifetime = Number(total?.lifetime_gain_count ?? 0);
+      const consistent = (!total || total.physical_slot_id === id && total.period_key === periodKey)
+        && (environment === "SHADOW" ? item.gain_count === lifetime : item.gain_count <= lifetime);
+      const slotState = environment === "SHADOW" ? (robotSlotsResponse.data || []).find((row) => row.cycle_id === cycle?.id && row.slot_number === slotNumber)?.status
+        : (item as TestnetAssetData["slots"][number]).entry_state;
+      return { physicalSlotNumber: slotNumber, physicalSlotId: id, lifetimeGainCount: lifetime,
+        monthlyGainCount: consistent ? Number(total?.monthly_gain_count ?? 0) : null,
+        balanceUsdc: Number(item.balance_usdc), entryState: slotState || "PLANNED" };
+    });
+    monthlyGoals.push(...rankMonthlySlots(asset, monthlyNow, inputs).map((status) => ({ ...status, environment, asset })));
+  }
 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
@@ -131,6 +162,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetOrders: testnetAssetData.SOL?.orders || [],
     testnetEvents: testnetAssetData.SOL?.events || [],
     testnetAssetData
+    , monthlyGoals
   }} />;
 
   const testnetHealth = Object.values(testnetAssetData).map(({ run, slots, orders, events }) => testnetPresentationHealth(

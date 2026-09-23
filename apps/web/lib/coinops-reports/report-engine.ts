@@ -3,12 +3,15 @@ import { buildStrategyAuditChecks, normalizeStrategyDecisions } from "./strategy
 import { buildTestnetMissedOccurrences, STRATEGY_4_1_EFFECTIVE_AT, summarizeTemporalMissed } from "./missed-level-temporal.ts";
 import { testnetClientOrderId } from "../execution/robot-v1-testnet-cycle.ts";
 import { auditExecutionGaps, auditTriggerWindows, type AuditRow, type TriggerWindow } from "./trigger-audit.ts";
+import { buildMonthlyAuditRows } from "./monthly-audit.ts";
+import { buildMonthlyGoalChecks } from "./monthly-audit-checks.ts";
+import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -292,6 +295,17 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       armed_at: buy?.created_at ?? null, missed_at: iso(slot.missed_at), buy_client_order_id: buy?.client_order_id ?? null, sell_client_order_id: sell?.client_order_id ?? null, snapshot_at: input.generatedAt,
       state_basis: "LATEST_PERSISTED_TESTNET_SLOT; fundos fictícios" });
   }
+  const monthlyGoals = buildMonthlyAuditRows({ filters, observationEnd, generatedAt: input.generatedAt,
+    incomplete: missing("robot_v1_monthly_slot_gains") || !Object.hasOwn(input.sources, "robot_v1_monthly_slot_gains"), credits: source("robot_v1_monthly_slot_gains"),
+    configs, cycles, shadowSlots: slots, shadowAccounts: accounts, runs: testnetRuns, testnetSlots });
+  const currentPeriod = monthlyPeriodKey(input.generatedAt);
+  for (const slot of normalizedSlots) {
+    const monthly = monthlyGoals.find((row) => row.environment === slot.environment && row.asset === slot.asset
+      && row.cycle_id === slot.cycle_id && row.physical_slot_number === slot.physical_slot_number && row.period_key === currentPeriod);
+    if (monthly) for (const key of ["physical_slot_id", "operational_rank", "lifetime_gain_count", "monthly_gain_count", "monthly_gain_target",
+      "monthly_target_reached", "period_key", "timezone", "eligible_for_new_entry", "blocked_reason", "next_action"])
+      slot[key] = monthly[key];
+  }
   const rules: AuditRow[] = [];
   const definitions = [...REPORT_RULE_CONTRACT, ...extensions];
   if (new Set(definitions.map((definition) => definition.parameter)).size !== definitions.length) throw new Error("COINOPS_REPORT_RULE_DUPLICATE");
@@ -307,6 +321,11 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     rules.push({ effective_from: input.generatedAt, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
       parameter: "strategy_version", value: cycle.strategy_version ?? null, unit: "version", source: cycle.environment === "TESTNET" ? "robot_v1_testnet_runs" : "robot_v1_cycles", version: 2,
       evidence_scope: "CURRENT_CYCLE_VERSION_SNAPSHOT", notes: "Versão adotada pelo ciclo no snapshot; vigência histórica vem das decisões, não da data de início do ciclo." });
+    if (cycle.environment !== "REAL" && cycle.strategy_version === "4.2") rules.push({ effective_from: input.generatedAt,
+      environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
+      parameter: "monthly_gain_target_per_physical_slot", value: cycle.asset === "BTC" ? 7 : 2, unit: "gains/month/slot",
+      source: "monthly-slot-policy.ts", version: 4, evidence_scope: "CURRENT_4_2_POLICY_SNAPSHOT",
+      notes: "Mês America/Campo_Grande; rank por lifetime entre elegíveis, sem alterar prioridade de preço." });
     const snapshot = { capital_usdc: cycle.capital_start, gain_rate: cycle.gain_rate, entry_spacing: cycle.entry_spacing, slot_count: cycle.slot_count };
     rules.push({ effective_from: cycle.started_at, effective_until: cycle.completed_at, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
       parameter: "profile", value: Number(cycle.gain_rate) === 0.005 && Number(cycle.entry_spacing) === 0.01 && Number(cycle.slot_count) === 25 ? "TEST_PROFILE" : "CUSTOM_TEST",
@@ -587,11 +606,25 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     , decisions: normalizeStrategyDecisions(source("robot_v1_strategy_decisions")).filter((row) => selected(row, filters) && overlap(row.created_at, row.completed_at, filters))
     , missed_temporal: temporalOccurrences.map((row) => ({ ...row, environment: "TESTNET", symbol: `${row.asset}USDC`,
       context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.temporal_classification === "HISTORICAL_PRE_4_1", source: "robot_v1_testnet_events+current_slot_fallback" }))
-      .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd)))
+      .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd))),
+    monthly_goals: monthlyGoals
   };
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
   datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters, contextOrders: normalizedOrders, contextEvents: allEvents }));
-  const currentInvariantCodes = new Set(["SLOT_COUNT_25", "SINGLE_ACTIVE_ENTRY", "TP_HAS_POSITION", "TP_NOT_DUPLICATED", "OPEN_POSITION_HAS_RESIDENT_TP", "PRIORITY_REENTRY_MUST_BE_ARMED_BEFORE_LOWER_LEVEL", "CURRENT_SLOT_STATE_NOT_OVERRIDDEN_BY_HISTORY"]);
+  datasets.checks.push(...buildMonthlyGoalChecks(datasets, input.sources, incompleteSources, input.generatedAt));
+  const liveParity = datasets.checks.find((row) => row.code === "LIVE_STRATEGY_PARITY_READY");
+  if (liveParity) {
+    const monthlyCodes = new Set(["MONTHLY_GAIN_COUNT_RECONCILES", "TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY",
+      "TARGET_REACHED_SLOT_HAS_NO_REENTRY", "NEW_MONTH_REENABLES_SLOT", "LIFETIME_GAIN_NEVER_RESETS",
+      "RANK_DESCENDING_BY_LIFETIME_GAINS", "RANK_EXCLUDES_TARGET_REACHED", "PHYSICAL_SLOT_ID_IMMUTABLE",
+      "SINGLE_ACTIVE_ENTRY_PRESERVED", "PRICE_PRIORITY_PRESERVED", "SHADOW_TESTNET_MONTHLY_TARGET_PARITY"]);
+    const monthlyChecks = datasets.checks.filter((row) => monthlyCodes.has(str(row.code)));
+    liveParity.status = monthlyChecks.some((row) => row.status === "FAIL") ? "FAIL"
+      : liveParity.status === "PASS" && monthlyChecks.length && monthlyChecks.every((row) => row.status === "PASS") ? "PASS" : "WARNING";
+    liveParity.explanation = `${liveParity.explanation} A Fase 4.2 também exige todos os checks mensais/rank PASS; virada de mês não observada permanece WARNING. LIVE continua bloqueado.`;
+  }
+  const currentInvariantCodes = new Set(["SLOT_COUNT_25", "SINGLE_ACTIVE_ENTRY", "TP_HAS_POSITION", "TP_NOT_DUPLICATED", "OPEN_POSITION_HAS_RESIDENT_TP", "PRIORITY_REENTRY_MUST_BE_ARMED_BEFORE_LOWER_LEVEL", "CURRENT_SLOT_STATE_NOT_OVERRIDDEN_BY_HISTORY",
+    "MONTHLY_GAIN_COUNT_RECONCILES", "TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY", "TARGET_REACHED_SLOT_HAS_NO_REENTRY", "RANK_DESCENDING_BY_LIFETIME_GAINS", "RANK_EXCLUDES_TARGET_REACHED", "PHYSICAL_SLOT_ID_IMMUTABLE"]);
   for (const row of summary) {
     const scopeChecks = datasets.checks.filter((check) => check.environment === row.environment && (!check.asset || check.asset === row.asset));
     const currentFailures = scopeChecks.filter((check) => currentInvariantCodes.has(str(check.code)) && check.status === "FAIL");

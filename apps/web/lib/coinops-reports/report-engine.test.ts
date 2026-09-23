@@ -61,7 +61,7 @@ test("temporal v3 report preserves one historical incident without counting late
   assert.equal(occurrence.first_cross_at, null); assert.equal(occurrence.is_active_issue, false); assert.equal(occurrence.strategy_version, null);
   assert.equal(summary.historical_missed, 1); assert.equal(summary.missed_since_strategy, 0); assert.equal(summary.missed_levels, 0); assert.equal(summary.active_missed, 0);
   assert.equal(summary.active_errors, 0); assert.equal(summary.operational_reentry_waiting, 1); assert.equal(summary.operational_next_buy, 1); assert.equal(summary.operational_planned, 23);
-  assert.equal(summary.health, "Motor OK — ocorrências históricas preservadas");
+  assert.equal(summary.health, "ATENÇÃO"); // Fixture 4.1 lacks the new monthly ledger; no false 4.2 PASS.
   for (const code of ["NO_NEW_ENGINE_MISSED_LEVELS", "HISTORICAL_MISSED_NOT_ACTIVE", "CURRENT_SLOT_STATE_NOT_OVERRIDDEN_BY_HISTORY", "MISSED_LEVEL_RECOVERY_EVIDENCE"]) assert.equal(report.datasets.checks.find((row) => row.code === code)?.status, "PASS", code);
   const currentSlot = report.datasets.slots.find((row) => row.slot_id === "t-slot-1")!;
   assert.equal(currentSlot.persisted_entry_state, "MISSED"); assert.equal(currentSlot.operational_state, "REENTRY_WAITING");

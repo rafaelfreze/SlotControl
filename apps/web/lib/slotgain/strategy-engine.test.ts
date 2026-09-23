@@ -195,6 +195,42 @@ test("Shadow and Testnet representations produce identical initial/TP/local/prio
     assert.deepEqual(planStrategyNextEntry(runContext, shadow, 121 * scale), planStrategyNextEntry(runContext, testnet, 121 * scale));
     for (const adapterSlots of [shadow, testnet]) { adapterSlots[0]!.state = "CLOSED"; adapterSlots[2]!.state = "CLOSED"; }
     assert.deepEqual(planStrategyClosedSlot(runContext, shadow, "physical-1"), planStrategyClosedSlot(runContext, testnet, "physical-1"));
-    assert.equal(STRATEGY_VERSION, "4.1.1");
+    assert.equal(STRATEGY_VERSION, "4.2");
   }
+});
+
+test("monthly target blocks local reentry but never closes another OPEN position", () => {
+  const slots = ladder();
+  slots[4] = candidate(5, 115.2, { state: "CLOSED", balanceUsdc: 10.1, monthlyTargetReached: true, operationalRank: null });
+  slots[2]!.state = "OPEN";
+  const plan = planStrategyClosedSlot(context, slots, "physical-5");
+  assert.equal(plan.mode, "MONTHLY_HOLD");
+  assert.equal(plan.decisions[0]?.action_type, "WAIT");
+  assert.equal(plan.decisions[0]?.reason, "MONTHLY_TARGET_REACHED");
+  assert.equal(slots[2]?.state, "OPEN");
+  assert.equal(slots[4]?.balanceUsdc, 10.1);
+});
+
+test("rank selects a new physical initial slot, while active reentry price stays first", () => {
+  const initial = candidate(5, 120, { operationalRank: 1 });
+  assert.equal(planStrategyInitialEntry(context, initial).action_type, "OPEN_INITIAL_MARKET");
+  assert.throws(() => planStrategyInitialEntry(context, candidate(2, 120, { operationalRank: 2 })), /INITIAL_SLOT_INVALID/);
+  const queued = [candidate(5, 117.78, { operationalRank: 1 }),
+    candidate(4, 118.97, { operationalRank: 2, operationSequence: 2 }),
+    candidate(2, 116.6, { operationalRank: 3 }),
+    candidate(1, 119.5, { operationalRank: null, monthlyTargetReached: true })];
+  const next = planStrategyNextEntry(context, queued, 120);
+  assert.equal(next.nextCandidateId, "physical-4");
+  assert.equal(next.decision.target_price, 118.97);
+  assert.deepEqual(next.missedCandidateIds, []);
+  const allReached = planStrategyNextEntry(context, queued.map((slot) => ({ ...slot, operationalRank: null, monthlyTargetReached: true })), 120);
+  assert.equal(allReached.decision.action_type, "WAIT");
+});
+
+test("monthly-blocked resident partial BUY is never canceled by ranking", () => {
+  const queued = [candidate(5, 118.97, { state: "ARMED", monthlyTargetReached: true, operationalRank: null }),
+    candidate(4, 117.78, { operationalRank: 1 })];
+  const plan = planStrategyNextEntry(context, queued, 120, { candidateId: "physical-5", executedQuantity: .01 });
+  assert.equal(plan.decision.reason, "RESIDENT_BUY_PARTIAL_FILL_PROTECTED");
+  assert.equal(plan.nextCandidateId, "physical-5");
 });

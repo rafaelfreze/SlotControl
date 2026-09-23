@@ -11,6 +11,8 @@ import { sumV1DecimalAmounts } from "./robot-v1-audit";
 import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1LocalReentry, evaluateV1Candle, findV1LogicalLevel, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
 import { STRATEGY_VERSION, calculateStrategyTakeProfit, isStrategyDecisionProven, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit, wasStrategyOrderResidentAt, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
+import { loadMonthlySlotStatuses } from "./monthly-slot-server";
+import type { MonthlySlotStatus } from "./monthly-slot-policy";
 import type { ExchangeSymbolInfo } from "./types";
 
 type Config = { strategy_version: string | null; strategy_lease_owner: string | null; strategy_lease_until: string | null; id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
@@ -74,10 +76,11 @@ function strategyContext(config: Config, cycle: Cycle, observedAt: string) {
   return { asset: config.asset, cycleId: cycle.id, observedAt };
 }
 
-function strategyCandidate(slot: Slot): StrategyCandidate {
+function strategyCandidate(slot: Slot, monthly?: MonthlySlotStatus): StrategyCandidate {
   return {
     id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), balanceUsdc: asNumber(slot.allocation_usdc, "COINOPS_V1_SLOT_INVALID"),
+    operationalRank: monthly?.operationalRank, monthlyTargetReached: monthly?.monthlyTargetReached,
     state: slot.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED"
       : slot.status === "OPEN" || slot.status === "TP_ACTIVE" ? "OPEN"
       : slot.status === "CLOSED" || slot.status === "CANCELLED" ? "CLOSED"
@@ -123,6 +126,13 @@ async function repairShadowReentryTickDrift(supabase: Service, config: Config, c
         next: { buyPrice: entry.buyPrice, reason: "PREVIOUS_CONFIRMED_ENTRY_TICK_RESTORED", operationSequence: slot.operation_sequence } });
   }
   return repaired;
+}
+
+async function monthlyStatuses(supabase: Service, config: Config, accounts: SlotAccount[]) {
+  return loadMonthlySlotStatuses(supabase, "SHADOW", { product_id: config.product_id, tenant_id: config.tenant_id,
+    user_id: config.user_id, config_id: config.id, asset: config.asset }, accounts.map((account) => ({
+    slot_number: account.slot_number, balance_usdc: account.balance_usdc, gain_count: account.gain_count, entry_state: "PLANNED"
+  })));
 }
 
 async function recoverShadowDecisions(supabase: Service, config: Config) {
@@ -220,10 +230,22 @@ async function ensureTakeProfit(supabase: Service, config: Config, cycle: Cycle,
 
 async function reconcileSingleArmedEntry(supabase: Service, config: Config, cycle: Cycle, observedFloor: number, observedAt: string, canArm: boolean) {
   const slots = await readSlots(supabase, cycle);
+  const monthly = await monthlyStatuses(supabase, config, await loadSlotAccounts(supabase, config));
+  const statusFor = (slot: Slot) => monthly.find((status) => status.physicalSlotNumber === slot.slot_number);
   const armed = slots.filter((slot) => slot.status === "PENDING" && slot.entry_state === "ARMED");
   if (armed.length > 1) throw new Error("COINOPS_V1_MULTIPLE_ARMED_BUYS");
+  for (const slot of armed.filter((item) => !statusFor(item)?.eligibleForNewEntry)) {
+    if (Number(slot.executed_quantity) > 0) continue;
+    const { error } = await supabase.from("robot_v1_slots").update({ entry_state: "PLANNED", armed_at: null })
+      .eq("id", slot.id).eq("status", "PENDING").eq("entry_state", "ARMED").eq("executed_quantity", 0);
+    if (error) throw error;
+    slot.entry_state = "PLANNED";
+    await audit(supabase, config, "MONTHLY_TARGET_HOLD", `${cycle.id}:${slot.id}:${monthly[0]?.periodKey}`,
+      { cycleId: cycle.id, slotId: slot.id, next: { reason: statusFor(slot)?.blockedReason, periodKey: monthly[0]?.periodKey }, observedAt });
+  }
+  const resident = armed.find((slot) => slot.entry_state === "ARMED");
   if (!canArm) {
-    for (const slot of armed) {
+    for (const slot of resident ? [resident] : []) {
       const { error } = await supabase.from("robot_v1_slots").update({ entry_state: "PLANNED", armed_at: null })
         .eq("id", slot.id).eq("status", "PENDING").eq("entry_state", "ARMED");
       if (error) throw error;
@@ -233,8 +255,9 @@ async function reconcileSingleArmedEntry(supabase: Service, config: Config, cycl
     return;
   }
   const plan = planStrategyNextEntry({ ...strategyContext(config, cycle, observedAt),
-    transitionKey: armed[0] ? `${armed[0].id}:${armed[0].operation_sequence}:${armed[0].armed_at}` : "NO_RESIDENT_BUY" }, slots.map(strategyCandidate), observedFloor,
-    armed[0] ? { candidateId: armed[0].id, executedQuantity: Number(armed[0].executed_quantity) } : null);
+    transitionKey: resident ? `${resident.id}:${resident.operation_sequence}:${resident.armed_at}` : "NO_RESIDENT_BUY" },
+    slots.map((slot) => strategyCandidate(slot, statusFor(slot))), observedFloor,
+    resident ? { candidateId: resident.id, executedQuantity: Number(resident.executed_quantity) } : null);
   await applyDecision(supabase, config, plan.decision, slots.find((slot) => slot.id === plan.nextCandidateId)?.operation_sequence, async () => {
     for (const missedId of plan.missedCandidateIds) {
       const slot = slots.find((item) => item.id === missedId)!;
@@ -246,13 +269,13 @@ async function reconcileSingleArmedEntry(supabase: Service, config: Config, cycl
     }
     if (plan.decision.action_type === "WAIT") return {
       status: plan.decision.expected_next_state, reason: plan.decision.reason, missed: plan.missedCandidateIds,
-      market_price: observedFloor, resident_slot_id: armed[0]?.id ?? null, resident_target_price: armed[0] ? Number(armed[0].buy_price) : null,
+      market_price: observedFloor, resident_slot_id: resident?.id ?? null, resident_target_price: resident ? Number(resident.buy_price) : null,
       priority_validated: plan.decision.reason === "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT"
     };
     const next = slots.find((slot) => slot.id === plan.nextCandidateId);
     if (!next) throw new Error("COINOPS_STRATEGY_NEXT_ENTRY_MISSING");
-    if (plan.decision.action_type === "CANCEL_REPLACE_NEXT_BUY" && armed[0]) {
-      const current = armed[0];
+    if (plan.decision.action_type === "CANCEL_REPLACE_NEXT_BUY" && resident) {
+      const current = resident;
       const { error } = await supabase.from("robot_v1_slots").update({ entry_state: "PLANNED", armed_at: null })
         .eq("id", current.id).eq("status", "PENDING").eq("entry_state", "ARMED").eq("executed_quantity", 0);
       if (error) throw error;
@@ -279,24 +302,29 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
   const parameters = { gainRate: Number(cycle.gain_rate), entrySpacing: Number(cycle.entry_spacing) };
   if (!slots.length) {
     const accounts = await loadSlotAccounts(supabase, config);
-    const balances = accounts.map((account) => Number(account.balance_usdc));
+    const monthly = await monthlyStatuses(supabase, config, accounts);
+    const physicalOrder = [...monthly].sort((left, right) =>
+      (left.operationalRank ?? 26 + left.physicalSlotNumber) - (right.operationalRank ?? 26 + right.physicalSlotNumber));
+    const balances = physicalOrder.map((status) => Number(accounts[status.physicalSlotNumber - 1]!.balance_usdc));
     const capital = Number(sumV1DecimalAmounts(accounts.map((account) => account.balance_usdc)));
     const grid = buildV1Grid(config.asset, capital, Number(cycle.anchor_price), filters, parameters, balances);
     const { error } = await supabase.from("robot_v1_slots").insert(grid.map((slot) => ({
       product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle.id,
-      slot_number: slot.slotNumber, logical_level: slot.logicalLevel, symbol: cycle.symbol, allocation_usdc: balances[slot.slotNumber - 1],
+      slot_number: physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber, logical_level: slot.logicalLevel, symbol: cycle.symbol, allocation_usdc: balances[slot.logicalLevel - 1],
       entry_state: "PLANNED", armed_at: null, buy_price: slot.buyPrice, requested_quantity: slot.quantity, executed_quantity: 0,
       average_fill_price: null, buy_status: "PENDING", take_profit_price: null, take_profit_status: "NONE", status: "PENDING",
-      buy_client_order_id: v1ClientOrderId(config.asset, cycle.id, slot.slotNumber, "BUY"),
-      idempotency_key: v1IdempotencyKey(cycle.id, slot.slotNumber, "BUY"), observed_at: market.observedAt
+      buy_client_order_id: v1ClientOrderId(config.asset, cycle.id, physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber, "BUY"),
+      idempotency_key: v1IdempotencyKey(cycle.id, physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber, "BUY"), observed_at: market.observedAt
     })));
     if (error) throw error;
     slots = await readSlots(supabase, cycle);
   }
   if (slots.length !== V1_SLOT_COUNT) throw new Error("COINOPS_STRATEGY_SLOT_COUNT_INVALID");
-  let initial = slots.find((slot) => slot.slot_number === 1)!;
-  if (initial.status === "PENDING" && initial.operation_sequence === 1 && !initial.buy_triggered_at) {
-    const plan = planStrategyInitialEntry(strategyContext(config, cycle, market.observedAt), strategyCandidate(initial));
+  const monthly = await monthlyStatuses(supabase, config, await loadSlotAccounts(supabase, config));
+  let initial = slots.find((slot) => slot.logical_level === 1)!;
+  const initialStatus = monthly.find((status) => status.physicalSlotNumber === initial.slot_number)!;
+  if (initialStatus.eligibleForNewEntry && initial.status === "PENDING" && initial.operation_sequence === 1 && !initial.buy_triggered_at) {
+    const plan = planStrategyInitialEntry(strategyContext(config, cycle, market.observedAt), strategyCandidate(initial, initialStatus));
     if (plan.action_type !== "OPEN_INITIAL_MARKET") throw new Error("COINOPS_STRATEGY_INITIAL_STATE_INVALID");
     const { quantity } = quantityForV1SlotBalance(Number(initial.allocation_usdc), market.price, filters);
     await applyDecision(supabase, config, plan, 1, async () => {
@@ -308,9 +336,9 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
       if (error) throw error;
       return { status: "OPEN", fill_price: market.price, quantity, slot_id: initial.id, virtual: true };
     });
-    await audit(supabase, config, "INITIAL_POSITION_OPENED", `${cycle.id}:1`,
-      { cycleId: cycle.id, slotId: initial.id, next: { slotNumber: 1, fillPrice: market.price, observedPrice: market.price }, observedAt: market.observedAt });
-    initial = (await readSlots(supabase, cycle)).find((slot) => slot.slot_number === 1)!;
+    await audit(supabase, config, "INITIAL_POSITION_OPENED", `${cycle.id}:${initial.slot_number}`,
+      { cycleId: cycle.id, slotId: initial.id, next: { slotNumber: initial.slot_number, operationalRank: initialStatus.operationalRank, fillPrice: market.price, observedPrice: market.price }, observedAt: market.observedAt });
+    initial = (await readSlots(supabase, cycle)).find((slot) => slot.id === initial.id)!;
   }
   await ensureTakeProfit(supabase, config, cycle, initial, filters, market.observedAt);
   await reconcileSingleArmedEntry(supabase, config, cycle, market.price, market.observedAt, !config.kill_switch && !config.pause_new_entries);
@@ -322,6 +350,7 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
 async function startInitialShadowCycle(supabase: Service, adapter: BinanceSpotAdapter, config: Config, now: Date) {
   const parameters = assertV1ShadowParameters({ gainRate: Number(config.gain_rate), entrySpacing: Number(config.entry_spacing) });
   const [filters, market, accounts] = await Promise.all([adapter.getSymbolInfo(config.symbol), adapter.getMarketPrice(config.symbol), loadSlotAccounts(supabase, config)]);
+  if (!(await monthlyStatuses(supabase, config, accounts)).some((status) => status.eligibleForNewEntry)) return null;
   const capital = Number(sumV1DecimalAmounts(accounts.map((account) => account.balance_usdc)));
   buildV1Grid(config.asset, capital, market.price, filters, parameters, accounts.map((account) => Number(account.balance_usdc)));
   const { data, error } = await supabase.from("robot_v1_cycles").insert({
@@ -350,12 +379,19 @@ async function settleClosedSlots(supabase: Service, config: Config, cycle: Cycle
     grossProfit: Number((asSignedNumber(slot.realized_quote_pnl, "COINOPS_V1_SLOT_INVALID") + Number(slot.sell_fee)).toFixed(12)), estimatedFees: Number(slot.sell_fee)
   });
   const accounts = await loadSlotAccounts(supabase, config);
-  const candidates = slots.map((slot) => ({ ...strategyCandidate(slot), balanceUsdc: Number(accounts[slot.slot_number - 1]!.balance_usdc) }));
+  const monthly = await monthlyStatuses(supabase, config, accounts);
+  const candidates = slots.map((slot) => ({ ...strategyCandidate(slot, monthly.find((status) => status.physicalSlotNumber === slot.slot_number)),
+    balanceUsdc: Number(accounts[slot.slot_number - 1]!.balance_usdc) }));
   const terminalPlan = planStrategyClosedSlot(strategyContext(config, cycle, observedAt), candidates, closed[0]!.id);
   if (terminalPlan.mode === "GLOBAL_RESET") return { terminal: true, updated: 0, decisions: terminalPlan.decisions };
   let updated = 0;
   for (const closedSlot of closed) {
     const plan = planStrategyClosedSlot(strategyContext(config, cycle, observedAt), candidates, closedSlot.id);
+    if (plan.mode === "MONTHLY_HOLD") {
+      await audit(supabase, config, "MONTHLY_TARGET_HOLD", `${cycle.id}:${closedSlot.id}:${monthly[0]?.periodKey}`,
+        { cycleId: cycle.id, slotId: closedSlot.id, next: { reason: monthly.find((status) => status.physicalSlotNumber === closedSlot.slot_number)?.blockedReason, periodKey: monthly[0]?.periodKey }, observedAt });
+      continue;
+    }
     const nextSequence = closedSlot.operation_sequence + 1;
     const account = accounts[closedSlot.slot_number - 1]!;
     const entry = buildV1LocalReentry(closedSlot.slot_number, Number(closedSlot.buy_price), Number(account.balance_usdc), filters);

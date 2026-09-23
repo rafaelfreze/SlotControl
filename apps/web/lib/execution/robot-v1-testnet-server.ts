@@ -9,6 +9,8 @@ import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset, type V1Symbol } f
 import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
 import { projectTestnetEntryState, recoverTestnetStrategyDecisions, type RecoverableTestnetDecision } from "./strategy-testnet-recovery";
+import { loadMonthlySlotStatuses } from "./monthly-slot-server";
+import type { MonthlySlotStatus } from "./monthly-slot-policy";
 import type { ExchangeSymbolInfo } from "./types";
 
 type Scope = { productId: string; tenantId: string; userId: string };
@@ -25,13 +27,14 @@ const rounded = (value: number) => Number(value.toFixed(8));
 const floorStep = (value: number, step: number) => rounded(Math.floor((value + 1e-10) / step) * step);
 const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id });
 const context = (run: Run) => ({ asset: run.asset, cycleId: run.id, observedAt: new Date().toISOString() });
-function candidate(slot: Slot): StrategyCandidate {
+function candidate(slot: Slot, monthly?: MonthlySlotStatus): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: amount(slot.target_buy_price), balanceUsdc: amount(slot.balance_usdc),
+    operationalRank: monthly?.operationalRank, monthlyTargetReached: monthly?.monthlyTargetReached,
     state: slot.missed_at ? "MISSED" : ["OPEN", "CLOSED", "ARMED"].includes(slot.entry_state) ? slot.entry_state as "OPEN" | "CLOSED" | "ARMED" : "PLANNED" };
 }
-function candidatesWithFills(slots: Slot[], orders: Order[]) {
-  return slots.map((slot) => ({ ...candidate(slot), ...(orders.some((order) => order.slot_id === slot.id
+function candidatesWithFills(slots: Slot[], orders: Order[], monthly: readonly MonthlySlotStatus[]) {
+  return slots.map((slot) => ({ ...candidate(slot, monthly.find((status) => status.physicalSlotNumber === slot.slot_number)), ...(orders.some((order) => order.slot_id === slot.id
     && order.operation_sequence === slot.operation_sequence && order.side === "BUY"
     && ACTIVE_ORDER.has(order.status) && amount(order.executed_quantity) > 0) ? { state: "PARTIALLY_FILLED" as const } : {}) }));
 }
@@ -249,6 +252,10 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
   }
 }
 
+async function monthlyStatuses(service: Service, run: Run, slots: Slot[]) {
+  return loadMonthlySlotStatuses(service, "TESTNET", { ...owned(run), asset: run.asset }, slots);
+}
+
 async function recoverDecisionAudit(service: Service, run: Run, successorId?: string) {
   const { data, error } = await service.from("robot_v1_strategy_decisions").select("decision_id,cycle_id,slot_id,operation_sequence,action_type,target_price,target_notional,result")
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
@@ -320,9 +327,10 @@ async function creditClosedSlots(service: Service, run: Run, slots: Slot[], orde
 
 async function recycleClosedSlotsLocally(service: Service, run: Run, slots: Slot[], orders: Order[]) {
   const closed = slots.filter((slot) => slot.entry_state === "CLOSED");
+  const monthly = await monthlyStatuses(service, run, slots);
   let recycled = false;
   for (const slot of closed) {
-    const plan = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders), slot.id);
+    const plan = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders, monthly), slot.id);
     if (plan.mode !== "LOCAL_REENTRY") continue;
     const previousEntryPrice = amount(slot.entry_reference_price || slot.target_buy_price);
     const nextSequence = slot.operation_sequence + 1;
@@ -345,14 +353,26 @@ async function recycleClosedSlotsLocally(service: Service, run: Run, slots: Slot
 }
 
 async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Order[], filters: SymbolFilters, adapter: BinanceSpotTestnetAdapter) {
+  let monthly = await monthlyStatuses(service, run, slots);
   if (!orders.some((order) => order.side === "BUY")) {
-    const slot = slots[0];
+    const selected = monthly.filter((status) => status.eligibleForNewEntry)
+      .sort((left, right) => left.operationalRank! - right.operationalRank!)[0];
+    if (!selected) return false;
+    const slot = slots.find((item) => item.slot_number === selected.physicalSlotNumber);
     if (!slot) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
-    const initialDecision = planStrategyInitialEntry(context(run), candidate(slot));
+    const { error: rankError } = await service.rpc("rank_robot_v1_testnet_fresh_cycle", {
+      p_run_id: run.id, p_price_tick: filters.priceTick
+    });
+    if (rankError) throw new Error("COINOPS_TESTNET_FRESH_RANK_FAILED");
+    const refreshed = await rows(service, run);
+    const rankedSlot = refreshed.slots.find((item) => item.id === slot.id);
+    if (!rankedSlot) throw new Error("COINOPS_TESTNET_FRESH_RANK_FAILED");
+    Object.assign(slot, rankedSlot);
+    const initialDecision = planStrategyInitialEntry(context(run), candidate(slot, selected));
     if (initialDecision.action_type !== "OPEN_INITIAL_MARKET") throw new Error("COINOPS_STRATEGY_INITIAL_STATE_INVALID");
     const decisionId = await intent(service, run, initialDecision, slot.operation_sequence);
     const prepared = await prepareOrder(service, run, slot, "BUY", "INITIAL", 1, null, amount(slot.balance_usdc), null, decisionId);
-    await event(service, run, `${prepared.client_order_id}:PREPARED`, "INITIAL_BUY_PREPARED", 1, { clientOrderId: prepared.client_order_id });
+    await event(service, run, `${prepared.client_order_id}:PREPARED`, "INITIAL_BUY_PREPARED", slot.slot_number, { clientOrderId: prepared.client_order_id });
     await updateSlot(service, run, slot, { entry_state: "ARMED" });
     await syncOrder(service, run, slot, prepared, adapter);
     if (run.previous_run_id) await event(service, run, `${prepared.client_order_id}:NEXT_BUY_ARMED`, "NEXT_BUY_ARMED", slot.slot_number,
@@ -375,8 +395,26 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
     const projected = projectTestnetEntryState(slot, orders);
     if (projected !== slot.entry_state) await updateSlot(service, run, slot, { entry_state: projected });
   }
-  const candidates = slots.map((slot) => ({ ...candidate(slot), ...(activeBuy?.slot_id === slot.id ? { state: activeBuy.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED" as const : "ARMED" as const } : {}) }));
-  const plan = planStrategyNextEntry({ ...context(run), transitionKey: `QUEUE:${orders.filter((order) => order.side === "BUY").length}` }, candidates, market.price, activeBuy ? { candidateId: activeBuy.slot_id, executedQuantity: amount(activeBuy.executed_quantity) } : null);
+  // A resident order may predate this month's target. Cancel only an exact
+  // CoinOps-owned, unfilled BUY; a partial fill remains protected through TP.
+  if (activeBuy && !monthly.find((status) => status.physicalSlotNumber === activeBuy.slot_number)?.eligibleForNewEntry
+    && amount(activeBuy.executed_quantity) === 0 && activeBuy.status !== "PARTIALLY_FILLED") {
+    if (activeBuy.status === "PREPARED") await updateOrder(service, run, activeBuy, { status: "CANCELED" });
+    else {
+      if (activeBuy.status !== "NEW" || !activeBuy.exchange_order_id) throw new Error("COINOPS_TESTNET_OWNED_BUY_NOT_CANCELABLE");
+      const canceled = await adapter.cancelOwnedOrder(run.symbol, activeBuy.exchange_order_id, activeBuy.client_order_id);
+      if (!canceled || canceled.status !== "CANCELED" || canceled.executedQuantity > 0) throw new Error("COINOPS_TESTNET_OWNED_BUY_CANCEL_UNCERTAIN");
+      await updateOrder(service, run, activeBuy, { status: "CANCELED", executed_quantity: 0, cumulative_quote: canceled.cumulativeQuoteQuantity });
+    }
+    const oldSlot = slots.find((slot) => slot.id === activeBuy.slot_id);
+    if (oldSlot) await updateSlot(service, run, oldSlot, { entry_state: "PLANNED" });
+    await event(service, run, `${activeBuy.client_order_id}:MONTHLY_TARGET_HOLD`, "MONTHLY_TARGET_HOLD", activeBuy.slot_number,
+      { clientOrderId: activeBuy.client_order_id, periodKey: monthly[0]?.periodKey ?? null, ownershipVerified: true });
+  }
+  const resident = activeBuy && ACTIVE_ORDER.has(activeBuy.status) ? activeBuy : undefined;
+  monthly = await monthlyStatuses(service, run, slots);
+  const candidates = slots.map((slot) => ({ ...candidate(slot, monthly.find((status) => status.physicalSlotNumber === slot.slot_number)), ...(resident?.slot_id === slot.id ? { state: resident.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED" as const : "ARMED" as const } : {}) }));
+  const plan = planStrategyNextEntry({ ...context(run), transitionKey: `QUEUE:${orders.filter((order) => order.side === "BUY").length}` }, candidates, market.price, resident ? { candidateId: resident.slot_id, executedQuantity: amount(resident.executed_quantity) } : null);
   const decisionId = await intent(service, run, plan.decision, slots.find((slot) => slot.id === plan.decision.slot_id)?.operation_sequence);
   for (const crossed of slots.filter((slot) => plan.missedCandidateIds.includes(slot.id))) {
     let filledAt: string | null = null, collectedAt: string | null = null;
@@ -402,8 +440,8 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   if (plan.decision.action_type === "WAIT") {
     await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
     await completeStrategyDecision(service, owned(run), "TESTNET", decisionId, {
-      market_price: market.price, resident_slot_id: activeBuy?.slot_id ?? null,
-      resident_target_price: activeBuy ? amount(activeBuy.price) : null, reason: plan.decision.reason,
+      market_price: market.price, resident_slot_id: resident?.slot_id ?? null,
+      resident_target_price: resident ? amount(resident.price) : null, reason: plan.decision.reason,
       priority_validated: plan.decision.reason === "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT",
       missed_count: slots.filter((slot) => slot.missed_at).length,
     });
@@ -412,20 +450,20 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   const desired = slots.find((slot) => slot.id === plan.nextCandidateId);
   if (!desired) throw new Error("COINOPS_STRATEGY_NEXT_SLOT_MISSING");
   await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
-  if (activeBuy) {
-    const activeSlot = slots.find((slot) => slot.id === activeBuy.slot_id);
+  if (resident) {
+    const activeSlot = slots.find((slot) => slot.id === resident.slot_id);
     if (!activeSlot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
-    if (amount(activeBuy.executed_quantity) > 0 || activeBuy.status === "PARTIALLY_FILLED") throw new Error("COINOPS_TESTNET_ACTIVE_BUY_PARTIAL");
+    if (amount(resident.executed_quantity) > 0 || resident.status === "PARTIALLY_FILLED") throw new Error("COINOPS_TESTNET_ACTIVE_BUY_PARTIAL");
     if (amount(activeSlot.target_buy_price) >= amount(desired.target_buy_price)) return false;
-    if (activeBuy.status === "PREPARED") await updateOrder(service, run, activeBuy, { status: "CANCELED" });
+    if (resident.status === "PREPARED") await updateOrder(service, run, resident, { status: "CANCELED" });
     else {
-      if (activeBuy.status !== "NEW" || !activeBuy.exchange_order_id) throw new Error("COINOPS_TESTNET_OWNED_BUY_NOT_CANCELABLE");
-      const canceled = await adapter.cancelOwnedOrder(run.symbol, activeBuy.exchange_order_id, activeBuy.client_order_id);
+      if (resident.status !== "NEW" || !resident.exchange_order_id) throw new Error("COINOPS_TESTNET_OWNED_BUY_NOT_CANCELABLE");
+      const canceled = await adapter.cancelOwnedOrder(run.symbol, resident.exchange_order_id, resident.client_order_id);
       if (!canceled || canceled.status !== "CANCELED" || canceled.executedQuantity > 0) throw new Error("COINOPS_TESTNET_OWNED_BUY_CANCEL_UNCERTAIN");
-      await updateOrder(service, run, activeBuy, { status: canceled.status, executed_quantity: canceled.executedQuantity, cumulative_quote: canceled.cumulativeQuoteQuantity });
+      await updateOrder(service, run, resident, { status: canceled.status, executed_quantity: canceled.executedQuantity, cumulative_quote: canceled.cumulativeQuoteQuantity });
     }
     await updateSlot(service, run, activeSlot, { entry_state: "PLANNED" });
-    await event(service, run, `${activeBuy.client_order_id}:BUY_REPLACED_FOR_REENTRY`, "BUY_REPLACED_FOR_REENTRY", activeSlot.slot_number, { clientOrderId: activeBuy.client_order_id, replacementSlotNumber: desired.slot_number, ownership_verified: true });
+    await event(service, run, `${resident.client_order_id}:BUY_REPLACED_FOR_REENTRY`, "BUY_REPLACED_FOR_REENTRY", activeSlot.slot_number, { clientOrderId: resident.client_order_id, replacementSlotNumber: desired.slot_number, ownership_verified: true });
   }
   for (const stale of slots.filter((slot) => slot.entry_state === "ARMED" && slot.id !== desired.id)) await updateSlot(service, run, stale, { entry_state: "PLANNED" });
   const price = amount(desired.target_buy_price);
@@ -446,8 +484,10 @@ async function restartTerminalCycle(service: Service, run: Run, slots: Slot[], o
   if (!reset.shouldRestart || !reset.terminalFill) return null;
   const closed = slots.find((slot) => slot.entry_state === "CLOSED");
   if (!closed) throw new Error("COINOPS_STRATEGY_TERMINAL_CLOSE_REQUIRED");
-  const strategyReset = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders), closed.id);
+  const monthly = await monthlyStatuses(service, run, slots);
+  const strategyReset = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders, monthly), closed.id);
   if (strategyReset.mode !== "GLOBAL_RESET") return null;
+  if (!monthly.some((status) => status.eligibleForNewEntry)) return null;
   const nextCapital = amount(run.next_capital_usdc ?? amount(run.slot_notional_usdc) * 25);
   const nextGainRate = amount(run.next_gain_rate ?? run.gain_rate);
   const nextSpacing = amount(run.next_entry_spacing ?? run.entry_spacing);

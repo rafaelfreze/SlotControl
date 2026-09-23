@@ -69,7 +69,9 @@ export function buildStrategyAuditChecks(data: AuditDatasets, context: Context):
       const market = Number(observed.market_price ?? observed.marketPrice);
       const priorityEvidence = currentSnapshot && Number.isFinite(market) && market > 0 && armed.length === 1;
       const partialResident = armed.some((slot) => slot.buy_status === "PARTIALLY_FILLED" || data.orders.some((order) => order.environment === environment && order.slot_id === slot.slot_id && order.side === "BUY" && active(order.status) && Number(order.executed_quantity) > 0));
-      const higher = priorityEvidence && slots.some((slot) => slot.entry_state === "PLANNED" && !slot.missed_at && Number(slot.buy_price) < market && Number(slot.buy_price) > Number(armed[0]!.buy_price));
+      const higher = priorityEvidence && slots.some((slot) => slot.entry_state === "PLANNED" && !slot.missed_at
+        && slot.monthly_target_reached !== true && slot.eligible_for_new_entry !== false
+        && Number(slot.buy_price) < market && Number(slot.buy_price) > Number(armed[0]!.buy_price));
       const missed = slots.filter((row) => row.missed_at);
       const occurrences = data.missed_temporal.filter((row) => row.environment === environment && row.cycle_id === cycle.cycle_id);
       const historical = occurrences.filter((row) => row.temporal_classification === "HISTORICAL_PRE_4_1");
@@ -81,7 +83,7 @@ export function buildStrategyAuditChecks(data: AuditDatasets, context: Context):
         const regression = occurrences.filter((row) => row.temporal_classification === "POST_4_1_REGRESSION");
         const unresolved = occurrences.filter((row) => row.temporal_classification === "UNRESOLVED" || row.temporal_classification === "POST_4_1_EXTERNAL" && row.is_active_issue !== false);
         const evidenceMissing = !currentSnapshot || !slots.length || !classifiedSnapshot || context.incompleteSources.some((name) => /^(robot_v1_testnet_events|robot_v1_testnet_slots|robot_v1_testnet_runs)/.test(name))
-          || !decisions.some((row) => row.cycle_id === cycle.cycle_id && /^4\.1\.(0|[1-9]\d*)$/.test(string(row.strategy_version))
+          || !decisions.some((row) => row.cycle_id === cycle.cycle_id && /^4\.(?:1\.(?:0|[1-9]\d*)|2(?:\.[0-9]+)?)$/.test(string(row.strategy_version))
             && row.strategy_version === cycle.strategy_version && time(row.created_at) >= time(STRATEGY_4_1_EFFECTIVE_AT));
         add("NO_NEW_ENGINE_MISSED_LEVELS", regression.length ? "FAIL" : unresolved.length || evidenceMissing ? "WARNING" : "PASS", `${regression.length} regressão(ões) comprovada(s) após 4.1; ${historical.length} histórico(s) não contam como falha nova. Falta de evidência não comprova ausência.`, { ...scope, cycle_id: cycle.cycle_id, strategy_effective_at: STRATEGY_4_1_EFFECTIVE_AT });
         const wronglyActive = historical.filter((row) => row.is_active_issue !== false);
