@@ -36,6 +36,7 @@ export function MonthlySlotView({ data, environment, asset, slots }: { data: Pro
   const nextAction = (row: typeof rows[number]) => ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(row.slot?.positionState || "") ? "Aguardar TP"
     : row.monthlyTargetReached ? "Aguardar próximo mês"
     : !row.eligibleForNewEntry ? "Reconciliar evidência"
+    : row.slot?.positionState === "MISSED" ? "Aguardar próximo ciclo"
     : row.slot?.positionState === "ARMED" ? "Próxima BUY armada" : "Aguardar preço/reentrada";
   return <div className="av2-monthly-panel" aria-label={`Metas mensais ${environment} ${asset}`}>
     <div className="av2-monthly-head"><div><strong>Metas mensais por slot · {asset}</strong><small>{statuses[0]?.periodKey} · America/Campo_Grande · reset {reset(nextMonthlyResetAt(`${statuses[0]?.periodKey}-15T12:00:00Z`))}</small></div>

@@ -69,7 +69,8 @@ export function buildMonthlyAuditRows(args: {
           current_balance: raw.currentBalance, entry_state: raw.entryState,
           next_action: raw.entryState === "OPEN" || raw.entryState === "TP_ACTIVE" ? "AGUARDAR_TP"
             : status.monthlyTargetReached ? "AGUARDAR_PROXIMO_MES"
-            : status.blockedReason ? "RECONCILIAR_EVIDENCIA" : "AGUARDAR_OPORTUNIDADE_DE_PRECO",
+            : status.blockedReason ? "RECONCILIAR_EVIDENCIA"
+            : raw.entryState === "MISSED" ? "AGUARDAR_PROXIMO_CICLO" : "AGUARDAR_OPORTUNIDADE_DE_PRECO",
           next_reset_at: nextReset, strategy_version: raw.strategyVersion,
           gain_time_basis: incomplete ? null : scopedCredits.some((credit) => credit.evidence_basis === "TESTNET_CREDIT_FALLBACK"
             && count(credit.slot_number) === status.physicalSlotNumber && credit.period_key === period)
