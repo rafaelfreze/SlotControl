@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildAuditReport, REPORT_DATASET_KEYS, type AuditDatasets } from "./report-engine.ts";
 import { buildStrategyAuditChecks, normalizeStrategyDecisions } from "./strategy-audit.ts";
-import { missedLevelCauseLabel, missedLevelEvidence } from "./missed-level-evidence.ts";
+import { missedLevelCauseLabel, missedLevelEvidence, TESTNET_MISSED_EVENT_TYPES } from "./missed-level-evidence.ts";
 import { buildReportPackage } from "./report-package.ts";
 
 const now = "2026-09-23T13:00:00Z";
@@ -74,6 +74,21 @@ test("missed UI distinguishes8h06m28.543 collection gap from unknown price cross
   assert.equal(evidence.latencyMs, 29_188_543); assert.equal(evidence.firstCrossAt, null); assert.equal(evidence.targetPrice, 118.97); assert.equal(evidence.marketPrice, 117.01);
   assert.equal(evidence.observedAt, "2026-09-23T12:30:07.235Z"); assert.equal(evidence.resolvedByVersion, "4.1.0");
   assert.match(missedLevelCauseLabel(evidence.rootCause), /cache desatualizado/); assert.equal(missedLevelEvidence([]).latencyMs, null);
+});
+
+test("missed occurrence never uses diagnosis insertion time when original event leaves recent40", () => {
+  const diagnosis = { event_type: "MISSED_LEVEL_DIAGNOSED", observed_at: "2026-09-23T14:19:00Z", details: { detected_at: "2026-09-23T12:30:07.190Z", targetPrice: 118.97, marketPrice: null } };
+  assert.ok(TESTNET_MISSED_EVENT_TYPES.includes("MISSED_LEVEL_DURING_REARM"));
+  const original = { event_type: "MISSED_LEVEL_DURING_REARM", observed_at: "2026-09-23T12:30:07.235Z", details: { targetPrice: 118.97, marketPrice: 117.01 } };
+  // The independent missed-event query retrieves this original even after it is
+  // no longer among the 40 most recent generic events for the run.
+  const evidence = missedLevelEvidence([diagnosis, original]);
+  assert.equal(evidence.observedAt, "2026-09-23T12:30:07.190Z"); assert.equal(evidence.marketPrice, 117.01);
+  assert.equal(missedLevelEvidence([diagnosis]).observedAt, "2026-09-23T12:30:07.190Z");
+  const withoutDetection = { ...diagnosis, details: { targetPrice: 118.97 } };
+  assert.equal(missedLevelEvidence([withoutDetection, original]).observedAt, original.observed_at);
+  assert.equal(missedLevelEvidence([withoutDetection]).observedAt, null);
+  assert.equal(missedLevelEvidence([withoutDetection]).marketPrice, null);
 });
 
 test("Testnet60s cadence begins at persisted adoption; prior5min checkpoints are not retroactively invalid", () => {

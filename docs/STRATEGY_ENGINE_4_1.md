@@ -31,6 +31,16 @@ versão corretiva. Não altera o saldo 10,09996 USDC, os gains já creditados ne
 cria uma BUY retrospectiva. O instante exato do cruzamento Testnet não foi
 observado e continua nulo; candles Production não são usados para inventá-lo.
 
+No primeiro reactor publicado (14:32 UTC), BTC também saiu do checkpoint parado
+desde 12:50:14.408 UTC. Seu TP de 14:01:50.234 foi coletado às 14:32:22.202
+(30m31.968s). A reentrada de 85.480,48 já havia sido ultrapassada. A migration
+`20260923143630_diagnose_pre_fix_btc_reconciliation_gap.sql` apenas documenta
+esse backlog anterior à correção, preservando o saldo 10,0470151 e o gain.
+Nos ticks seguintes os dois ativos avançaram juntos, com aproximadamente 60s
+entre verificações e execução de cerca de 2–3s; isso não representa SLA de fill.
+Os quatro motores adotaram 4.1.0. Os dois missed históricos continuam explícitos;
+a presença deles não autoriza certificar o gate LIVE como PASS.
+
 ## Reação e recuperação
 
 - `/api/cron/testnet-reactor`: polling serverless a cada minuto, autorizado por

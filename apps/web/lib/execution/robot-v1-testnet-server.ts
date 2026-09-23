@@ -366,13 +366,25 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   const plan = planStrategyNextEntry({ ...context(run), transitionKey: `QUEUE:${orders.filter((order) => order.side === "BUY").length}` }, candidates, market.price, activeBuy ? { candidateId: activeBuy.slot_id, executedQuantity: amount(activeBuy.executed_quantity) } : null);
   const decisionId = await intent(service, run, plan.decision, slots.find((slot) => slot.id === plan.decision.slot_id)?.operation_sequence);
   for (const crossed of slots.filter((slot) => plan.missedCandidateIds.includes(slot.id))) {
-    await updateSlot(service, run, crossed, { entry_state: "MISSED", missed_at: new Date().toISOString() });
+    let filledAt: string | null = null, collectedAt: string | null = null;
+    if (crossed.last_credited_sell_client_order_id) {
+      const evidence = await service.from("robot_v1_testnet_events").select("observed_at,details")
+        .eq("run_id", run.id).eq("tenant_id", run.tenant_id).eq("event_type", "TESTNET_FILL_OBSERVED")
+        .contains("details", { clientOrderId: crossed.last_credited_sell_client_order_id }).order("observed_at", { ascending: false }).limit(1).maybeSingle();
+      if (evidence.error) throw new Error("COINOPS_TESTNET_MISSED_EVIDENCE_UNAVAILABLE");
+      filledAt = evidence.data?.details?.filledAt ?? null;
+      collectedAt = evidence.data?.details?.collectedAt ?? null;
+    }
+    const latencyMs = filledAt && collectedAt ? Math.max(0, Date.parse(collectedAt) - Date.parse(filledAt)) : null;
+    const detectedAt = new Date().toISOString();
     await event(service, run, `SLOT_${crossed.slot_number}_MISSED_${crossed.operation_sequence}`, "MISSED_LEVEL_DURING_REARM", crossed.slot_number, {
       marketPrice: market.price, targetPrice: amount(crossed.target_buy_price), decision_id: decisionId,
-      first_cross_at: null, detected_at: new Date().toISOString(), order_resident_at: null,
-      root_cause: "NO_RESIDENT_BUY_AT_OBSERVATION", strategy_version: STRATEGY_VERSION,
+      first_cross_at: null, detected_at: detectedAt, order_resident_at: null,
+      root_cause: latencyMs !== null && latencyMs > 90_000 ? "DELAYED_TP_RECONCILIATION" : "NO_RESIDENT_BUY_AT_OBSERVATION", strategy_version: STRATEGY_VERSION,
+      filled_at: filledAt, collected_at: collectedAt, latency_ms: latencyMs,
       recovery_action: "PRESERVE_HISTORY_NO_RETROACTIVE_MARKET_FILL"
     });
+    await updateSlot(service, run, crossed, { entry_state: "MISSED", missed_at: detectedAt });
   }
   if (plan.decision.action_type === "WAIT") {
     await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
