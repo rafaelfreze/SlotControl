@@ -5,7 +5,7 @@ import type { ExchangeSymbolInfo } from "./types.ts";
 
 /** The same decision contract is consumed by the Shadow and Testnet adapters.
  * Transport, exchange credentials and execution environment never enter it. */
-export const STRATEGY_VERSION = "4.2" as const;
+export const STRATEGY_VERSION = "4.3" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
@@ -18,6 +18,8 @@ export type StrategyCandidate = {
   balanceUsdc: number;
   operationalRank?: number | null;
   monthlyTargetReached?: boolean;
+  postAthGroup?: "PRIMARY" | "RESERVE" | null;
+  entryOrigin?: "GRID" | "REENTRY";
   state: "PLANNED" | "ARMED" | "PARTIALLY_FILLED" | "OPEN" | "CLOSED" | "MISSED";
 };
 export type StrategyResidentBuy = { candidateId: string; executedQuantity: number };
@@ -198,6 +200,18 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
     missedCandidateIds,
     nextCandidateId: next.id
   };
+}
+
+/** The primary gate applies only to new grid entries. A local reentry and an
+ * already-resident BUY retain price/fill priority even if classified RESERVE. */
+export function planStrategyPostAthNextEntry(context: StrategyContext,
+  candidates: readonly StrategyCandidate[], observedFloor: number, residentBuy?: StrategyResidentBuy | null) {
+  assertCandidates(candidates);
+  const primaryAvailable = candidates.some((candidate) => candidate.postAthGroup === "PRIMARY"
+    && !candidate.monthlyTargetReached && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(candidate.state));
+  const allowed = primaryAvailable ? candidates.filter((candidate) => candidate.postAthGroup === "PRIMARY"
+    || candidate.entryOrigin === "REENTRY" || candidate.id === residentBuy?.candidateId) : candidates;
+  return planStrategyNextEntry(context, allowed, observedFloor, residentBuy);
 }
 
 /** Adapter must persist the realised P&L/compounded balance first, and pass the

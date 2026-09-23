@@ -5,13 +5,14 @@ import { testnetClientOrderId } from "../execution/robot-v1-testnet-cycle.ts";
 import { auditExecutionGaps, auditTriggerWindows, type AuditRow, type TriggerWindow } from "./trigger-audit.ts";
 import { buildMonthlyAuditRows } from "./monthly-audit.ts";
 import { buildMonthlyGoalChecks } from "./monthly-audit-checks.ts";
+import { buildAthAudit } from "./ath-audit.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -607,11 +608,14 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     , missed_temporal: temporalOccurrences.map((row) => ({ ...row, environment: "TESTNET", symbol: `${row.asset}USDC`,
       context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.temporal_classification === "HISTORICAL_PRE_4_1", source: "robot_v1_testnet_events+current_slot_fallback" }))
       .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd))),
-    monthly_goals: monthlyGoals
+    monthly_goals: monthlyGoals, ath_regime: []
   };
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
   datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters, contextOrders: normalizedOrders, contextEvents: allEvents }));
   datasets.checks.push(...buildMonthlyGoalChecks(datasets, input.sources, incompleteSources, input.generatedAt));
+  const athAudit = buildAthAudit(datasets, input.sources, incompleteSources, input.generatedAt);
+  datasets.ath_regime.push(...athAudit.rows);
+  datasets.checks.push(...athAudit.checks);
   const liveParity = datasets.checks.find((row) => row.code === "LIVE_STRATEGY_PARITY_READY");
   if (liveParity) {
     const monthlyCodes = new Set(["MONTHLY_GAIN_COUNT_RECONCILES", "TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY",

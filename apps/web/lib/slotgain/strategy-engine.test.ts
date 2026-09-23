@@ -195,7 +195,7 @@ test("Shadow and Testnet representations produce identical initial/TP/local/prio
     assert.deepEqual(planStrategyNextEntry(runContext, shadow, 121 * scale), planStrategyNextEntry(runContext, testnet, 121 * scale));
     for (const adapterSlots of [shadow, testnet]) { adapterSlots[0]!.state = "CLOSED"; adapterSlots[2]!.state = "CLOSED"; }
     assert.deepEqual(planStrategyClosedSlot(runContext, shadow, "physical-1"), planStrategyClosedSlot(runContext, testnet, "physical-1"));
-    assert.equal(STRATEGY_VERSION, "4.2");
+    assert.equal(STRATEGY_VERSION, "4.3");
   }
 });
 

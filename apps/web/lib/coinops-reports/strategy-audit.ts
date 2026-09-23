@@ -83,7 +83,7 @@ export function buildStrategyAuditChecks(data: AuditDatasets, context: Context):
         const regression = occurrences.filter((row) => row.temporal_classification === "POST_4_1_REGRESSION");
         const unresolved = occurrences.filter((row) => row.temporal_classification === "UNRESOLVED" || row.temporal_classification === "POST_4_1_EXTERNAL" && row.is_active_issue !== false);
         const evidenceMissing = !currentSnapshot || !slots.length || !classifiedSnapshot || context.incompleteSources.some((name) => /^(robot_v1_testnet_events|robot_v1_testnet_slots|robot_v1_testnet_runs)/.test(name))
-          || !decisions.some((row) => row.cycle_id === cycle.cycle_id && /^4\.(?:1\.(?:0|[1-9]\d*)|2(?:\.[0-9]+)?)$/.test(string(row.strategy_version))
+          || !decisions.some((row) => row.cycle_id === cycle.cycle_id && /^4\.(?:1\.(?:0|[1-9]\d*)|[23](?:\.[0-9]+)?)$/.test(string(row.strategy_version))
             && row.strategy_version === cycle.strategy_version && time(row.created_at) >= time(STRATEGY_4_1_EFFECTIVE_AT));
         add("NO_NEW_ENGINE_MISSED_LEVELS", regression.length ? "FAIL" : unresolved.length || evidenceMissing ? "WARNING" : "PASS", `${regression.length} regressão(ões) comprovada(s) após 4.1; ${historical.length} histórico(s) não contam como falha nova. Falta de evidência não comprova ausência.`, { ...scope, cycle_id: cycle.cycle_id, strategy_effective_at: STRATEGY_4_1_EFFECTIVE_AT });
         const wronglyActive = historical.filter((row) => row.is_active_issue !== false);

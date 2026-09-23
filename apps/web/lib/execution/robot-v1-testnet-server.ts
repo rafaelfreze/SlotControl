@@ -1,22 +1,26 @@
 import { randomUUID } from "node:crypto";
 
 import { BinanceSpotTestnetAdapter, type TestnetOrder, type TestnetTrade } from "./binance-spot-testnet-adapter";
+import { BinanceSpotAdapter } from "./binance-spot-adapter";
+import { planAthLadder } from "./ath-ladder";
+import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 import { testnetFillEvents } from "../coinops-reports/testnet-fill-evidence";
 import { planTerminalTestnetRestart, TESTNET_ACTIVE_ORDER_STATUSES, testnetClientOrderId, testnetOpenPositionQuantity, testnetResetIdempotencyKey } from "./robot-v1-testnet-cycle";
 import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset, type V1Symbol } from "./robot-v1";
-import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
+import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
 import { projectTestnetEntryState, recoverTestnetStrategyDecisions, type RecoverableTestnetDecision } from "./strategy-testnet-recovery";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import type { MonthlySlotStatus } from "./monthly-slot-policy";
+import { monthlyPeriodKey } from "./monthly-slot-policy";
 import type { ExchangeSymbolInfo } from "./types";
 
 type Scope = { productId: string; tenantId: string; userId: string };
 type Service = ReturnType<typeof createServiceRoleClient>;
-type Run = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; status: string; symbol: V1Symbol; anchor_price: number | string; slot_notional_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; next_capital_usdc: number | string | null; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; lease_owner: string | null; lease_until: string | null; previous_run_id: string | null; reset_started_at: string | null; reset_completed_at: string | null; recovery_source: string | null };
-type Slot = { id: string; run_id: string; slot_number: number; entry_state: string; target_buy_price: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string; missed_at: string | null; operation_sequence: number; entry_origin: "GRID" | "REENTRY"; entry_reference_price: number | string; last_take_profit_price: number | string | null; last_credited_sell_client_order_id: string | null };
+type Run = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; status: string; symbol: V1Symbol; anchor_price: number | string; slot_notional_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; next_capital_usdc: number | string | null; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; lease_owner: string | null; lease_until: string | null; previous_run_id: string | null; reset_started_at: string | null; reset_completed_at: string | null; recovery_source: string | null; entry_regime: "NORMAL" | "POST_ATH" | null; ath_transition_key: string | null; ath_period_key: string | null; config_version: number | null; config_snapshot: Record<string, unknown> | null };
+type Slot = { id: string; run_id: string; slot_number: number; entry_state: string; target_buy_price: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string; missed_at: string | null; operation_sequence: number; entry_origin: "GRID" | "REENTRY"; entry_reference_price: number | string; last_take_profit_price: number | string | null; last_credited_sell_client_order_id: string | null; operational_rank: number | null; post_ath_group: "PRIMARY" | "RESERVE" | null; post_ath_group_rank: number | null };
 type Order = ReturnType<typeof owned> & { id: string; run_id: string; slot_id: string; slot_number: number; side: "BUY" | "SELL"; purpose: "INITIAL" | "ENTRY" | "TP"; revision: number; operation_sequence: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; requested_quote: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; fee_base: number | string; fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>; trades_reconciled: boolean };
 type SymbolFilters = ExchangeSymbolInfo;
 
@@ -27,10 +31,12 @@ const rounded = (value: number) => Number(value.toFixed(8));
 const floorStep = (value: number, step: number) => rounded(Math.floor((value + 1e-10) / step) * step);
 const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id });
 const context = (run: Run) => ({ asset: run.asset, cycleId: run.id, observedAt: new Date().toISOString() });
-function candidate(slot: Slot, monthly?: MonthlySlotStatus): StrategyCandidate {
+function candidate(slot: Slot, monthly?: MonthlySlotStatus, regime: "NORMAL" | "POST_ATH" = "NORMAL"): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: amount(slot.target_buy_price), balanceUsdc: amount(slot.balance_usdc),
-    operationalRank: monthly?.operationalRank, monthlyTargetReached: monthly?.monthlyTargetReached,
+    operationalRank: regime === "POST_ATH" ? slot.operational_rank ?? monthly?.operationalRank : monthly?.operationalRank,
+    monthlyTargetReached: monthly?.monthlyTargetReached, postAthGroup: slot.post_ath_group,
+    entryOrigin: slot.entry_origin,
     state: slot.missed_at ? "MISSED" : ["OPEN", "CLOSED", "ARMED"].includes(slot.entry_state) ? slot.entry_state as "OPEN" | "CLOSED" | "ARMED" : "PLANNED" };
 }
 function candidatesWithFills(slots: Slot[], orders: Order[], monthly: readonly MonthlySlotStatus[]) {
@@ -86,7 +92,10 @@ async function prepareOrder(service: Service, run: Run, slot: Slot, side: "BUY" 
   const id = testnetClientOrderId(run.id, run.asset, slot.slot_number, side, revision);
   const { data, error } = await service.from("robot_v1_testnet_orders").upsert({
     run_id: run.id, slot_id: slot.id, ...owned(run), slot_number: slot.slot_number, side, purpose, revision,
-    operation_sequence: slot.operation_sequence, client_order_id: id, requested_quantity: requestedQuantity, requested_quote: requestedQuote, price, strategy_decision_id: decisionId ?? null
+    operation_sequence: slot.operation_sequence, client_order_id: id, requested_quantity: requestedQuantity, requested_quote: requestedQuote, price, strategy_decision_id: decisionId ?? null,
+    config_version: run.config_version,
+    config_snapshot: { ...(run.config_snapshot ?? {}), regime: run.entry_regime,
+      entry_spacing: amount(run.entry_spacing), ath_transition_key: run.ath_transition_key },
   }, { onConflict: "client_order_id", ignoreDuplicates: true }).select("*").maybeSingle();
   if (error) throw new Error("COINOPS_TESTNET_ORDER_PREPARE_FAILED");
   const validateIdentity = (order: Order) => {
@@ -158,16 +167,22 @@ export async function startTestnetRun(userId: string, asset: V1Asset) {
   }
   const { data: config, error: configError } = await service.from("robot_v1_configs").select("slot_count,execution_mode").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).single();
   if (configError || !config || config.execution_mode !== "SHADOW" || config.slot_count !== 25) throw new Error("COINOPS_TESTNET_SHADOW_CONFIG_REQUIRED");
+  const athProfile = await loadAthProfile(service, scope, "TESTNET", asset);
+  const initialGain = Number(athProfile.next_gain_rate ?? athProfile.gain_rate);
+  const initialSpacing = Number(athProfile.regime === "POST_ATH"
+    ? athProfile.next_post_ath_spacing_rate ?? athProfile.post_ath_spacing_rate
+    : athProfile.next_normal_spacing_rate ?? athProfile.normal_spacing_rate);
   const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
   const [account, filters, market, openOrders] = await Promise.all([adapter.reads.getAccount(), adapter.reads.getSymbolInfo(symbol), adapter.reads.getMarketPrice(symbol), adapter.reads.getOpenOrders(symbol)]);
   const notional = V1_TEST_PROFILE.capitalUsdc / V1_TEST_PROFILE.slotCount;
-  buildV1Grid(asset, V1_TEST_PROFILE.capitalUsdc, market.price, filters, { gainRate: V1_TEST_PROFILE.gainRate, entrySpacing: V1_TEST_PROFILE.entrySpacing });
+  buildV1Grid(asset, V1_TEST_PROFILE.capitalUsdc, market.price, filters,
+    { gainRate: initialGain, entrySpacing: initialSpacing });
   const tradePermission = await adapter.checkTradePermission(symbol);
   if (!tradePermission.ok) throw new Error("COINOPS_TESTNET_TRADE_PERMISSION_INVALID");
   const freeUsdc = account.balances.find((balance) => balance.asset === "USDC")?.free ?? 0;
   if (!account.canTrade || !Number.isFinite(notional) || notional < filters.minNotional || freeUsdc < V1_TEST_PROFILE.capitalUsdc) throw new Error("COINOPS_TESTNET_FUNDS_OR_FILTERS_INVALID");
   if (openOrders.some((order) => order.clientOrderId?.startsWith(`COV1-${asset}-`))) throw new Error("COINOPS_TESTNET_UNRECONCILED_OWNED_ORDER");
-  const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, asset, symbol, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: V1_TEST_PROFILE.gainRate, entry_spacing: V1_TEST_PROFILE.entrySpacing }).select("*").single();
+  const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, asset, symbol, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: initialGain, entry_spacing: initialSpacing }).select("*").single();
   if (insertError?.code === "23505") {
     const { data: concurrent } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).eq("status", "ACTIVE").maybeSingle();
     if (concurrent) { await advanceTestnetRun(concurrent.id, "CONCURRENT_START_RECOVERY"); return concurrent.id as string; }
@@ -254,6 +269,157 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
 
 async function monthlyStatuses(service: Service, run: Run, slots: Slot[]) {
   return loadMonthlySlotStatuses(service, "TESTNET", { ...owned(run), asset: run.asset }, slots);
+}
+
+async function applyTestnetAthTransition(service: Service, run: Run, slots: Slot[], orders: Order[],
+  profile: AthProfileRow, filters: SymbolFilters, adapter: BinanceSpotTestnetAdapter) {
+  const periodKey = monthlyPeriodKey(new Date());
+  if (!profile.transition_key || run.ath_transition_key === profile.transition_key
+    && run.entry_regime === profile.regime && run.ath_period_key === periodKey) return false;
+  const activeBuys = orders.filter((order) => order.side === "BUY" && ACTIVE_ORDER.has(order.status));
+  if (activeBuys.length > 1) throw new Error("COINOPS_STRATEGY_MULTIPLE_ARMED_BUYS");
+  const active = activeBuys[0];
+  if (active) {
+    if (active.purpose !== "ENTRY" || active.status === "PARTIALLY_FILLED"
+      || amount(active.executed_quantity) > 0) throw new Error("COINOPS_ATH_BUY_FILL_RECONCILIATION_REQUIRED");
+    if (active.status === "PREPARED") await updateOrder(service, run, active, { status: "CANCELED" });
+    else {
+      if (active.status !== "NEW" || !active.exchange_order_id) throw new Error("COINOPS_ATH_OWNED_BUY_NOT_CANCELABLE");
+      const canceled = await adapter.cancelOwnedOrder(run.symbol, active.exchange_order_id, active.client_order_id);
+      if (!canceled || canceled.status !== "CANCELED" || canceled.executedQuantity > 0)
+        throw new Error("COINOPS_ATH_OWNED_BUY_CANCEL_UNCERTAIN");
+      await updateOrder(service, run, active, { status: "CANCELED", executed_quantity: 0,
+        cumulative_quote: canceled.cumulativeQuoteQuantity });
+    }
+    const residentSlot = slots.find((slot) => slot.id === active.slot_id);
+    if (!residentSlot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
+    await updateSlot(service, run, residentSlot, { entry_state: "PLANNED" });
+    await event(service, run, `${active.client_order_id}:ATH_REPRICE_CANCELLED`, "ATH_OWNED_BUY_CANCELLED",
+      active.slot_number, { clientOrderId: active.client_order_id, ownershipVerified: true,
+        transitionKey: profile.transition_key });
+  }
+  const monthly = await monthlyStatuses(service, run, slots);
+  const market = await adapter.reads.getMarketPrice(run.symbol);
+  const transition = planAthLadder(run.asset, profile.regime, market.price,
+    { gainRate: amount(run.gain_rate), normalSpacing: Number(profile.normal_spacing_rate),
+      postAthSpacing: Number(profile.post_ath_spacing_rate) }, filters.priceTick,
+    slots.map((slot) => {
+      const evidence = monthly.find((item) => item.physicalSlotNumber === slot.slot_number);
+      if (!evidence) throw new Error("COINOPS_ATH_MONTHLY_EVIDENCE_MISSING");
+      return { physicalSlotId: evidence.physicalSlotId, physicalSlotNumber: slot.slot_number,
+        lifetimeGainCount: evidence.lifetimeGainCount, monthlyGainCount: evidence.monthlyGainCount,
+        entryState: slot.missed_at ? "MISSED" : slot.entry_state,
+        status: slot.entry_state, buyPrice: amount(slot.target_buy_price),
+        entryOrigin: slot.entry_origin, operationSequence: slot.operation_sequence };
+    }));
+  const updated = transition.map((decision) => {
+    const slot = slots.find((item) => item.slot_number === decision.physicalSlotNumber)!;
+    const reprice = slot.entry_state === "PLANNED" && !decision.frozenReason;
+    const quantity = reprice ? floorStep(amount(slot.balance_usdc) / decision.nextBuyPrice, filters.quantityStep) : null;
+    if (quantity !== null && (quantity < filters.minQuantity || quantity > filters.maxQuantity
+      || quantity * decision.nextBuyPrice < filters.minNotional)) throw new Error("COINOPS_ATH_TESTNET_ENTRY_FILTER_INVALID");
+    return { slot, decision, reprice };
+  });
+  for (const { slot, decision, reprice } of updated) {
+    await updateSlot(service, run, slot, { operational_rank: decision.operationalRank,
+      post_ath_group: decision.postAthGroup, post_ath_group_rank: decision.postAthGroupRank,
+      ...(reprice ? { target_buy_price: decision.nextBuyPrice,
+        entry_reference_price: decision.nextBuyPrice } : {}) });
+  }
+  if (profile.regime === "POST_ATH") {
+    await event(service, run, `POST_ATH_PRIMARY_GROUP_BUILT:${profile.transition_key}:${periodKey}`,
+      "POST_ATH_PRIMARY_GROUP_BUILT", null,
+      { count: transition.filter((item) => item.postAthGroup === "PRIMARY").length,
+        transitionKey: profile.transition_key });
+    await event(service, run, `POST_ATH_RESERVE_GROUP_BUILT:${profile.transition_key}:${periodKey}`,
+      "POST_ATH_RESERVE_GROUP_BUILT", null,
+      { count: transition.filter((item) => item.postAthGroup === "RESERVE").length,
+        transitionKey: profile.transition_key });
+  }
+  const { data: marked, error } = await service.from("robot_v1_testnet_runs").update({
+    entry_regime: profile.regime, ath_transition_key: profile.transition_key,
+    ath_period_key: periodKey, entry_spacing: profile.regime === "POST_ATH"
+      ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
+  }).eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner)
+    .select("id").maybeSingle();
+  if (error || !marked) throw new Error("COINOPS_ATH_TESTNET_RUN_TRANSITION_FAILED");
+  run.entry_regime = profile.regime; run.ath_transition_key = profile.transition_key;
+  run.ath_period_key = periodKey;
+  run.entry_spacing = profile.regime === "POST_ATH" ? profile.post_ath_spacing_rate : profile.normal_spacing_rate;
+  return true;
+}
+
+async function queueTestnetAthNextProfile(service: Service, run: Run, profile: AthProfileRow) {
+  const nextGain = Number(profile.next_gain_rate ?? run.next_gain_rate ?? profile.gain_rate);
+  const nextNormal = Number(profile.next_normal_spacing_rate ??
+    (profile.regime === "NORMAL" ? run.next_entry_spacing : null) ?? profile.normal_spacing_rate);
+  const nextPost = Number(profile.next_post_ath_spacing_rate ??
+    (profile.regime === "POST_ATH" ? run.next_entry_spacing : null) ?? profile.post_ath_spacing_rate);
+  const nextSpacing = profile.regime === "POST_ATH" ? nextPost : nextNormal;
+  if (Number(run.next_gain_rate ?? run.gain_rate) === nextGain
+    && Number(run.next_entry_spacing ?? run.entry_spacing) === nextSpacing) return;
+  const { data, error } = await service.from("robot_v1_testnet_runs").update({
+    next_gain_rate: nextGain, next_entry_spacing: nextSpacing,
+  }).eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner)
+    .select("id").maybeSingle();
+  if (error || !data) throw new Error("COINOPS_ATH_TESTNET_NEXT_PROFILE_QUEUE_FAILED");
+  run.next_gain_rate = nextGain; run.next_entry_spacing = nextSpacing;
+}
+
+async function activateTestnetAthProfile(service: Service, run: Run, profile: AthProfileRow,
+  orders: Order[]) {
+  if (orders.length) return profile;
+  const targetGain = Number(profile.next_gain_rate ?? run.gain_rate);
+  const targetNormal = Number(profile.next_normal_spacing_rate ??
+    (profile.regime === "NORMAL" ? run.entry_spacing : profile.normal_spacing_rate));
+  const targetPost = Number(profile.next_post_ath_spacing_rate ??
+    (profile.regime === "POST_ATH" ? run.entry_spacing : profile.post_ath_spacing_rate));
+  const targetSpacing = profile.regime === "POST_ATH" ? targetPost : targetNormal;
+  // A new run created by the reset RPC must match the queued snapshot before
+  // profile activation. A mismatch blocks the first fictitious order.
+  if (amount(run.gain_rate) !== targetGain || amount(run.entry_spacing) !== targetSpacing)
+    throw new Error("COINOPS_ATH_TESTNET_CONFIG_SNAPSHOT_MISMATCH");
+  const activate = profile.next_config_version !== null || targetGain !== Number(profile.gain_rate)
+    || targetNormal !== Number(profile.normal_spacing_rate) || targetPost !== Number(profile.post_ath_spacing_rate);
+  if (activate) {
+    const nextVersion = profile.next_config_version ?? profile.config_version + 1;
+    const { data, error } = await service.from("robot_v1_ath_profiles").update({
+      config_version: nextVersion, gain_rate: targetGain,
+      normal_spacing_rate: targetNormal, post_ath_spacing_rate: targetPost,
+      next_gain_rate: null, next_normal_spacing_rate: null,
+      next_post_ath_spacing_rate: null, next_config_version: null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", profile.id).eq("tenant_id", run.tenant_id)
+      .eq("config_version", profile.config_version).select("*").maybeSingle();
+    if (error || !data) throw new Error("COINOPS_ATH_TESTNET_PROFILE_ACTIVATE_FAILED");
+    profile = data as AthProfileRow;
+    const { error: auditError } = await service.from("robot_v1_ath_events").upsert({
+      profile_id: profile.id, product_id: run.product_id, tenant_id: run.tenant_id,
+      user_id: run.user_id, environment: "TESTNET", asset: run.asset,
+      event_key: `STRATEGY_CONFIG_ACTIVATED:${nextVersion}`, event_type: "STRATEGY_CONFIG_ACTIVATED",
+      details: { config_version: nextVersion, gain_rate: targetGain,
+        normal_spacing_rate: targetNormal, post_ath_spacing_rate: targetPost },
+    }, { onConflict: "profile_id,event_key", ignoreDuplicates: true });
+    if (auditError) throw new Error("COINOPS_ATH_TESTNET_CONFIG_AUDIT_FAILED");
+  }
+  if (run.config_version === null) {
+    const snapshot = { gain_rate: targetGain, normal_spacing_rate: targetNormal,
+      post_ath_spacing_rate: targetPost, regime: profile.regime,
+      ath_price: profile.ath_price, ath_source: profile.ath_source };
+    const { data, error } = await service.from("robot_v1_testnet_runs").update({
+      config_version: profile.config_version, entry_regime: profile.regime,
+      ath_transition_key: profile.regime === "POST_ATH" ? null : profile.transition_key,
+      ath_period_key: profile.regime === "POST_ATH" ? null : monthlyPeriodKey(new Date()),
+      config_snapshot: snapshot,
+    }).eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner)
+      .select("id").maybeSingle();
+    if (error || !data) throw new Error("COINOPS_ATH_TESTNET_RUN_SNAPSHOT_FAILED");
+    run.config_version = profile.config_version; run.entry_regime = profile.regime;
+    run.config_snapshot = snapshot;
+    run.ath_transition_key = profile.regime === "POST_ATH" ? null : profile.transition_key;
+    run.ath_period_key = profile.regime === "POST_ATH" ? null : monthlyPeriodKey(new Date());
+  }
+  return profile;
 }
 
 async function recoverDecisionAudit(service: Service, run: Run, successorId?: string) {
@@ -356,19 +522,25 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   let monthly = await monthlyStatuses(service, run, slots);
   if (!orders.some((order) => order.side === "BUY")) {
     const selected = monthly.filter((status) => status.eligibleForNewEntry)
-      .sort((left, right) => left.operationalRank! - right.operationalRank!)[0];
+      .sort((left, right) => run.entry_regime === "POST_ATH"
+        ? (slots.find((item) => item.slot_number === left.physicalSlotNumber)?.operational_rank ?? 26 + left.physicalSlotNumber)
+          - (slots.find((item) => item.slot_number === right.physicalSlotNumber)?.operational_rank ?? 26 + right.physicalSlotNumber)
+        : left.operationalRank! - right.operationalRank!)[0];
     if (!selected) return false;
     const slot = slots.find((item) => item.slot_number === selected.physicalSlotNumber);
     if (!slot) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
-    const { error: rankError } = await service.rpc("rank_robot_v1_testnet_fresh_cycle", {
-      p_run_id: run.id, p_price_tick: filters.priceTick
-    });
-    if (rankError) throw new Error("COINOPS_TESTNET_FRESH_RANK_FAILED");
+    if (run.entry_regime !== "POST_ATH") {
+      const { error: rankError } = await service.rpc("rank_robot_v1_testnet_fresh_cycle", {
+        p_run_id: run.id, p_price_tick: filters.priceTick
+      });
+      if (rankError) throw new Error("COINOPS_TESTNET_FRESH_RANK_FAILED");
+    }
     const refreshed = await rows(service, run);
     const rankedSlot = refreshed.slots.find((item) => item.id === slot.id);
     if (!rankedSlot) throw new Error("COINOPS_TESTNET_FRESH_RANK_FAILED");
     Object.assign(slot, rankedSlot);
-    const initialDecision = planStrategyInitialEntry(context(run), candidate(slot, selected));
+    const initialDecision = planStrategyInitialEntry(context(run), candidate(slot, selected,
+      run.entry_regime ?? "NORMAL"));
     if (initialDecision.action_type !== "OPEN_INITIAL_MARKET") throw new Error("COINOPS_STRATEGY_INITIAL_STATE_INVALID");
     const decisionId = await intent(service, run, initialDecision, slot.operation_sequence);
     const prepared = await prepareOrder(service, run, slot, "BUY", "INITIAL", 1, null, amount(slot.balance_usdc), null, decisionId);
@@ -413,8 +585,23 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   }
   const resident = activeBuy && ACTIVE_ORDER.has(activeBuy.status) ? activeBuy : undefined;
   monthly = await monthlyStatuses(service, run, slots);
-  const candidates = slots.map((slot) => ({ ...candidate(slot, monthly.find((status) => status.physicalSlotNumber === slot.slot_number)), ...(resident?.slot_id === slot.id ? { state: resident.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED" as const : "ARMED" as const } : {}) }));
-  const plan = planStrategyNextEntry({ ...context(run), transitionKey: `QUEUE:${orders.filter((order) => order.side === "BUY").length}` }, candidates, market.price, resident ? { candidateId: resident.slot_id, executedQuantity: amount(resident.executed_quantity) } : null);
+  const candidates = slots.map((slot) => ({ ...candidate(slot,
+    monthly.find((status) => status.physicalSlotNumber === slot.slot_number), run.entry_regime ?? "NORMAL"),
+    ...(resident?.slot_id === slot.id ? { state: resident.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED" as const : "ARMED" as const } : {}) }));
+  const strategyContext = { ...context(run), transitionKey: `QUEUE:${orders.filter((order) => order.side === "BUY").length}` };
+  const residentBuy = resident ? { candidateId: resident.slot_id, executedQuantity: amount(resident.executed_quantity) } : null;
+  const plan = run.entry_regime === "POST_ATH"
+    ? planStrategyPostAthNextEntry(strategyContext, candidates, market.price, residentBuy)
+    : planStrategyNextEntry(strategyContext, candidates, market.price, residentBuy);
+  if (run.entry_regime === "POST_ATH" && !candidates.some((item) => item.postAthGroup === "PRIMARY"
+    && !item.monthlyTargetReached && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(item.state))) {
+    await event(service, run, `POST_ATH_PRIMARY_EXHAUSTED:${run.ath_transition_key}:${run.ath_period_key}`,
+      "POST_ATH_PRIMARY_EXHAUSTED", null, { periodKey: run.ath_period_key });
+    if (candidates.find((item) => item.id === plan.nextCandidateId)?.postAthGroup === "RESERVE")
+      await event(service, run, `POST_ATH_RESERVE_ACTIVATED:${run.ath_transition_key}:${run.ath_period_key}`,
+        "POST_ATH_RESERVE_ACTIVATED", null,
+        { slotId: plan.nextCandidateId, periodKey: run.ath_period_key });
+  }
   const decisionId = await intent(service, run, plan.decision, slots.find((slot) => slot.id === plan.decision.slot_id)?.operation_sequence);
   for (const crossed of slots.filter((slot) => plan.missedCandidateIds.includes(slot.id))) {
     let filledAt: string | null = null, collectedAt: string | null = null;
@@ -587,7 +774,9 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
   try {
     if (V1_RULES[run.asset]?.symbol !== run.symbol) throw new Error("COINOPS_TESTNET_RUN_SYMBOL_INVALID");
     const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+    const publicMarket = new BinanceSpotAdapter(null);
     const filters = await adapter.reads.getSymbolInfo(run.symbol);
+    let athProfile: AthProfileRow | null = null;
     await recoverDecisionAudit(service, run);
     if (run.previous_run_id) {
       const previous = await queryRun(service, run.previous_run_id);
@@ -607,8 +796,16 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
       await ensureTakeProfits(service, run, slots, orders, filters, adapter);
       await creditClosedSlots(service, run, slots, orders, filters);
       await recycleClosedSlotsLocally(service, run, slots, orders);
+      if (!athProfile) {
+        const productionPrice = await publicMarket.getMarketPrice(run.symbol);
+        athProfile = await refreshAthProfile(service, { productId: run.product_id,
+          tenantId: run.tenant_id, userId: run.user_id }, "TESTNET", run.asset, productionPrice);
+      }
+      athProfile = await activateTestnetAthProfile(service, run, athProfile, orders);
+      await queueTestnetAthNextProfile(service, run, athProfile);
       nextRunId = await restartTerminalCycle(service, run, slots, orders, filters, adapter, recoverySource);
       if (nextRunId) { result = { status: "RESTARTED", nextRunId }; break; }
+      await applyTestnetAthTransition(service, run, slots, orders, athProfile, filters, adapter);
       const armed = await armNextBuy(service, run, slots, orders, filters, adapter);
       if (!armed) break;
     }

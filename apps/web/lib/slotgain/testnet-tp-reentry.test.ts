@@ -94,8 +94,9 @@ function harness(seedOrders: Row[], status = "NEW") {
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const dependencies: Record<string, unknown> = {
     "./robot-v1-testnet-cycle": cycle, "./robot-v1": robot, "./strategy-engine": strategy,
+    "./binance-spot-adapter": {}, "./ath-ladder": {}, "./ath-profile-server": {},
     "./strategy-testnet-recovery": recovery, "../coinops-reports/testnet-fill-evidence": fillEvidence,
-    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => [] },
+    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => [] }, "./monthly-slot-policy": {},
     "../supabase/env": {}, "../supabase/service-role": {}, "./binance-spot-testnet-adapter": {},
     "./strategy-decision-server": {
       persistStrategyDecision: async (_service: unknown, _scope: unknown, _environment: unknown, decision: Row) => { decisions.push(decision); },

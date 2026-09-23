@@ -16,6 +16,7 @@ export function AutomationStatusStrip({ status }: { status: AutomationStatus }) 
 export function AutomationCenter({ view, data }: { view: AutomationView; data: Props }) {
   return <div className="coinops-automation ac-cockpit ac-dense" data-view={view}>
     <EnvironmentTabs view={view} />
+    <div className="ac-simulator-link"><a href="/automacao/simulador-ath">Simulador ATH isolado →</a></div>
     <AutomationDetails view={view} data={data} section="all" asset="SOL" />
   </div>;
 }

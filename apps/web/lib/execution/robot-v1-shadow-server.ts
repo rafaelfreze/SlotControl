@@ -7,19 +7,22 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
+import { planAthLadder, validateAthTransitionedGrid } from "./ath-ladder";
+import { buildPostAthQueue, orderedPostAthSlots } from "./ath-regime";
+import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
 import { sumV1DecimalAmounts } from "./robot-v1-audit";
 import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1LocalReentry, evaluateV1Candle, findV1LogicalLevel, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
-import { STRATEGY_VERSION, calculateStrategyTakeProfit, isStrategyDecisionProven, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit, wasStrategyOrderResidentAt, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
+import { STRATEGY_VERSION, calculateStrategyTakeProfit, isStrategyDecisionProven, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry, planStrategyTakeProfit, wasStrategyOrderResidentAt, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
-import type { MonthlySlotStatus } from "./monthly-slot-policy";
+import { monthlyPeriodKey, type MonthlySlotStatus } from "./monthly-slot-policy";
 import type { ExchangeSymbolInfo } from "./types";
 
 type Config = { strategy_version: string | null; strategy_lease_owner: string | null; strategy_lease_until: string | null; id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
-type Cycle = { strategy_version: string | null; id: string; status: string; asset: V1Asset; symbol: string; anchor_price: number | string; started_at: string; gain_rate: number | string; entry_spacing: number | string };
-type Slot = { id: string; slot_number: number; logical_level: number; operation_sequence: number; entry_state: "NONE" | "ARMED" | "PLANNED"; armed_at: string | null; missed_at: string | null; allocation_usdc: number | string; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; realized_quote_pnl: number | string | null; sell_fee: number | string; buy_client_order_id: string; sell_client_order_id: string | null; buy_triggered_at: string | null; tp_triggered_at: string | null; status: "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" | "CANCELLED" };
+type Cycle = { strategy_version: string | null; id: string; status: string; asset: V1Asset; symbol: string; anchor_price: number | string; started_at: string; gain_rate: number | string; entry_spacing: number | string; entry_regime: "NORMAL" | "POST_ATH" | null; ath_transition_key: string | null; ath_period_key: string | null; config_version: number | null; config_snapshot: Record<string, unknown> | null };
+type Slot = { id: string; slot_number: number; logical_level: number; operation_sequence: number; entry_state: "NONE" | "ARMED" | "PLANNED"; armed_at: string | null; missed_at: string | null; allocation_usdc: number | string; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; realized_quote_pnl: number | string | null; sell_fee: number | string; buy_client_order_id: string; sell_client_order_id: string | null; buy_triggered_at: string | null; tp_triggered_at: string | null; status: "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" | "CANCELLED"; operational_rank: number | null; post_ath_group: "PRIMARY" | "RESERVE" | null; post_ath_group_rank: number | null; entry_origin: "GRID" | "REENTRY"; config_version: number | null; config_snapshot: Record<string, unknown> | null };
 type SlotAccount = { slot_number: number; initial_balance_usdc: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string };
-const SLOT_COLUMNS = "id,slot_number,logical_level,operation_sequence,entry_state,armed_at,missed_at,allocation_usdc,buy_price,requested_quantity,executed_quantity,average_fill_price,take_profit_price,realized_quote_pnl,sell_fee,buy_client_order_id,sell_client_order_id,buy_triggered_at,tp_triggered_at,status";
+const SLOT_COLUMNS = "id,slot_number,logical_level,operation_sequence,entry_state,armed_at,missed_at,allocation_usdc,buy_price,requested_quantity,executed_quantity,average_fill_price,take_profit_price,realized_quote_pnl,sell_fee,buy_client_order_id,sell_client_order_id,buy_triggered_at,tp_triggered_at,status,operational_rank,post_ath_group,post_ath_group_rank,entry_origin,config_version,config_snapshot";
 const ACTIVE = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 
 function asNumber(value: number | string | null, code: string) { const result = Number(value); if (!Number.isFinite(result) || result < 0) throw new Error(code); return result; }
@@ -39,7 +42,8 @@ async function archiveClosedShadowOperation(supabase: ReturnType<typeof createSe
     product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle.id, slot_id: slot.id, physical_slot_number: slot.slot_number, operation_sequence: slot.operation_sequence, logical_level: slot.logical_level, allocation_usdc: slot.allocation_usdc,
     symbol: cycle.symbol, entry_price: slot.average_fill_price, executed_quantity: slot.executed_quantity, take_profit_price: slot.take_profit_price,
     buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id, opened_at: slot.buy_triggered_at, closed_at: values.closedAt,
-    gross_quote_pnl: values.grossProfit, estimated_quote_fees: values.estimatedFees, net_quote_pnl: values.grossProfit - values.estimatedFees
+    gross_quote_pnl: values.grossProfit, estimated_quote_fees: values.estimatedFees, net_quote_pnl: values.grossProfit - values.estimatedFees,
+    config_version: slot.config_version, config_snapshot: slot.config_snapshot
   }, { onConflict: "slot_id,operation_sequence", ignoreDuplicates: true });
   if (error) throw error;
 }
@@ -69,18 +73,20 @@ async function loadSlotAccounts(supabase: ReturnType<typeof createServiceRoleCli
 }
 
 
-const CYCLE_COLUMNS = "id,status,asset,symbol,anchor_price,started_at,gain_rate,entry_spacing,strategy_version";
+const CYCLE_COLUMNS = "id,status,asset,symbol,anchor_price,started_at,gain_rate,entry_spacing,strategy_version,entry_regime,ath_transition_key,ath_period_key,config_version,config_snapshot";
 type Service = ReturnType<typeof createServiceRoleClient>;
 
 function strategyContext(config: Config, cycle: Cycle, observedAt: string) {
   return { asset: config.asset, cycleId: cycle.id, observedAt };
 }
 
-function strategyCandidate(slot: Slot, monthly?: MonthlySlotStatus): StrategyCandidate {
+function strategyCandidate(slot: Slot, monthly?: MonthlySlotStatus, regime: "NORMAL" | "POST_ATH" = "NORMAL"): StrategyCandidate {
   return {
     id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), balanceUsdc: asNumber(slot.allocation_usdc, "COINOPS_V1_SLOT_INVALID"),
-    operationalRank: monthly?.operationalRank, monthlyTargetReached: monthly?.monthlyTargetReached,
+    operationalRank: regime === "POST_ATH" ? slot.operational_rank ?? monthly?.operationalRank : monthly?.operationalRank,
+    monthlyTargetReached: monthly?.monthlyTargetReached,
+    postAthGroup: slot.post_ath_group, entryOrigin: slot.entry_origin,
     state: slot.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED"
       : slot.status === "OPEN" || slot.status === "TP_ACTIVE" ? "OPEN"
       : slot.status === "CLOSED" || slot.status === "CANCELLED" ? "CLOSED"
@@ -92,6 +98,68 @@ async function readSlots(supabase: Service, cycle: Cycle) {
   const { data, error } = await supabase.from("robot_v1_slots").select(SLOT_COLUMNS).eq("cycle_id", cycle.id).order("slot_number");
   if (error) throw error;
   return (data || []) as Slot[];
+}
+
+async function applyShadowAthTransition(supabase: Service, config: Config, cycle: Cycle,
+  profile: AthProfileRow, filters: ExchangeSymbolInfo, marketPrice: number) {
+  const periodKey = monthlyPeriodKey(new Date());
+  if (!profile.transition_key || cycle.ath_transition_key === profile.transition_key
+    && cycle.entry_regime === profile.regime && cycle.ath_period_key === periodKey) return false;
+  const slots = await readSlots(supabase, cycle);
+  const accounts = await loadSlotAccounts(supabase, config);
+  const monthly = await monthlyStatuses(supabase, config, accounts);
+  const regimeChanged = cycle.ath_transition_key !== profile.transition_key;
+  const target = planAthLadder(config.asset, profile.regime,
+    profile.regime === "POST_ATH" && regimeChanged ? Math.max(Number(profile.ath_price), marketPrice) : marketPrice,
+    { gainRate: Number(cycle.gain_rate), normalSpacing: Number(profile.normal_spacing_rate),
+      postAthSpacing: Number(profile.post_ath_spacing_rate) }, filters.priceTick,
+    slots.map((slot) => {
+      const evidence = monthly.find((item) => item.physicalSlotNumber === slot.slot_number);
+      if (!evidence) throw new Error("COINOPS_ATH_MONTHLY_EVIDENCE_MISSING");
+      return { physicalSlotId: evidence.physicalSlotId, physicalSlotNumber: slot.slot_number,
+        lifetimeGainCount: evidence.lifetimeGainCount, monthlyGainCount: evidence.monthlyGainCount,
+        entryState: slot.status === "PENDING" ? slot.missed_at ? "MISSED" : slot.entry_state : slot.status,
+        status: slot.status, buyPrice: Number(slot.buy_price), entryOrigin: slot.entry_origin,
+        operationSequence: slot.operation_sequence };
+    }));
+  const updates = target.map((decision) => {
+    const slot = slots.find((item) => item.slot_number === decision.physicalSlotNumber)!;
+    const account = accounts[slot.slot_number - 1]!;
+    const reprice = slot.status === "PENDING" && !decision.frozenReason;
+    const quantity = reprice ? quantityForV1SlotBalance(Number(account.balance_usdc), decision.nextBuyPrice, filters).quantity : null;
+    return { slot, decision, reprice, quantity, account };
+  });
+  for (const { slot, decision, reprice, quantity, account } of updates) {
+    const values = { operational_rank: decision.operationalRank,
+      post_ath_group: decision.postAthGroup, post_ath_group_rank: decision.postAthGroupRank,
+      ...(reprice ? { buy_price: decision.nextBuyPrice, requested_quantity: quantity,
+        allocation_usdc: account.balance_usdc, entry_state: "PLANNED", armed_at: null,
+        config_version: cycle.config_version,
+        config_snapshot: { ...(cycle.config_snapshot ?? {}), regime: profile.regime,
+          entry_spacing: profile.regime === "POST_ATH" ? Number(profile.post_ath_spacing_rate) : Number(profile.normal_spacing_rate),
+          ath_transition_key: profile.transition_key } } : {}) };
+    const { data, error } = await supabase.from("robot_v1_slots").update(values)
+      .eq("id", slot.id).eq("cycle_id", cycle.id).eq("operation_sequence", slot.operation_sequence)
+      .eq("status", slot.status).select("id").maybeSingle();
+    if (error || !data) throw new Error("COINOPS_ATH_SHADOW_SLOT_TRANSITION_FAILED");
+  }
+  const key = `${profile.transition_key}:${periodKey}`;
+  if (profile.regime === "POST_ATH") {
+    await audit(supabase, config, "POST_ATH_PRIMARY_GROUP_BUILT", `${cycle.id}:${key}`,
+      { cycleId: cycle.id, next: { count: target.filter((item) => item.postAthGroup === "PRIMARY").length,
+        regime: profile.regime, configVersion: profile.config_version } });
+    await audit(supabase, config, "POST_ATH_RESERVE_GROUP_BUILT", `${cycle.id}:${key}`,
+      { cycleId: cycle.id, next: { count: target.filter((item) => item.postAthGroup === "RESERVE").length,
+        regime: profile.regime, configVersion: profile.config_version } });
+  }
+  const { data, error } = await supabase.from("robot_v1_cycles").update({
+    entry_regime: profile.regime, ath_transition_key: profile.transition_key, ath_period_key: periodKey,
+    entry_spacing: profile.regime === "POST_ATH" ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
+  }).eq("id", cycle.id).in("status", ACTIVE).select("id").maybeSingle();
+  if (error || !data) throw new Error("COINOPS_ATH_SHADOW_CYCLE_TRANSITION_FAILED");
+  cycle.entry_regime = profile.regime; cycle.ath_transition_key = profile.transition_key; cycle.ath_period_key = periodKey;
+  cycle.entry_spacing = profile.regime === "POST_ATH" ? profile.post_ath_spacing_rate : profile.normal_spacing_rate;
+  return true;
 }
 
 /** Repair only the proven one-tick floor drift of an unfilled, unarmed virtual
@@ -254,10 +322,23 @@ async function reconcileSingleArmedEntry(supabase: Service, config: Config, cycl
     }
     return;
   }
-  const plan = planStrategyNextEntry({ ...strategyContext(config, cycle, observedAt),
-    transitionKey: resident ? `${resident.id}:${resident.operation_sequence}:${resident.armed_at}` : "NO_RESIDENT_BUY" },
-    slots.map((slot) => strategyCandidate(slot, statusFor(slot))), observedFloor,
-    resident ? { candidateId: resident.id, executedQuantity: Number(resident.executed_quantity) } : null);
+  const strategyContextWithKey = { ...strategyContext(config, cycle, observedAt),
+    transitionKey: resident ? `${resident.id}:${resident.operation_sequence}:${resident.armed_at}` : "NO_RESIDENT_BUY" };
+  const candidates = slots.map((slot) => strategyCandidate(slot, statusFor(slot), cycle.entry_regime ?? "NORMAL"));
+  const residentBuy = resident ? { candidateId: resident.id, executedQuantity: Number(resident.executed_quantity) } : null;
+  const plan = cycle.entry_regime === "POST_ATH"
+    ? planStrategyPostAthNextEntry(strategyContextWithKey, candidates, observedFloor, residentBuy)
+    : planStrategyNextEntry(strategyContextWithKey, candidates, observedFloor, residentBuy);
+  if (cycle.entry_regime === "POST_ATH" && !candidates.some((item) => item.postAthGroup === "PRIMARY"
+    && !item.monthlyTargetReached && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(item.state))) {
+    await audit(supabase, config, "POST_ATH_PRIMARY_EXHAUSTED",
+      `${cycle.id}:${cycle.ath_transition_key}:${cycle.ath_period_key}`,
+      { cycleId: cycle.id, next: { regime: "POST_ATH", periodKey: cycle.ath_period_key }, observedAt });
+    if (candidates.find((item) => item.id === plan.nextCandidateId)?.postAthGroup === "RESERVE")
+      await audit(supabase, config, "POST_ATH_RESERVE_ACTIVATED",
+        `${cycle.id}:${cycle.ath_transition_key}:${cycle.ath_period_key}`,
+        { cycleId: cycle.id, next: { slotId: plan.nextCandidateId, periodKey: cycle.ath_period_key }, observedAt });
+  }
   await applyDecision(supabase, config, plan.decision, slots.find((slot) => slot.id === plan.nextCandidateId)?.operation_sequence, async () => {
     for (const missedId of plan.missedCandidateIds) {
       const slot = slots.find((item) => item.id === missedId)!;
@@ -303,15 +384,30 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
   if (!slots.length) {
     const accounts = await loadSlotAccounts(supabase, config);
     const monthly = await monthlyStatuses(supabase, config, accounts);
-    const physicalOrder = [...monthly].sort((left, right) =>
-      (left.operationalRank ?? 26 + left.physicalSlotNumber) - (right.operationalRank ?? 26 + right.physicalSlotNumber));
+    const postQueue = cycle.entry_regime === "POST_ATH" ? buildPostAthQueue(config.asset,
+      monthly.map((status) => ({ physicalSlotId: status.physicalSlotId,
+        physicalSlotNumber: status.physicalSlotNumber, lifetimeGainCount: status.lifetimeGainCount,
+        monthlyGainCount: status.monthlyGainCount, entryState: "PLANNED" }))) : null;
+    const groupByNumber = new Map(postQueue?.map((item) => [item.physicalSlotNumber, item]) ?? []);
+    const physicalOrder = [...monthly].sort((left, right) => cycle.entry_regime === "POST_ATH"
+      ? (groupByNumber.get(left.physicalSlotNumber)?.operationalRank ?? 26 + left.physicalSlotNumber)
+        - (groupByNumber.get(right.physicalSlotNumber)?.operationalRank ?? 26 + right.physicalSlotNumber)
+      : (left.operationalRank ?? 26 + left.physicalSlotNumber)
+        - (right.operationalRank ?? 26 + right.physicalSlotNumber));
     const balances = physicalOrder.map((status) => Number(accounts[status.physicalSlotNumber - 1]!.balance_usdc));
     const capital = Number(sumV1DecimalAmounts(accounts.map((account) => account.balance_usdc)));
     const grid = buildV1Grid(config.asset, capital, Number(cycle.anchor_price), filters, parameters, balances);
     const { error } = await supabase.from("robot_v1_slots").insert(grid.map((slot) => ({
       product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, cycle_id: cycle.id,
       slot_number: physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber, logical_level: slot.logicalLevel, symbol: cycle.symbol, allocation_usdc: balances[slot.logicalLevel - 1],
-      entry_state: "PLANNED", armed_at: null, buy_price: slot.buyPrice, requested_quantity: slot.quantity, executed_quantity: 0,
+      entry_state: "PLANNED", entry_origin: "GRID", armed_at: null,
+      config_version: cycle.config_version, config_snapshot: cycle.config_snapshot,
+      operational_rank: cycle.entry_regime === "POST_ATH"
+        ? groupByNumber.get(physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber)?.operationalRank ?? null
+        : physicalOrder[slot.logicalLevel - 1]!.operationalRank,
+      post_ath_group: groupByNumber.get(physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber)?.postAthGroup ?? null,
+      post_ath_group_rank: groupByNumber.get(physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber)?.postAthGroupRank ?? null,
+      buy_price: slot.buyPrice, requested_quantity: slot.quantity, executed_quantity: 0,
       average_fill_price: null, buy_status: "PENDING", take_profit_price: null, take_profit_status: "NONE", status: "PENDING",
       buy_client_order_id: v1ClientOrderId(config.asset, cycle.id, physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber, "BUY"),
       idempotency_key: v1IdempotencyKey(cycle.id, physicalOrder[slot.logicalLevel - 1]!.physicalSlotNumber, "BUY"), observed_at: market.observedAt
@@ -324,7 +420,8 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
   let initial = slots.find((slot) => slot.logical_level === 1)!;
   const initialStatus = monthly.find((status) => status.physicalSlotNumber === initial.slot_number)!;
   if (initialStatus.eligibleForNewEntry && initial.status === "PENDING" && initial.operation_sequence === 1 && !initial.buy_triggered_at) {
-    const plan = planStrategyInitialEntry(strategyContext(config, cycle, market.observedAt), strategyCandidate(initial, initialStatus));
+    const plan = planStrategyInitialEntry(strategyContext(config, cycle, market.observedAt),
+      strategyCandidate(initial, initialStatus, cycle.entry_regime ?? "NORMAL"));
     if (plan.action_type !== "OPEN_INITIAL_MARKET") throw new Error("COINOPS_STRATEGY_INITIAL_STATE_INVALID");
     const { quantity } = quantityForV1SlotBalance(Number(initial.allocation_usdc), market.price, filters);
     await applyDecision(supabase, config, plan, 1, async () => {
@@ -349,6 +446,11 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
 
 async function startInitialShadowCycle(supabase: Service, adapter: BinanceSpotAdapter, config: Config, now: Date) {
   const parameters = assertV1ShadowParameters({ gainRate: Number(config.gain_rate), entrySpacing: Number(config.entry_spacing) });
+  const profile = await loadAthProfile(supabase, { productId: config.product_id,
+    tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset);
+  const activeSpacing = Number(profile.regime === "POST_ATH" ? profile.post_ath_spacing_rate : profile.normal_spacing_rate);
+  if (parameters.gainRate !== Number(profile.gain_rate) || parameters.entrySpacing !== activeSpacing)
+    throw new Error("COINOPS_ATH_SHADOW_CONFIG_SNAPSHOT_MISMATCH");
   const [filters, market, accounts] = await Promise.all([adapter.getSymbolInfo(config.symbol), adapter.getMarketPrice(config.symbol), loadSlotAccounts(supabase, config)]);
   if (!(await monthlyStatuses(supabase, config, accounts)).some((status) => status.eligibleForNewEntry)) return null;
   const capital = Number(sumV1DecimalAmounts(accounts.map((account) => account.balance_usdc)));
@@ -356,7 +458,13 @@ async function startInitialShadowCycle(supabase: Service, adapter: BinanceSpotAd
   const { data, error } = await supabase.from("robot_v1_cycles").insert({
     product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, config_id: config.id, asset: config.asset, symbol: config.symbol,
     execution_mode: "SHADOW", strategy_version: STRATEGY_VERSION, status: "STARTING", anchor_price: market.price,
-    slot_notional_usdc: capital / V1_SLOT_COUNT, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, started_at: now.toISOString()
+    slot_notional_usdc: capital / V1_SLOT_COUNT, capital_usdc: capital, gain_rate: parameters.gainRate,
+    entry_spacing: parameters.entrySpacing, entry_regime: profile.regime,
+    ath_transition_key: profile.transition_key, ath_period_key: monthlyPeriodKey(now),
+    config_version: profile.config_version,
+    config_snapshot: { gain_rate: parameters.gainRate, normal_spacing_rate: Number(profile.normal_spacing_rate),
+      post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
+      ath_price: profile.ath_price, ath_source: profile.ath_source }, started_at: now.toISOString()
   }).select(CYCLE_COLUMNS).single();
   if (error?.code === "23505") return null;
   if (error) throw error;
@@ -399,7 +507,10 @@ async function settleClosedSlots(supabase: Service, config: Config, cycle: Cycle
       const { data, error } = await supabase.from("robot_v1_slots").update({
         operation_sequence: nextSequence, allocation_usdc: account.balance_usdc, buy_price: entry.buyPrice,
         requested_quantity: entry.quantity, executed_quantity: 0, average_fill_price: null, buy_status: "PENDING",
-        entry_state: "PLANNED", armed_at: null, missed_at: null, buy_trigger_price: null, buy_trigger_observed_price: null, buy_triggered_at: null,
+        entry_state: "PLANNED", entry_origin: "REENTRY", armed_at: null, missed_at: null, buy_trigger_price: null, buy_trigger_observed_price: null, buy_triggered_at: null,
+        config_version: cycle.config_version,
+        config_snapshot: { ...(cycle.config_snapshot ?? {}), regime: cycle.entry_regime,
+          entry_spacing: Number(cycle.entry_spacing), ath_transition_key: cycle.ath_transition_key },
         take_profit_price: null, take_profit_status: "NONE", tp_trigger_observed_price: null, tp_triggered_at: null,
         realized_quote_pnl: null, buy_fee: 0, sell_fee: 0, status: "PENDING",
         buy_client_order_id: v1ClientOrderId(config.asset, cycle.id, closedSlot.slot_number, "BUY", nextSequence), sell_client_order_id: null,
@@ -421,7 +532,25 @@ async function settleClosedSlots(supabase: Service, config: Config, cycle: Cycle
 }
 
 async function applyQueuedShadowProfile(supabase: ReturnType<typeof createServiceRoleClient>, adapter: BinanceSpotAdapter, config: Config) {
-  if (config.next_capital_usdc === null && config.next_gain_rate === null && config.next_entry_spacing === null) return config;
+  const profile = await loadAthProfile(supabase, { productId: config.product_id,
+    tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset);
+  const targetGain = Number(profile.next_gain_rate ?? config.next_gain_rate ?? profile.gain_rate);
+  const targetNormal = Number(profile.next_normal_spacing_rate ??
+    (profile.regime === "NORMAL" ? config.next_entry_spacing : null) ?? profile.normal_spacing_rate);
+  const targetPost = Number(profile.next_post_ath_spacing_rate ??
+    (profile.regime === "POST_ATH" ? config.next_entry_spacing : null) ?? profile.post_ath_spacing_rate);
+  const targetSpacing = profile.regime === "POST_ATH" ? targetPost : targetNormal;
+  const profilePending = profile.next_config_version !== null;
+  if (config.next_capital_usdc === null && config.next_gain_rate === null && config.next_entry_spacing === null
+    && Number(config.gain_rate) === targetGain && Number(config.entry_spacing) === targetSpacing && !profilePending) return config;
+  if (Number(config.next_gain_rate ?? config.gain_rate) !== targetGain
+    || Number(config.next_entry_spacing ?? config.entry_spacing) !== targetSpacing) {
+    const { error } = await supabase.from("robot_v1_configs").update({
+      next_gain_rate: targetGain, next_entry_spacing: targetSpacing,
+    }).eq("id", config.id).eq("tenant_id", config.tenant_id);
+    if (error) throw new Error("COINOPS_ATH_SHADOW_NEXT_PROFILE_QUEUE_FAILED");
+    config = { ...config, next_gain_rate: targetGain, next_entry_spacing: targetSpacing };
+  }
   const capital = asNumber(config.next_capital_usdc ?? config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
   const parameters = assertV1ShadowParameters({ gainRate: asNumber(config.next_gain_rate ?? config.gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.next_entry_spacing ?? config.entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
   const accounts = await loadSlotAccounts(supabase, config);
@@ -432,6 +561,25 @@ async function applyQueuedShadowProfile(supabase: ReturnType<typeof createServic
   buildV1Grid(config.asset, capital, market.price, filters, parameters, balances);
   const { data, error } = await supabase.rpc("apply_robot_v1_shadow_next_profile", { p_config_id: config.id });
   if (error || !data) throw new Error("COINOPS_V1_NEXT_PROFILE_APPLY_FAILED");
+  if (profilePending || targetGain !== Number(profile.gain_rate)
+    || targetNormal !== Number(profile.normal_spacing_rate) || targetPost !== Number(profile.post_ath_spacing_rate)) {
+    const nextVersion = profile.next_config_version ?? profile.config_version + 1;
+    const { error: profileError } = await supabase.from("robot_v1_ath_profiles").update({
+      config_version: nextVersion, gain_rate: targetGain,
+      normal_spacing_rate: targetNormal, post_ath_spacing_rate: targetPost,
+      next_config_version: null, next_gain_rate: null, next_normal_spacing_rate: null,
+      next_post_ath_spacing_rate: null, updated_at: new Date().toISOString(),
+    }).eq("id", profile.id).eq("tenant_id", config.tenant_id).eq("config_version", profile.config_version);
+    if (profileError) throw new Error("COINOPS_ATH_SHADOW_PROFILE_ACTIVATE_FAILED");
+    const { error: eventError } = await supabase.from("robot_v1_ath_events").upsert({
+      profile_id: profile.id, product_id: config.product_id, tenant_id: config.tenant_id,
+      user_id: config.user_id, environment: "SHADOW", asset: config.asset,
+      event_key: `STRATEGY_CONFIG_ACTIVATED:${nextVersion}`, event_type: "STRATEGY_CONFIG_ACTIVATED",
+      details: { config_version: nextVersion, gain_rate: targetGain,
+        normal_spacing_rate: targetNormal, post_ath_spacing_rate: targetPost },
+    }, { onConflict: "profile_id,event_key", ignoreDuplicates: true });
+    if (eventError) throw new Error("COINOPS_ATH_SHADOW_CONFIG_AUDIT_FAILED");
+  }
   return { ...config, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, next_capital_usdc: null, next_gain_rate: null, next_entry_spacing: null, last_candle_open_at: null };
 }
 
@@ -479,6 +627,9 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
         .eq("id", config.id).eq("strategy_lease_owner", leaseOwner);
       if (versionError) throw versionError;
       if (!cycle && !config.kill_switch && !config.pause_new_entries) {
+        const sourceMarket = await adapter.getMarketPrice(rule.symbol);
+        await refreshAthProfile(supabase, { productId: config.product_id,
+          tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset, sourceMarket);
         config = await applyQueuedShadowProfile(supabase, adapter, config);
         cycle = await startInitialShadowCycle(supabase, adapter, config, new Date());
         if (cycle) cyclesStarted += 1;
@@ -491,17 +642,27 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       }
       if (cycle.status === "STARTING" && !config.kill_switch && !config.pause_new_entries) await initializeShadowCycle(supabase, adapter, config, cycle);
       const [filters, market] = await Promise.all([adapter.getSymbolInfo(rule.symbol), adapter.getMarketPrice(rule.symbol)]);
-      const cycleParameters = assertV1ShadowParameters({ gainRate: Number(cycle.gain_rate), entrySpacing: Number(cycle.entry_spacing) });
+      let cycleParameters = assertV1ShadowParameters({ gainRate: Number(cycle.gain_rate), entrySpacing: Number(cycle.entry_spacing) });
       let healthSlots = await readSlots(supabase, cycle);
       // Complete a previously persisted BUY before processing later candles.
       for (const slot of healthSlots) await ensureTakeProfit(supabase, config, cycle, slot, filters, new Date().toISOString());
       healthSlots = await readSlots(supabase, cycle);
-      const repairedTickDrift = await repairShadowReentryTickDrift(supabase, config, cycle, healthSlots, filters, cycleParameters);
+      const athProfile = await refreshAthProfile(supabase, { productId: config.product_id,
+        tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset, market);
+      if (await applyShadowAthTransition(supabase, config, cycle, athProfile, filters, market.price)) {
+        healthSlots = await readSlots(supabase, cycle);
+        cycleParameters = assertV1ShadowParameters({ gainRate: Number(cycle.gain_rate), entrySpacing: Number(cycle.entry_spacing) });
+      }
+      const repairedTickDrift = cycle.ath_transition_key ? 0
+        : await repairShadowReentryTickDrift(supabase, config, cycle, healthSlots, filters, cycleParameters);
       if (repairedTickDrift) healthSlots = await readSlots(supabase, cycle);
-      const gridValidation = validateActiveGrid(Number(cycle.anchor_price), filters, cycleParameters, healthSlots.map((slot) => ({
-        slotNumber: slot.slot_number, logicalLevel: slot.logical_level, buyPrice: Number(slot.buy_price),
-        status: slot.status === "CLOSED" || slot.status === "CANCELLED" ? "PENDING" : slot.status
-      })));
+      const gridValidation = cycle.ath_transition_key
+        ? validateAthTransitionedGrid(healthSlots.map((slot) => ({ physicalSlotNumber: slot.slot_number,
+          buyPrice: Number(slot.buy_price), status: slot.status, operationalRank: slot.operational_rank })), filters.priceTick)
+        : validateActiveGrid(Number(cycle.anchor_price), filters, cycleParameters, healthSlots.map((slot) => ({
+          slotNumber: slot.slot_number, logicalLevel: slot.logical_level, buyPrice: Number(slot.buy_price),
+          status: slot.status === "CLOSED" || slot.status === "CANCELLED" ? "PENDING" : slot.status
+        })));
       const gridError = gridValidation.valid ? null : `GRADE ${config.asset} INVÁLIDA: ${gridValidation.errors.join(", ")}`;
       let resumeAfterRepair = false;
       if (repairedTickDrift && gridValidation.valid && config.pause_new_entries && config.grid_status === "INVALID"

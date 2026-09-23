@@ -262,3 +262,4 @@
 .av2-monthly-hint { display: block; margin-top: 3px; color: var(--av-muted); font-size: 10px; font-weight: 600; white-space: normal; }
 .av2-mobile-slot .av2-monthly-hint { margin: 0; color: var(--av-gold); }
 @media (max-width: 620px) { .av2-monthly-toolbar { padding: 7px 10px; } .av2-monthly-toolbar label { width: 100%; justify-content: space-between; } }
+.ac-simulator-link{display:flex;justify-content:flex-end;margin:8px 0 14px}.ac-simulator-link a{color:#d5b15e;text-decoration:none;font-size:13px;border:1px solid #5a4d2b;border-radius:9px;padding:8px 12px}.ac-simulator-link a:hover{text-decoration:underline}
