@@ -19,7 +19,7 @@ export function EnvironmentAssetCards({ data, environment, selectedAsset, onSele
     return <button type="button" key={asset} className={`av2-asset-card ${asset.toLowerCase()}`} data-selected={asset === selectedAsset} aria-pressed={asset === selectedAsset} onClick={() => onSelect(asset)} aria-label={`${asset}/USDC ${environment === "TESTNET" ? "Testnet, fundos fictícios" : "Production somente leitura"}`}>
       <span className="av2-asset-heading"><b className="av2-asset-icon">{asset === "BTC" ? "₿" : "≋"}</b><strong>{asset}/USDC</strong><em>{environment === "TESTNET" ? "TESTNET" : "READ-ONLY"}</em></span>
       <strong className="av2-asset-price">{amount(price, 2)} <small>USDC</small></strong>
-      <span className="av2-asset-trend">{environment === "TESTNET" ? "Preço Testnet · curva: mercado real" : "Cotação de mercado · somente leitura"}</span>
+      <span className="av2-asset-trend">{environment === "TESTNET" ? "Testnet · curva Production" : "Mercado · somente leitura"}</span>
       <span className="av2-asset-balance">{environment === "TESTNET" ? "Saldo fictício disponível" : "Saldo Binance"}<strong>{amount(balance, 8)} {asset}</strong></span>
       <Sparkline candles={candles} asset={asset} />
     </button>;

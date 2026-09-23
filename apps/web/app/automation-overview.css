@@ -50,8 +50,15 @@
 .aov-event-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #d8e3ed; }
 .aov-activity time { color: var(--av-muted); font-size: 10px; white-space: nowrap; }
 .aov-empty { padding: 10px 0; color: var(--av-muted); font-size: 12px; }
-@media (min-width: 1280px) { .aov-activity ol { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; } .aov-activity li { grid-template-columns: 52px 26px minmax(0, 1fr) auto; gap: 5px; } }
+@media (min-width: 1280px) { .aov-activity ol { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; } .aov-activity li { grid-template-columns: 52px 34px minmax(0, 1fr) auto; gap: 7px; } }
 @media (min-width: 1600px) { .aov-heading { padding-top: 14px; padding-bottom: 12px; } .aov-metrics { gap: 11px 16px; padding-top: 12px; padding-bottom: 12px; } .aov-asset { padding-top: 13px; padding-bottom: 13px; } .aov-asset-metrics .aov-metric dd, .aov-real-balances .aov-metric dd { font-size: 15px; } .aov-activity li { min-height: 33px; } }
+@media (min-width: 1280px) and (max-height: 800px) {
+  .aov-heading { padding-block: 7px; }
+  .aov-metrics { padding-block: 6px; }
+  .aov-asset { padding-block: 6px; }
+  .aov-footer { padding-block: 7px; }
+  .aov-activity { padding-top: 8px; }
+}
 @media (max-width: 1150px) and (min-width: 761px) { .aov-environments { grid-template-columns: repeat(2, minmax(0, 1fr)); } .aov-real { grid-column: 1 / -1; } .aov-real .aov-assets { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; } .aov-real .aov-asset + .aov-asset { border-top: 0; } .aov-real .aov-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .aov-environments { grid-template-columns: minmax(0, 1fr); } .aov-heading { padding: 11px 12px; } .aov-heading h2 { font-size: 17px; } .aov-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 10px 12px; gap: 8px; } .aov-metrics .aov-metric dd { font-size: 17px; } .aov-metrics .aov-metric dt { font-size: 10px; } .aov-metrics .aov-metric dd small { flex-basis: 100%; font-size: 9px; } .aov-assets { padding: 0 12px; } .aov-asset-metrics { grid-template-columns: 1.2fr 1.2fr .65fr 1fr; } .aov-footer { padding: 9px 12px; } .aov-footer a { min-height: 32px; display: inline-flex; align-items: center; } .aov-activity { padding: 10px 12px 4px; } .aov-activity ol { grid-template-columns: minmax(0, 1fr); } .aov-activity > header > span { display: none; } .aov-activity li { min-height: 36px; gap: 6px; grid-template-columns: 52px 27px minmax(0, 1fr) auto; } .aov-activity time { font-size: 9px; } }
 @media (max-width: 380px) { .aov-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .aov-metrics .aov-metric dd small { flex-basis: auto; } .aov-asset-heading { flex-wrap: wrap; } .aov-asset-heading > small { flex-basis: 100%; text-align: left; padding-left: 32px; margin-top: -5px; } .aov-asset-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
