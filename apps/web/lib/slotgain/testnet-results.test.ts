@@ -49,3 +49,17 @@ test("Testnet committed capital includes only unfilled resident BUY reservations
   assert.ok(Math.abs(placed.committedCapital - 20) < 1e-10);
   assert.equal(placed.freeCapital, 0);
 });
+
+test("Testnet current row ignores completed orders from earlier operation sequences", () => {
+  const recycled = { ...slot, entry_state: "ARMED", operation_sequence: 2, entry_origin: "REENTRY", entry_reference_price: 100, last_take_profit_price: 100.5, balance_usdc: 10.05, gain_count: 1, net_profit_usdc: .05 };
+  const previousBuy = { ...order, operation_sequence: 1, client_order_id: "old-buy" };
+  const previousTp = { ...order, operation_sequence: 1, side: "SELL", purpose: "TP", client_order_id: "old-tp", price: 100.5, cumulative_quote: 10.05 };
+  const currentBuy = { ...order, operation_sequence: 2, purpose: "ENTRY", client_order_id: "reentry-buy", exchange_order_id: "3", status: "NEW", executed_quantity: 0, cumulative_quote: 0, requested_quantity: .100, price: 100 };
+  const result = summarizeTestnetResults([recycled], [previousBuy, previousTp, currentBuy], 101, 10);
+  assert.equal(result.rows[0].orders.length, 1);
+  assert.equal(result.rows[0].buy?.client_order_id, "reentry-buy");
+  assert.equal(result.rows[0].takeProfitPrice, null);
+  assert.equal(result.rows[0].remainingQuantity, 0);
+  assert.equal(result.rows[0].reservedBuyCapital, 10);
+  assert.equal(result.realizedProfit, .05);
+});

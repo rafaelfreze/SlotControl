@@ -153,22 +153,30 @@ export function buildV1InitialShadowPosition(grid: V1GridSlot[]): V1InitialShado
   return { slotNumber: firstSlot.slotNumber, quantity: firstSlot.quantity, buyPrice: firstSlot.buyPrice, takeProfitPrice: firstSlot.takeProfitPrice };
 }
 
-/** Extends the existing V1 ladder below its current lowest active level. This
- * never reanchors a cycle and leaves active positions and their TPs untouched. */
-export function buildV1RecycledEntries(asset: V1Asset, capitalUsdc: number, slotNumbers: number[], activeBuyPrices: number[], filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset], slotBalances?: ReadonlyMap<number, number>): V1RecycledEntry[] {
-  const rule = assertV1ShadowParameters(parameters);
-  const slotNotional = calculateV1SlotNotional(capitalUsdc);
-  if (!slotNumbers.length || !activeBuyPrices.length || slotNotional < filters.minNotional) throw new Error("COINOPS_V1_RECYCLE_INPUT_INVALID");
-  const knownPrices = new Set(activeBuyPrices.map((price) => normalizePriceToTick(price, filters.priceTick)));
-  let lowerBound = Math.min(...activeBuyPrices);
-  return [...slotNumbers].sort((a, b) => a - b).map((slotNumber) => {
-    let buyPrice = normalizePriceToTick(lowerBound * (1 - rule.entrySpacing), filters.priceTick);
-    while (knownPrices.has(buyPrice)) buyPrice = normalizePriceToTick(buyPrice * (1 - rule.entrySpacing), filters.priceTick);
-    const { quantity, notional } = quantityForV1SlotBalance(slotBalances?.get(slotNumber) ?? slotNotional, buyPrice, filters);
-    knownPrices.add(buyPrice);
-    lowerBound = buyPrice;
-    return { slotNumber, buyPrice, quantity, notional };
-  });
+/** A gain only releases its physical slot. While another position remains
+ * open, that slot keeps the same ladder level and entry reference. The global
+ * grid is reanchored only after the final open position closes. */
+export function buildV1LocalReentry(slotNumber: number, previousEntryPrice: number, balanceUsdc: number, filters: ExchangeSymbolInfo): V1RecycledEntry {
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > V1_SLOT_COUNT || !Number.isFinite(previousEntryPrice) || previousEntryPrice <= 0) {
+    throw new Error("COINOPS_V1_RECYCLE_INPUT_INVALID");
+  }
+  const buyPrice = normalizePriceToTick(previousEntryPrice, filters.priceTick);
+  const { quantity, notional } = quantityForV1SlotBalance(balanceUsdc, buyPrice, filters);
+  return { slotNumber, buyPrice, quantity, notional };
+}
+
+export function planV1ClosedSlotTransition(slots: Array<{ slotNumber: number; status: V1SlotStatus }>, closedSlotNumber: number) {
+  if (slots.length !== V1_SLOT_COUNT || new Set(slots.map((slot) => slot.slotNumber)).size !== V1_SLOT_COUNT) throw new Error("COINOPS_V1_SLOT_INVARIANT_INVALID");
+  const otherOpenPositions = slots.filter((slot) => slot.slotNumber !== closedSlotNumber && ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"].includes(slot.status)).length;
+  return { mode: otherOpenPositions > 0 ? "LOCAL_REENTRY" as const : "GLOBAL_RESET" as const, otherOpenPositions };
+}
+
+export function assertV1PhysicalSlotInvariant(slots: Array<{ slotNumber: number; current: boolean; armed: boolean }>) {
+  const current = slots.filter((slot) => slot.current);
+  if (current.length !== V1_SLOT_COUNT || new Set(current.map((slot) => slot.slotNumber)).size !== V1_SLOT_COUNT || current.filter((slot) => slot.armed).length > 1) {
+    throw new Error("COINOPS_V1_SLOT_INVARIANT_INVALID");
+  }
+  return true;
 }
 
 export function v1ClientOrderId(asset: V1Asset, cycleId: string, slotNumber: number, side: "BUY" | "SELL", operationSequence = 1) {

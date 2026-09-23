@@ -85,7 +85,7 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   const [configs, cycles, runs] = await Promise.all([
     load("robot_v1_configs", source("id,asset,symbol,execution_mode,capital_usdc,slot_count,kill_switch,pause_new_entries,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,shadow_test_started_at,shadow_test_target_end_at,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,created_at,updated_at", ["id"], { assetColumn: "asset" })),
     withShadow ? load("robot_v1_cycles", source("id,config_id,asset,symbol,execution_mode,status,anchor_price,slot_notional_usdc,capital_usdc,gain_rate,entry_spacing,completion_reason,started_at,completed_at,created_at,updated_at", ["started_at", "id"], { assetColumn: "asset", time: "started_at", until })) : Promise.resolve([]),
-    withTestnet ? load("robot_v1_testnet_runs", source("id,asset,symbol,status,anchor_price,slot_notional_usdc,gain_rate,entry_spacing,last_reconciled_at,last_error,created_at,updated_at", ["created_at", "id"], { assetColumn: "asset", time: "created_at", until })) : Promise.resolve([]),
+    withTestnet ? load("robot_v1_testnet_runs", source("id,asset,symbol,status,anchor_price,slot_notional_usdc,gain_rate,entry_spacing,last_reconciled_at,last_error,created_at,updated_at,previous_run_id,completed_at,completion_reason,terminal_fill_client_order_id,reset_idempotency_key,reset_started_at,reset_completed_at,recovery_source", ["created_at", "id"], { assetColumn: "asset", time: "created_at", until })) : Promise.resolve([]),
   ]);
   const configIds = ids(configs); const cycleIds = ids(cycles); const runIds = ids(runs);
   const relatedConfigs = { column: "config_id", ids: configIds };
@@ -110,8 +110,8 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
     assetColumn: "symbol", time: "candle_open_at", from: filters.start, until, related: relatedConfigs,
   }), MAX_AUDIT_CANDLES));
   if (withTestnet) tasks.push(
-    () => load("robot_v1_testnet_slots", source("id,run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,created_at,updated_at", ["run_id", "slot_number"], { related: relatedRuns })),
-    () => load("robot_v1_testnet_orders", source("id,run_id,slot_id,slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,requested_quote,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,trades_reconciled,created_at,updated_at", ["created_at", "id"], { related: relatedRuns, time: "created_at", until })),
+    () => load("robot_v1_testnet_slots", source("id,run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,last_credited_sell_client_order_id,created_at,updated_at", ["run_id", "slot_number"], { related: relatedRuns })),
+    () => load("robot_v1_testnet_orders", source("id,run_id,slot_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,requested_quote,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,trades_reconciled,created_at,updated_at", ["created_at", "id"], { related: relatedRuns, time: "created_at", until })),
     () => load("robot_v1_testnet_events", source("id,run_id,event_key,event_type,slot_number,details,observed_at", ["observed_at", "id"], { related: relatedRuns, time: "observed_at", until })),
   );
   if (withReal) tasks.push(

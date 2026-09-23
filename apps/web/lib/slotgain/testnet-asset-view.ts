@@ -1,5 +1,5 @@
 type Asset = "BTC" | "SOL";
-type Bundle<Run, Slot, Order, Event> = { run: Run; slots: Slot[]; orders: Order[]; events: Event[] };
+type Bundle<Run, Slot, Order, Event> = { run: Run; slots: Slot[]; orders: Order[]; events: Event[]; history?: Array<{ run: Run; slots: Slot[]; orders: Order[] }> };
 
 /** Presentation scope only: never starts or changes an executor. */
 export function selectTestnetAssetData<Run extends { symbol: string }, Slot, Order, Event>(source: {
@@ -18,6 +18,7 @@ export function selectTestnetAssetData<Run extends { symbol: string }, Slot, Ord
     testnetSlots: validBundle?.slots ?? (legacyMatches ? source.testnetSlots : []),
     testnetOrders: validBundle?.orders ?? (legacyMatches ? source.testnetOrders : []),
     testnetEvents: validBundle?.events ?? (legacyMatches ? source.testnetEvents : []),
+    testnetHistory: validBundle?.history ?? [],
     // Current execution support is SOL only. A future BTC ledger does not
     // implicitly authorize starting a BTC executor or a SOL run from its tab.
     testnetEnabled: asset === "SOL" && source.testnetEnabled

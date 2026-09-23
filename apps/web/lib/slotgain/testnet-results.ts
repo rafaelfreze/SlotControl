@@ -2,10 +2,12 @@
 export type TestnetResultSlot = {
   slot_number: number; entry_state: string; target_buy_price?: number | string;
   balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string;
-  missed_at: string | null; created_at?: string; updated_at?: string;
+  missed_at: string | null; operation_sequence?: number; entry_origin?: string;
+  entry_reference_price?: number | string; last_take_profit_price?: number | string | null;
+  created_at?: string; updated_at?: string;
 };
 export type TestnetResultOrder = {
-  slot_number: number; side: string; purpose: string; revision: number;
+  slot_number: number; side: string; purpose: string; revision: number; operation_sequence?: number;
   client_order_id: string; exchange_order_id: string | null; status: string;
   requested_quantity: number | string | null; price: number | string | null;
   executed_quantity: number | string; cumulative_quote: number | string;
@@ -17,7 +19,8 @@ const amount = (value: number | string | null | undefined) => Number(value) || 0
 
 export function summarizeTestnetResults(slots: TestnetResultSlot[], orders: TestnetResultOrder[], marketPrice: number | null, initialPerSlot: number | null) {
   const rows = [...slots].sort((a, b) => a.slot_number - b.slot_number).map((slot) => {
-    const slotOrders = orders.filter((order) => order.slot_number === slot.slot_number);
+    const sequence = slot.operation_sequence ?? 1;
+    const slotOrders = orders.filter((order) => order.slot_number === slot.slot_number && (order.operation_sequence ?? 1) === sequence);
     const buys = slotOrders.filter((order) => order.side === "BUY");
     const sells = slotOrders.filter((order) => order.side === "SELL");
     const bought = buys.reduce((sum, order) => sum + amount(order.executed_quantity), 0);

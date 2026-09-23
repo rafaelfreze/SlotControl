@@ -13,7 +13,7 @@ test("Testnet asset selection preserves matching legacy SOL rows", () => {
   assert.equal(view.testnetEnabled, true);
 });
 test("Testnet BTC without a run never displays SOL data or offers the SOL executor", () => {
-  assert.deepEqual(selectTestnetAssetData(source, "BTC"), { testnetRun: null, testnetSlots: [], testnetOrders: [], testnetEvents: [], testnetEnabled: false });
+  assert.deepEqual(selectTestnetAssetData(source, "BTC"), { testnetRun: null, testnetSlots: [], testnetOrders: [], testnetEvents: [], testnetHistory: [], testnetEnabled: false });
 });
 test("Testnet BTC and SOL bundles retain independent rows and execution support", () => {
   const bundle = { run: { id: "btc-run", symbol: "BTCUSDC" }, slots: [{ id: "btc-slot" }], orders: [{ id: "btc-order" }], events: [{ id: "btc-event" }] };

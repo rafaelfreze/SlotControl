@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
       .eq("tenant_id", getCoinOpsServiceTenantId()).eq("status", "ACTIVE").order("created_at").limit(3);
     if (error) throw error;
     const results = [];
-    for (const run of data || []) results.push(await advanceTestnetRun(run.id));
+    for (const run of data || []) results.push(await advanceTestnetRun(run.id, "CRON_RECONCILIATION"));
     return NextResponse.json({ status: "OK", runs: results.length, results }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     const code = error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_CRON_FAILED";

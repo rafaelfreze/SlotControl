@@ -73,17 +73,31 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   // RLS client. Viewing BTC must never reuse SOL's ledger or start an executor.
   const testnetAssetData: Partial<Record<"BTC" | "SOL", TestnetAssetData>> = {};
   await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
-    const { data: run, error } = await supabase.from("robot_v1_testnet_runs")
-      .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing").eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const { data: runs, error } = await supabase.from("robot_v1_testnet_runs")
+      .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source")
+      .eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset).order("created_at", { ascending: false }).limit(20);
     if (error) throw error;
+    const run = runs?.find((item) => item.status === "ACTIVE" || item.status === "PAUSED") || runs?.[0];
     if (!run) return;
+    const runIds = (runs || []).map((item) => item.id);
     const [slots, orders, events] = await Promise.all([
-      supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,created_at,updated_at").eq("run_id", run.id).order("slot_number"),
-      supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("run_id", run.id).order("created_at"),
-      supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", run.id).order("observed_at", { ascending: false }).limit(20)
+      supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at").in("run_id", runIds).order("slot_number"),
+      supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").in("run_id", runIds).order("created_at"),
+      supabase.from("robot_v1_testnet_events").select("run_id,event_type,slot_number,observed_at,details").in("run_id", runIds).order("observed_at", { ascending: false }).limit(40)
     ]);
     if (slots.error || orders.error || events.error) throw slots.error || orders.error || events.error;
-    testnetAssetData[asset] = { run, slots: slots.data || [], orders: orders.data || [], events: events.data || [] };
+    const allSlots = slots.data || [], allOrders = orders.data || [];
+    testnetAssetData[asset] = {
+      run,
+      slots: allSlots.filter((item) => item.run_id === run.id),
+      orders: allOrders.filter((item) => item.run_id === run.id),
+      events: events.data || [],
+      history: (runs || []).filter((item) => item.id !== run.id).map((historicalRun) => ({
+        run: historicalRun,
+        slots: allSlots.filter((item) => item.run_id === historicalRun.id),
+        orders: allOrders.filter((item) => item.run_id === historicalRun.id)
+      }))
+    };
   }));
   const testnetRun = testnetAssetData.SOL?.run || null;
 

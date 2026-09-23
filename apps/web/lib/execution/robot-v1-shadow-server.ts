@@ -8,7 +8,7 @@ import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observat
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
 import { sumV1DecimalAmounts } from "./robot-v1-audit";
-import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, evaluateV1Candle, findV1LogicalLevel, planV1NextEntry, planV1ShadowCycleRestart, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
+import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1LocalReentry, evaluateV1Candle, planV1NextEntry, planV1ShadowCycleRestart, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
 
 type Config = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
 type Cycle = { id: string; status: string; asset: V1Asset; symbol: string; anchor_price: number | string; started_at: string; gain_rate: number | string; entry_spacing: number | string };
@@ -77,6 +77,19 @@ async function reconcileSingleArmedEntry(supabase: ReturnType<typeof createServi
     }
     return;
   }
+  if (armed.length === 1) {
+    const current = armed[0]!;
+    const higherCandidate = slots.filter((slot) => slot.status === "PENDING" && slot.entry_state !== "ARMED" && slot.missed_at === null)
+      .filter((slot) => asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID") < observedFloor && asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID") > asNumber(current.buy_price, "COINOPS_V1_SLOT_INVALID"))
+      .sort((a, b) => asNumber(b.buy_price, "COINOPS_V1_SLOT_INVALID") - asNumber(a.buy_price, "COINOPS_V1_SLOT_INVALID"))[0];
+    if (!higherCandidate) return;
+    const { error: replaceError } = await supabase.from("robot_v1_slots").update({ entry_state: "PLANNED", armed_at: null })
+      .eq("id", current.id).eq("status", "PENDING").eq("entry_state", "ARMED");
+    if (replaceError) throw replaceError;
+    current.entry_state = "PLANNED";
+    current.armed_at = null;
+    await audit(supabase, config, "NEXT_BUY_DISARMED", `${cycle.id}:${current.id}:${current.operation_sequence}:higher-reentry`, { cycleId: cycle.id, slotId: current.id, next: { reason: "HIGHER_LOCAL_REENTRY_PRIORITY", replacementSlotNumber: higherCandidate.slot_number }, observedAt });
+  }
   const plan = planV1NextEntry(slots.map((slot) => ({ slotNumber: slot.slot_number, buyPrice: asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), status: slot.status, entryState: slot.entry_state, armedAt: slot.armed_at, missedAt: slot.missed_at })), observedFloor);
   if (plan.current !== null) return;
   for (const slotNumber of plan.missed) {
@@ -91,7 +104,10 @@ async function reconcileSingleArmedEntry(supabase: ReturnType<typeof createServi
   const { data: armedRow, error: armError } = await supabase.from("robot_v1_slots").update({ entry_state: "ARMED", armed_at: observedAt })
     .eq("id", next.id).eq("status", "PENDING").is("missed_at", null).in("entry_state", ["NONE", "PLANNED"]).select("id").maybeSingle();
   if (armError) throw armError;
-  if (armedRow?.id) await audit(supabase, config, "NEXT_BUY_ARMED", `${cycle.id}:${next.id}:${next.operation_sequence}`, { cycleId: cycle.id, slotId: next.id, next: { slotNumber: next.slot_number, logicalLevel: next.logical_level, buyPrice: next.buy_price, observedFloor }, observedAt });
+  if (armedRow?.id) {
+    await audit(supabase, config, "NEXT_BUY_ARMED", `${cycle.id}:${next.id}:${next.operation_sequence}`, { cycleId: cycle.id, slotId: next.id, next: { slotNumber: next.slot_number, logicalLevel: next.logical_level, buyPrice: next.buy_price, observedFloor }, observedAt });
+    if (next.operation_sequence > 1) await audit(supabase, config, "SLOT_REENTRY_ARMED", `${cycle.id}:${next.id}:${next.operation_sequence}`, { cycleId: cycle.id, slotId: next.id, next: { physicalSlotNumber: next.slot_number, operationSequence: next.operation_sequence, reentryPrice: next.buy_price, localRecycleVsGlobalReset: "LOCAL_REENTRY" }, observedAt });
+  }
 }
 
 async function startInitialShadowCycle(supabase: ReturnType<typeof createServiceRoleClient>, adapter: BinanceSpotAdapter, config: Config, now: Date) {
@@ -267,16 +283,14 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
     const restartPlan = planV1ShadowCycleRestart(reconciledSlots.map((slot) => ({ slotNumber: slot.slot_number, status: slot.status })));
     const closedSlots = reconciledSlots.filter((slot) => slot.status === "CLOSED");
     if (gridValidation.valid && !restartPlan.shouldRestart && closedSlots.length) {
-      const activePrices = reconciledSlots.filter((slot) => slot.status === "PENDING" || slot.status === "TP_ACTIVE" || slot.status === "OPEN" || slot.status === "PARTIALLY_FILLED").map((slot) => asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"));
       const currentAccounts = await loadSlotAccounts(supabase, config);
       const balances = new Map(currentAccounts.map((account) => [account.slot_number, asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID")]));
-      const recycledEntries = buildV1RecycledEntries(config.asset, asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID"), closedSlots.map((slot) => slot.slot_number), activePrices, filters, cycleParameters, balances);
+      const recycledEntries = closedSlots.map((slot) => buildV1LocalReentry(slot.slot_number, asNumber(slot.average_fill_price, "COINOPS_V1_SLOT_INVALID"), balances.get(slot.slot_number)!, filters));
       for (const entry of recycledEntries) {
         const closedSlot = closedSlots.find((slot) => slot.slot_number === entry.slotNumber);
         if (!closedSlot) continue;
         const nextSequence = closedSlot.operation_sequence + 1;
-        const logicalLevel = findV1LogicalLevel(asNumber(cycle.anchor_price, "COINOPS_V1_GRID_INPUT_INVALID"), entry.buyPrice, filters, cycleParameters);
-        if (logicalLevel === null) throw new Error("COINOPS_V1_RECYCLED_LEVEL_INVALID");
+        const logicalLevel = closedSlot.logical_level;
         const { data: recycled, error: recycleError } = await supabase.from("robot_v1_slots").update({
           operation_sequence: nextSequence, logical_level: logicalLevel, allocation_usdc: balances.get(closedSlot.slot_number), buy_price: entry.buyPrice, requested_quantity: entry.quantity, executed_quantity: 0, average_fill_price: null, buy_status: "PENDING", entry_state: "PLANNED", armed_at: null, missed_at: null, buy_trigger_price: null, buy_trigger_observed_price: null, buy_triggered_at: null,
           take_profit_price: null, take_profit_status: "NONE", tp_trigger_observed_price: null, tp_triggered_at: null, realized_quote_pnl: null, buy_fee: 0, sell_fee: 0, status: "PENDING",
@@ -284,7 +298,12 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
         }).eq("id", closedSlot.id).eq("status", "CLOSED").eq("operation_sequence", closedSlot.operation_sequence).select("id").maybeSingle();
         if (recycleError) throw recycleError;
         if (!recycled?.id) continue;
-        await audit(supabase, config, "SLOT_RECYCLED", `${cycle.id}:${closedSlot.id}:${nextSequence}`, { cycleId: cycle.id, slotId: closedSlot.id, previous: { operationSequence: closedSlot.operation_sequence, logicalLevel: closedSlot.logical_level, status: "CLOSED" }, next: { operationSequence: nextSequence, logicalLevel, buyPrice: entry.buyPrice, reason: "CONTINUOUS_SHADOW_CAPACITY" }, observedAt: now.toISOString() });
+        const account = currentAccounts.find((item) => item.slot_number === closedSlot.slot_number)!;
+        await audit(supabase, config, "SLOT_RECYCLED", `${cycle.id}:${closedSlot.id}:${nextSequence}`, { cycleId: cycle.id, slotId: closedSlot.id, previous: { operationSequence: closedSlot.operation_sequence, logicalLevel: closedSlot.logical_level, status: "CLOSED", entryPrice: closedSlot.average_fill_price, takeProfitPrice: closedSlot.take_profit_price }, next: { operationSequence: nextSequence, logicalLevel, buyPrice: entry.buyPrice, reason: "LOCAL_REENTRY_SAME_PRICE", balanceUsdc: account.balance_usdc }, observedAt: now.toISOString() });
+        await audit(supabase, config, "SLOT_REENTRY_PLANNED", `${cycle.id}:${closedSlot.id}:${nextSequence}`, { cycleId: cycle.id, slotId: closedSlot.id, previous: { previousEntryPrice: closedSlot.average_fill_price, balanceBefore: asSignedNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID") - asSignedNumber(closedSlot.realized_quote_pnl, "COINOPS_V1_SLOT_INVALID"), gainCountBefore: account.gain_count - 1 }, next: { physicalSlotNumber: closedSlot.slot_number, operationSequence: nextSequence, reentryPrice: entry.buyPrice, balanceAfter: account.balance_usdc, gainCountAfter: account.gain_count, otherOpenPositions: reconciledSlots.filter((item) => item.id !== closedSlot.id && ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"].includes(item.status)).length, localRecycleVsGlobalReset: "LOCAL_REENTRY" }, observedAt: now.toISOString() });
+        // Keep this tick's in-memory snapshot aligned with the successful CAS so
+        // Single Active Entry can replace a lower armed level immediately.
+        Object.assign(closedSlot, { operation_sequence: nextSequence, logical_level: logicalLevel, allocation_usdc: account.balance_usdc, buy_price: entry.buyPrice, requested_quantity: entry.quantity, executed_quantity: 0, average_fill_price: null, entry_state: "PLANNED", status: "PENDING", missed_at: null, armed_at: null });
         slotsUpdated += 1;
       }
       await reconcileSingleArmedEntry(supabase, config, cycle, market.price, market.observedAt, !config.kill_switch && !config.pause_new_entries);

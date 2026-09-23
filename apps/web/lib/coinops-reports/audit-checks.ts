@@ -30,6 +30,15 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     const activeBuys = datasets.orders.filter((order) => order.environment === environment && order.asset === asset && order.side === "BUY" && active(order.status));
     const slotsMissing = incomplete(environment === "SHADOW" ? "robot_v1_slots" : "robot_v1_testnet_slots", environment === "SHADOW" ? "robot_v1_cycles" : "robot_v1_testnet_orders");
     add("SINGLE_ACTIVE_ENTRY", slotsMissing || !currentSlots.length ? "WARNING" : armed.length <= 1 && activeBuys.length <= 1 ? "PASS" : "FAIL", slotsMissing || !currentSlots.length ? "Não há snapshot completo para verificar a próxima BUY." : `Snapshot observado: ${armed.length} slot(s) armados e ${activeBuys.length} BUY(s) residentes; limite de um por ativo/ambiente.`, { ...extra, evidence_scope: "CURRENT_PERSISTED_SNAPSHOT" });
+    const localReentries = datasets.events.filter((event) => event.environment === environment && event.asset === asset && ["SLOT_REENTRY_PLANNED", "SLOT_REENTRY_ARMED", "SHADOW_STATE_REPAIRED"].includes(s(event.event_type)) && n(event.other_open_positions) > 0);
+    const brokenReentry = localReentries.some((event) => !same(event.previous_entry_price, event.reentry_price)
+      || event.balance_before !== null && event.balance_before !== undefined && n(event.balance_after) < n(event.balance_before)
+      || event.gain_count_before !== null && event.gain_count_before !== undefined && n(event.gain_count_after) < n(event.gain_count_before)
+      || !n(event.physical_slot_number));
+    const missingCurrentSlot = localReentries.some((event) => activeCycles.some((cycle) => cycle.cycle_id === event.cycle_id)
+      && !currentSlots.some((slot) => slot.cycle_id === event.cycle_id && n(slot.physical_slot_number) === n(event.physical_slot_number)));
+    add("GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY", slotsMissing || !localReentries.length ? "WARNING" : brokenReentry || missingCurrentSlot ? "FAIL" : "PASS",
+      !localReentries.length ? "Nenhuma reciclagem local com outro OPEN foi observada no período; a regra não pôde ser exercitada." : brokenReentry || missingCurrentSlot ? "Um gain com outro OPEN perdeu identidade, preço de reentrada, saldo/gain ou o slot físico atual." : `${localReentries.length} evento(s) preservaram slot físico, preço anterior, compounding e ownership no mesmo ciclo.`, extra);
     const cycles = datasets.cycles.filter((cycle) => cycle.environment === environment && cycle.asset === asset).sort((a, b) => s(a.started_at).localeCompare(s(b.started_at)));
     const failedBeforeSlots = (cycle: AuditRow) => cycle.status === "FAILED"
       && !currentSlots.some((slot) => slot.cycle_id === cycle.cycle_id)

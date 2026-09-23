@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALLOWED_V1_SYMBOLS, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1RecycledEntries, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, findV1LogicalLevel, planV1NextEntry, planV1ShadowCycleRestart, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1EntryCandidate } from "../execution/robot-v1.ts";
+import { ALLOWED_V1_SYMBOLS, assertV1PhysicalSlotInvariant, assertV1ShadowParameters, buildV1Grid, buildV1InitialShadowPosition, buildV1LocalReentry, calculateV1SlotNotional, calculateV1TakeProfit, canResetV1Cycle, classifyV1Fill, evaluateV1Candle, planV1ClosedSlotTransition, planV1NextEntry, planV1ShadowCycleRestart, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1EntryCandidate } from "../execution/robot-v1.ts";
 
 const filters = (symbol: "BTCUSDC" | "SOLUSDC") => ({ symbol, baseAsset: symbol.slice(0, -4), quoteAsset: "USDC", minQuantity: 0.00001, maxQuantity: 100000, minNotional: 5, quantityStep: 0.00001, priceTick: 0.01 });
 
@@ -59,41 +59,23 @@ test("only resets an exhausted Shadow cycle and invalidates pending entries with
   assert.deepEqual(planV1ShadowCycleRestart(Array.from({ length: 25 }, (_, index) => ({ slotNumber: index + 1, status: "CLOSED" as const }))), { shouldRestart: true, pendingSlotNumbers: [] });
 });
 
-test("recycles closed Shadow slots below the current ladder without changing active positions", () => {
+test("real SOL regression keeps physical Slot #2 at its 117.90 entry while Slot #1 remains open", () => {
   const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
-  const grid = buildV1Grid("BTC", 250, 100000, filters("BTCUSDC"), parameters);
-  const afterThreeGains = [
-    ...grid.slice(0, 3).map((slot) => ({ slotNumber: slot.slotNumber, status: "CLOSED" as const })),
-    ...grid.slice(3, 5).map((slot) => ({ slotNumber: slot.slotNumber, status: "TP_ACTIVE" as const })),
-    ...grid.slice(5).map((slot) => ({ slotNumber: slot.slotNumber, status: "PENDING" as const }))
-  ];
-  assert.deepEqual(planV1ShadowCycleRestart(afterThreeGains), { shouldRestart: false, pendingSlotNumbers: Array.from({ length: 20 }, (_, index) => index + 6) });
-  const remainingActiveLevels = grid.slice(3).map((slot) => slot.buyPrice);
-  const recycled = buildV1RecycledEntries("BTC", 250, [1, 2, 3], remainingActiveLevels, filters("BTCUSDC"), parameters);
-  assert.equal(recycled.length, 3);
-  assert.equal(new Set([...remainingActiveLevels, ...recycled.map((slot) => slot.buyPrice)]).size, 25);
-  assert.ok(recycled.every((slot) => slot.buyPrice < Math.min(...remainingActiveLevels)));
-  assert.deepEqual(buildV1RecycledEntries("BTC", 250, [1, 2, 3], remainingActiveLevels, filters("BTCUSDC"), parameters), recycled);
-  assert.equal(v1IdempotencyKey("cycle", 1, "BUY", 2) === v1IdempotencyKey("cycle", 1, "BUY", 3), false);
-  assert.equal(v1ClientOrderId("BTC", "cycle", 1, "BUY", 2) === v1ClientOrderId("BTC", "cycle", 1, "BUY", 3), false);
-});
-
-test("SOL recycled physical Slot #2 keeps the historical level #2 and becomes logical level #26", () => {
-  const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
-  const anchor = 117.79;
+  const anchor = 119.10;
   const grid = buildV1Grid("SOL", 250, anchor, filters("SOLUSDC"), parameters);
-  assert.equal(grid[1]?.buyPrice, 116.61);
-  const activeBeforeRecycle = grid.filter((slot) => slot.slotNumber !== 2);
-  const [recycled] = buildV1RecycledEntries("SOL", 250, [2], activeBeforeRecycle.map((slot) => slot.buyPrice), filters("SOLUSDC"), parameters);
-  assert.equal(recycled?.buyPrice, 91.61);
-  assert.equal(findV1LogicalLevel(anchor, recycled!.buyPrice, filters("SOLUSDC"), parameters), 26);
-  const activeGrid = [
-    ...activeBeforeRecycle.map((slot) => ({ slotNumber: slot.slotNumber, logicalLevel: slot.logicalLevel, buyPrice: slot.buyPrice, status: slot.slotNumber === 1 ? "TP_ACTIVE" as const : "PENDING" as const })),
-    { slotNumber: 2, logicalLevel: 26, buyPrice: recycled!.buyPrice, status: "PENDING" as const }
-  ];
+  assert.equal(grid[1]?.buyPrice, 117.9);
+  assert.equal(grid[2]?.buyPrice, 116.72);
+  const states = grid.map((slot) => ({ slotNumber: slot.slotNumber, status: slot.slotNumber === 1 ? "TP_ACTIVE" as const : slot.slotNumber === 2 ? "CLOSED" as const : "PENDING" as const }));
+  assert.deepEqual(planV1ClosedSlotTransition(states, 2), { mode: "LOCAL_REENTRY", otherOpenPositions: 1 });
+  const reentry = buildV1LocalReentry(2, 117.9, 10.0986, { ...filters("SOLUSDC"), quantityStep: 0.001 });
+  assert.equal(reentry.buyPrice, 117.9);
+  assert.equal(reentry.quantity, 0.085);
+  const activeGrid = grid.map((slot) => ({ slotNumber: slot.slotNumber, logicalLevel: slot.logicalLevel, buyPrice: slot.slotNumber === 2 ? reentry.buyPrice : slot.buyPrice, status: slot.slotNumber === 1 ? "TP_ACTIVE" as const : "PENDING" as const }));
   assert.equal(validateActiveGrid(anchor, filters("SOLUSDC"), parameters, activeGrid).valid, true);
-  assert.equal(validateActiveGrid(anchor, filters("SOLUSDC"), parameters, activeGrid.map((slot) => slot.slotNumber === 2 ? { ...slot, logicalLevel: 2 } : slot)).valid, false);
-  assert.equal(validateActiveGrid(anchor, filters("SOLUSDC"), parameters, activeGrid.map((slot) => slot.slotNumber === 2 ? { ...slot, buyPrice: 91.6 } : slot)).valid, false);
+  assert.equal(assertV1PhysicalSlotInvariant(activeGrid.map((slot) => ({ slotNumber: slot.slotNumber, current: true, armed: slot.slotNumber === 2 }))), true);
+  assert.throws(() => assertV1PhysicalSlotInvariant(activeGrid.slice(1).map((slot) => ({ slotNumber: slot.slotNumber, current: true, armed: false }))), /SLOT_INVARIANT_INVALID/);
+  assert.equal(v1IdempotencyKey("cycle", 2, "BUY", 2) === v1IdempotencyKey("cycle", 2, "BUY", 3), false);
+  assert.equal(v1ClientOrderId("SOL", "cycle", 2, "BUY", 2) === v1ClientOrderId("SOL", "cycle", 2, "BUY", 3), false);
 });
 
 test("a physical slot compounds its next virtual BUY without changing other slots or the ladder", () => {
@@ -111,15 +93,13 @@ test("a physical slot compounds its next virtual BUY without changing other slot
   assert.ok(third[0]!.notional > second[0]!.notional);
 });
 
-test("recycled physical slot keeps its compounded balance at a new logical level", () => {
-  const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
+test("local reentry compounds at the same price and final OPEN uses global reset", () => {
   const symbolFilters = filters("SOLUSDC");
-  const grid = buildV1Grid("SOL", 250, 117.79, symbolFilters, parameters);
-  const activePrices = grid.filter((slot) => slot.slotNumber !== 2).map((slot) => slot.buyPrice);
-  const [recycled] = buildV1RecycledEntries("SOL", 250, [2], activePrices, symbolFilters, parameters, new Map([[2, 10.0493]]));
-  assert.equal(findV1LogicalLevel(117.79, recycled!.buyPrice, symbolFilters, parameters), 26);
-  assert.equal(recycled!.quantity, quantityForV1SlotBalance(10.0493, recycled!.buyPrice, symbolFilters).quantity);
-  assert.ok(recycled!.notional > buildV1RecycledEntries("SOL", 250, [2], activePrices, symbolFilters, parameters)[0]!.notional);
+  const reentry = buildV1LocalReentry(2, 117.9, 10.0986, symbolFilters);
+  assert.equal(reentry.buyPrice, 117.9);
+  assert.equal(reentry.quantity, quantityForV1SlotBalance(10.0986, 117.9, symbolFilters).quantity);
+  const lastOpenClosed = Array.from({ length: 25 }, (_, index) => ({ slotNumber: index + 1, status: index === 0 ? "CLOSED" as const : "PENDING" as const }));
+  assert.deepEqual(planV1ClosedSlotTransition(lastOpenClosed, 1), { mode: "GLOBAL_RESET", otherOpenPositions: 0 });
 });
 
 test("compounded budget remains visible even when the Binance lot step keeps executable quantity unchanged", () => {

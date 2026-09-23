@@ -130,6 +130,25 @@ test("cycles retain completion/reset reasons and exact next cycle relationship",
   input.sources.robot_v1_audit_events!.push({ ...owner, id: "restart", config_id: "config-sol", cycle_id: "cycle-2", event_type: "CYCLE_RESTARTED", previous_state: { cycleId: "cycle-1", reason: "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS" }, next_state: { cycleId: "cycle-2" }, observed_at: at("02:00"), idempotency_key: "restart" });
   const cycle = buildAuditReport(input, filters).datasets.cycles[0]!; assert.equal(cycle.next_cycle_id, "cycle-2"); assert.equal(cycle.reset_reason, "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS");
 });
+test("Testnet terminal reset exports the full rollover evidence and links both cycles", () => {
+  const input = addTestnet(fixture());
+  Object.assign(input.sources.robot_v1_testnet_runs![0]!, { status: "COMPLETED", completed_at: at("01:02"), completion_reason: "LAST_OPEN_TP_FILLED", reset_started_at: at("01:01"), recovery_source: "CRON_RECONCILIATION" });
+  input.sources.robot_v1_testnet_runs!.push({ ...owner, id: "run-2", previous_run_id: "run-1", asset: "SOL", symbol: "SOLUSDC", status: "ACTIVE", anchor_price: 10.1, slot_notional_usdc: 10, gain_rate: .005, entry_spacing: .01, created_at: at("01:02"), reset_started_at: at("01:01"), reset_completed_at: at("01:03"), recovery_source: "CRON_RECONCILIATION" });
+  input.sources.robot_v1_testnet_events!.push({ ...owner, id: "reset", run_id: "run-2", slot_number: null, event_type: "RESET_COMPLETED", event_key: "reset-complete", observed_at: at("01:03"), details: { reset_after_last_tp: true, old_next_buy_canceled: true, new_cycle_started: true, initial_reentry_filled: true, new_tp_created: true, next_buy_armed: true, reset_latency_ms: 120000, recovery_source: "CRON_RECONCILIATION" } });
+  const report = buildAuditReport(input, { ...filters, environments: ["TESTNET"] });
+  const oldCycle = report.datasets.cycles.find((row) => row.cycle_id === "run-1")!;
+  const reset = report.datasets.events.find((row) => row.event_type === "RESET_COMPLETED")!;
+  assert.equal(oldCycle.next_cycle_id, "run-2"); assert.equal(oldCycle.reset_reason, "LAST_OPEN_TP_FILLED");
+  assert.equal(reset.reset_after_last_tp, true); assert.equal(reset.initial_reentry_filled, true); assert.equal(reset.next_buy_armed, true);
+  assert.equal(reset.reset_latency_ms, 120000); assert.equal(reset.recovery_source, "CRON_RECONCILIATION");
+});
+test("local slot recycle exports prior entry, compounding and physical ownership evidence", () => {
+  const input = fixture();
+  input.sources.robot_v1_audit_events!.push({ ...owner, id: "reentry", config_id: "config-sol", cycle_id: "cycle-1", slot_id: "slot-1", event_type: "SLOT_REENTRY_ARMED", observed_at: at("01:31"), idempotency_key: "reentry-1", next_state: { physicalSlotNumber: 1, previousEntryPrice: 10, reentryPrice: 10, balanceBefore: 10.05, balanceAfter: 10.1, gainCountBefore: 1, gainCountAfter: 2, otherOpenPositions: 1, localRecycleVsGlobalReset: "LOCAL_REENTRY" } });
+  const report = buildAuditReport(input, filters), event = report.datasets.events.find((row) => row.event_type === "SLOT_REENTRY_ARMED")!;
+  assert.equal(event.previous_entry_price, 10); assert.equal(event.reentry_price, 10); assert.equal(event.balance_after, 10.1); assert.equal(event.physical_slot_number, 1);
+  assert.equal(report.datasets.checks.find((row) => row.code === "GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY")?.status, "PASS");
+});
 test("Single Active Entry and 25 physical slots detect breaches without changing strategy", () => {
   const input = fixture(); input.sources.robot_v1_slots![2]!.entry_state = "ARMED"; input.sources.robot_v1_slots!.pop();
   const checks = buildAuditReport(input, filters).datasets.checks;

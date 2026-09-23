@@ -35,7 +35,7 @@ export async function startCoinOpsTestnet() {
 
 export async function reconcileCoinOpsTestnet(formData: FormData) {
   const runId = await ownedRun(formData);
-  try { await advanceTestnetRun(runId); }
+  try { await advanceTestnetRun(runId, "MANUAL_RECONCILIATION"); }
   catch (error) { redirect(`/automacao?view=testnet&testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_RECONCILIATION_FAILED"}`); }
   revalidatePath("/automacao");
   redirect("/automacao?view=testnet&testnet=check");
