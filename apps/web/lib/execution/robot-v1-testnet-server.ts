@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { BinanceSpotTestnetAdapter, type TestnetOrder, type TestnetTrade } from "./binance-spot-testnet-adapter";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
+import { testnetFillEvents } from "../coinops-reports/testnet-fill-evidence";
 
 type Scope = { productId: string; tenantId: string; userId: string };
 type Service = ReturnType<typeof createServiceRoleClient>;
@@ -165,8 +166,16 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
   if (actual.symbol !== SYMBOL || actual.side !== order.side) throw new Error("COINOPS_TESTNET_ORDER_SCOPE_MISMATCH");
   let fees = { base: amount(order.fee_base), quote: amount(order.fee_quote), quantity: 0, other: order.fee_other || [] };
   if (actual.executedQuantity > 0) {
-    fees = feeTotals(await adapter.getOwnedTrades(SYMBOL, order.client_order_id, actual.orderId));
+    const trades = await adapter.getOwnedTrades(SYMBOL, order.client_order_id, actual.orderId);
+    fees = feeTotals(trades);
     if (fees.quantity + 1e-9 < actual.executedQuantity) throw new Error("COINOPS_TESTNET_TRADES_PENDING");
+    // Preserve the fills already returned by this read. No additional exchange
+    // request, order, or execution decision is introduced by reporting.
+    try {
+      const evidence = testnetFillEvents({ productId: run.product_id, tenantId: run.tenant_id, userId: run.user_id }, run.id, slot.slot_number, order.client_order_id, actual.orderId, trades, new Date().toISOString());
+      const { error: evidenceError } = await service.from("robot_v1_testnet_events").upsert(evidence, { onConflict: "run_id,event_key", ignoreDuplicates: true });
+      if (evidenceError) console.error("COINOPS_TESTNET_FILL_EVIDENCE_PERSIST_FAILED");
+    } catch { console.error("COINOPS_TESTNET_FILL_EVIDENCE_PERSIST_FAILED"); }
   }
   const previousStatus = order.status;
   if (previousStatus !== actual.status) await event(service, run, `${order.client_order_id}:${actual.status}`, `${order.side}_${actual.status}`, slot.slot_number,

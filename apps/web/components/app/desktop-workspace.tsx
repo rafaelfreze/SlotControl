@@ -19,7 +19,7 @@ export const desktopNavigation: readonly DesktopNavigationItem[] = [
   { href: "/slots", label: "Slots", icon: "slots" },
   { href: "/plano-crescimento", label: "Plano", icon: "plan" },
   { href: "/historico", label: "Histórico", icon: "history" },
-  { href: "/plano-crescimento/relatorios", label: "Relatórios", icon: "reports" },
+  { href: "/relatorios", label: "Relatórios", icon: "reports" },
   { href: "/ciclos", label: "Ciclos", icon: "cycles" },
   { href: "/alertas", label: "Alertas", icon: "alerts" },
   { href: "/automacao", label: "Automação", icon: "automation" },

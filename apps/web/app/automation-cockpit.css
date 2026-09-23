@@ -353,3 +353,53 @@
   .ac-dense .ac-action-row { gap: 3px; }
   .ac-dense .ac-action-row .ac-button { padding: 4px; font-size: 9px; min-height: 26px; }
 }
+
+/* Results share Shadow's visual language; Testnet and Real keep independent ledgers. */
+.ac-results { display: contents; }
+.ac-results .av2-gain-list > button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; padding: 5px; border: 1px solid var(--av-line); border-radius: 5px; background: #102431; color: var(--av-text); font-size: 10px; text-align: left; cursor: pointer; }
+.ac-results .av2-gain-list > button > strong { color: var(--av-green); white-space: nowrap; }
+.ac-results .av2-slot-detail > a { justify-self: start; }
+.ac-results .av2-slot-detail p { overflow-wrap: anywhere; }
+.ac-results-gains > small { display: block; color: var(--av-muted); }
+.ac-results .ac-real-empty { margin: 0; padding: 9px; color: var(--av-muted); font-size: 11px; }
+.ac-results .av2-slot-table td[colspan] { padding: 12px 9px; color: var(--av-muted); }
+@media (min-width: 1024px) {
+  .ac-dense .ac-testnet-view > .ac-testnet-hero { grid-row: 1; }
+  .ac-dense .ac-testnet-view .ac-results-kpis { grid-column: 1/8; grid-row: 2; grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .ac-dense .ac-testnet-view > .ac-balance-grid { grid-column: 8/-1; grid-row: 2; grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .ac-dense .ac-testnet-view .ac-balance { padding: 5px 6px !important; min-height: 0 !important; gap: 4px; }
+  .ac-dense .ac-testnet-view .ac-balance .ac-coin { display: none; }
+  .ac-dense .ac-testnet-view .ac-balance strong { font-size: 15px; }
+  .ac-dense .ac-testnet-view .ac-balance small { font-size: 9px; }
+  .ac-dense .ac-testnet-view .ac-results-slots { grid-column: 1/8; grid-row: 3; }
+  .ac-dense .ac-testnet-view .ac-testnet-chart { grid-column: 8/-1; grid-row: 3; }
+  .ac-dense .ac-testnet-view .ac-results-gains { grid-column: 1/6; grid-row: 5; }
+  .ac-dense .ac-testnet-view .ac-execution { grid-column: 6/10; grid-row: 4; }
+  .ac-dense .ac-testnet-view .ac-orders { grid-column: 1/6; grid-row: 4; }
+  .ac-dense .ac-testnet-view .ac-events { grid-column: 10/-1; grid-row: 4; }
+  .ac-dense .ac-testnet-view .ac-actions { grid-column: 6/9; grid-row: 5; }
+  .ac-dense .ac-testnet-view .ac-health { grid-column: 9/-1; grid-row: 5; }
+  .ac-dense .ac-testnet-view .ac-execution-step { grid-template-columns: 17px minmax(72px,.8fr) minmax(65px,.7fr) minmax(95px,1fr); min-height: 23px; padding: 3px 0; font-size: 9px; }
+  .ac-dense .ac-testnet-view .ac-execution-step > time { display: none; }
+  .ac-dense .ac-testnet-view .ac-execution-step > strong { font-size: 9px; }
+  .ac-dense .ac-testnet-view .ac-results-kpis article { padding: 5px 7px; }
+  .ac-dense .ac-testnet-view .ac-results-kpis article > strong { font-size: 16px; }
+  .ac-dense .ac-testnet-view .ac-results-slots > header { flex-wrap: wrap; }
+  .ac-dense .ac-testnet-view .ac-results-slots .av2-slot-counts { margin-left: auto; }
+  .ac-dense .ac-testnet-view .ac-events > .ac-timeline { grid-template-columns: 1fr; }
+  .ac-dense .ac-testnet-view .ac-events > .ac-timeline li { grid-template-columns: 6px minmax(0,1fr); }
+  .ac-dense .ac-testnet-view .ac-events > .ac-timeline time { grid-column: 2; }
+  .ac-dense .ac-live-view { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .ac-dense .ac-live-view > .ac-live-hero, .ac-dense .ac-live-view > .ac-live-grid, .ac-dense .ac-live-view > .ac-checklist, .ac-dense .ac-live-view .ac-results-kpis { grid-column: 1/-1; }
+  .ac-dense .ac-live-view .ac-results-kpis { grid-row: auto; grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .ac-dense .ac-live-view .ac-results-slots { grid-column: 1; grid-row: auto; }
+  .ac-dense .ac-live-view .ac-results-gains { grid-column: 2; grid-row: auto; }
+}
+@media (max-width: 1023px) {
+  .ac-dense .ac-results-kpis, .ac-dense .ac-results-slots, .ac-dense .ac-results-gains { grid-column: 1/-1; grid-row: auto; }
+  .ac-dense .ac-results-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .ac-dense .ac-results .av2-slot-panel > header { flex-wrap: wrap; }
+  .ac-dense .ac-results .av2-gain-list > button { font-size: 11px; padding: 7px; }
+  .ac-dense .ac-results .av2-slot-detail .av2-detail-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .ac-dense .ac-results .av2-mobile-slot small { white-space: normal; }
+}

@@ -7,6 +7,7 @@ import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robo
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 
 import type { AutomationView } from "./automation-center";
 import { AutomationCenter } from "./automation-cockpit";
@@ -38,7 +39,15 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     const tenantId = getCoinOpsServiceTenantId();
     const { data: scope, error: scopeError } = await createServiceRoleClient().from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
     if (scopeError || !scope) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
+    const diagnosticStartedAt = new Date().toISOString();
     testnet = await diagnoseBinanceSpotTestnet().then((result) => ({ ok: true as const, ...result })).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : "TESTNET_DIAGNOSTIC_FAILED" }));
+    if (tenantId) await recordRuntimeObservation({
+      scope: { productId: scope.product_id, tenantId, userId: user.id },
+      source: "TESTNET_DIAGNOSTIC", environment: "TESTNET",
+      reference: `diagnostic:${diagnosticStartedAt.slice(0, 16)}`,
+      startedAt: diagnosticStartedAt, finishedAt: new Date().toISOString(),
+      status: testnet.ok ? "COMPLETED" : "FAILED", error: testnet.ok ? null : testnet.error, metrics: testnet,
+    });
   }
 
   const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse] = await Promise.all([
@@ -59,11 +68,11 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
   ))).flat();
   const { data: testnetRun, error: testnetRunError } = await supabase.from("robot_v1_testnet_runs")
-    .select("id,status,symbol,last_reconciled_at,last_error,created_at").eq("asset", "SOL").order("created_at", { ascending: false }).limit(1).maybeSingle();
+    .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing").eq("asset", "SOL").order("created_at", { ascending: false }).limit(1).maybeSingle();
   if (testnetRunError) throw testnetRunError;
   const [testnetSlots, testnetOrders, testnetEvents] = testnetRun ? await Promise.all([
-    supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,balance_usdc,gain_count,net_profit_usdc,missed_at").eq("run_id", testnetRun.id).order("slot_number"),
-    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,created_at,updated_at").eq("run_id", testnetRun.id).order("created_at"),
+    supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,created_at,updated_at").eq("run_id", testnetRun.id).order("slot_number"),
+    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("run_id", testnetRun.id).order("created_at"),
     supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", testnetRun.id).order("observed_at", { ascending: false }).limit(20)
   ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
   if (testnetSlots.error || testnetOrders.error || testnetEvents.error) throw testnetSlots.error || testnetOrders.error || testnetEvents.error;

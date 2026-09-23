@@ -12,8 +12,8 @@ type MarketBuy = { type: "MARKET"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY"; q
 export type TestnetOrderRequest = LimitOrder | MarketBuy;
 export type TestnetOrder = { orderId: string; clientOrderId: string; symbol: string; side: "BUY" | "SELL"; status: string; executedQuantity: number; cumulativeQuoteQuantity: number; price: number };
 type OrderPayload = { orderId?: number | string; clientOrderId?: string; origClientOrderId?: string; symbol?: string; side?: string; status?: string; executedQty?: string; cummulativeQuoteQty?: string; price?: string; code?: number };
-type TradePayload = { id?: number | string; orderId?: number | string; qty?: string; quoteQty?: string; commission?: string; commissionAsset?: string; isBuyer?: boolean };
-export type TestnetTrade = { id: string; quantity: number; quoteQuantity: number; commission: number; commissionAsset: string; isBuyer: boolean };
+type TradePayload = { id?: number | string; orderId?: number | string; qty?: string; quoteQty?: string; commission?: string; commissionAsset?: string; isBuyer?: boolean; time?: number };
+export type TestnetTrade = { id: string; quantity: number; quoteQuantity: number; commission: number; commissionAsset: string; isBuyer: boolean; filledAt?: string };
 
 function decimal(value: string) { return /^\d+(?:\.\d{1,12})?$/.test(value) && Number(value) > 0; }
 function verifyOwned(symbol: string, clientOrderId: string) {
@@ -130,7 +130,8 @@ export class BinanceSpotTestnetAdapter {
     return (response.payload as TradePayload[]).map((trade) => {
       const quantity = Number(trade.qty), quoteQuantity = Number(trade.quoteQty), commission = Number(trade.commission);
       if (String(trade.orderId) !== orderId || !trade.id || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(quoteQuantity) || quoteQuantity <= 0 || !Number.isFinite(commission) || commission < 0 || !trade.commissionAsset) throw new Error("COINOPS_TESTNET_TRADE_INVALID");
-      return { id: String(trade.id), quantity, quoteQuantity, commission, commissionAsset: trade.commissionAsset, isBuyer: Boolean(trade.isBuyer) };
+      const filledAt = typeof trade.time === "number" && Number.isFinite(trade.time) && trade.time >= 0 && trade.time < 8.64e15 ? new Date(trade.time).toISOString() : undefined;
+      return { id: String(trade.id), quantity, quoteQuantity, commission, commissionAsset: trade.commissionAsset, isBuyer: Boolean(trade.isBuyer), ...(filledAt ? { filledAt } : {}) };
     });
   }
 

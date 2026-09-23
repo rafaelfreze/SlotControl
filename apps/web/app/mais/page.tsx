@@ -6,7 +6,7 @@ import { AppHeader, MobileScreen, SectionCard } from "@/components/app/mobile-ui
 export const metadata: Metadata = { title: "Mais" };
 
 const destinations = [
-  { href: "/plano-crescimento/relatorios", title: "Relatórios", description: "Acompanhe os resultados e a evolução dos ciclos." },
+  { href: "/relatorios", title: "Relatórios", description: "Audite Shadow, Testnet e Real e exporte o relatório completo." },
   { href: "/ciclos", title: "Ciclos", description: "Veja cada ciclo, suas etapas e o histórico preservado." },
   { href: "/alertas", title: "Alertas", description: "Consulte avisos que merecem atenção." },
   { href: "/automacao", title: "Automação", description: "Acompanhe a simulação Shadow e a conexão somente leitura." },

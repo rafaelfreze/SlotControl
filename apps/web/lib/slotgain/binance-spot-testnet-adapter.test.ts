@@ -97,3 +97,16 @@ test("owned trades preserve base and quote commissions for partial-fill accounti
   assert.deepEqual(trades, [{ id: "9", quantity: 0.08, quoteQuantity: 9.6, commission: 0.00008, commissionAsset: "BTC", isBuyer: true }]);
   await assert.rejects(adapter.getOwnedTrades("BTCUSDC", id, "43"), /OWNED_ORDER_NOT_FOUND/);
 });
+
+test("owned trade time is preserved for audit using GET only", async () => {
+  const methods: string[] = [];
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url, init) => {
+    methods.push(init?.method || "GET");
+    if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
+    if (new URL(url).pathname === "/api/v3/order") return json(payload(id, "FILLED"));
+    return json([{ id: 9, orderId: 42, qty: "0.08", quoteQty: "9.6", commission: "0", commissionAsset: "BTC", isBuyer: true, time: 1790121600000 }]);
+  } });
+  const [trade] = await adapter.getOwnedTrades("BTCUSDC", id, "42");
+  assert.equal(trade?.filledAt, new Date(1790121600000).toISOString());
+  assert.ok(methods.every((method) => method === "GET"));
+});

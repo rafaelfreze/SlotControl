@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
 import { sumV1DecimalAmounts } from "./robot-v1-audit";
@@ -153,6 +154,12 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
   const adapter = BinanceSpotAdapter.fromEnvironment();
   let cyclesStarted = 0, slotsUpdated = 0, candlesProcessed = 0;
   for (const config of configs) {
+    const observationStartedAt = new Date().toISOString();
+    const countersBefore = { cyclesStarted, slotsUpdated, candlesProcessed };
+    let observationStatus: "COMPLETED" | "FAILED" | "SKIPPED" = "COMPLETED";
+    let observationError: unknown = null;
+    let observationCycleId: string | null = null;
+    try {
     const rule = V1_RULES[config.asset];
     if (config.symbol !== rule.symbol) throw new Error("COINOPS_V1_CONFIG_SYMBOL_INVALID");
     const { data: cycleData, error: cycleError } = await supabase.from("robot_v1_cycles").select("id,status,asset,symbol,anchor_price,started_at,gain_rate,entry_spacing").eq("config_id", config.id).in("status", ACTIVE).maybeSingle();
@@ -162,7 +169,8 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       cycle = await startInitialShadowCycle(supabase, adapter, config, now);
       if (cycle) cyclesStarted += 1;
     }
-    if (!cycle) continue;
+    if (!cycle) { observationStatus = "SKIPPED"; continue; }
+    observationCycleId = cycle.id;
 
     const filters = await adapter.getSymbolInfo(rule.symbol);
     const market = await adapter.getMarketPrice(rule.symbol);
@@ -304,6 +312,25 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
           await audit(supabase, effectiveConfig, "CYCLE_RESTARTED", `${cycle.id}:${nextCycle.id}`, { cycleId: nextCycle.id, previous: { cycleId: cycle.id, reason: "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS" }, next: { cycleId: nextCycle.id, anchorFrom: "CURRENT_READ_ONLY_MARKET_PRICE" }, observedAt: now.toISOString() });
         }
       }
+    }
+    } catch (error) {
+      observationStatus = "FAILED";
+      observationError = error;
+      throw error;
+    } finally {
+      await recordRuntimeObservation({
+        scope: { productId: config.product_id, tenantId: config.tenant_id, userId: config.user_id },
+        source: "SHADOW_ENGINE", environment: "SHADOW", asset: config.asset, symbol: config.symbol,
+        reference: `${config.id}:${now.toISOString()}`, startedAt: observationStartedAt, finishedAt: new Date().toISOString(),
+        status: observationStatus, error: observationError,
+        metrics: {
+          config_id: config.id, cycle_id: observationCycleId,
+          cycles_started: cyclesStarted - countersBefore.cyclesStarted, slots_updated: slotsUpdated - countersBefore.slotsUpdated,
+          candles_processed: candlesProcessed - countersBefore.candlesProcessed,
+          gain_rate: config.gain_rate, entry_spacing: config.entry_spacing, capital_usdc: config.capital_usdc,
+          kill_switch: config.kill_switch, pause_new_entries: config.pause_new_entries,
+        },
+      });
     }
   }
   return { status: "COMPLETED" as const, cyclesStarted, slotsUpdated, candlesProcessed };
