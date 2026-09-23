@@ -1,4 +1,5 @@
 import { buildAuditChecks } from "./audit-checks.ts";
+import { buildStrategyAuditChecks, normalizeStrategyDecisions } from "./strategy-audit.ts";
 import { testnetClientOrderId } from "../execution/robot-v1-testnet-cycle.ts";
 import { auditExecutionGaps, auditTriggerWindows, type AuditRow, type TriggerWindow } from "./trigger-audit.ts";
 
@@ -6,7 +7,7 @@ export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[] };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -14,6 +15,7 @@ export type ReportRuleDefinition = { parameter: string; field: string; unit: str
 /** Extension contract: an operational config field must have an export rule entry.
  * Cycle snapshots, rather than today's defaults, are authoritative for old cycles. */
 export const REPORT_RULE_CONTRACT: readonly ReportRuleDefinition[] = [
+  { parameter: "strategy_version", field: "strategy_version", unit: "version", version: 2, notes: "Versão efetivamente adotada; null preserva ausência de evidência histórica." },
   { parameter: "gain_rate", field: "gain_rate", unit: "ratio", version: 1 },
   { parameter: "entry_spacing", field: "entry_spacing", unit: "ratio", version: 1 },
   { parameter: "slot_count", field: "slot_count", unit: "slots", version: 1 },
@@ -51,6 +53,8 @@ const allowedDetails = new Set(["asset", "symbol", "capital", "slots", "slotCoun
 for (const field of ["tradeId", "side", "quoteQuantity", "commission", "commissionAsset", "filledAt", "collectedAt", "timestampBasis"]) allowedDetails.add(field);
 for (const field of ["reset_after_last_tp", "old_next_buy_canceled", "new_cycle_started", "initial_reentry_filled", "new_tp_created", "next_buy_armed", "reset_latency_ms", "recovery_source", "previous_entry_price", "reentry_price", "balance_before", "balance_after", "gain_count_before", "gain_count_after", "other_open_positions", "local_recycle_vs_global_reset", "ownership_verified", "replacementSlotNumber"]) allowedDetails.add(field);
 for (const field of ["previousEntryPrice", "reentryPrice", "balanceBefore", "balanceAfter", "gainCountBefore", "gainCountAfter", "otherOpenPositions", "localRecycleVsGlobalReset", "physicalSlotNumber", "repairReason"]) allowedDetails.add(field);
+for (const field of ["strategy_version", "decision_id", "root_cause", "first_cross_at", "decision_created_at", "decision_dispatched_at", "exchange_ack_at", "order_resident_at", "latency_ms", "resolved_by_version", "expected_behavior", "observed_behavior", "operation_sequence", "target_price", "market_price", "filled_at", "collected_at", "source", "reconciliation_gap_ms"]) allowedDetails.add(field);
+for (const field of ["expected_interval_seconds", "fallback_interval_seconds", "age_before_ms", "started_at", "finished_at", "duration_ms", "outcome", "last_reconciled_at", "error", "app_commit_sha", "remedy"]) allowedDetails.add(field);
 function safeDetails(value: unknown): AuditRow {
   return Object.fromEntries(Object.entries(object(value)).filter(([key]) => allowedDetails.has(key)).map(([key, field]) => [key,
     typeof field === "string" && /bearer\s|(?:secret|password|api[_ -]?key|authorization)\s*[:=]|eyJ[A-Za-z0-9_-]+\./i.test(field) ? "[REDACTED]" : field
@@ -109,6 +113,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       gain_count_before: details.gain_count_before ?? null, gain_count_after: details.gain_count_after ?? null,
       other_open_positions: details.other_open_positions ?? null,
       local_recycle_vs_global_reset: details.local_recycle_vs_global_reset ?? null,
+      strategy_version: details.strategy_version ?? null, root_cause: details.root_cause ?? null, first_cross_at: details.first_cross_at ?? null,
+      decision_created_at: details.decision_created_at ?? null, decision_dispatched_at: details.decision_dispatched_at ?? null,
+      exchange_ack_at: details.exchange_ack_at ?? null, order_resident_at: details.order_resident_at ?? null,
+      latency_ms: details.latency_ms ?? details.reconciliation_gap_ms ?? null, resolved_by_version: details.resolved_by_version ?? null,
       idempotency_key: row.event_key, source: "robot_v1_testnet_events", severity: /ERROR|FAILED/.test(str(row.event_type)) ? "ERROR" : /MISSED|DISCONNECTED/.test(str(row.event_type)) ? "WARNING" : "INFO" });
   }
   allEvents.sort(byTime);
@@ -172,7 +180,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     if (rawOperations.some((operation) => operation.slot_id === slot.id && operation.operation_sequence === slot.operation_sequence)) continue;
     const cycle = cycleById.get(str(slot.cycle_id)) ?? {};
     allOperations.push({ environment: str(cycle.execution_mode) || "SHADOW", asset: assetOf(cycle), symbol: cycle.symbol, operation_id: `open:${slot.id}:${slot.operation_sequence}`, cycle_id: slot.cycle_id, config_id: cycle.config_id, slot_id: slot.id,
-      slot: slot.slot_number, physical_slot_number: slot.slot_number, logical_level: slot.logical_level, operation_sequence: slot.operation_sequence, sequence: slot.operation_sequence, side: "BUY→TP", entry_price: num(slot.average_fill_price), quantity: num(slot.executed_quantity), allocation: num(slot.allocation_usdc),
+      slot: slot.slot_number, strategy_version: cycle.strategy_version ?? null, physical_slot_number: slot.slot_number, logical_level: slot.logical_level, operation_sequence: slot.operation_sequence, sequence: slot.operation_sequence, side: "BUY→TP", entry_price: num(slot.average_fill_price), quantity: num(slot.executed_quantity), allocation: num(slot.allocation_usdc),
       take_profit_price: num(slot.take_profit_price), gain_target_percent: num(cycle.gain_rate) === null ? null : number(cycle.gain_rate) * 100, opened_at: iso(slot.buy_triggered_at), closed_at: null, gross_profit: null, fees: null, net_profit: null, result: "OPEN",
       context_ended_at: iso(cycle.completed_at), context_end_reason: cycle.completion_reason ?? null,
       trigger_source: "PERSISTED_SHADOW_CANDLE", buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id, source: "robot_v1_slots", snapshot_at: input.generatedAt });
@@ -208,7 +216,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const events = allEvents.filter((event) => event.cycle_id === row.id);
     const restart = allEvents.find((event) => event.event_type === "CYCLE_RESTARTED" && object(event.previous_state).cycleId === row.id);
     const completion = events.find((event) => event.event_type === "CYCLE_COMPLETED");
-    return { environment: str(row.execution_mode) || "SHADOW", asset: row.asset, symbol: row.symbol, cycle_id: row.id, config_id: row.config_id, status: row.status, completion_reason: row.completion_reason ?? object(completion?.next_state).reason ?? null,
+    return { environment: str(row.execution_mode) || "SHADOW", asset: row.asset, symbol: row.symbol, cycle_id: row.id, config_id: row.config_id, strategy_version: row.strategy_version ?? null, status: row.status, completion_reason: row.completion_reason ?? object(completion?.next_state).reason ?? null,
       anchor_price: num(row.anchor_price), gain_rate: num(row.gain_rate), entry_spacing: num(row.entry_spacing), capital_start: num(row.capital_usdc), capital_end: num(row.capital_usdc) === null ? null : number(row.capital_usdc) + sum(operations, "net_profit"),
       capital_end_basis: row.completed_at ? "CAPITAL_START_PLUS_ARCHIVED_NET_PROFIT" : "AS_OF_REPORT_CUTOFF", slot_count: slots.filter((slot) => slot.cycle_id === row.id).length,
       started_at: iso(row.started_at), completed_at: iso(row.completed_at), duration_ms: duration(row.started_at, row.completed_at ?? observationEnd), operations: operations.length, gains: operations.filter((operation) => number(operation.net_profit) > 0).length,
@@ -217,7 +225,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   });
   for (const run of testnetRuns) {
     const operations = allOperations.filter((row) => row.environment === "TESTNET" && row.cycle_id === run.id && row.closed_at && timestamp(row.closed_at) < timestamp(observationEnd));
-    normalizedCycles.push({ environment: "TESTNET", asset: run.asset, symbol: run.symbol, cycle_id: run.id, status: run.status, completion_reason: run.completion_reason ?? null, anchor_price: num(run.anchor_price), gain_rate: num(run.gain_rate), entry_spacing: num(run.entry_spacing),
+    normalizedCycles.push({ environment: "TESTNET", asset: run.asset, symbol: run.symbol, cycle_id: run.id, strategy_version: run.strategy_version ?? null, status: run.status, completion_reason: run.completion_reason ?? null, anchor_price: num(run.anchor_price), gain_rate: num(run.gain_rate), entry_spacing: num(run.entry_spacing),
       capital_start: num(run.slot_notional_usdc) === null ? null : number(run.slot_notional_usdc) * 25, capital_end: num(run.slot_notional_usdc) === null ? null : number(run.slot_notional_usdc) * 25 + sum(operations, "net_profit"),
       capital_end_basis: "FICTITIOUS_SLOT_CAPITAL_PLUS_CLOSED_PROFIT", slot_count: testnetSlots.filter((slot) => slot.run_id === run.id).length, started_at: iso(run.created_at), completed_at: iso(run.completed_at), duration_ms: duration(run.created_at, run.completed_at ?? observationEnd), operations: operations.length,
       gains: operations.filter((row) => number(row.net_profit) > 0).length, realized_pnl: sum(operations, "net_profit"), missed_levels: testnetSlots.filter((slot) => slot.run_id === run.id && slot.missed_at).length, errors: run.last_error ? 1 : 0,
@@ -234,7 +242,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const contextEnded = Boolean(cycle.completed_at && timestamp(cycle.completed_at) <= timestamp(input.generatedAt));
     const open = !contextEnded && ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(str(slot.status));
     return { environment: str(cycle.execution_mode) || "SHADOW", asset: assetOf(cycle), symbol: cycle.symbol, cycle_id: slot.cycle_id, config_id: cycle.config_id, slot_id: slot.id,
-      physical_slot_number: slot.slot_number, logical_level: slot.logical_level, operation_sequence: slot.operation_sequence, entry_state: slot.entry_state, status: slot.status,
+      strategy_version: cycle.strategy_version ?? null, physical_slot_number: slot.slot_number, logical_level: slot.logical_level, operation_sequence: slot.operation_sequence, entry_state: slot.entry_state, status: slot.status,
       gain_count_test: history.length, gain_count_cycle: history.filter((row) => row.cycle_id === slot.cycle_id).length, initial_balance: num(account?.initial_balance_usdc), current_balance: num(account?.balance_usdc),
       accumulated_profit: num(account?.net_profit_usdc), allocation: num(slot.allocation_usdc), buy_price: num(slot.buy_price), current_price_snapshot: market, price_observed_at: iso(config.last_market_observed_at), take_profit_price: num(slot.take_profit_price),
       buy_status: slot.buy_status, tp_status: slot.take_profit_status, quantity, notional: entry === null || quantity === null ? null : entry * quantity, open_pnl: open && market !== null && entry !== null && quantity !== null ? (market - entry) * quantity : open ? null : 0,
@@ -247,7 +255,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const run = runById.get(str(slot.run_id)) ?? {}, orders = normalizedOrders.filter((order) => order.slot_id === slot.id), operation = allOperations.find((row) => row.slot_id === slot.id && row.environment === "TESTNET");
     const buy = orders.filter((row) => row.side === "BUY").at(-1), sell = orders.filter((row) => row.side === "SELL").at(-1);
     normalizedSlots.push({ environment: "TESTNET", asset: assetOf(run), symbol: run.symbol, cycle_id: slot.run_id, slot_id: slot.id, physical_slot_number: slot.slot_number, logical_level: slot.slot_number,
-      operation_sequence: slot.operation_sequence ?? 1, entry_state: slot.entry_state, entry_origin: slot.entry_origin ?? "GRID", entry_reference_price: num(slot.entry_reference_price), last_take_profit_price: num(slot.last_take_profit_price), status: slot.entry_state, gain_count_test: slot.gain_count, gain_count_cycle: slot.gain_count, initial_balance: num(run.slot_notional_usdc), current_balance: num(slot.balance_usdc),
+      strategy_version: run.strategy_version ?? null, operation_sequence: slot.operation_sequence ?? 1, entry_state: slot.entry_state, entry_origin: slot.entry_origin ?? "GRID", entry_reference_price: num(slot.entry_reference_price), last_take_profit_price: num(slot.last_take_profit_price), status: slot.entry_state, gain_count_test: slot.gain_count, gain_count_cycle: slot.gain_count, initial_balance: num(run.slot_notional_usdc), current_balance: num(slot.balance_usdc),
       accumulated_profit: num(slot.net_profit_usdc), allocation: num(run.slot_notional_usdc), buy_price: num(slot.target_buy_price), current_price_snapshot: null, take_profit_price: sell?.requested_price ?? null, buy_status: buy?.status ?? "PLANNED", tp_status: sell?.status ?? "NONE",
       quantity: operation?.quantity ?? null, notional: operation?.allocation ?? null, open_pnl: null, realized_pnl: num(slot.net_profit_usdc), opened_at: operation?.opened_at ?? null, closed_at: operation?.closed_at ?? null, recycled_at: null,
       armed_at: buy?.created_at ?? null, missed_at: iso(slot.missed_at), buy_client_order_id: buy?.client_order_id ?? null, sell_client_order_id: sell?.client_order_id ?? null, snapshot_at: input.generatedAt,
@@ -265,6 +273,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     parameter, value: run[field], unit, source: `robot_v1_testnet_runs.${field}`, version: 1,
     evidence_scope: "NEXT_CYCLE_PENDING", notes: "Configuração pendente; o ciclo atual preserva seus parâmetros originais." });
   for (const cycle of normalizedCycles.filter((row) => overlap(row.started_at, row.completed_at, filters))) {
+    rules.push({ effective_from: input.generatedAt, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
+      parameter: "strategy_version", value: cycle.strategy_version ?? null, unit: "version", source: cycle.environment === "TESTNET" ? "robot_v1_testnet_runs" : "robot_v1_cycles", version: 2,
+      evidence_scope: "CURRENT_CYCLE_VERSION_SNAPSHOT", notes: "Versão adotada pelo ciclo no snapshot; vigência histórica vem das decisões, não da data de início do ciclo." });
     const snapshot = { capital_usdc: cycle.capital_start, gain_rate: cycle.gain_rate, entry_spacing: cycle.entry_spacing, slot_count: cycle.slot_count };
     rules.push({ effective_from: cycle.started_at, effective_until: cycle.completed_at, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
       parameter: "profile", value: Number(cycle.gain_rate) === 0.005 && Number(cycle.entry_spacing) === 0.01 && Number(cycle.slot_count) === 25 ? "TEST_PROFILE" : "CUSTOM_TEST",
@@ -276,8 +287,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   for (const event of allEvents.filter((row) => /CAPITAL|PARAMETERS|PAUSED|RESUMED|KILL_SWITCH/.test(str(row.event_type)))) rules.push({
     effective_from: event.timestamp, environment: event.environment, asset: event.asset, symbol: event.symbol, cycle_id: event.cycle_id,
     parameter: event.event_type, value: event.next_state, unit: "event", source: event.source, version: 1, evidence_scope: "CONFIGURATION_EVENT", notes: "Evento histórico; parâmetros NEXT_CYCLE entram em vigor no ciclo seguinte, não neste instante." });
-  for (const environment of filters.environments) for (const [parameter, value, unit] of [["single_active_entry", true, "boolean"], ["compounding", "PER_PHYSICAL_SLOT", "enum"], ["engine_interval", 300, "seconds"], ["reconciliation_interval", 300, "seconds"], ["production_write_enabled", false, "boolean"], ["live_enabled", false, "boolean"]] as const) rules.push({
-    effective_from: input.generatedAt, environment, asset: null, parameter, value, unit, source: parameter.endsWith("interval") ? "apps/web/vercel.json" : "runtime_contract_phase_3_9", version: 1, evidence_scope: "CURRENT_CODE_CONTRACT", notes: "Contrato da versão exportada; não comprova vigência histórica anterior ao registro." });
+  for (const environment of filters.environments) for (const [parameter, value, unit] of [["single_active_entry", true, "boolean"], ["compounding", "PER_PHYSICAL_SLOT", "enum"], ["engine_interval", environment === "TESTNET" ? 60 : 300, "seconds"], ["reconciliation_interval", environment === "TESTNET" ? 60 : 300, "seconds"], ["reconciliation_fallback_interval", 300, "seconds"], ["production_write_enabled", false, "boolean"], ["live_enabled", false, "boolean"]] as const) rules.push({
+    effective_from: input.generatedAt, environment, asset: null, parameter, value, unit, source: parameter.endsWith("interval") ? "apps/web/vercel.json" : "runtime_contract_phase_4_1", version: 2, evidence_scope: "CURRENT_CODE_CONTRACT", notes: "Contrato da versão exportada; não comprova vigência histórica anterior ao registro." });
   for (const key of ["execution_engine_settings", "execution_asset_settings"]) for (const settings of source(key)) for (const field of ["mode", "execution_mode", "kill_switch", "global_kill_switch", "max_order_notional", "max_order_notional_usdt", "max_daily_notional_usdt", "max_market_age_seconds", "max_total_exposure", "max_daily_loss", "automation_enabled", "enabled", "paused"]) if (settings[field] !== undefined) rules.push({
     effective_from: iso(settings.updated_at ?? settings.created_at), environment: "REAL", asset: settings.asset ?? null, symbol: settings.symbol ?? null, parameter: field, value: settings[field], unit: "configuration",
     source: `${key}.${field}`, version: 1, evidence_scope: "CURRENT_SNAPSHOT", notes: "Configuração persistida; não habilita LIVE." });
@@ -350,7 +361,13 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   for (const run of source("exchange_reconciliation_runs").filter((row) => row.status === "FAILED")) alerts.push({ timestamp: iso(run.completed_at ?? run.started_at), environment: "REAL", severity: "ERROR", code: run.error_code ?? "RECONCILIATION_FAILED", message: run.error_code ?? "Reconciliação falhou.", resolved: null, source: "exchange_reconciliation_runs" });
   for (const run of testnetRuns) {
     const started = timestamp(run.created_at) > timestamp(filters.start) ? str(run.created_at) : filters.start;
-    alerts.push(...auditExecutionGaps(allEvents.filter((event) => event.environment === "TESTNET" && event.cycle_id === run.id && event.event_type === "RECONCILED").map((event) => str(event.timestamp)), 300_000, { start: started, end: observationEnd, source: "robot_v1_testnet_events.RECONCILED", environment: "TESTNET", asset: assetOf(run), includeEdges: run.status === "ACTIVE" }));
+    const runEvents = allEvents.filter((event) => event.environment === "TESTNET" && event.cycle_id === run.id);
+    const fastStart = runEvents.find((event) => event.event_type === "RECONCILIATION_STARTED" && number(object(event.details).expected_interval_seconds) === 60)?.timestamp;
+    const checkpoints = runEvents.filter((event) => event.event_type === "RECONCILED").map((event) => str(event.timestamp));
+    const boundary = fastStart && timestamp(fastStart) < timestamp(observationEnd) ? str(fastStart) : null;
+    const gapContext = { source: "robot_v1_testnet_events.RECONCILED", environment: "TESTNET", asset: assetOf(run), includeEdges: run.status === "ACTIVE" };
+    if (!boundary || timestamp(boundary) > timestamp(started)) alerts.push(...auditExecutionGaps(checkpoints.filter((at) => !boundary || timestamp(at) < timestamp(boundary)), 300_000, { ...gapContext, start: started, end: boundary ?? observationEnd }));
+    if (boundary) alerts.push(...auditExecutionGaps(checkpoints.filter((at) => timestamp(at) >= timestamp(boundary)), 60_000, { ...gapContext, start: timestamp(boundary) > timestamp(started) ? boundary : started, end: observationEnd }));
   }
   for (const config of configs) {
     const ownCandles = candles.filter((candle) => candle.config_id === config.id);
@@ -408,7 +425,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       source: "exchange_reconciliation_runs.summary.filters" });
   }
   if (filters.environments.includes("REAL")) {
-    realRows.push({ environment: "REAL", row_type: "LIVE_READINESS", asset: "SOL", symbol: "SOLBRL", mode: "PRODUCTION_READ_ONLY", live_status: "BLOCKED", filters_status: object(realSnapshot.filters).SOLBRL ? "PERSISTED" : "NOT_PERSISTED", source: "runtime_contract_phase_3_9", notes: "Preparação somente. Esta fase não consulta a exchange, não cria ordens e não habilita LIVE." });
+    realRows.push({ environment: "REAL", row_type: "LIVE_READINESS", asset: "SOL", symbol: "SOLBRL", mode: "PRODUCTION_READ_ONLY", live_status: "BLOCKED", filters_status: object(realSnapshot.filters).SOLBRL ? "PERSISTED" : "NOT_PERSISTED", source: "runtime_contract_phase_4_1", notes: "Preparação somente. Esta fase não consulta a exchange, não cria ordens e não habilita LIVE." });
     incompleteSources.push("production_http_write_history:not_persisted");
   }
   const testnetRows: AuditRow[] = [
@@ -489,8 +506,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     capital: allCapital.filter((row) => selected(row, filters) && inPeriod(row.timestamp, filters)), market: [...triggerResults, ...candleSamples].filter((row) => selected(row, filters)),
     reconciliation: reconciliation.filter((row) => selected(row, filters) && inPeriod(row.timestamp, filters)), alerts: alerts.filter((row) => selected(row, filters) && inPeriod(row.timestamp, filters)),
     rules: rules.filter((row) => selected(row, filters)), checks: [], testnet: testnetRows.filter((row) => filters.environments.includes("TESTNET") && (!assetOf(row) || filters.assets.includes(assetOf(row) as ReportAsset) || ["USDC", "USDT", "BRL"].includes(str(row.asset))) && (row.cycle_id ? cycleIds.has(row.cycle_id) : inPeriod(row.timestamp, filters))), real: realRows.filter((row) => filters.environments.includes("REAL") && (!assetOf(row) || filters.assets.includes(assetOf(row) as ReportAsset) || ["USDC", "USDT", "BRL"].includes(str(row.asset))))
+    , decisions: normalizeStrategyDecisions(source("robot_v1_strategy_decisions")).filter((row) => selected(row, filters) && overlap(row.created_at, row.completed_at, filters))
   };
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
+  datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters }));
   for (const check of datasets.checks.filter((row) => row.status !== "PASS")) warnings.push(`${check.code}: ${check.explanation}`);
   for (const key of REPORT_DATASET_KEYS) datasets[key].sort(byTime);
   return { datasets, warnings: [...new Set(warnings)].sort(), incompleteSources: [...new Set(incompleteSources)].sort() };

@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export const preferredRegion = "gru1";
 export const maxDuration = 60;
 
-/** Five-minute fallback; the minute reactor is the primary reaction path. */
+/** Bounded serverless poll: no claim of real-time websocket delivery. */
 export async function GET(request: NextRequest) {
-  return handleTestnetCron(request, "WATCHDOG");
+  return handleTestnetCron(request, "REACTOR");
 }

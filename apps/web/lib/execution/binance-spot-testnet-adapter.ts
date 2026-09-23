@@ -194,7 +194,7 @@ export class BinanceSpotTestnetAdapter {
     payload.set("signature", createHmac("sha256", this.credentials.apiSecret).update(payload.toString()).digest("hex"));
     const url = `${BINANCE_SPOT_TESTNET_BASE_URL}${path}${method === "GET" ? `?${payload.toString()}` : ""}`;
     let response: Response;
-    try { response = await this.fetcher(url, { method, cache: "no-store", headers: { accept: "application/json", "X-MBX-APIKEY": this.credentials.apiKey, ...(method === "GET" ? {} : { "content-type": "application/x-www-form-urlencoded" }) }, ...(method === "GET" ? {} : { body: payload.toString() }) }); }
+    try { response = await this.fetcher(url, { method, cache: "no-store", signal: AbortSignal.timeout(8000), headers: { accept: "application/json", "X-MBX-APIKEY": this.credentials.apiKey, ...(method === "GET" ? {} : { "content-type": "application/x-www-form-urlencoded" }) }, ...(method === "GET" ? {} : { body: payload.toString() }) }); }
     catch { throw new Error("COINOPS_TESTNET_NETWORK_UNKNOWN_RESULT"); }
     const body = await response.json().catch(() => ({})) as OrderPayload | TradePayload[];
     return { ok: response.ok, status: response.status, code: Array.isArray(body) ? undefined : body.code, payload: body };

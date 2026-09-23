@@ -234,7 +234,7 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
     const url = `${baseUrl}${path}${query.size ? `?${query.toString()}` : ""}`;
     for (let attempt = 0; attempt <= this.maxReadRetries; attempt += 1) {
       let response: Response;
-      try { response = await this.fetcher(url, { method: "GET", cache: "no-store", headers: { accept: "application/json", ...headers } }); }
+      try { response = await this.fetcher(url, { method: "GET", cache: "no-store", signal: AbortSignal.timeout(8000), headers: { accept: "application/json", ...headers } }); }
       catch { if (attempt < this.maxReadRetries) { await this.sleep(100 * (attempt + 1)); continue; } throw new BinanceReadOnlyError("BINANCE_NETWORK_UNAVAILABLE", true); }
       const payload = await response.json().catch(() => ({})) as T & BinanceErrorPayload;
       if (response.ok) return payload as T;

@@ -1,7 +1,7 @@
 import type { ReportFilters } from "./source-contract.ts";
 
 export const REPORT_TIMEZONE = "America/Campo_Grande";
-export const REPORT_VERSION = 1;
+export const REPORT_VERSION = 2;
 const DAY = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 

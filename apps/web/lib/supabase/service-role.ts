@@ -1,6 +1,7 @@
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "./env";
+import { fetchOperationalData } from "./no-store-fetch";
 
 export function createServiceRoleClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -17,9 +18,12 @@ export function createServiceRoleClient() {
     db: {
       schema: dataSchema
     },
-    global: dataSchema === "coinops" && coinOpsServiceTenantId
-      ? { headers: { "x-coinops-tenant-id": coinOpsServiceTenantId } }
-      : undefined,
+    global: {
+      fetch: fetchOperationalData,
+      ...(dataSchema === "coinops" && coinOpsServiceTenantId
+        ? { headers: { "x-coinops-tenant-id": coinOpsServiceTenantId } }
+        : {})
+    },
     auth: {
       autoRefreshToken: false,
       persistSession: false

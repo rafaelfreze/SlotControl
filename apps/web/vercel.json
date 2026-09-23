@@ -16,6 +16,10 @@
     "app/api/cron/testnet-execution/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 60
+    },
+    "app/api/cron/testnet-reactor/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 60
     }
   },
   "crons": [
@@ -30,6 +34,10 @@
     {
       "path": "/api/cron/testnet-execution",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/testnet-reactor",
+      "schedule": "* * * * *"
     }
   ]
 }

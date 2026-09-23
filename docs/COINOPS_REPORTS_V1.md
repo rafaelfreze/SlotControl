@@ -1,4 +1,6 @@
-# CoinOps — relatórios auditáveis, versão 1
+# CoinOps — relatórios auditáveis, versão 2
+
+O nome histórico deste runbook é preservado. `report_version = 2` acrescenta a evidência de decisões da Strategy Engine 4.1; pacotes anteriores permanecem versão 1 e não são reinterpretados.
 
 Central: `/relatorios`. Legado de relatórios oficiais de ciclos: `/plano-crescimento/relatorios` (preservado, não misturado ao robô V1).
 
@@ -10,7 +12,7 @@ Downloads são respostas privadas `no-store`, sem URL pública persistente ou ar
 
 ## Pacote e formatos
 
-`coinops-report-AAAA-MM-DD_AAAA-MM-DD.zip` contém 15 CSVs numerados, `AUDITORIA_COMPLETA.json`, `manifest.json` e `RESUMO.md`. Também há download individual e exportação separada de candles 1m completos.
+`coinops-report-AAAA-MM-DD_AAAA-MM-DD.zip` contém 16 CSVs numerados, `AUDITORIA_COMPLETA.json`, `manifest.json` e `RESUMO.md` (19 arquivos). Também há download individual e exportação separada de candles 1m completos.
 
 CSVs têm BOM UTF-8, separador `;`, CRLF, campos escapados entre aspas, ponto decimal e proteção contra fórmula em células textuais. No Excel brasileiro, importar como UTF-8, delimitador `;`, e usar localidade Inglês (Estados Unidos) para números. Datas ISO. Persistência UTC; datas de filtro são dias inclusivos de `America/Campo_Grande`, transformados em intervalo UTC com fim exclusivo. Janela máxima: 366 dias. Campos sem evidência são vazios/null, não zero.
 
@@ -29,6 +31,14 @@ Snapshots atuais de slots/configuração/ordens não devem ser lidos como estado
 Um reset pode preservar um slot com status antigo sem arquivar um TP. `context_ended_at` registra o encerramento do ciclo, sem inventar venda, `closed_at` ou ganho. Esse snapshot deixa de compor posições ativas, capital comprometido e janelas de gatilhos depois do encerramento. Falhas de inicialização sem slots ficam nos erros históricos; não são tratadas como grades simultâneas em execução.
 
 ## Evidência adicionada nesta versão
+
+Fase 4.1: `robot_v1_strategy_decisions` preserva a decisão antes do despacho, `strategy_version`, ambiente, ativo, ciclo/slot/operação, ação, prioridade, alvo, notional, razão, estado esperado/observado, despacho, ACK, conclusão, resultado, erro, latência e causa/correção quando disponíveis. Os campos são exportados no `15_ESTRATEGIA_DECISOES.csv` e no dataset JSON `decisions`. Fonte com falha é explicitamente incompleta; execuções históricas sem decisão/versão não recebem uma versão inventada. ACK Testnet e conclusão simulada Shadow são evidências diferentes.
+
+Os checks incluem versão/paridade, decisão sem despacho/ACK, duplicação, posição sem TP, fill sem ordem, entrada MARKET inicial e `PRIORITY_REENTRY_MUST_BE_ARMED_BEFORE_LOWER_LEVEL`. Prioridade exige mercado observado, BUY residente e candidatos do mesmo ciclo. `LIVE_STRATEGY_PARITY_READY` só pode passar com os quatro contextos, versão única e evidência integral aprovada; nunca habilita LIVE. Ausência/recorte histórico ou pendência recente gera WARNING, não PASS. Falha comprovada permanece FAIL mesmo se outra fonte estiver incompleta.
+
+Testnet registra `RECONCILIATION_STARTED`/`RECONCILIATION_FINISHED`, fonte FAST_REACTOR/WATCHDOG, intervalo esperado, duração, resultado e idade do checkpoint. O contrato atual é worker Testnet de 60 segundos e fallback de 300 segundos; Shadow permanece em 300 segundos. Detecção histórica de gaps só aplica 60 segundos a partir do primeiro evento comprovando a adoção, sem retroagir ao histórico de 5 minutos. Isso é polling serverless, não stream contínuo nem garantia de latência máxima.
+
+`MISSED_LEVEL_DIAGNOSED` acrescenta causa, timestamps e versão da correção sem modificar o missed, saldo, gain ou inventar fill. Horário do fill na exchange, coleta e primeiro cruzamento de preço são conceitos separados; primeiro cruzamento não conhecido fica null. A interface mantém a ocorrência histórica visível mesmo depois de tratar a causa e não apresenta `Motor OK` enquanto houver missed no snapshot. Os relatórios e a interface não executam recovery financeiro para gerar evidência.
 
 A migration aditiva `20260923004502_add_report_runtime_observations.sql` cria observações de execução do motor e dos diagnósticos Testnet já existentes. Registra somente metadados permitidos, com identidade de escopo, versão e idempotência. RLS é obrigatória; usuários autenticados podem ler seu escopo, e somente o serviço pode inserir. UPDATE/DELETE não são concedidos. A coleta não altera decisões do robô nem faz consultas extras à exchange.
 

@@ -5,7 +5,10 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/en
 import { createServiceRoleClient } from "../supabase/service-role";
 import { testnetFillEvents } from "../coinops-reports/testnet-fill-evidence";
 import { planTerminalTestnetRestart, TESTNET_ACTIVE_ORDER_STATUSES, testnetClientOrderId, testnetOpenPositionQuantity, testnetResetIdempotencyKey } from "./robot-v1-testnet-cycle";
-import { buildV1Grid, planV1ClosedSlotTransition, V1_RULES, V1_TEST_PROFILE, type V1Asset, type V1Symbol } from "./robot-v1";
+import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset, type V1Symbol } from "./robot-v1";
+import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
+import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
+import { projectTestnetEntryState, recoverTestnetStrategyDecisions, type RecoverableTestnetDecision } from "./strategy-testnet-recovery";
 import type { ExchangeSymbolInfo } from "./types";
 
 type Scope = { productId: string; tenantId: string; userId: string };
@@ -20,8 +23,22 @@ const terminal = new Set(["FILLED", "CANCELED", "EXPIRED", "REJECTED"]);
 const amount = (value: number | string | null) => Number(value || 0);
 const rounded = (value: number) => Number(value.toFixed(8));
 const floorStep = (value: number, step: number) => rounded(Math.floor((value + 1e-10) / step) * step);
-const ceilStep = (value: number, step: number) => rounded(Math.ceil((value - 1e-10) / step) * step);
 const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id });
+const context = (run: Run) => ({ asset: run.asset, cycleId: run.id, observedAt: new Date().toISOString() });
+function candidate(slot: Slot): StrategyCandidate {
+  return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
+    buyPrice: amount(slot.target_buy_price), balanceUsdc: amount(slot.balance_usdc),
+    state: slot.missed_at ? "MISSED" : ["OPEN", "CLOSED", "ARMED"].includes(slot.entry_state) ? slot.entry_state as "OPEN" | "CLOSED" | "ARMED" : "PLANNED" };
+}
+function candidatesWithFills(slots: Slot[], orders: Order[]) {
+  return slots.map((slot) => ({ ...candidate(slot), ...(orders.some((order) => order.slot_id === slot.id
+    && order.operation_sequence === slot.operation_sequence && order.side === "BUY"
+    && ACTIVE_ORDER.has(order.status) && amount(order.executed_quantity) > 0) ? { state: "PARTIALLY_FILLED" as const } : {}) }));
+}
+async function intent(service: Service, run: Run, decision: StrategyDecision, sequence?: number) {
+  await persistStrategyDecision(service, owned(run), "TESTNET", decision, sequence);
+  return decision.decision_id;
+}
 
 function assertTestnetEnvironment() {
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId()) throw new Error("COINOPS_TESTNET_SCHEMA_SCOPE_INVALID");
@@ -62,11 +79,11 @@ async function updateSlot(service: Service, run: Run, slot: Slot, values: Record
   Object.assign(slot, values);
 }
 
-async function prepareOrder(service: Service, run: Run, slot: Slot, side: "BUY" | "SELL", purpose: Order["purpose"], revision: number, requestedQuantity: number | null, requestedQuote: number | null, price: number | null): Promise<Order> {
+async function prepareOrder(service: Service, run: Run, slot: Slot, side: "BUY" | "SELL", purpose: Order["purpose"], revision: number, requestedQuantity: number | null, requestedQuote: number | null, price: number | null, decisionId?: string): Promise<Order> {
   const id = testnetClientOrderId(run.id, run.asset, slot.slot_number, side, revision);
   const { data, error } = await service.from("robot_v1_testnet_orders").upsert({
     run_id: run.id, slot_id: slot.id, ...owned(run), slot_number: slot.slot_number, side, purpose, revision,
-    operation_sequence: slot.operation_sequence, client_order_id: id, requested_quantity: requestedQuantity, requested_quote: requestedQuote, price
+    operation_sequence: slot.operation_sequence, client_order_id: id, requested_quantity: requestedQuantity, requested_quote: requestedQuote, price, strategy_decision_id: decisionId ?? null
   }, { onConflict: "client_order_id", ignoreDuplicates: true }).select("*").maybeSingle();
   if (error) throw new Error("COINOPS_TESTNET_ORDER_PREPARE_FAILED");
   if (data) return data as Order;
@@ -87,8 +104,10 @@ async function claim(service: Service, runId: string) {
 }
 
 async function release(service: Service, run: Run, leaseOwner: string, error: string | null) {
-  await service.from("robot_v1_testnet_runs").update({ lease_owner: null, lease_until: null, last_reconciled_at: new Date().toISOString(), last_error: error })
+  const result = await service.from("robot_v1_testnet_runs").update({ lease_owner: null, lease_until: null, last_reconciled_at: new Date().toISOString(), last_error: error,
+    ...(error ? {} : { strategy_version: STRATEGY_VERSION }) })
     .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", leaseOwner);
+  if (result.error) throw new Error("COINOPS_TESTNET_LEASE_RELEASE_FAILED");
 }
 
 async function ensurePlan(service: Service, run: Run, filters: SymbolFilters) {
@@ -161,8 +180,11 @@ function feeTotals(trades: TestnetTrade[], asset: V1Asset) {
   };
 }
 
-async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, adapter: BinanceSpotTestnetAdapter) {
+async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, adapter: BinanceSpotTestnetAdapter, observedDecision: Record<string, unknown> = {}) {
   if (terminal.has(order.status) && (order.status !== "FILLED" || order.trades_reconciled)) return;
+  const decisionId = (order as Order & { strategy_decision_id?: string | null }).strategy_decision_id;
+  if (decisionId) await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
+  try {
   let actual: TestnetOrder | null = order.status === "PREPARED"
     ? await adapter.ensureOwnedOrder(orderRequest(run, order, slot))
     : await adapter.getOwnedOrder(run.symbol, order.client_order_id).catch((error) => {
@@ -200,6 +222,32 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
     cumulative_quote: actual.cumulativeQuoteQuantity, fee_base: fees.base, fee_quote: fees.quote, fee_other: fees.other,
     trades_reconciled: actual.status === "FILLED"
   });
+  if (decisionId && ["REJECTED", "EXPIRED"].includes(actual.status)) {
+    await failStrategyDecision(service, owned(run), "TESTNET", decisionId, `COINOPS_TESTNET_ORDER_${actual.status}`);
+  } else if (decisionId && ["NEW", "PARTIALLY_FILLED", "FILLED"].includes(actual.status) && (order.purpose !== "INITIAL" || actual.status === "FILLED")) {
+    await completeStrategyDecision(service, owned(run), "TESTNET", decisionId, {
+      client_order_id: order.client_order_id, exchange_order_id: actual.orderId, order_status: actual.status,
+      resident_slot_id: slot.id, resident_target_price: amount(order.price), executed_quantity: actual.executedQuantity,
+      cumulative_quote: actual.cumulativeQuoteQuantity, ownership_verified: true,
+      ...observedDecision,
+    }, true);
+  }
+  } catch (error) {
+    if (decisionId) await failStrategyDecision(service, owned(run), "TESTNET", decisionId, error instanceof Error ? error.message : "COINOPS_STRATEGY_DISPATCH_FAILED");
+    throw error;
+  }
+}
+
+async function recoverDecisionAudit(service: Service, run: Run, successorId?: string) {
+  const { data, error } = await service.from("robot_v1_strategy_decisions").select("decision_id,cycle_id,slot_id,operation_sequence,action_type,target_price,target_notional,result")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("environment", "TESTNET").eq("cycle_id", run.id).neq("result", "COMPLETED");
+  if (error) throw new Error("COINOPS_STRATEGY_RECOVERY_READ_FAILED");
+  if (!data?.length) return;
+  const ledger = await rows(service, run);
+  for (const recovered of recoverTestnetStrategyDecisions({ runId: run.id, decisions: data as RecoverableTestnetDecision[], ...ledger, successorId })) {
+    await completeStrategyDecision(service, owned(run), "TESTNET", recovered.decisionId, recovered.observed, recovered.exchangeAck);
+  }
 }
 
 function buysFor(orders: Order[], slot: Slot) { return orders.filter((order) => order.slot_id === slot.id && order.side === "BUY" && order.operation_sequence === slot.operation_sequence); }
@@ -218,10 +266,13 @@ async function ensureTakeProfits(service: Service, run: Run, slots: Slot[], orde
     const uncovered = floorStep(bought - soldOrCovered(sells), filters.quantityStep);
     const buyQuantity = buys.reduce((sum, order) => sum + amount(order.executed_quantity), 0);
     const buyQuote = buys.reduce((sum, order) => sum + amount(order.cumulative_quote) + amount(order.fee_quote), 0);
-    const tpPrice = ceilStep((buyQuote / buyQuantity) * (1 + amount(run.gain_rate)), filters.priceTick);
+    const revision = Math.max(0, ...sells.map((order) => order.revision)) + 1;
+    const tpDecision = planStrategyTakeProfit({ ...context(run), transitionKey: `TP:${revision}` }, { ...candidate(slot), state: "OPEN" }, buyQuote / buyQuantity, filters,
+      { gainRate: amount(run.gain_rate), entrySpacing: amount(run.entry_spacing) });
+    const tpPrice = tpDecision.target_price!;
     if (uncovered >= filters.minQuantity && uncovered * tpPrice >= filters.minNotional) {
-      const revision = Math.max(0, ...sells.map((order) => order.revision)) + 1;
-      const prepared = await prepareOrder(service, run, slot, "SELL", "TP", revision, uncovered, null, tpPrice);
+      const decisionId = await intent(service, run, tpDecision, slot.operation_sequence);
+      const prepared = await prepareOrder(service, run, slot, "SELL", "TP", revision, uncovered, null, tpPrice, decisionId);
       await event(service, run, `${prepared.client_order_id}:PREPARED`, "TP_PREPARED", slot.slot_number, { clientOrderId: prepared.client_order_id, quantity: uncovered, price: tpPrice });
       await syncOrder(service, run, slot, prepared, adapter);
       if (run.previous_run_id) await event(service, run, `${prepared.client_order_id}:NEW_TP_CREATED`, "NEW_TP_CREATED", slot.slot_number,
@@ -258,11 +309,12 @@ async function recycleClosedSlotsLocally(service: Service, run: Run, slots: Slot
   const closed = slots.filter((slot) => slot.entry_state === "CLOSED");
   let recycled = false;
   for (const slot of closed) {
-    const policySlots = slots.map((item) => ({ slotNumber: item.slot_number, status: item.entry_state === "OPEN" ? "OPEN" as const : item.entry_state === "CLOSED" ? "CLOSED" as const : "PENDING" as const }));
-    const plan = planV1ClosedSlotTransition(policySlots, slot.slot_number);
+    const plan = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders), slot.id);
     if (plan.mode !== "LOCAL_REENTRY") continue;
     const previousEntryPrice = amount(slot.entry_reference_price || slot.target_buy_price);
     const nextSequence = slot.operation_sequence + 1;
+    const decisionId = await intent(service, run, plan.decisions[0], nextSequence);
+    await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
     await updateSlot(service, run, slot, {
       entry_state: "PLANNED", entry_origin: "REENTRY", target_buy_price: previousEntryPrice,
       entry_reference_price: previousEntryPrice, operation_sequence: nextSequence, missed_at: null
@@ -273,6 +325,7 @@ async function recycleClosedSlotsLocally(service: Service, run: Run, slots: Slot
       other_open_positions: plan.otherOpenPositions, local_recycle_vs_global_reset: "LOCAL_REENTRY",
       operation_sequence: nextSequence
     });
+    await completeStrategyDecision(service, owned(run), "TESTNET", decisionId, { state: "PLANNED", operation_sequence: nextSequence, balance_usdc: amount(slot.balance_usdc), reentry_price: previousEntryPrice });
     recycled = true;
   }
   return recycled;
@@ -282,7 +335,10 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   if (!orders.some((order) => order.side === "BUY")) {
     const slot = slots[0];
     if (!slot) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
-    const prepared = await prepareOrder(service, run, slot, "BUY", "INITIAL", 1, null, amount(slot.balance_usdc), null);
+    const initialDecision = planStrategyInitialEntry(context(run), candidate(slot));
+    if (initialDecision.action_type !== "OPEN_INITIAL_MARKET") throw new Error("COINOPS_STRATEGY_INITIAL_STATE_INVALID");
+    const decisionId = await intent(service, run, initialDecision, slot.operation_sequence);
+    const prepared = await prepareOrder(service, run, slot, "BUY", "INITIAL", 1, null, amount(slot.balance_usdc), null, decisionId);
     await event(service, run, `${prepared.client_order_id}:PREPARED`, "INITIAL_BUY_PREPARED", 1, { clientOrderId: prepared.client_order_id });
     await updateSlot(service, run, slot, { entry_state: "ARMED" });
     await syncOrder(service, run, slot, prepared, adapter);
@@ -292,19 +348,45 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
     return true;
   }
   const market = await adapter.reads.getMarketPrice(run.symbol);
-  const eligible = slots.filter((slot) => ["PLANNED", "ARMED"].includes(slot.entry_state) && !slot.missed_at)
-    .sort((a, b) => amount(b.target_buy_price) - amount(a.target_buy_price) || a.slot_number - b.slot_number);
-  for (const crossed of eligible.filter((slot) => slot.entry_state !== "ARMED" && market.price <= amount(slot.target_buy_price))) {
-    await updateSlot(service, run, crossed, { entry_state: "MISSED", missed_at: new Date().toISOString() });
-    await event(service, run, `SLOT_${crossed.slot_number}_MISSED_${crossed.operation_sequence}`, "MISSED_LEVEL_DURING_REARM", crossed.slot_number, { marketPrice: market.price, targetPrice: amount(crossed.target_buy_price) });
+  const activeBuys = orders.filter((order) => order.side === "BUY" && ACTIVE_ORDER.has(order.status));
+  if (activeBuys.length > 1) throw new Error("COINOPS_STRATEGY_MULTIPLE_ARMED_BUYS");
+  const activeBuy = activeBuys[0];
+  // Repair the materialized slot projection after a crash between cancel /
+  // prepare and slot persistence. The exchange-backed order ledger is the
+  // authority for residence; a stale ARMED flag must never stall the queue.
+  for (const slot of slots) {
+    if (activeBuy?.slot_id === slot.id) {
+      if (slot.operation_sequence !== activeBuy.operation_sequence || slot.missed_at)
+        throw new Error("COINOPS_TESTNET_OWNED_BUY_SEQUENCE_MISMATCH");
+    }
+    const projected = projectTestnetEntryState(slot, orders);
+    if (projected !== slot.entry_state) await updateSlot(service, run, slot, { entry_state: projected });
   }
-  const desired = eligible.find((slot) => market.price > amount(slot.target_buy_price));
-  if (!desired) return false;
-  const activeBuy = orders.find((order) => order.side === "BUY" && ACTIVE_ORDER.has(order.status));
-  if (activeBuy?.slot_id === desired.id && activeBuy.operation_sequence === desired.operation_sequence) {
-    if (desired.entry_state !== "ARMED") await updateSlot(service, run, desired, { entry_state: "ARMED" });
+  const candidates = slots.map((slot) => ({ ...candidate(slot), ...(activeBuy?.slot_id === slot.id ? { state: activeBuy.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED" as const : "ARMED" as const } : {}) }));
+  const plan = planStrategyNextEntry({ ...context(run), transitionKey: `QUEUE:${orders.filter((order) => order.side === "BUY").length}` }, candidates, market.price, activeBuy ? { candidateId: activeBuy.slot_id, executedQuantity: amount(activeBuy.executed_quantity) } : null);
+  const decisionId = await intent(service, run, plan.decision, slots.find((slot) => slot.id === plan.decision.slot_id)?.operation_sequence);
+  for (const crossed of slots.filter((slot) => plan.missedCandidateIds.includes(slot.id))) {
+    await updateSlot(service, run, crossed, { entry_state: "MISSED", missed_at: new Date().toISOString() });
+    await event(service, run, `SLOT_${crossed.slot_number}_MISSED_${crossed.operation_sequence}`, "MISSED_LEVEL_DURING_REARM", crossed.slot_number, {
+      marketPrice: market.price, targetPrice: amount(crossed.target_buy_price), decision_id: decisionId,
+      first_cross_at: null, detected_at: new Date().toISOString(), order_resident_at: null,
+      root_cause: "NO_RESIDENT_BUY_AT_OBSERVATION", strategy_version: STRATEGY_VERSION,
+      recovery_action: "PRESERVE_HISTORY_NO_RETROACTIVE_MARKET_FILL"
+    });
+  }
+  if (plan.decision.action_type === "WAIT") {
+    await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
+    await completeStrategyDecision(service, owned(run), "TESTNET", decisionId, {
+      market_price: market.price, resident_slot_id: activeBuy?.slot_id ?? null,
+      resident_target_price: activeBuy ? amount(activeBuy.price) : null, reason: plan.decision.reason,
+      priority_validated: plan.decision.reason === "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT",
+      missed_count: slots.filter((slot) => slot.missed_at).length,
+    });
     return false;
   }
+  const desired = slots.find((slot) => slot.id === plan.nextCandidateId);
+  if (!desired) throw new Error("COINOPS_STRATEGY_NEXT_SLOT_MISSING");
+  await dispatchStrategyDecision(service, owned(run), "TESTNET", decisionId);
   if (activeBuy) {
     const activeSlot = slots.find((slot) => slot.id === activeBuy.slot_id);
     if (!activeSlot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
@@ -325,10 +407,10 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
   const quantity = floorStep(amount(desired.balance_usdc) / price, filters.quantityStep);
   if (quantity < filters.minQuantity || quantity > filters.maxQuantity || quantity * price < filters.minNotional) throw new Error("COINOPS_TESTNET_ENTRY_FILTER_INVALID");
   const revision = Math.max(0, ...orders.filter((order) => order.slot_id === desired.id && order.side === "BUY").map((order) => order.revision)) + 1;
-  const prepared = await prepareOrder(service, run, desired, "BUY", "ENTRY", revision, quantity, null, price);
+  const prepared = await prepareOrder(service, run, desired, "BUY", "ENTRY", revision, quantity, null, price, decisionId);
   await event(service, run, `${prepared.client_order_id}:PREPARED`, "NEXT_BUY_PREPARED", desired.slot_number, { clientOrderId: prepared.client_order_id, quantity, price, operationSequence: desired.operation_sequence });
   await updateSlot(service, run, desired, { entry_state: "ARMED" });
-  await syncOrder(service, run, desired, prepared, adapter);
+  await syncOrder(service, run, desired, prepared, adapter, { market_price: market.price, priority_validated: true });
   if (desired.entry_origin === "REENTRY") await event(service, run, `${prepared.client_order_id}:SLOT_REENTRY_ARMED`, "SLOT_REENTRY_ARMED", desired.slot_number, { previous_entry_price: amount(desired.entry_reference_price), reentry_price: price, balance_after: amount(desired.balance_usdc), gain_count_after: desired.gain_count, local_recycle_vs_global_reset: "LOCAL_REENTRY", operation_sequence: desired.operation_sequence });
   orders.push(prepared);
   return true;
@@ -337,6 +419,10 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
 async function restartTerminalCycle(service: Service, run: Run, slots: Slot[], orders: Order[], filters: SymbolFilters, adapter: BinanceSpotTestnetAdapter, recoverySource: string) {
   const reset = planTerminalTestnetRestart(orders, filters.quantityStep);
   if (!reset.shouldRestart || !reset.terminalFill) return null;
+  const closed = slots.find((slot) => slot.entry_state === "CLOSED");
+  if (!closed) throw new Error("COINOPS_STRATEGY_TERMINAL_CLOSE_REQUIRED");
+  const strategyReset = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders), closed.id);
+  if (strategyReset.mode !== "GLOBAL_RESET") return null;
   const nextCapital = amount(run.next_capital_usdc ?? amount(run.slot_notional_usdc) * 25);
   const nextGainRate = amount(run.next_gain_rate ?? run.gain_rate);
   const nextSpacing = amount(run.next_entry_spacing ?? run.entry_spacing);
@@ -346,9 +432,17 @@ async function restartTerminalCycle(service: Service, run: Run, slots: Slot[], o
   if (nextCapital > 2500 || nextBalances.some((balance) => balance <= 0 || balance > 100)) throw new Error("COINOPS_TESTNET_NEXT_CAPITAL_INVALID");
   buildV1Grid(run.asset, nextCapital, previewMarket.price, filters, { gainRate: nextGainRate, entrySpacing: nextSpacing }, nextBalances);
   const account = await adapter.reads.getAccount();
-  if ((account.balances.find((balance) => balance.asset === "USDC")?.free ?? 0) < nextBalances.reduce((sum, balance) => sum + balance, 0)) throw new Error("COINOPS_TESTNET_NEXT_FUNDS_INVALID");
+  // Only the exact owned pending BUY is refundable; never count unrelated
+  // account locks as capital available to this cycle.
+  const refundable = reset.activeNextBuy && reset.activeNextBuy.status === "NEW"
+    ? amount((reset.activeNextBuy as Order).requested_quantity) * amount((reset.activeNextBuy as Order).price) : 0;
+  if ((account.balances.find((balance) => balance.asset === "USDC")?.free ?? 0) + refundable + 1e-8 < nextBalances.reduce((sum, balance) => sum + balance, 0)) throw new Error("COINOPS_TESTNET_NEXT_FUNDS_INVALID");
   const resetStartedAt = new Date().toISOString();
   const resetKey = testnetResetIdempotencyKey(run.id, reset.terminalFill.client_order_id);
+  for (const decision of strategyReset.decisions) {
+    await intent(service, run, decision, closed.operation_sequence);
+    await dispatchStrategyDecision(service, owned(run), "TESTNET", decision.decision_id);
+  }
   await event(service, run, `RESET_STARTED:${resetKey}`, "RESET_AFTER_LAST_TP", null, {
     terminalFillClientOrderId: reset.terminalFill.client_order_id, reset_after_last_tp: true, recovery_source: recoverySource
   });
@@ -387,6 +481,8 @@ async function restartTerminalCycle(service: Service, run: Run, slots: Slot[], o
   });
   const nextRunId = (Array.isArray(data) ? data[0]?.new_run_id : data?.new_run_id) as string | undefined;
   if (error || !nextRunId) throw new Error("COINOPS_TESTNET_CYCLE_RESTART_FAILED");
+  for (const decision of strategyReset.decisions) await completeStrategyDecision(service, owned(run), "TESTNET", decision.decision_id,
+    { state: "COMPLETED", next_cycle_id: nextRunId, anchor_price: market.price, old_owned_orders_canceled: true });
   return nextRunId;
 }
 
@@ -419,6 +515,7 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
   const lock = await claim(service, runId);
   if (!lock) return { status: "BUSY_OR_INACTIVE" };
   const { run, leaseOwner } = lock;
+  const deadline = Date.now() + 45_000;
   let errorCode: string | null = null;
   let nextRunId: string | null = null;
   let result: { status: string; nextRunId?: string } = { status: "OK" };
@@ -426,10 +523,18 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
     if (V1_RULES[run.asset]?.symbol !== run.symbol) throw new Error("COINOPS_TESTNET_RUN_SYMBOL_INVALID");
     const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
     const filters = await adapter.reads.getSymbolInfo(run.symbol);
+    await recoverDecisionAudit(service, run);
+    if (run.previous_run_id) {
+      const previous = await queryRun(service, run.previous_run_id);
+      if (previous.status !== "COMPLETED" || previous.product_id !== run.product_id || previous.user_id !== run.user_id || previous.asset !== run.asset)
+        throw new Error("COINOPS_STRATEGY_RECOVERY_SCOPE_INVALID");
+      await recoverDecisionAudit(service, previous, run.id);
+    }
     for (let iteration = 0; iteration < 4; iteration++) {
       const { slots, orders } = await rows(service, run);
       if (slots.length !== 25) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
       for (const order of orders) {
+        if (Date.now() >= deadline) throw new Error("COINOPS_TESTNET_WORK_BUDGET_EXCEEDED");
         const slot = slots.find((item) => item.id === order.slot_id);
         if (!slot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
         await syncOrder(service, run, slot, order, adapter);
@@ -442,10 +547,12 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
       const armed = await armNextBuy(service, run, slots, orders, filters, adapter);
       if (!armed) break;
     }
+    await recoverDecisionAudit(service, run, nextRunId ?? undefined);
     if (!nextRunId) {
       const latest = await rows(service, run);
       await markRestartComplete(service, run, latest.slots, latest.orders);
-      await event(service, run, `RECONCILED_${new Date().toISOString().slice(0, 16)}`, "RECONCILED", null, { mode: "TESTNET", recovery_source: recoverySource });
+      await event(service, run, `RECONCILED_${new Date().toISOString().slice(0, 16)}`, "RECONCILED", null, { mode: "TESTNET", recovery_source: recoverySource, strategy_version: STRATEGY_VERSION,
+        missed_count: latest.slots.filter((slot) => slot.missed_at).length, expected_interval_seconds: 60 });
     }
   } catch (error) {
     errorCode = error instanceof Error && /^[A-Z][A-Z0-9_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_RECONCILIATION_FAILED";
@@ -455,36 +562,8 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
   return result;
 }
 
-/** Cancels only the exact persisted CoinOps BUY, then replaces it at the same strategy level. */
+/** Compatibility entry point: repair must obey the same engine priority and
+ * durable decisions, never force a gratuitous same-level cancel/replace. */
 export async function replaceOwnedTestnetBuy(runId: string) {
-  assertTestnetEnvironment();
-  const service = createServiceRoleClient();
-  const lock = await claim(service, runId);
-  if (!lock) throw new Error("COINOPS_TESTNET_RUN_BUSY");
-  const { run, leaseOwner } = lock;
-  let errorCode: string | null = null;
-  try {
-    if (V1_RULES[run.asset]?.symbol !== run.symbol) throw new Error("COINOPS_TESTNET_RUN_SYMBOL_INVALID");
-    const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
-    const { slots, orders } = await rows(service, run);
-    const current = orders.find((order) => order.side === "BUY" && order.purpose === "ENTRY" && ACTIVE_ORDER.has(order.status));
-    if (!current || !current.exchange_order_id) throw new Error("COINOPS_TESTNET_NO_OWNED_ENTRY_TO_REPLACE");
-    if (current.revision > 1) return { status: "ALREADY_REPLACED", clientOrderId: current.client_order_id };
-    if (current.status !== "NEW" || amount(current.executed_quantity) > 0) throw new Error("COINOPS_TESTNET_BUY_NOT_UNFILLED");
-    const slot = slots.find((item) => item.id === current.slot_id);
-    if (!slot) throw new Error("COINOPS_TESTNET_ORDER_SLOT_MISSING");
-    if ((await adapter.reads.getMarketPrice(run.symbol)).price <= amount(current.price)) throw new Error("COINOPS_TESTNET_LEVEL_CROSSED_BEFORE_REPLACE");
-    const canceled = await adapter.cancelOwnedOrder(run.symbol, current.exchange_order_id, current.client_order_id);
-    if (!canceled) throw new Error("COINOPS_TESTNET_CANCEL_UNCERTAIN");
-    await updateOrder(service, run, current, { status: canceled.status, executed_quantity: canceled.executedQuantity, cumulative_quote: canceled.cumulativeQuoteQuantity });
-    await event(service, run, `${current.client_order_id}:CANCEL_RESULT`, "OWNED_BUY_CANCEL_RESULT", slot.slot_number, { clientOrderId: current.client_order_id, status: canceled.status });
-    if (canceled.status !== "CANCELED" || canceled.executedQuantity > 0) return { status: "FILLED_OR_PARTIAL_RECONCILE_REQUIRED" };
-    const next = await prepareOrder(service, run, slot, "BUY", "ENTRY", current.revision + 1, amount(current.requested_quantity), null, amount(current.price));
-    await syncOrder(service, run, slot, next, adapter);
-    await event(service, run, `${next.client_order_id}:REPLACED`, "OWNED_BUY_REPLACED", slot.slot_number, { canceledClientOrderId: current.client_order_id, replacementClientOrderId: next.client_order_id });
-    return { status: "REPLACED", clientOrderId: next.client_order_id };
-  } catch (error) {
-    errorCode = error instanceof Error && /^[A-Z][A-Z0-9_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_REPLACE_FAILED";
-    throw new Error(errorCode);
-  } finally { await release(service, run, leaseOwner, errorCode); }
+  return advanceTestnetRun(runId, "MANUAL_PRIORITY_REPAIR");
 }

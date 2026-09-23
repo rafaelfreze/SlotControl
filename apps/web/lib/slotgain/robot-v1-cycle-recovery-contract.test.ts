@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 const server = readFileSync(new URL("../execution/robot-v1-testnet-server.ts", import.meta.url), "utf8");
@@ -8,7 +8,14 @@ const migration = readFileSync(new URL("../../../../supabase/migrations/20260923
 const repairMigration = readFileSync(new URL("../../../../supabase/migrations/20260923032000_add_shadow_local_reentry_repair_rpc.sql", import.meta.url), "utf8");
 const repairStateMigration = readFileSync(new URL("../../../../supabase/migrations/20260923033000_repair_shadow_local_reentry_state.sql", import.meta.url), "utf8");
 const serviceRoleFixMigration = readFileSync(new URL("../../../../supabase/migrations/20260923034000_fix_testnet_restart_service_role_claim.sql", import.meta.url), "utf8");
-const phaseFourMigration = readFileSync(new URL("../../../../supabase/migrations/20260923072722_enable_btc_sol_testnet_profile.sql", import.meta.url), "utf8");
+const migrationsDirectory = new URL("../../../../supabase/migrations/", import.meta.url);
+function migrationBySuffix(suffix: string) {
+  const matches = readdirSync(migrationsDirectory).filter((name) => name.endsWith(suffix));
+  assert.equal(matches.length, 1, `one versioned migration expected: ${suffix}`);
+  return readFileSync(new URL(matches[0]!, migrationsDirectory), "utf8");
+}
+const phaseFourMigration = migrationBySuffix("_enable_btc_sol_testnet_profile.sql");
+const strategyMigration = migrationBySuffix("_strategy_engine_decision_ledger.sql");
 
 test("Testnet terminal reset is atomic, locked, idempotent and copies compounded physical balances", () => {
   assert.match(migration, /pg_advisory_xact_lock/);
@@ -23,7 +30,7 @@ test("Testnet terminal reset is atomic, locked, idempotent and copies compounded
 });
 
 test("Testnet local recycle preserves the physical slot, same entry, compounding and one owned BUY", () => {
-  assert.match(server, /planV1ClosedSlotTransition/);
+  assert.match(server, /planStrategyClosedSlot/);
   assert.match(server, /entry_origin: "REENTRY"/);
   assert.match(server, /target_buy_price: previousEntryPrice/);
   assert.match(server, /operation_sequence: nextSequence/);
@@ -49,10 +56,53 @@ test("Phase 4 Testnet isolates BTC and SOL and freezes the active cycle profile"
 test("Shadow and Testnet share the local-versus-global transition policy", () => {
   assert.match(shadow, /buildV1LocalReentry/);
   assert.match(shadow, /LOCAL_REENTRY_SAME_PRICE/);
-  assert.match(shadow, /Object\.assign\(closedSlot,[\s\S]+entry_state: "PLANNED", status: "PENDING"/);
-  assert.match(server, /planV1ClosedSlotTransition/);
+  assert.match(shadow, /buildV1LocalReentry\(closedSlot\.slot_number, Number\(closedSlot\.buy_price\)/);
+  for (const runtime of [shadow, server]) {
+    assert.match(runtime, /planStrategyClosedSlot/);
+    assert.match(runtime, /planStrategyInitialEntry/);
+    assert.match(runtime, /planStrategyNextEntry/);
+    assert.match(runtime, /planStrategyTakeProfit/);
+    assert.match(runtime, /persistStrategyDecision/);
+  }
   assert.match(server, /restartTerminalCycle/);
   assert.match(server, /restart_robot_v1_testnet_cycle/);
+});
+
+test("Strategy ledger is scoped, versioned, immutable and permits only fictitious environments", () => {
+  assert.match(strategyMigration, /environment in \('SHADOW','TESTNET'\)/);
+  assert.match(strategyMigration, /unique \(product_id,tenant_id,user_id,environment,decision_id\)/);
+  assert.match(strategyMigration, /enable row level security/);
+  assert.match(strategyMigration, /force row level security/);
+  assert.match(strategyMigration, /private\.coinops_can_access_row\(product_id,tenant_id,user_id\)/);
+  assert.match(strategyMigration, /grant insert,update on coinops\.robot_v1_strategy_decisions to service_role/);
+  assert.match(strategyMigration, /COINOPS_STRATEGY_DECISION_IMMUTABLE/);
+  assert.match(strategyMigration, /r\.product_id=new\.product_id and r\.tenant_id=new\.tenant_id and r\.user_id=new\.user_id and r\.asset=new\.asset/);
+  assert.match(strategyMigration, /s\.id=new\.slot_id and s\.run_id=new\.cycle_id/);
+  assert.match(strategyMigration, /s\.id=new\.slot_id and s\.cycle_id=new\.cycle_id/);
+  assert.match(strategyMigration, /strategy_version text/);
+  assert.match(strategyMigration, /STALE_CACHED_RUN_DISCOVERY/);
+  assert.match(strategyMigration, /historical_missed_preserved/);
+  assert.doesNotMatch(strategyMigration, /\b(?:update|delete\s+from)\s+coinops\.(?:robot_v1_slot_operations|robot_v1_slot_accounts|robot_v1_testnet_fills|robot_v1_testnet_slots|robot_v1_testnet_runs|asset_slots|assets)\b/i);
+  assert.doesNotMatch(strategyMigration, /(?:truncate|drop\s+table)\s/i);
+});
+
+test("Shadow recovery has a bounded lease and processes resident candle chronology before current-market queue decisions", () => {
+  assert.match(shadow, /strategy_lease_owner: leaseOwner, strategy_lease_until: new Date\(started \+ 90_000\)/);
+  assert.match(shadow, /strategy_lease_until\.is\.null,strategy_lease_until\.lt/);
+  assert.match(shadow, /Date\.now\(\) >= deadline/);
+  assert.match(shadow, /strategy_lease_owner: null, strategy_lease_until: null/);
+  assert.match(shadow, /wasStrategyOrderResidentAt\(slot\.buy_triggered_at, candle\.openTime\)/);
+  const candleLoop = shadow.indexOf("for (const candle of candles)");
+  const localClose = shadow.indexOf("settleClosedSlots(supabase, config, cycle, filters, candle.closeTime)", candleLoop);
+  const oldQueue = shadow.indexOf("reconcileSingleArmedEntry(supabase, config, cycle, candle.low, candle.closeTime, canArm)", candleLoop);
+  const newQueue = shadow.indexOf("reconcileSingleArmedEntry(supabase, config, cycle, candle.close, candle.closeTime, canArm)", localClose);
+  const checkpoint = shadow.indexOf("last_candle_open_at: candle.openTime", candleLoop);
+  const currentMarketQueue = shadow.indexOf("reconcileSingleArmedEntry(supabase, config, cycle, market.price, market.observedAt, canArm)", candleLoop);
+  assert.ok(candleLoop >= 0 && localClose > candleLoop && checkpoint > localClose && currentMarketQueue > checkpoint);
+  assert.ok(oldQueue > candleLoop && oldQueue < localClose && newQueue > localClose && newQueue < checkpoint);
+  assert.match(shadow, /if \(!terminal && backlogComplete\)/);
+  assert.match(shadow, /if \(terminal\) break/);
+  assert.match(shadow, /Math\.max\(Date\.parse\(cycle\.started_at\), config\.last_candle_open_at/);
 });
 
 test("Production remains structurally outside every write path", () => {
