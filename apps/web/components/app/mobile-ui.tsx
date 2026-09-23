@@ -80,7 +80,7 @@ const navigation = [
   { href: "/dashboard", label: "Resumo", icon: "◈" },
   { href: "/slots", label: "Slots", icon: "▦" },
   { href: "/plano-crescimento", label: "Plano", icon: "↗" },
-  { href: "/historico", label: "Histórico", icon: "◷" },
+  { href: "/automacao", label: "Automação", icon: "ϟ" },
   { href: "/mais", label: "Mais", icon: "☰" }
 ];
 

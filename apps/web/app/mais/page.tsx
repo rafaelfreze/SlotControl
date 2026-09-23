@@ -8,8 +8,8 @@ export const metadata: Metadata = { title: "Mais" };
 const destinations = [
   { href: "/relatorios", title: "Relatórios", description: "Audite Shadow, Testnet e Real e exporte o relatório completo." },
   { href: "/ciclos", title: "Ciclos", description: "Veja cada ciclo, suas etapas e o histórico preservado." },
+  { href: "/historico", title: "Histórico", description: "Consulte operações, gains e eventos já registrados." },
   { href: "/alertas", title: "Alertas", description: "Consulte avisos que merecem atenção." },
-  { href: "/automacao", title: "Automação", description: "Acompanhe a simulação Shadow e a conexão somente leitura." },
   { href: "/config", title: "Configurações", description: "Ajuste as preferências disponíveis para sua conta." }
 ];
 
