@@ -164,7 +164,9 @@ export function buildV1LocalReentry(slotNumber: number, previousEntryPrice: numb
   if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > V1_SLOT_COUNT || !Number.isFinite(previousEntryPrice) || previousEntryPrice <= 0) {
     throw new Error("COINOPS_V1_RECYCLE_INPUT_INVALID");
   }
-  const buyPrice = normalizePriceToTick(previousEntryPrice, filters.priceTick);
+  // Preserve an already valid exchange tick. A generic floor can lose one
+  // tick to IEEE-754 noise (83788.15 / .01, for example).
+  const buyPrice = normalizeV1TargetPrice(previousEntryPrice, filters.priceTick);
   const { quantity, notional } = quantityForV1SlotBalance(balanceUsdc, buyPrice, filters);
   return { slotNumber, buyPrice, quantity, notional };
 }

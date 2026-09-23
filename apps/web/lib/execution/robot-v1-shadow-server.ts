@@ -8,7 +8,7 @@ import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observat
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
 import { sumV1DecimalAmounts } from "./robot-v1-audit";
-import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1LocalReentry, evaluateV1Candle, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
+import { V1_RULES, V1_SLOT_COUNT, assertV1ShadowParameters, buildV1Grid, buildV1LocalReentry, evaluateV1Candle, findV1LogicalLevel, quantityForV1SlotBalance, selectV1CandleResidentSlots, validateActiveGrid, v1ClientOrderId, v1IdempotencyKey, type V1Asset, type V1ShadowParameters } from "./robot-v1";
 import { STRATEGY_VERSION, calculateStrategyTakeProfit, isStrategyDecisionProven, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit, wasStrategyOrderResidentAt, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
 import type { ExchangeSymbolInfo } from "./types";
@@ -89,6 +89,40 @@ async function readSlots(supabase: Service, cycle: Cycle) {
   const { data, error } = await supabase.from("robot_v1_slots").select(SLOT_COLUMNS).eq("cycle_id", cycle.id).order("slot_number");
   if (error) throw error;
   return (data || []) as Slot[];
+}
+
+/** Repair only the proven one-tick floor drift of an unfilled, unarmed virtual
+ * reentry. No open position, resident BUY or historical operation is changed. */
+async function repairShadowReentryTickDrift(supabase: Service, config: Config, cycle: Cycle,
+  slots: Slot[], filters: ExchangeSymbolInfo, parameters: V1ShadowParameters) {
+  let repaired = 0;
+  for (const slot of slots.filter((row) => row.status === "PENDING" && row.entry_state === "PLANNED"
+    && row.operation_sequence > 1 && Number(row.executed_quantity) === 0)) {
+    const { data: previous, error } = await supabase.from("robot_v1_slot_operations")
+      .select("entry_price,closed_at").eq("cycle_id", cycle.id).eq("slot_id", slot.id)
+      .eq("operation_sequence", slot.operation_sequence - 1).maybeSingle();
+    if (error) throw error;
+    const previousPrice = Number(previous?.entry_price), drift = previousPrice - Number(slot.buy_price);
+    if (!previous?.closed_at || !Number.isFinite(drift)
+      || Math.abs(drift - filters.priceTick) > filters.priceTick * 1e-5
+      || findV1LogicalLevel(Number(cycle.anchor_price), previousPrice, filters, parameters) !== slot.logical_level) continue;
+    const account = (await loadSlotAccounts(supabase, config))[slot.slot_number - 1]!;
+    const entry = buildV1LocalReentry(slot.slot_number, previousPrice, Number(account.balance_usdc), filters);
+    if (entry.buyPrice !== previousPrice) continue;
+    const { data: changed, error: updateError } = await supabase.from("robot_v1_slots").update({
+      buy_price: entry.buyPrice, requested_quantity: entry.quantity, allocation_usdc: account.balance_usdc,
+      observed_at: new Date().toISOString()
+    }).eq("id", slot.id).eq("cycle_id", cycle.id).eq("operation_sequence", slot.operation_sequence)
+      .eq("status", "PENDING").eq("entry_state", "PLANNED").eq("executed_quantity", 0)
+      .eq("buy_price", slot.buy_price).select("id").maybeSingle();
+    if (updateError) throw updateError;
+    if (!changed?.id) continue;
+    repaired += 1;
+    await audit(supabase, config, "SHADOW_TICK_DRIFT_REPAIRED", `${cycle.id}:${slot.id}:${slot.operation_sequence}`,
+      { cycleId: cycle.id, slotId: slot.id, previous: { buyPrice: slot.buy_price },
+        next: { buyPrice: entry.buyPrice, reason: "PREVIOUS_CONFIRMED_ENTRY_TICK_RESTORED", operationSequence: slot.operation_sequence } });
+  }
+  return repaired;
 }
 
 async function recoverShadowDecisions(supabase: Service, config: Config) {
@@ -426,16 +460,33 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       // Complete a previously persisted BUY before processing later candles.
       for (const slot of healthSlots) await ensureTakeProfit(supabase, config, cycle, slot, filters, new Date().toISOString());
       healthSlots = await readSlots(supabase, cycle);
+      const repairedTickDrift = await repairShadowReentryTickDrift(supabase, config, cycle, healthSlots, filters, cycleParameters);
+      if (repairedTickDrift) healthSlots = await readSlots(supabase, cycle);
       const gridValidation = validateActiveGrid(Number(cycle.anchor_price), filters, cycleParameters, healthSlots.map((slot) => ({
         slotNumber: slot.slot_number, logicalLevel: slot.logical_level, buyPrice: Number(slot.buy_price),
         status: slot.status === "CLOSED" || slot.status === "CANCELLED" ? "PENDING" : slot.status
       })));
       const gridError = gridValidation.valid ? null : `GRADE ${config.asset} INVÁLIDA: ${gridValidation.errors.join(", ")}`;
+      let resumeAfterRepair = false;
+      if (repairedTickDrift && gridValidation.valid && config.pause_new_entries && config.grid_status === "INVALID"
+        && /^GRADE (BTC|SOL) INVÁLIDA: PRICE_OFF_LADDER_\d+$/.test(config.grid_error || "") && !config.kill_switch) {
+        const { data: lastControl, error: controlError } = await supabase.from("robot_v1_audit_events")
+          .select("event_type").eq("config_id", config.id).in("event_type", ["PAUSED", "RESUMED", "SHADOW_STARTED"])
+          .order("observed_at", { ascending: false }).limit(1).maybeSingle();
+        if (controlError) throw controlError;
+        resumeAfterRepair = Boolean(lastControl && lastControl.event_type !== "PAUSED");
+      }
       const { error: healthError } = await supabase.from("robot_v1_configs").update({
         last_market_price: market.price, last_market_observed_at: market.observedAt, last_engine_at: new Date().toISOString(), last_engine_error: gridError,
-        grid_status: gridValidation.valid ? "VALID" : "INVALID", grid_error: gridError, ...(gridValidation.valid ? {} : { pause_new_entries: true })
+        grid_status: gridValidation.valid ? "VALID" : "INVALID", grid_error: gridError,
+        ...(gridValidation.valid ? resumeAfterRepair ? { pause_new_entries: false } : {} : { pause_new_entries: true })
       }).eq("id", config.id).eq("strategy_lease_owner", leaseOwner);
       if (healthError) throw healthError;
+      if (resumeAfterRepair) {
+        config.pause_new_entries = false;
+        await audit(supabase, config, "SHADOW_GRID_AUTO_RESUMED", `${cycle.id}:TICK_DRIFT_REPAIRED`,
+          { cycleId: cycle.id, next: { reason: "ONLY_AUTO_PAUSE_FROM_PROVEN_TICK_DRIFT", repairedSlots: repairedTickDrift } });
+      }
       if (!gridValidation.valid) await audit(supabase, config, "GRID_INVALID", `${cycle.id}:${gridValidation.errors.join("|")}`,
         { cycleId: cycle.id, next: { errors: gridValidation.errors, action: "NEW_ENTRIES_PAUSED" }, observedAt: new Date().toISOString() });
       const canArm = gridValidation.valid && !config.kill_switch && !config.pause_new_entries;

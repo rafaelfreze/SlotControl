@@ -78,6 +78,17 @@ test("real SOL regression keeps physical Slot #2 at its 117.90 entry while Slot 
   assert.equal(v1ClientOrderId("SOL", "cycle", 2, "BUY", 2) === v1ClientOrderId("SOL", "cycle", 2, "BUY", 3), false);
 });
 
+test("BTC recycled tick stays exactly on its previous frozen ladder level", () => {
+  const btc = { ...filters("BTCUSDC"), priceTick: 0.01, quantityStep: 0.00001, minQuantity: 0.00001 };
+  const grid = buildV1Grid("BTC", 250, 87225.17, btc, { gainRate: 0.005, entrySpacing: 0.01 });
+  assert.equal(grid[4]?.buyPrice, 83788.15);
+  const recycled = buildV1LocalReentry(5, 83788.15, 10.0460845, btc);
+  assert.equal(recycled.buyPrice, 83788.15);
+  assert.equal(validateActiveGrid(87225.17, btc, { gainRate: 0.005, entrySpacing: 0.01 },
+    grid.map((slot) => ({ slotNumber: slot.slotNumber, logicalLevel: slot.logicalLevel,
+      buyPrice: slot.slotNumber === 5 ? recycled.buyPrice : slot.buyPrice, status: "PENDING" as const }))).valid, true);
+});
+
 test("a physical slot compounds its next virtual BUY without changing other slots or the ladder", () => {
   const parameters = { entrySpacing: 0.01, gainRate: 0.005 };
   const symbolFilters = filters("SOLUSDC");
