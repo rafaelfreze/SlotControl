@@ -304,10 +304,20 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     if (!isBuy && !isTp) continue;
     const details = object(event.next_state), trigger = num(isBuy ? details.buyPrice ?? details.triggerPrice : details.takeProfitPrice);
     if (trigger === null || !event.timestamp) continue;
-    const stop = allEvents.find((candidate) => candidate.environment === "SHADOW" && candidate.cycle_id === event.cycle_id
+    const actionTypes = isBuy ? ["BUY_TRIGGERED", "BUY_FILLED"] : ["TP_TRIGGERED", "TP_FILLED"];
+    const isAction = (candidate: AuditRow) => actionTypes.includes(str(candidate.event_type));
+    const isStop = (candidate: AuditRow) => candidate.environment === "SHADOW" && candidate.cycle_id === event.cycle_id
       && timestamp(candidate.timestamp) >= timestamp(event.timestamp) && candidate !== event
-      && ((candidate.slot === event.slot && (isBuy ? ["BUY_TRIGGERED", "BUY_FILLED", "NEXT_BUY_DISARMED", "SLOT_RECYCLED"] : ["TP_TRIGGERED", "TP_FILLED", "SLOT_RECYCLED"]).includes(str(candidate.event_type))) || candidate.event_type === "CYCLE_COMPLETED"));
-    const observed = stop && (isBuy ? ["BUY_TRIGGERED", "BUY_FILLED"] : ["TP_TRIGGERED", "TP_FILLED"]).includes(str(stop.event_type)) ? stop : null;
+      && (!isAction(candidate) || !(event.operation_sequence != null && candidate.operation_sequence != null && event.operation_sequence !== candidate.operation_sequence)
+        && !(event.operation_id && candidate.operation_id && event.operation_id !== candidate.operation_id))
+      && ((candidate.slot === event.slot && (isBuy ? [...actionTypes, "NEXT_BUY_DISARMED", "SLOT_RECYCLED"] : [...actionTypes, "SLOT_RECYCLED"]).includes(str(candidate.event_type))) || candidate.event_type === "CYCLE_COMPLETED");
+    const firstStop = allEvents.find(isStop);
+    // Candle-driven TP, credit and recycle legitimately share one timestamp.
+    // UUID/JSON ordering is not causal: prefer the matching action only at the
+    // first stop instant, never across an earlier disarm/recycle/cycle boundary.
+    const stop = firstStop && (allEvents.find((candidate) => timestamp(candidate.timestamp) === timestamp(firstStop.timestamp)
+      && isAction(candidate) && isStop(candidate)) ?? firstStop);
+    const observed = stop && isAction(stop) ? stop : null;
     // Historical restarts can close a cycle without a CYCLE_COMPLETED event.
     // A trigger cannot remain armed after its owning cycle has ended.
     const completedAt = timestamp(cycleById.get(str(event.cycle_id))?.completed_at);

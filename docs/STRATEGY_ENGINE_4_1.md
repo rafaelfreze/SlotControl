@@ -85,6 +85,20 @@ checks de prioridade, inicial MARKET, duplicação e paridade. Evidência ausent
 é WARNING; falha interna/missed não aparece como Motor OK. O gate
 `LIVE_STRATEGY_PARITY_READY` é informativo e não habilita LIVE.
 
+Quando TP/BUY e reciclagem têm o mesmo timestamp de candle, o detector de
+gatilhos prioriza a ação efetivamente persistida naquele primeiro instante de
+encerramento. Um evento posterior não pode encobrir um encerramento anterior.
+Isso evita falso `MISSING_ACTION` sem fabricar execução ou ocultar falha real.
+
+Smoke de 23/09/2026, 14:32–14:44 UTC: 13 reconciliações por ativo, sem falha;
+maior intervalo de 60,635s. O diagnóstico direto Testnet confirmou 2 ordens
+próprias BTC e 5 SOL, com reservas iguais ao ledger. Os dois runs mantiveram
+25 slots, uma única NEXT BUY por ativo e nenhum ID de decisão duplicado.
+UI desktop e relatório v2/exportação de decisões foram inspecionados. O controle
+de viewport do navegador não aplicou 390px (permaneceu em 1920px), portanto
+o smoke mobile não foi certificado. Estes dados comprovam a janela observada,
+não operação prolongada nem aprovação do gate LIVE.
+
 Validação reproduzível em `apps/web`: `npm.cmd test`, `npm.cmd run lint`,
 `npm.cmd run typecheck`, `npm.cmd run build`. Testes não enviam ordens e cobrem
 cache real do Next, engine pura, isolamento do dispatcher, intent/retry,

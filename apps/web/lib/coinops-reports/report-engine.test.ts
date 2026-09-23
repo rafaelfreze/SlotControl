@@ -91,6 +91,54 @@ test("a proven missing action stays FAIL even when another trigger has incomplet
   assert.ok(report.datasets.market.some((row) => row.result === "INCOMPLETE"));
   assert.equal(report.datasets.checks.find((row) => row.code === "ARMED_TRIGGER_ACTIONS")?.status, "FAIL");
 });
+
+test("TP and recycle at the same candle close prefer the actual TP, regardless of UUID ordering", () => {
+  const input = fixture();
+  input.sources.robot_v1_audit_events.push(
+    { ...owner, id: "entry", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "BUY_TRIGGERED", observed_at: at("01:17"), next_state: { takeProfitPrice: 114.37, operationSequence: 2 } },
+    { ...owner, id: "0-recycle-first-lexically", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "SLOT_RECYCLED", observed_at: at("01:36"), next_state: { operationSequence: 3 } },
+    { ...owner, id: "z-tp-after-lexically", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "TP_TRIGGERED", observed_at: at("01:36"), next_state: { operationSequence: 2, targetPrice: 114.37, observedHigh: 114.53 } }
+  );
+  input.sources.robot_v1_market_candles.push({ ...owner, symbol: "SOLUSDC", candle_open_at: at("01:35"), candle_close_at: at("01:36"), high_price: 114.53, low_price: 114.23 });
+  const report = buildAuditReport(input, filters);
+  const trigger = report.datasets.market.find((row) => row.trigger_type === "TP" && row.slot === 6)!;
+  assert.equal(trigger.result, "OBSERVED"); assert.equal(trigger.observed_action, "TP_TRIGGERED");
+  assert.equal(trigger.observed_at, at("01:36")); assert.equal(trigger.ended_at, "2026-09-22T01:36:00.001Z");
+  assert.equal(report.datasets.checks.find((row) => row.code === "ARMED_TRIGGER_ACTIONS")?.status, "PASS");
+  // The deployed legacy BUY/TP events did not carry their operation sequence.
+  // Preserve that absence while still recognizing the persisted same-slot TP.
+  for (const event of input.sources.robot_v1_audit_events.filter((row) => ["entry", "z-tp-after-lexically"].includes(String(row.id)))) {
+    delete (event.next_state as Record<string, unknown>).operationSequence;
+  }
+  assert.equal(buildAuditReport(input, filters).datasets.market.find((row) => row.trigger_type === "TP" && row.slot === 6)?.result, "OBSERVED");
+});
+
+test("a later TP cannot override a legitimate earlier recycle boundary", () => {
+  const input = fixture();
+  input.sources.robot_v1_audit_events.push(
+    { ...owner, id: "entry", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "BUY_TRIGGERED", observed_at: at("01:17"), next_state: { takeProfitPrice: 114.37, operationSequence: 2 } },
+    { ...owner, id: "recycle", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "SLOT_RECYCLED", observed_at: at("01:35"), next_state: { operationSequence: 3 } },
+    { ...owner, id: "later-tp", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "TP_TRIGGERED", observed_at: at("01:36"), next_state: { operationSequence: 2, targetPrice: 114.37 } }
+  );
+  input.sources.robot_v1_market_candles.push({ ...owner, symbol: "SOLUSDC", candle_open_at: at("01:34"), candle_close_at: at("01:35"), high_price: 114.53, low_price: 114.23 });
+  const trigger = buildAuditReport(input, filters).datasets.market.find((row) => row.trigger_type === "TP" && row.slot === 6)!;
+  assert.equal(trigger.result, "MISSING_ACTION"); assert.equal(trigger.observed_action, null);
+  assert.equal(trigger.ended_at, "2026-09-22T01:35:00.001Z");
+});
+
+test("same-time action preference cannot borrow another physical slot, cycle or known operation sequence", () => {
+  const input = fixture();
+  input.sources.robot_v1_audit_events.push(
+    { ...owner, id: "entry", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "BUY_TRIGGERED", observed_at: at("01:17"), next_state: { takeProfitPrice: 114.37, operationSequence: 2 } },
+    { ...owner, id: "0-recycle", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "SLOT_RECYCLED", observed_at: at("01:36"), next_state: { operationSequence: 3 } },
+    { ...owner, id: "wrong-operation", cycle_id: "cycle-1", slot_id: "slot-6", event_type: "TP_TRIGGERED", observed_at: at("01:36"), next_state: { operationSequence: 3 } },
+    { ...owner, id: "wrong-slot", cycle_id: "cycle-1", slot_id: "slot-7", event_type: "TP_TRIGGERED", observed_at: at("01:36"), next_state: { operationSequence: 2 } },
+    { ...owner, id: "wrong-cycle", cycle_id: "other-cycle", slot_id: "slot-6", event_type: "TP_TRIGGERED", observed_at: at("01:36"), next_state: { operationSequence: 2 } }
+  );
+  input.sources.robot_v1_market_candles.push({ ...owner, symbol: "SOLUSDC", candle_open_at: at("01:35"), candle_close_at: at("01:36"), high_price: 114.53, low_price: 114.23 });
+  const trigger = buildAuditReport(input, filters).datasets.market.find((row) => row.trigger_type === "TP" && row.slot === 6)!;
+  assert.equal(trigger.result, "MISSING_ACTION"); assert.equal(trigger.observed_action, null);
+});
 test("period is end-exclusive; immutable credit uses operation time despite migration backfill", () => {
   const report = buildAuditReport(fixture(), { ...filters, start: at("01:00"), end: at("01:30") });
   assert.equal(report.datasets.gains.length, 1); assert.equal(report.datasets.gains[0]!.operation_id, "op-1"); assert.equal(report.datasets.capital.length, 1);
