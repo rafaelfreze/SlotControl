@@ -12,8 +12,9 @@ const GLOBAL_CHECKS = ["OPERATION_IDS_UNIQUE", "EVENT_IDEMPOTENCY_UNIQUE", "TERM
 /** A read-only evidence gate, never a trading permission or feature flag. */
 export function buildPreLiveAuditGate(data: AuditDatasets, incomplete: string[]): AuditRow {
   const checks = data.checks.filter((row) => !["PRE_LIVE_AUDIT_READY", "LIVE_STRATEGY_PARITY_READY"].includes(String(row.code)));
-  const recovered = (row: AuditRow) => row.code === "STRATEGY_DECISION_DISPATCH"
-    && row.active_failures === 0 && Number(row.recovered_historical_failures) > 0;
+  const recovered = (row: AuditRow) => row.active_failures === 0 && Number(row.recovered_historical_failures) > 0
+    && (row.code === "STRATEGY_DECISION_DISPATCH" || ["GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY", "LOCAL_REENTRY_RULE"].includes(String(row.code))
+      && row.recovery_basis === "SAME_OPERATION_TICK_REPAIR_AND_PRICE_CONFIRMATION");
   const failures = checks.filter((row) => row.status === "FAIL" && !recovered(row));
   const historical = checks.filter((row) => row.status === "FAIL" && recovered(row));
   const activeRuntime = data.summary?.filter((row) => ["SHADOW", "TESTNET"].includes(String(row.environment)) && Number(row.active_errors) > 0) ?? [];

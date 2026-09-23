@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { buildAuditReport, REPORT_DATASET_KEYS, type AuditInput, type AuditFilters } from "./report-engine.ts";
 import { auditExecutionGaps, auditTriggerWindows, type TriggerWindow } from "./trigger-audit.ts";
 import { STRATEGY_4_1_EFFECTIVE_AT } from "./missed-level-temporal.ts";
+import { buildPreLiveAuditGate } from "./pre-live-audit.ts";
 
 const at = (time: string) => `2026-09-22T${time}:00.000Z`;
 const filters: AuditFilters = { start: at("00:00"), end: at("03:00"), assets: ["SOL"], environments: ["SHADOW"] };
@@ -301,6 +302,89 @@ test("local slot recycle exports prior entry, compounding and physical ownership
   const report = buildAuditReport(input, filters), event = report.datasets.events.find((row) => row.event_type === "SLOT_REENTRY_ARMED")!;
   assert.equal(event.previous_entry_price, 10); assert.equal(event.reentry_price, 10); assert.equal(event.balance_after, 10.1); assert.equal(event.physical_slot_number, 1);
   assert.equal(report.datasets.checks.find((row) => row.code === "GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY")?.status, "PASS");
+});
+
+function repairedBtcReentryFixture() {
+  const input = fixture(); input.generatedAt = "2026-09-23T18:00:00Z";
+  for (const rows of Object.values(input.sources)) for (const row of rows) {
+    if (row.asset === "SOL") row.asset = "BTC";
+    if (row.symbol === "SOLUSDC") row.symbol = "BTCUSDC";
+  }
+  for (const slot of input.sources.robot_v1_slots!) if (slot.entry_state === "ARMED") slot.entry_state = "PLANNED";
+  Object.assign(input.sources.robot_v1_slots![4]!, { operation_sequence: 2, buy_price: 83788.15, entry_state: "ARMED" });
+  const event = { ...owner, id: "historical-one-tick", config_id: "config-sol", cycle_id: "cycle-1", slot_id: "slot-5",
+    event_type: "SLOT_REENTRY_PLANNED", observed_at: "2026-09-23T16:06:59.999Z", idempotency_key: "historical-one-tick",
+    previous_state: { previousEntryPrice: 83788.15 },
+    next_state: { balanceAfter: 10.0470184, reentryPrice: 83788.14, gainCountAfter: 1, operationSequence: 2, otherOpenPositions: 2, physicalSlotNumber: 5 } };
+  const repair = { ...owner, id: "proven-tick-repair", config_id: "config-sol", cycle_id: "cycle-1", slot_id: "slot-5",
+    event_type: "SHADOW_TICK_DRIFT_REPAIRED", observed_at: "2026-09-23T17:50:26.082Z", idempotency_key: "proven-tick-repair",
+    previous_state: { buyPrice: 83788.14 }, next_state: { reason: "PREVIOUS_CONFIRMED_ENTRY_TICK_RESTORED", buyPrice: 83788.15, operationSequence: 2 } };
+  input.sources.robot_v1_audit_events!.push(event, repair);
+  const btcFilters: AuditFilters = { start: "2026-09-23T00:00:00Z", end: input.generatedAt, assets: ["BTC"], environments: ["SHADOW"] };
+  return { input, event, repair, btcFilters };
+}
+const reentryCodes = ["GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY", "LOCAL_REENTRY_RULE"];
+
+test("raw Shadow reentry preserves previous_state evidence and missing price is never zero", () => {
+  const { input, event, btcFilters } = repairedBtcReentryFixture();
+  input.sources.robot_v1_audit_events = [event];
+  event.previous_state.previousEntryPrice = 85489.38; event.next_state.reentryPrice = 85489.38;
+  let report = buildAuditReport(input, btcFilters);
+  assert.equal(report.datasets.events[0]!.previous_entry_price, 85489.38);
+  for (const code of reentryCodes) assert.equal(report.datasets.checks.find((row) => row.code === code)?.status, "PASS", code);
+  event.previous_state = {} as typeof event.previous_state;
+  report = buildAuditReport(input, btcFilters);
+  assert.equal(report.datasets.events[0]!.previous_entry_price, null);
+  for (const code of reentryCodes) assert.equal(report.datasets.checks.find((row) => row.code === code)?.status, "WARNING", code);
+});
+
+test("one-tick reentry violation stays historical FAIL while exact repair proof removes only active failure", () => {
+  const { input, btcFilters } = repairedBtcReentryFixture();
+  const report = buildAuditReport(input, btcFilters);
+  const event = report.datasets.events.find((row) => row.event_id === "historical-one-tick")!;
+  assert.equal(event.previous_entry_price, 83788.15); assert.equal(event.reentry_price, 83788.14);
+  assert.equal(event.reentry_recovery_event_id, "proven-tick-repair");
+  const checks = report.datasets.checks.filter((row) => reentryCodes.includes(String(row.code)));
+  for (const check of checks) {
+    assert.equal(check.status, "FAIL"); assert.equal(check.active_failures, 0); assert.equal(check.recovered_historical_failures, 1);
+  }
+  const gate = buildPreLiveAuditGate({ ...report.datasets, checks, summary: [] }, []);
+  assert.equal(gate.status, "WARNING"); assert.equal(gate.recovered_historical_failures, 2); assert.equal(gate.live_enabled, false);
+});
+
+test("reentry repair must match cycle, physical slot, sequence, chronology and both prices", () => {
+  const variants: Array<(fixture: ReturnType<typeof repairedBtcReentryFixture>) => void> = [
+    ({ input }) => { input.sources.robot_v1_audit_events = input.sources.robot_v1_audit_events!.filter((row) => row.event_type !== "SHADOW_TICK_DRIFT_REPAIRED"); },
+    ({ repair }) => { repair.cycle_id = "other-cycle"; },
+    ({ repair }) => { repair.slot_id = "slot-3"; },
+    ({ repair }) => { repair.next_state.operationSequence = 3; },
+    ({ repair }) => { repair.previous_state.buyPrice = 83788.13; },
+    ({ repair }) => { repair.next_state.buyPrice = 83788.16; },
+    ({ repair }) => { repair.observed_at = "2026-09-23T16:00:00Z"; },
+    ({ input }) => { input.sources.robot_v1_slots![4]!.buy_price = 83788.14; },
+  ];
+  for (const modify of variants) {
+    const f = repairedBtcReentryFixture(); modify(f);
+    const report = buildAuditReport(f.input, f.btcFilters);
+    const checks = report.datasets.checks.filter((row) => reentryCodes.includes(String(row.code)));
+    for (const check of checks) { assert.equal(check.status, "FAIL"); assert.equal(check.active_failures, 1); }
+    assert.equal(buildPreLiveAuditGate({ ...report.datasets, checks, summary: [] }, []).status, "FAIL");
+  }
+});
+
+test("immutable operation can confirm repaired entry after slot reuse but price repair cannot excuse lost capital", () => {
+  const { input, event, btcFilters } = repairedBtcReentryFixture();
+  input.sources.robot_v1_slots![4]!.operation_sequence = 3;
+  input.sources.robot_v1_slot_operations!.push({ ...owner, id: "repaired-entry", cycle_id: "cycle-1", slot_id: "slot-5",
+    symbol: "BTCUSDC", physical_slot_number: 5, operation_sequence: 2, entry_price: 83788.15,
+    opened_at: "2026-09-23T17:55:00Z", allocation_usdc: 10.0470184, executed_quantity: .00011 });
+  let report = buildAuditReport(input, btcFilters);
+  assert.equal(report.datasets.events.find((row) => row.event_id === event.id)?.reentry_recovery_event_id, "proven-tick-repair");
+  Object.assign(event.previous_state, { balanceBefore: 11 });
+  report = buildAuditReport(input, btcFilters);
+  const checks = report.datasets.checks.filter((row) => reentryCodes.includes(String(row.code)));
+  assert.equal(checks.find((row) => row.code === "GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY")?.active_failures, 1);
+  assert.equal(buildPreLiveAuditGate({ ...report.datasets, checks, summary: [] }, []).status, "FAIL");
 });
 test("Single Active Entry and 25 physical slots detect breaches without changing strategy", () => {
   const input = fixture(); input.sources.robot_v1_slots![2]!.entry_state = "ARMED"; input.sources.robot_v1_slots!.pop();

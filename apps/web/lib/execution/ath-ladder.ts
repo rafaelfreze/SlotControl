@@ -2,6 +2,7 @@ import { buildPostAthQueue, orderedPostAthSlots, validateAthParameters, type Ath
   type PostAthGroup } from "./ath-regime.ts";
 import { MONTHLY_SLOT_TARGET } from "./monthly-slot-policy.ts";
 import type { V1Asset } from "./robot-v1.ts";
+import { athLadderLevelPrice } from "./ath-ladder-price.ts";
 
 export type AthLadderSlot = AthSlot & {
   buyPrice: number;
@@ -47,11 +48,6 @@ export function validateAthTransitionedGrid(slots: ReadonlyArray<{ physicalSlotN
   return { valid: errors.length === 0, errors };
 }
 
-function floorToTick(value: number, tick: number) {
-  const steps = Math.floor(value / tick + 1e-8);
-  return Number((steps * tick).toPrecision(15));
-}
-
 /** Plans prices, never writes. Existing OPEN/TP, partial fills and local
  * reentries remain frozen. A caller must atomically persist all future GRID
  * targets under its cycle/run lease before allowing another BUY. */
@@ -78,7 +74,7 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   for (const slot of ordered) {
     const physical = slots.find((item) => item.physicalSlotId === slot.physicalSlotId)!;
     if (physical.entryOrigin === "REENTRY") continue;
-    const target = floorToTick(anchorPrice * (1 - spacing) ** nextLevel, tick);
+    const target = athLadderLevelPrice(anchorPrice, spacing, nextLevel, tick);
     if (!Number.isFinite(target) || target <= 0) throw new Error("COINOPS_ATH_LADDER_FILTER_INVALID");
     computed.set(slot.physicalSlotId, target);
     nextLevel++;

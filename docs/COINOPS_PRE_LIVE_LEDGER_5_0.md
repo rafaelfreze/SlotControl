@@ -16,6 +16,7 @@ principal da Fase 5.0.
 | LEDGER-04 | MEDIUM | Preview/SQL dependiam de `entry_state=OPEN` e BUY `FILLED`; uma execução parcial ainda ARMED ou terminal cancelada perdia a evidência de posição/capital comprometido. | A exposição Testnet deriva de BUY − SELL − taxas base da operação corrente; a evidência preserva o quote original das BUY. Shadow também reconhece PARTIALLY_FILLED. Não altera posição nem ordem. |
 | LEDGER-05 | LOW | Retry de reversal com mesma chave e motivo diferente retornava sucesso no atalho da server action. | Motivo normalizado também integra a comparação de idempotência; o RPC continua protegendo fingerprint completo. |
 | LEDGER-06 | MEDIUM | Falhas de consulta do ciclo/slot Shadow eram silenciosamente representadas como ausência de posição. | Preview falha fechado com `POSITION_UNAVAILABLE`. |
+| LEDGER-07 | MEDIUM | Relatório preferia BUY_NEW histórico a snapshot CANCELED posterior. Duas BUY antigas canceladas eram contadas como reservas abertas; reprodução com 1 OPEN + 1 TP + 1 NEXT elevou incorretamente orders_open de 2 para 4 e capital comprometido de 19,9 para 39,4. | Precedência pela data da evidência: snapshot só antes do cutoff, eventos posteriores prevalecem; estados históricos nunca usam snapshot futuro. Cancelamentos semânticos persistidos também são reconhecidos. Capital contábil e ordens não são alterados. |
 
 As guards de FX corrigem a fronteira SQL mesmo que o cliente TypeScript já
 rejeitasse NaN. O RPC é somente service-role e a UI não fornece um caminho
@@ -118,3 +119,12 @@ Execução do novo RPC e das constraints locais não constitui aplicação
 remota de migrations; isso pertence ao fechamento principal.
 
 Production continua READ-ONLY; LIVE bloqueado; zero operação financeira real.
+
+## Regressão do relatório no smoke
+
+`apps/web/lib/coinops-reports/audit-5-order-snapshot.test.ts` executa o
+`buildAuditReport` real com ordens e eventos sintéticos. Confere resumo,
+capital comprometido/livre, estado exportado, cutoff exclusivo, preservação
+do estado histórico, precedência do evento mais novo e ausência de evidência
+sem transformar UNKNOWN em zero. Este finding não era duplicação de intents:
+o erro era a classificação temporal de BUYs já canceladas.

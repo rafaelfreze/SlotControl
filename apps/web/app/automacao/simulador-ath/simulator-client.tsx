@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import type { AthSimulationStep } from "@/lib/execution/ath-simulator";
+import { buildAthDescentPrices } from "@/lib/execution/ath-simulation-scenarios";
 
 type Asset = "BTC" | "SOL";
 type Result = { simulationId: string; state: { regime: string; athPrice: number | null }; cycleNumber: number;
@@ -12,8 +13,6 @@ const initialGains = Array.from({ length: 25 }, (_, index) => String(index + 1))
 const pct = (value: string) => Number(value.trim().replace(",", ".")) / 100;
 const counts = (value: string) => value.split(/[;,\s]+/).filter(Boolean).map(Number);
 const pricesOf = (value: string) => value.split(/[;\s]+/).filter(Boolean).map((part) => Number(part.replace(",", ".")));
-const sequence = (anchor: number, spacing: number) => [anchor, ...Array.from({ length: 24 }, (_, index) =>
-  Number((anchor * (1 - spacing) ** (index + 1) - .000001).toFixed(8)))].join("; ");
 
 export function AthSimulatorClient() {
   const [asset, setAsset] = useState<Asset>("BTC");
@@ -25,13 +24,21 @@ export function AthSimulatorClient() {
   const [post, setPost] = useState("5");
   const [lifetime, setLifetime] = useState(initialGains);
   const [monthly, setMonthly] = useState(Array(25).fill("0").join(","));
-  const [prices, setPrices] = useState(sequence(105, .05));
+  const [prices, setPrices] = useState(() => buildAthDescentPrices({ anchor: 105, spacing: .05 }).join("; "));
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const setAssetDefaults = (next: Asset) => {
     setAsset(next); setGain(next === "BTC" ? "1,2" : "5,5"); setNormal(next === "BTC" ? "2" : "3");
     setPost(next === "BTC" ? "5" : "8"); setResult(null);
+  };
+  const generatePrices = () => {
+    try {
+      setPrices(buildAthDescentPrices({ anchor: Number(initialPrice.replace(",", ".")), spacing: pct(post) }).join("; "));
+      setError(null);
+    } catch (scenarioError) {
+      setError(scenarioError instanceof Error ? scenarioError.message : "Falha ao gerar cenário");
+    }
   };
   const run = async () => {
     setRunning(true); setError(null); setResult(null);
@@ -61,7 +68,7 @@ export function AthSimulatorClient() {
     </div><div className="ath-sim-large-fields"><label>Lifetime gains dos 25 slots (1→25)<textarea value={lifetime} onChange={(event) => setLifetime(event.target.value)} rows={3} /></label>
       <label>Gains do mês dos 25 slots<textarea value={monthly} onChange={(event) => setMonthly(event.target.value)} rows={3} /></label>
       <label>Sequência artificial de preços / candles (separe por ;, vírgula decimal aceita)<textarea value={prices} onChange={(event) => setPrices(event.target.value)} rows={5} /></label></div>
-      <div className="ath-sim-actions"><button type="button" onClick={() => setPrices(sequence(Number(initialPrice.replace(",", ".")), pct(post)))}>Gerar queda de 25 níveis</button><button type="button" onClick={run} disabled={running}>{running ? "Simulando…" : "Executar cenário isolado"}</button></div>
+      <div className="ath-sim-actions"><button type="button" onClick={generatePrices}>Gerar queda de 25 níveis</button><button type="button" onClick={run} disabled={running}>{running ? "Simulando…" : "Executar cenário isolado"}</button></div>
       {error ? <p role="alert" className="ath-sim-error">{error}</p> : null}</section>
     {result ? <section className="ath-sim-panel"><h2>Resultado · {result.simulationId}</h2><div className="ath-sim-kpis"><span>Regime<strong>{result.state.regime}</strong></span><span>ATH<strong>{result.state.athPrice ?? "—"}</strong></span><span>Ciclos<strong>{result.cycleNumber}</strong></span><span>Missed<strong>{result.missedLevels}</strong></span></div>
       <p><strong>Primary selecionado / ordem:</strong> {result.primary.join(" → ") || "—"}</p><p><strong>Reserve / ordem:</strong> {result.reserve.join(" → ") || "—"}</p><p><strong>BUY executadas:</strong> {buys.map((step) => `#${step.slot}`).join(" → ") || "—"}</p>

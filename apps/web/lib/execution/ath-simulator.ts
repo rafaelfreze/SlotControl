@@ -2,6 +2,7 @@ import { advanceAthState, athSimulationId, buildPostAthQueue, orderedPostAthSlot
   type AthParameters, type AthRegime, type AthSlot, type AthState, type PostAthGroup, type PostAthSlot } from "./ath-regime.ts";
 import { MONTHLY_SLOT_TARGET } from "./monthly-slot-policy.ts";
 import { planAthLadder } from "./ath-ladder.ts";
+import { ATH_SIMULATION_PRICE_TICK } from "./ath-simulation-scenarios.ts";
 import { calculateStrategyTakeProfit, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry,
   planStrategyTakeProfit, type StrategyCandidate,
   type StrategyContext } from "./strategy-engine.ts";
@@ -80,7 +81,7 @@ const candidate = (slot: SimSlot): StrategyCandidate => ({ id: slot.physicalSlot
 export function simulateAth(input: AthSimulationInput) {
   checkInput(input);
   const simulationId = athSimulationId(input);
-  const tick = input.priceTick ?? (input.asset === "BTC" ? 0.01 : 0.01);
+  const tick = input.priceTick ?? ATH_SIMULATION_PRICE_TICK;
   if (!Number.isFinite(tick) || tick <= 0 || tick > 1) throw new Error("COINOPS_ATH_SIMULATION_TICK_INVALID");
   const filters: ExchangeSymbolInfo = { symbol: `${input.asset}USDC`, baseAsset: input.asset, quoteAsset: "USDC",
     priceTick: tick, quantityStep: 0.000001, minQuantity: 0.000001, maxQuantity: 1000000, minNotional: 0.01 };

@@ -7,6 +7,9 @@ const s = (value: unknown) => String(value ?? "");
 const sum = (rows: AuditRow[], key: string) => rows.reduce((total, row) => total + n(row[key]), 0);
 const same = (a: unknown, b: unknown) => Number.isFinite(n(a)) && Number.isFinite(n(b)) && Math.abs(n(a) - n(b)) <= 0.00000001;
 const active = (value: unknown) => ["PREPARED", "PENDING", "NEW", "PARTIALLY_FILLED"].includes(s(value));
+const reentryPriceBroken = (event: AuditRow) => event.previous_entry_price != null && event.reentry_price != null && !same(event.previous_entry_price, event.reentry_price);
+const reentryRecovered = (event: AuditRow) => event.reentry_temporal_classification === "HISTORICAL_REPAIRED"
+  && event.reentry_recovery_basis === "SAME_OPERATION_TICK_REPAIR_AND_PRICE_CONFIRMATION" && Boolean(event.reentry_recovery_event_id);
 const duplicates = (rows: AuditRow[], key: (row: AuditRow) => string) => { const seen = new Set<string>(); return rows.some((row) => { const value = key(row); if (!value) return false; if (seen.has(value)) return true; seen.add(value); return false; }); };
 
 /** Checks explain their evidence boundary. Missing input is WARNING, never PASS. */
@@ -32,14 +35,20 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     add("SINGLE_ACTIVE_ENTRY", slotsMissing || !currentSlots.length ? "WARNING" : armed.length <= 1 && activeBuys.length <= 1 ? "PASS" : "FAIL", slotsMissing || !currentSlots.length ? "Não há snapshot completo para verificar a próxima BUY." : `Snapshot observado: ${armed.length} slot(s) armados e ${activeBuys.length} BUY(s) residentes; limite de um por ativo/ambiente.`, { ...extra, evidence_scope: "CURRENT_PERSISTED_SNAPSHOT" });
     const localReentries = datasets.events.filter((event) => event.environment === environment && event.asset === asset && ["SLOT_REENTRY_PLANNED", "SLOT_REENTRY_ARMED", "SHADOW_STATE_REPAIRED"].includes(s(event.event_type)) && n(event.other_open_positions) > 0);
     const incompleteReentry = localReentries.some((event) => event.previous_entry_price == null || event.reentry_price == null);
-    const brokenReentry = localReentries.some((event) => event.previous_entry_price != null && event.reentry_price != null && !same(event.previous_entry_price, event.reentry_price)
-      || event.balance_before !== null && event.balance_before !== undefined && n(event.balance_after) < n(event.balance_before)
+    const otherReentryBroken = (event: AuditRow) => event.balance_before !== null && event.balance_before !== undefined && n(event.balance_after) < n(event.balance_before)
       || event.gain_count_before !== null && event.gain_count_before !== undefined && n(event.gain_count_after) < n(event.gain_count_before)
-      || !n(event.physical_slot_number));
-    const missingCurrentSlot = localReentries.some((event) => activeCycles.some((cycle) => cycle.cycle_id === event.cycle_id)
-      && !currentSlots.some((slot) => slot.cycle_id === event.cycle_id && n(slot.physical_slot_number) === n(event.physical_slot_number)));
+      || !n(event.physical_slot_number);
+    const missingCurrentSlotFor = (event: AuditRow) => activeCycles.some((cycle) => cycle.cycle_id === event.cycle_id)
+      && !currentSlots.some((slot) => slot.cycle_id === event.cycle_id && n(slot.physical_slot_number) === n(event.physical_slot_number));
+    const brokenReentry = localReentries.some((event) => reentryPriceBroken(event) || otherReentryBroken(event));
+    const missingCurrentSlot = localReentries.some(missingCurrentSlotFor);
+    const activeReentryFailures = localReentries.filter((event) => otherReentryBroken(event) || missingCurrentSlotFor(event)
+      || reentryPriceBroken(event) && !reentryRecovered(event)).length;
+    const recoveredReentries = localReentries.filter((event) => reentryPriceBroken(event) && reentryRecovered(event)).length;
     add("GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY", brokenReentry || missingCurrentSlot ? "FAIL" : slotsMissing || !localReentries.length || incompleteReentry ? "WARNING" : "PASS",
-      !localReentries.length ? "Nenhuma reciclagem local com outro OPEN foi observada no período; a regra não pôde ser exercitada." : brokenReentry || missingCurrentSlot ? "Um gain com outro OPEN perdeu identidade, preço de reentrada, saldo/gain ou o slot físico atual." : incompleteReentry ? "Evento histórico sem preço anterior/novo comparável: falta de evidência não prova violação nem conformidade." : `${localReentries.length} evento(s) preservaram slot físico, preço anterior, compounding e ownership no mesmo ciclo.`, extra);
+      !localReentries.length ? "Nenhuma reciclagem local com outro OPEN foi observada no período; a regra não pôde ser exercitada." : brokenReentry || missingCurrentSlot ? `${activeReentryFailures} violação(ões) sem recuperação comprovada; ${recoveredReentries} desvio(s) histórico(s) de preço reparado(s), preservados como FAIL histórico. Recuperação exige evento exato e preço confirmado da mesma operação.` : incompleteReentry ? "Evento histórico sem preço anterior/novo comparável: falta de evidência não prova violação nem conformidade." : `${localReentries.length} evento(s) preservaram slot físico, preço anterior, compounding e ownership no mesmo ciclo.`,
+      { ...extra, active_failures: activeReentryFailures, recovered_historical_failures: recoveredReentries,
+        recovery_basis: recoveredReentries ? "SAME_OPERATION_TICK_REPAIR_AND_PRICE_CONFIRMATION" : null });
     const cycles = datasets.cycles.filter((cycle) => cycle.environment === environment && cycle.asset === asset).sort((a, b) => s(a.started_at).localeCompare(s(b.started_at)));
     const failedBeforeSlots = (cycle: AuditRow) => cycle.status === "FAILED"
       && !currentSlots.some((slot) => slot.cycle_id === cycle.cycle_id)
@@ -73,8 +82,11 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     add("GAIN_COUNTS_RECONCILE", !summary || incomplete(environment === "SHADOW" ? "robot_v1_slot_operations" : "robot_v1_testnet_orders") ? "WARNING" : gains.length === n(summary.gains) ? "PASS" : "FAIL", "Contagem de gains positivos confrontada com o resumo do período.", { environment, asset });
     const local = datasets.events.filter((row) => row.environment === environment && row.asset === asset && row.event_type === "SLOT_REENTRY_PLANNED");
     const comparableLocal = local.filter((event) => event.previous_entry_price != null && event.reentry_price != null);
-    add("LOCAL_REENTRY_RULE", comparableLocal.some((event) => !same(event.previous_entry_price, event.reentry_price)) ? "FAIL"
-      : !local.length || comparableLocal.length !== local.length ? "WARNING" : "PASS", !local.length ? "Nenhuma reentrada local observada no período." : comparableLocal.length !== local.length ? "Parte do histórico não registra ambos os preços; ausência não equivale a zero ou violação." : "Reentrada local conserva o preço anterior do slot físico.", { environment, asset });
+    const brokenLocal = comparableLocal.filter(reentryPriceBroken), recoveredLocal = brokenLocal.filter(reentryRecovered);
+    add("LOCAL_REENTRY_RULE", brokenLocal.length ? "FAIL"
+      : !local.length || comparableLocal.length !== local.length ? "WARNING" : "PASS", !local.length ? "Nenhuma reentrada local observada no período." : brokenLocal.length ? `${brokenLocal.length} violação(ões) histórica(s) de preço; ${recoveredLocal.length} com reparo e preço da mesma operação confirmados. A ocorrência original não é apagada.` : comparableLocal.length !== local.length ? "Parte do histórico não registra ambos os preços; ausência não equivale a zero ou violação." : "Reentrada local conserva o preço anterior do slot físico.",
+      { environment, asset, active_failures: brokenLocal.length - recoveredLocal.length, recovered_historical_failures: recoveredLocal.length,
+        recovery_basis: recoveredLocal.length ? "SAME_OPERATION_TICK_REPAIR_AND_PRICE_CONFIRMATION" : null });
     const reset = datasets.events.filter((row) => row.environment === environment && row.asset === asset && ["CYCLE_RESTARTED", "NEW_CYCLE_STARTED"].includes(s(row.event_type)));
     add("GLOBAL_RESET_RULE", !reset.length ? "WARNING" : cycles.some((cycle) => cycle.completion_reason || cycle.reset_reason) ? "PASS" : "FAIL", !reset.length ? "Nenhum reset global observado no período." : "Reset e novo ciclo confrontados com motivo persistido.", { environment, asset });
   }

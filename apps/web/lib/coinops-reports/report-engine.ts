@@ -220,6 +220,33 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       trigger_source: "PERSISTED_SHADOW_CANDLE", buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id, source: "robot_v1_slots", snapshot_at: input.generatedAt });
   }
   const observationEnd = new Date(Math.min(timestamp(filters.end), timestamp(input.generatedAt))).toISOString();
+  // Keep a proven historical price violation intact. Recovery is separate
+  // evidence: the exact repair and the same operation's restored price.
+  for (const event of allEvents.filter((row) => row.environment === "SHADOW" && row.event_type === "SLOT_REENTRY_PLANNED")) {
+    const previousPrice = num(event.previous_entry_price), reentryPrice = num(event.reentry_price), sequence = num(event.operation_sequence);
+    if (previousPrice === null || reentryPrice === null || previousPrice === reentryPrice || !sequence
+      || missing("robot_v1_audit_events")) continue;
+    const repair = allEvents.find((row) => row.environment === "SHADOW" && row.event_type === "SHADOW_TICK_DRIFT_REPAIRED"
+      && row.cycle_id === event.cycle_id && row.slot_id === event.slot_id && row.asset === event.asset
+      && num(row.operation_sequence) === sequence && timestamp(row.timestamp) > timestamp(event.timestamp)
+      && timestamp(row.timestamp) < timestamp(observationEnd)
+      && object(row.next_state).reason === "PREVIOUS_CONFIRMED_ENTRY_TICK_RESTORED"
+      && num(object(row.previous_state).buyPrice) === reentryPrice && num(object(row.next_state).buyPrice) === previousPrice);
+    if (!repair) continue;
+    const current = slotById.get(str(event.slot_id));
+    const currentProof = timestamp(filters.end) >= timestamp(input.generatedAt) && !missing("robot_v1_slots")
+      && current?.cycle_id === event.cycle_id && num(current?.operation_sequence) === sequence && num(current?.buy_price) === previousPrice;
+    const operationProof = !missing("robot_v1_slot_operations") && rawOperations.some((row) => row.cycle_id === event.cycle_id
+      && row.slot_id === event.slot_id && num(row.operation_sequence) === sequence && num(row.entry_price) === previousPrice
+      && timestamp(row.opened_at) >= timestamp(repair.timestamp) && timestamp(row.opened_at) < timestamp(observationEnd));
+    if (!currentProof && !operationProof) continue;
+    Object.assign(event, { reentry_recovery_event_id: repair.event_id, reentry_recovered_at: repair.timestamp,
+      reentry_recovery_basis: "SAME_OPERATION_TICK_REPAIR_AND_PRICE_CONFIRMATION",
+      reentry_temporal_classification: "HISTORICAL_REPAIRED", reentry_is_active_issue: false });
+    event.details = { ...object(event.details), reentry_recovery: { event_id: repair.event_id, repaired_at: repair.timestamp,
+      original_price: previousPrice, historical_reentry_price: reentryPrice,
+      evidence_basis: event.reentry_recovery_basis, confirmation: currentProof ? "CURRENT_SAME_OPERATION_PRICE" : "IMMUTABLE_OPERATION_ENTRY_PRICE" } };
+  }
   const allCapital: AuditRow[] = credits.map((credit) => {
     const operation = operationById.get(str(credit.operation_id)) ?? {}, cycle = cycleById.get(str(operation.cycle_id)) ?? {}, config = configById.get(str(credit.config_id)) ?? {};
     return { timestamp: iso(operation.closed_at), credited_at: iso(credit.credited_at), environment: str(config.execution_mode) || "SHADOW", asset: assetOf(config), symbol: config.symbol ?? null,
@@ -487,9 +514,26 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   ];
   const periodOrders = normalizedOrders.filter((row) => selected(row, filters) && cycleIds.has(row.cycle_id) && timestamp(row.created_at) < timestamp(filters.end));
   for (const order of periodOrders) {
-    const history = allEvents.filter((row) => row.environment === "TESTNET" && object(row.details).clientOrderId === order.client_order_id && timestamp(row.timestamp) < timestamp(observationEnd));
-    const stateEvent = history.filter((row) => /_(NEW|PARTIALLY_FILLED|FILLED|CANCELED|EXPIRED|REJECTED)$/.test(str(row.event_type)) || row.event_type === "OWNED_BUY_CANCEL_RESULT").at(-1);
-    order.status_at_period_end = stateEvent ? object(stateEvent.details).status ?? str(stateEvent.event_type).replace(/^(BUY|SELL)_/, "") : timestamp(order.updated_at) <= timestamp(observationEnd) ? order.status : "UNKNOWN";
+    const history = allEvents.filter((row) => row.environment === "TESTNET" && row.cycle_id === order.cycle_id
+      && object(row.details).clientOrderId === order.client_order_id && timestamp(row.timestamp) < timestamp(observationEnd));
+    const states = history.flatMap((row) => {
+      const type = str(row.event_type), explicit = str(object(row.details).status);
+      const match = /^(BUY|SELL)_(NEW|PARTIALLY_FILLED|FILLED|CANCELED|EXPIRED|EXPIRED_IN_MATCH|REJECTED)$/.exec(type);
+      const status = match?.[2] ?? (type === "OWNED_BUY_CANCEL_RESULT"
+        && ["NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"].includes(explicit) ? explicit
+        : order.side === "BUY" && ["ATH_OWNED_BUY_CANCELLED", "MONTHLY_TARGET_HOLD", "BUY_REPLACED_FOR_REENTRY", "OLD_NEXT_BUY_CANCELED"].includes(type) ? "CANCELED" : null);
+      return status ? [{ row, status }] : [];
+    });
+    const stateEvent = states.at(-1);
+    // A prior NEW event must not resurrect a later persisted cancellation.
+    // Conversely a current snapshot cannot rewrite a historical cutoff.
+    const snapshotKnown = timestamp(order.updated_at) < timestamp(observationEnd);
+    const useSnapshot = snapshotKnown && (!stateEvent || timestamp(order.updated_at) >= timestamp(stateEvent.row.timestamp));
+    order.status_at_period_end = useSnapshot ? order.status : stateEvent?.status ?? "UNKNOWN";
+    order.status_at_period_end_basis = useSnapshot ? "PERSISTED_SNAPSHOT_AT_OR_BEFORE_CUTOFF"
+      : stateEvent ? "IMMUTABLE_ORDER_EVENT_BEFORE_CUTOFF" : "NO_ORDER_STATE_EVIDENCE_BEFORE_CUTOFF";
+    order.status_at_period_end_evidence_at = useSnapshot ? order.updated_at : stateEvent?.row.timestamp ?? null;
+    order.evidence_basis = order.status_at_period_end_basis;
     order.context_only = !inPeriod(order.created_at, filters) && !inPeriod(order.filled_at ?? order.canceled_at ?? order.updated_at, filters);
   }
   const realRows: AuditRow[] = [];
