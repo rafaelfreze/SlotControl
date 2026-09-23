@@ -2,7 +2,7 @@
 
 import { useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth, type TestnetOperationalState } from "@/lib/slotgain/testnet-results";
+import { summarizeTestnetResults, summarizeTestnetLedgerTotals, testnetDiagnosticIssue, testnetPresentationHealth, type TestnetOperationalState } from "@/lib/slotgain/testnet-results";
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
 import { missedLevelEvidence, missedLevelCauseLabel } from "@/lib/coinops-reports/missed-level-evidence";
 import type { Props } from "./automation-mobile";
@@ -28,20 +28,19 @@ export function TestnetResults({ data, children, asset }: { data: Props; childre
   const initialPerSlot = data.testnetRun?.slot_notional_usdc == null ? null : Number(data.testnetRun.slot_notional_usdc);
   const result = summarizeTestnetResults(data.testnetSlots, data.testnetOrders, marketPrice, initialPerSlot, { asset, cycleId: data.testnetRun?.id, events: data.testnetEvents });
   const health = testnetPresentationHealth(result, data.testnetRun, Date.now(), testnetDiagnosticIssue(data.testnet, data.testnetActionError));
-  const historicalCompleted = (data.testnetHistory || []).flatMap((bundle) => summarizeTestnetResults(bundle.slots, bundle.orders, null, Number(bundle.run.slot_notional_usdc ?? 0)).rows
-    .filter((row) => row.closed).map((row) => ({ ...row, runId: bundle.run.id })));
-  const currentCompleted = result.rows.filter((row) => row.closed).map((row) => ({ ...row, runId: data.testnetRun?.id || "current" }));
-  const lifetimeCompleted = [...historicalCompleted, ...currentCompleted].sort((a, b) => String(b.closedAt).localeCompare(String(a.closedAt)));
-  const lifetimeProfit = lifetimeCompleted.reduce((sum, row) => sum + row.realizedProfit, 0);
-  const lifetimeGains = lifetimeCompleted.reduce((sum, row) => sum + Math.max(0, row.gains), 0);
+  const ledger = summarizeTestnetLedgerTotals(data.testnetRun ? { cycleId: data.testnetRun.id, slots: data.testnetSlots } : null,
+    (data.testnetHistory || []).map((bundle) => ({ cycleId: bundle.run.id, slots: bundle.slots })));
+  const historicalRows = ledger.rows.filter((row) => !row.current);
+  const lifetimeProfit = ledger.realizedProfit;
+  const lifetimeGains = ledger.gains;
   const historicalGainsBySlot = new Map<number, number>();
-  for (const row of historicalCompleted) historicalGainsBySlot.set(row.slot_number, (historicalGainsBySlot.get(row.slot_number) || 0) + Math.max(0, row.gains));
+  for (const row of historicalRows) historicalGainsBySlot.set(row.slot_number, (historicalGainsBySlot.get(row.slot_number) || 0) + row.gains);
   const hasLedger = Boolean(data.testnetRun && result.rows.length);
   const displayed = result.rows.slice(0, allSlots ? result.rows.length : 5);
   const detail = result.rows.find((row) => row.slot_number === expanded);
-  const detailHistoricalProfit = detail ? historicalCompleted.filter((row) => row.slot_number === detail.slot_number).reduce((sum, row) => sum + row.realizedProfit, 0) : 0;
+  const detailHistoricalProfit = detail ? historicalRows.filter((row) => row.slot_number === detail.slot_number).reduce((sum, row) => sum + row.realizedProfit, 0) : 0;
   const detailHistoricalGains = detail ? historicalGainsBySlot.get(detail.slot_number) || 0 : 0;
-  const completed = lifetimeCompleted;
+  const accumulated = ledger.realizedRows;
   const detailEvents = data.testnetEvents.filter((event) => event.slot_number === expanded && (!event.run_id || event.run_id === data.testnetRun?.id));
   const missedEvidence = missedLevelEvidence(detailEvents);
   const rate = data.testnetRun?.gain_rate == null ? null : Number(data.testnetRun.gain_rate) * 100;
@@ -53,7 +52,7 @@ export function TestnetResults({ data, children, asset }: { data: Props; childre
     <div className="av2-kpi-grid ac-results-kpis">
       <article><span>Capital operacional · Testnet</span><strong>{hasLedger ? `${n(result.capital, 2)} USDC` : "Sem evidência"}</strong><small>{result.rows.length} slots · inicial {hasLedger ? n(result.initialCapital, 2) : "—"} USDC</small></article>
       <article><span>Lucro líquido · fictício</span><strong className={!hasLedger ? "" : lifetimeProfit >= 0 ? "av2-positive" : "av2-negative"}>{hasLedger ? `${signed(lifetimeProfit)} USDC` : "Não disponível"}</strong><small>P&L aberto estimado {hasLedger ? signed(result.openPnl) : "—"} USDC</small></article>
-      <article><span>Gains / operações</span><strong>{hasLedger ? `${lifetimeGains} gains · ${lifetimeCompleted.length} operações` : "Não disponível"}</strong><small>{(data.testnetHistory || []).filter((bundle) => bundle.run.status === "COMPLETED").length} ciclos concluídos · ciclo atual separado</small></article>
+      <article><span>Gains acumulados · Testnet</span><strong>{hasLedger ? `${lifetimeGains} gains` : "Não disponível"}</strong><small>{(data.testnetHistory || []).filter((bundle) => bundle.run.status === "COMPLETED").length} ciclos concluídos · ciclo atual separado</small></article>
       <article><span>Saúde do motor Testnet</span><strong className={health.tone === "ok" ? "av2-positive" : health.tone === "error" ? "av2-negative" : "av2-warning"}>{health.label}</strong><small>Última verificação {date(data.testnetRun?.last_reconciled_at)} · Estratégia {data.testnetRun?.strategy_version || "legada / não registrada"}</small></article>
     </div>
     <section className="av2-slot-panel ac-results-slots" aria-label={`Slots Testnet ${asset}/USDC`} onKeyDown={(event) => { if (event.key === "Escape" && expanded !== null) { event.stopPropagation(); closeDetail(); } }}>
@@ -80,7 +79,14 @@ export function TestnetResults({ data, children, asset }: { data: Props; childre
       <details><summary>Trilha técnica do missed level</summary><p>Mercado observado {n(missedEvidence.marketPrice, 4)} USDC · atraso {missedEvidence.latencyMs == null ? "não medido" : `${n(missedEvidence.latencyMs / 60000, 2)} min`}.</p><p>Fill da exchange {date(missedEvidence.fillAt)} · coletado {date(missedEvidence.collectedAt)} · decisão {date(missedEvidence.decisionCreatedAt)} · despacho {date(missedEvidence.dispatchedAt)} · ACK {date(missedEvidence.ackAt)} · ordem residente {date(missedEvidence.residentAt)}.</p><p>Nenhum fill foi criado retroativamente.</p></details></div> : null}{detail.hasUnknownFees ? <p className="av2-missed-note">Há taxa em outro ativo sem conversão registrada. O P&L estimado permanece indisponível.</p> : null}<details><summary>Ordens e fills deste slot ({detail.orders.length})</summary>{detail.orders.length ? detail.orders.map((order) => <p key={order.client_order_id}>{order.side} · {order.purpose} · {order.status} · executado {n(order.executed_quantity, 8)} {asset} · cotação acumulada {n(order.cumulative_quote, 8)} USDC · {order.client_order_id}</p>) : <p>Nenhuma ordem enviada.</p>}</details><details><summary>Eventos recentes deste slot ({detailEvents.length})</summary>{detailEvents.length ? detailEvents.map((event, index) => <p key={`${event.observed_at}-${index}`}>{date(event.observed_at)} · {event.event_type}</p>) : <p>Nenhum evento na janela recente. Consulte o relatório completo.</p>}</details><a className="ac-button" href="/relatorios">Auditar histórico completo →</a></div> : null}
     </section>
     {children}
-    <section className="av2-gains-panel ac-results-gains"><header><h2>Histórico de ganhos · Testnet</h2><strong>{hasLedger ? `${lifetimeGains} gains · ${signed(lifetimeProfit)} USDC` : "Sem evidência disponível"}</strong></header>{completed.length ? <div className="av2-gain-list">{completed.slice(0, 4).map((row) => <button type="button" key={`${row.runId}-${row.slot_number}`} onClick={(event) => { lastTrigger.current = event.currentTarget; setExpanded(row.slot_number); }}><span>Slot #{row.slot_number} · {date(row.closedAt)}</span><strong>{signed(row.realizedProfit)} USDC</strong></button>)}</div> : <p className="av2-empty">Nenhuma operação Testnet concluída.</p>}<details><summary>Ver todas as operações concluídas ({lifetimeCompleted.length})</summary>{completed.map((row) => <p key={`${row.runId}-${row.slot_number}`}>Slot #{row.slot_number} · entrada {n(row.averageEntry, 4)} → TP {n(row.takeProfitPrice, 4)} · líquido {signed(row.realizedProfit)} USDC · saldo {n(row.balance, 8)} USDC · {date(row.closedAt)}</p>)}</details><small>Ciclo atual e histórico concluído permanecem separados. Saldos da conta fictícia são exibidos à parte.</small></section>
+    <section className="av2-gains-panel ac-results-gains">
+      <header><h2>Resultados acumulados por ciclo/slot · Testnet</h2><strong>{hasLedger ? `${lifetimeGains} gains · ${signed(lifetimeProfit)} USDC` : "Sem evidência disponível"}</strong></header>
+      {accumulated.length ? <div className="av2-gain-list">{accumulated.slice(0, 4).map((row) => row.current
+        ? <button type="button" key={`${row.cycleId}-${row.slot_number}`} onClick={(event) => { lastTrigger.current = event.currentTarget; setExpanded(row.slot_number); }}><span>Slot #{row.slot_number} · ciclo atual · {row.gains} gains</span><strong>{signed(row.realizedProfit)} USDC</strong></button>
+        : <p key={`${row.cycleId}-${row.slot_number}`}><span>Slot #{row.slot_number} · ciclo {row.cycleId.slice(0, 8)} · {row.gains} gains</span><strong>{signed(row.realizedProfit)} USDC</strong></p>)}</div> : <p className="av2-empty">Nenhum resultado realizado registrado no ledger Testnet.</p>}
+      <details><summary>Ver todos os acumulados por ciclo/slot ({accumulated.length})</summary>{accumulated.map((row) => <p key={`${row.cycleId}-${row.slot_number}`}>Slot #{row.slot_number} · {row.current ? "ciclo atual" : `ciclo ${row.cycleId.slice(0, 8)}`} · {row.gains} gains · líquido acumulado {signed(row.realizedProfit)} USDC</p>)}</details>
+      <small>Acumulados persistidos por ciclo/slot, não operações individuais. A reentrada preserva os ganhos já creditados. Saldos da conta fictícia são exibidos à parte.</small>
+    </section>
   </div>;
 }
 

@@ -21,6 +21,29 @@ export type TestnetResultOrder = {
 const active = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
 const amount = (value: number | string | null | undefined) => Number(value) || 0;
 
+type TestnetLedgerCycle = { cycleId: string; slots: TestnetResultSlot[] };
+
+/** Credited ledger totals survive reentry. These are cycle/slot accumulators,
+ * not individual trades, and must never be inferred from the current state. */
+export function summarizeTestnetLedgerTotals(current: TestnetLedgerCycle | null, history: TestnetLedgerCycle[] = []) {
+  const seenCycles = new Set<string>();
+  const rows: Array<{ cycleId: string; slot_number: number; current: boolean; gains: number; realizedProfit: number }> = [];
+  for (const cycle of [...(current ? [current] : []), ...history]) {
+    if (seenCycles.has(cycle.cycleId)) continue;
+    seenCycles.add(cycle.cycleId);
+    const seenSlots = new Set<number>();
+    for (const slot of cycle.slots) {
+      if (seenSlots.has(slot.slot_number)) continue;
+      seenSlots.add(slot.slot_number);
+      rows.push({ cycleId: cycle.cycleId, slot_number: slot.slot_number, current: cycle.cycleId === current?.cycleId,
+        gains: amount(slot.gain_count), realizedProfit: amount(slot.net_profit_usdc) });
+    }
+  }
+  return { rows, realizedRows: rows.filter((row) => row.gains !== 0 || row.realizedProfit !== 0),
+    gains: rows.reduce((sum, row) => sum + row.gains, 0),
+    realizedProfit: rows.reduce((sum, row) => sum + row.realizedProfit, 0) };
+}
+
 export function summarizeTestnetResults(slots: TestnetResultSlot[], orders: TestnetResultOrder[], marketPrice: number | null, initialPerSlot: number | null, context: TemporalContext = {}) {
   const events = (context.events || []).filter((event) => !context.cycleId || !(event.run_id || event.cycle_id) || (event.run_id || event.cycle_id) === context.cycleId);
   const missedOccurrences = buildTestnetMissedOccurrences(events, { asset: context.asset, cycleId: context.cycleId, fallbackSlots: slots });

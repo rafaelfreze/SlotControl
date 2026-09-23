@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth, type TestnetResultOrder, type TestnetResultSlot } from "./testnet-results.ts";
+import { summarizeTestnetResults, summarizeTestnetLedgerTotals, testnetDiagnosticIssue, testnetPresentationHealth, type TestnetResultOrder, type TestnetResultSlot } from "./testnet-results.ts";
 
 const slot: TestnetResultSlot = { slot_number: 1, entry_state: "OPEN", target_buy_price: 100, balance_usdc: 10, gain_count: 0, net_profit_usdc: 0, missed_at: null };
 const order: TestnetResultOrder = { slot_number: 1, side: "BUY", purpose: "INITIAL", revision: 1, client_order_id: "owned-buy", exchange_order_id: "1", status: "FILLED", requested_quantity: 0.1, price: null, executed_quantity: 0.1, cumulative_quote: 10, created_at: "2026-09-22T12:00:00Z", updated_at: "2026-09-22T12:00:01Z", fee_base: 0, fee_quote: 0, fee_other: [] };
@@ -182,4 +182,48 @@ test("explicit Testnet permission denials stay yellow even with an otherwise hea
   }
   assert.equal(testnetDiagnosticIssue(permitted, "COINOPS_TESTNET_START_FAILED"), "COINOPS_TESTNET_START_FAILED");
   assert.equal(testnetDiagnosticIssue(null, "COINOPS_TESTNET_START_FAILED"), "COINOPS_TESTNET_START_FAILED");
+});
+
+test("BTC MISSED reentry retains the credited gain and profit in ledger KPIs", () => {
+  const current = { cycleId: "btc-current", slots: [{ ...slot, entry_state: "MISSED", operation_sequence: 2,
+    entry_origin: "REENTRY", gain_count: 1, net_profit_usdc: "0.047", balance_usdc: "10.047" }] };
+  const before = structuredClone(current);
+  const totals = summarizeTestnetLedgerTotals(current);
+  assert.equal(totals.gains, 1);
+  assert.equal(totals.realizedProfit, .047);
+  assert.deepEqual(totals.realizedRows, [{ cycleId: "btc-current", slot_number: 1, current: true, gains: 1, realizedProfit: .047 }]);
+  assert.deepEqual(current, before);
+});
+
+test("SOL ARMED accumulators include earlier cycles once and do not pretend to be individual operations", () => {
+  const current = { cycleId: "sol-current", slots: [
+    { ...slot, entry_state: "ARMED", operation_sequence: 3, entry_origin: "REENTRY", gain_count: 2, net_profit_usdc: .10 },
+    { ...slot, slot_number: 2, entry_state: "PLANNED", gain_count: 0, net_profit_usdc: 0 }
+  ] };
+  const previous = { cycleId: "sol-previous", slots: [{ ...slot, entry_state: "CLOSED", gain_count: 1, net_profit_usdc: .05 }] };
+  const history = [previous, current, previous];
+  const before = structuredClone({ current, history });
+  const totals = summarizeTestnetLedgerTotals(current, history);
+  assert.equal(totals.gains, 3);
+  assert.ok(Math.abs(totals.realizedProfit - .15) < 1e-12);
+  assert.equal(totals.rows.length, 3);
+  assert.equal(totals.realizedRows.length, 2); // Two cycle/slot accumulators, not three trades.
+  assert.deepEqual(totals.realizedRows.map((row) => [row.cycleId, row.slot_number, row.current]), [["sol-current", 1, true], ["sol-previous", 1, false]]);
+  assert.deepEqual({ current, history }, before);
+});
+
+test("ledger totals preserve negative and historical non-CLOSED results without inferring prices or timestamps", () => {
+  const totals = summarizeTestnetLedgerTotals(null, [{ cycleId: "past", slots: [
+    { ...slot, entry_state: "OPEN", gain_count: 1, net_profit_usdc: .04, balance_usdc: 200 },
+    { ...slot, slot_number: 2, entry_state: "PLANNED", gain_count: 0, net_profit_usdc: -.01, balance_usdc: 999 }
+  ] }]);
+  assert.equal(totals.gains, 1);
+  assert.ok(Math.abs(totals.realizedProfit - .03) < 1e-12);
+  assert.equal(totals.realizedRows.length, 2);
+  for (const row of totals.rows) {
+    assert.equal("entryPrice" in row, false);
+    assert.equal("closedAt" in row, false);
+    assert.equal("operations" in row, false);
+  }
+  assert.deepEqual(summarizeTestnetLedgerTotals(null), { rows: [], realizedRows: [], gains: 0, realizedProfit: 0 });
 });
