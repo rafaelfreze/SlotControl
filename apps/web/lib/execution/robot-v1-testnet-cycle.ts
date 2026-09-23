@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 
 export const TESTNET_ACTIVE_ORDER_STATUSES = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
 
+export function testnetClientOrderId(runId: string, asset: "BTC" | "SOL", slot: number, side: "BUY" | "SELL", revision: number) {
+  if (!runId || !Number.isInteger(slot) || slot < 1 || slot > 25 || !Number.isInteger(revision) || revision < 1) throw new Error("COINOPS_TESTNET_ORDER_ID_INVALID");
+  // Preserve SOL's original hash contract so PREPARED orders recover the same
+  // Binance client ID after deployment. BTC receives its own namespace.
+  const source = asset === "SOL" ? `coinops-testnet|${runId}|${slot}|${side}|${revision}` : `coinops-testnet|${runId}|BTC|${slot}|${side}|${revision}`;
+  return `COV1-${asset}-${slot}-${revision}-${side}-${createHash("sha256").update(source).digest("hex").slice(0, 18)}`;
+}
+
 export type TestnetCycleOrderState = {
   slot_number: number;
   side: "BUY" | "SELL";

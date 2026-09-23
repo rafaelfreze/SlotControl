@@ -15,6 +15,10 @@ export const V1_RULES: Record<V1Asset, { symbol: V1Symbol; entrySpacing: number;
   SOL: { symbol: "SOLUSDC", entrySpacing: 0.03, gainRate: 0.055 }
 };
 
+// Deliberately independent of the future official strategy. Never use this
+// preset as an implicit LIVE configuration.
+export const V1_TEST_PROFILE = { gainRate: 0.005, entrySpacing: 0.01, slotCount: V1_SLOT_COUNT, capitalUsdc: 250 } as const;
+
 export type V1ShadowParameters = { entrySpacing: number; gainRate: number };
 
 export function assertV1ShadowParameters(parameters: V1ShadowParameters) {

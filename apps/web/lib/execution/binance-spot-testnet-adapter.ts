@@ -68,8 +68,8 @@ export class BinanceSpotTestnetAdapter {
   }
 
   /** Binance validates TRADE permission and filters without entering an order. */
-  async checkTradePermission() {
-    const response = await this.signedRequest("POST", "/api/v3/order/test", { symbol: "SOLUSDC", side: "BUY", type: "MARKET", quoteOrderQty: "10" });
+  async checkTradePermission(symbol: "BTCUSDC" | "SOLUSDC" = "SOLUSDC") {
+    const response = await this.signedRequest("POST", "/api/v3/order/test", { symbol, side: "BUY", type: "MARKET", quoteOrderQty: "10" });
     return { ok: response.ok, error: response.ok ? null : `BINANCE_TEST_ORDER_HTTP_${response.status}_${response.code ?? "UNKNOWN"}` };
   }
 

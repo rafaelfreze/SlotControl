@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { advanceTestnetRun, replaceOwnedTestnetBuy, startTestnetRun } from "@/lib/execution/robot-v1-testnet-server";
+import { BinanceSpotTestnetAdapter } from "@/lib/execution/binance-spot-testnet-adapter";
+import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset } from "@/lib/execution/robot-v1";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
@@ -25,12 +27,55 @@ async function ownedRun(formData: FormData) {
   return runId;
 }
 
-export async function startCoinOpsTestnet() {
+function assetOf(formData: FormData): V1Asset {
+  const asset = String(formData.get("asset") || "");
+  if (asset !== "BTC" && asset !== "SOL") throw new Error("COINOPS_TESTNET_ASSET_INVALID");
+  return asset;
+}
+
+function positiveNumber(formData: FormData, field: string) {
+  const raw = String(formData.get(field) || "").trim().replace(",", ".");
+  const value = Number(raw);
+  if (!raw || !Number.isFinite(value) || value <= 0) throw new Error("COINOPS_TESTNET_NEXT_PROFILE_INVALID");
+  return value;
+}
+
+export async function startCoinOpsTestnet(formData: FormData) {
   const userId = await currentUserId();
-  try { await startTestnetRun(userId); }
+  const asset = assetOf(formData);
+  try { await startTestnetRun(userId, asset); }
   catch (error) { redirect(`/automacao?view=testnet&testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_START_FAILED"}`); }
   revalidatePath("/automacao");
   redirect("/automacao?view=testnet&testnet=check");
+}
+
+export async function saveCoinOpsTestnetNextCycle(formData: FormData) {
+  const userId = await currentUserId();
+  const asset = assetOf(formData);
+  const runId = await ownedRun(formData);
+  const preset = formData.get("preset") === "quick";
+  const capital = preset ? V1_TEST_PROFILE.capitalUsdc : positiveNumber(formData, "capital_usdc");
+  const gainRate = preset ? V1_TEST_PROFILE.gainRate : positiveNumber(formData, "gain_percent") / 100;
+  const entrySpacing = preset ? V1_TEST_PROFILE.entrySpacing : positiveNumber(formData, "spacing_percent") / 100;
+  if (capital > 2500 || gainRate < 0.001 || gainRate > 0.20 || entrySpacing < 0.001 || entrySpacing > 0.20) throw new Error("COINOPS_TESTNET_NEXT_PROFILE_INVALID");
+  const service = createServiceRoleClient();
+  const { data: run, error: runError } = await service.from("robot_v1_testnet_runs")
+    .select("id,product_id,tenant_id,user_id,asset,symbol,slot_notional_usdc")
+    .eq("id", runId).eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId).eq("asset", asset).eq("status", "ACTIVE").single();
+  if (runError || !run || run.symbol !== V1_RULES[asset].symbol) throw new Error("COINOPS_TESTNET_RUN_NOT_OWNED");
+  const { data: slots, error: slotError } = await service.from("robot_v1_testnet_slots").select("slot_number,balance_usdc")
+    .eq("run_id", runId).eq("tenant_id", run.tenant_id).order("slot_number");
+  if (slotError || slots?.length !== 25) throw new Error("COINOPS_TESTNET_PLAN_INCOMPLETE");
+  const adapter = BinanceSpotTestnetAdapter.readsFromEnvironment();
+  const [filters, market] = await Promise.all([adapter.getSymbolInfo(run.symbol), adapter.getMarketPrice(run.symbol)]);
+  const delta = capital / 25 - Number(run.slot_notional_usdc);
+  const balances = slots.map((slot) => Number(slot.balance_usdc) + delta);
+  if (balances.some((balance) => balance <= 0 || balance > 100)) throw new Error("COINOPS_TESTNET_NEXT_CAPITAL_INVALID");
+  buildV1Grid(asset, capital, market.price, filters, { gainRate, entrySpacing }, balances);
+  const { data: saved, error } = await service.from("robot_v1_testnet_runs").update({ next_capital_usdc: capital, next_gain_rate: gainRate, next_entry_spacing: entrySpacing })
+    .eq("id", runId).eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", userId).eq("asset", asset).eq("status", "ACTIVE").is("lease_owner", null).select("id").maybeSingle();
+  if (error || !saved) throw new Error("COINOPS_TESTNET_NEXT_PROFILE_SAVE_FAILED");
+  revalidatePath("/automacao");
 }
 
 export async function reconcileCoinOpsTestnet(formData: FormData) {

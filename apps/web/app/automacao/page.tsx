@@ -74,7 +74,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const testnetAssetData: Partial<Record<"BTC" | "SOL", TestnetAssetData>> = {};
   await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
     const { data: runs, error } = await supabase.from("robot_v1_testnet_runs")
-      .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source")
+      .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,next_capital_usdc,next_gain_rate,next_entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source")
       .eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset).order("created_at", { ascending: false }).limit(20);
     if (error) throw error;
     const run = runs?.find((item) => item.status === "ACTIVE" || item.status === "PAUSED") || runs?.[0];

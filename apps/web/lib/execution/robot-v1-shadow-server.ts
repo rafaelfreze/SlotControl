@@ -152,6 +152,21 @@ async function startInitialShadowCycle(supabase: ReturnType<typeof createService
   return cycle;
 }
 
+async function applyQueuedShadowProfile(supabase: ReturnType<typeof createServiceRoleClient>, adapter: BinanceSpotAdapter, config: Config) {
+  if (config.next_capital_usdc === null && config.next_gain_rate === null && config.next_entry_spacing === null) return config;
+  const capital = asNumber(config.next_capital_usdc ?? config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
+  const parameters = assertV1ShadowParameters({ gainRate: asNumber(config.next_gain_rate ?? config.gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.next_entry_spacing ?? config.entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
+  const accounts = await loadSlotAccounts(supabase, config);
+  const delta = (capital - asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID")) / 25;
+  const balances = accounts.map((account) => asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID") + delta);
+  if (capital > 2500 || balances.some((balance) => balance <= 0 || balance > 100)) throw new Error("COINOPS_V1_NEXT_PROFILE_INVALID");
+  const [filters, market] = await Promise.all([adapter.getSymbolInfo(V1_RULES[config.asset].symbol), adapter.getMarketPrice(V1_RULES[config.asset].symbol)]);
+  buildV1Grid(config.asset, capital, market.price, filters, parameters, balances);
+  const { data, error } = await supabase.rpc("apply_robot_v1_shadow_next_profile", { p_config_id: config.id });
+  if (error || !data) throw new Error("COINOPS_V1_NEXT_PROFILE_APPLY_FAILED");
+  return { ...config, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, next_capital_usdc: null, next_gain_rate: null, next_entry_spacing: null, last_candle_open_at: null };
+}
+
 /**
  * Server-only V1 Shadow worker. Production Binance calls remain GET-only.
  * One-minute candles prove crossed levels between five-minute cron runs; a
@@ -169,7 +184,7 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
 
   const adapter = BinanceSpotAdapter.fromEnvironment();
   let cyclesStarted = 0, slotsUpdated = 0, candlesProcessed = 0;
-  for (const config of configs) {
+  for (let config of configs) {
     const observationStartedAt = new Date().toISOString();
     const countersBefore = { cyclesStarted, slotsUpdated, candlesProcessed };
     let observationStatus: "COMPLETED" | "FAILED" | "SKIPPED" = "COMPLETED";
@@ -182,6 +197,7 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
     if (cycleError) throw cycleError;
     let cycle = cycleData as Cycle | null;
     if (!cycle && !config.kill_switch && !config.pause_new_entries) {
+      config = await applyQueuedShadowProfile(supabase, adapter, config);
       cycle = await startInitialShadowCycle(supabase, adapter, config, now);
       if (cycle) cyclesStarted += 1;
     }
@@ -314,16 +330,21 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
         if (cancelError) throw cancelError;
       }
       const nextCapital = config.next_capital_usdc === null ? null : asNumber(config.next_capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
-      if (nextCapital !== null && nextCapital !== asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID")) throw new Error("COINOPS_V1_CAPITAL_CHANGE_UNSUPPORTED");
       const nextParameters = config.next_gain_rate === null || config.next_entry_spacing === null ? null : assertV1ShadowParameters({ gainRate: asNumber(config.next_gain_rate, "COINOPS_V1_PARAMETERS_INVALID"), entrySpacing: asNumber(config.next_entry_spacing, "COINOPS_V1_PARAMETERS_INVALID") });
+      if (nextCapital !== null || nextParameters) {
+        const previewCapital = nextCapital ?? asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID");
+        const delta = (previewCapital - asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID")) / 25;
+        const previewAccounts = await loadSlotAccounts(supabase, config);
+        const previewBalances = previewAccounts.map((account) => asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID") + delta);
+        buildV1Grid(config.asset, previewCapital, market.price, filters, nextParameters ?? cycleParameters, previewBalances);
+      }
       const { data: completed, error: finishError } = await supabase.from("robot_v1_cycles").update({ status: "CYCLE_COMPLETE", completed_at: now.toISOString(), completion_reason: "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS" }).eq("id", cycle.id).in("status", ACTIVE).select("id").maybeSingle();
       if (finishError) throw finishError;
       if (!completed?.id) continue;
-      const configUpdate = { last_candle_open_at: null, next_capital_usdc: null, ...(nextParameters ? { gain_rate: nextParameters.gainRate, entry_spacing: nextParameters.entrySpacing, next_gain_rate: null, next_entry_spacing: null } : {}) };
-      const { error: capitalError } = await supabase.from("robot_v1_configs").update(configUpdate).eq("id", config.id);
+      const { error: capitalError } = await supabase.from("robot_v1_configs").update({ last_candle_open_at: null }).eq("id", config.id);
       if (capitalError) throw capitalError;
       await audit(supabase, config, "CYCLE_COMPLETED", cycle.id, { cycleId: cycle.id, previous: { capital: config.capital_usdc }, next: { reason: "AUTO_RESET_NO_OPEN_SHADOW_POSITIONS", invalidatedPendingSlots: restartPlan.pendingSlotNumbers, nextCapitalApplied: nextCapital }, observedAt: now.toISOString() });
-      const effectiveConfig: Config = { ...config, capital_usdc: nextCapital ?? config.capital_usdc, gain_rate: nextParameters?.gainRate ?? config.gain_rate, entry_spacing: nextParameters?.entrySpacing ?? config.entry_spacing, next_capital_usdc: null, next_gain_rate: null, next_entry_spacing: null, last_candle_open_at: null };
+      const effectiveConfig = await applyQueuedShadowProfile(supabase, adapter, config);
       if (!effectiveConfig.kill_switch && !effectiveConfig.pause_new_entries) {
         const nextCycle = await startInitialShadowCycle(supabase, adapter, effectiveConfig, now);
         if (nextCycle) {

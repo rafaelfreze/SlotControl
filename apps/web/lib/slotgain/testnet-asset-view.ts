@@ -19,8 +19,6 @@ export function selectTestnetAssetData<Run extends { symbol: string }, Slot, Ord
     testnetOrders: validBundle?.orders ?? (legacyMatches ? source.testnetOrders : []),
     testnetEvents: validBundle?.events ?? (legacyMatches ? source.testnetEvents : []),
     testnetHistory: validBundle?.history ?? [],
-    // Current execution support is SOL only. A future BTC ledger does not
-    // implicitly authorize starting a BTC executor or a SOL run from its tab.
-    testnetEnabled: asset === "SOL" && source.testnetEnabled
+    testnetEnabled: source.testnetEnabled
   };
 }

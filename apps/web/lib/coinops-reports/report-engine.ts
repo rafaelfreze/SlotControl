@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { buildAuditChecks } from "./audit-checks.ts";
+import { testnetClientOrderId } from "../execution/robot-v1-testnet-cycle.ts";
 import { auditExecutionGaps, auditTriggerWindows, type AuditRow, type TriggerWindow } from "./trigger-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
@@ -132,7 +132,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   });
   const normalizedOrders: AuditRow[] = testnetOrders.map((row) => {
     const run = runById.get(str(row.run_id)) ?? {};
-    const expectedId = `COV1-SOL-${row.slot_number}-${row.revision}-${row.side}-${createHash("sha256").update(`coinops-testnet|${row.run_id}|${row.slot_number}|${row.side}|${row.revision}`).digest("hex").slice(0, 18)}`;
+    const asset = assetOf(run);
+    const expectedId = asset === "BTC" || asset === "SOL" ? testnetClientOrderId(str(row.run_id), asset, number(row.slot_number), row.side as "BUY" | "SELL", number(row.revision)) : null;
     const relatedEvents = allEvents.filter((event) => event.environment === "TESTNET" && event.cycle_id === row.run_id && object(event.details).clientOrderId === row.client_order_id);
     const fillEvidence = relatedEvents.filter((event) => event.event_type === "TESTNET_FILL_OBSERVED").sort(byTime);
     const firstFill = fillEvidence[0] ?? relatedEvents.find((event) => /_(PARTIALLY_FILLED|FILLED)$/.test(str(event.event_type)));
@@ -259,9 +260,19 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     effective_from: iso(config.updated_at ?? config.created_at), environment: definition.field.endsWith("_brl") ? "REAL" : str(config.execution_mode) || "SHADOW", asset: config.asset, symbol: definition.field.endsWith("_brl") ? `${config.asset}BRL` : config.symbol, config_id: config.id,
     parameter: definition.parameter, value: config[definition.field] ?? null, unit: definition.unit, source: `robot_v1_configs.${definition.field}`, version: definition.version,
     evidence_scope: "CURRENT_SNAPSHOT", notes: definition.notes ?? "Snapshot atual; não aplicar retroativamente a ciclos anteriores." });
-  for (const cycle of normalizedCycles.filter((row) => overlap(row.started_at, row.completed_at, filters))) for (const [parameter, field, unit] of [["gain_rate", "gain_rate", "ratio"], ["entry_spacing", "entry_spacing", "ratio"], ["capital", "capital_start", "USDC"], ["slot_count", "slot_count", "slots"]]) rules.push({
+  for (const run of testnetRuns) for (const [parameter, field, unit] of [["next_capital", "next_capital_usdc", "USDC"], ["next_gain_rate", "next_gain_rate", "ratio"], ["next_entry_spacing", "next_entry_spacing", "ratio"]]) if (run[field] != null) rules.push({
+    effective_from: iso(run.updated_at ?? run.created_at), environment: "TESTNET", asset: run.asset, symbol: run.symbol, cycle_id: run.id,
+    parameter, value: run[field], unit, source: `robot_v1_testnet_runs.${field}`, version: 1,
+    evidence_scope: "NEXT_CYCLE_PENDING", notes: "Configuração pendente; o ciclo atual preserva seus parâmetros originais." });
+  for (const cycle of normalizedCycles.filter((row) => overlap(row.started_at, row.completed_at, filters))) {
+    const snapshot = { capital_usdc: cycle.capital_start, gain_rate: cycle.gain_rate, entry_spacing: cycle.entry_spacing, slot_count: cycle.slot_count };
+    rules.push({ effective_from: cycle.started_at, effective_until: cycle.completed_at, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
+      parameter: "profile", value: Number(cycle.gain_rate) === 0.005 && Number(cycle.entry_spacing) === 0.01 && Number(cycle.slot_count) === 25 ? "TEST_PROFILE" : "CUSTOM_TEST",
+      unit: "enum", source: cycle.environment === "TESTNET" ? "robot_v1_testnet_runs" : "robot_v1_cycles", version: 1, evidence_scope: "CYCLE_SNAPSHOT", snapshot });
+    for (const [parameter, field, unit] of [["gain_rate", "gain_rate", "ratio"], ["entry_spacing", "entry_spacing", "ratio"], ["capital", "capital_start", "USDC"], ["slot_count", "slot_count", "slots"]]) rules.push({
     effective_from: cycle.started_at, effective_until: cycle.completed_at, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
     parameter, value: cycle[field!] ?? null, unit, source: cycle.environment === "TESTNET" ? "robot_v1_testnet_runs" : "robot_v1_cycles", version: 1, evidence_scope: "CYCLE_SNAPSHOT", notes: "Parâmetros congelados do ciclo; identidade preservada." });
+  }
   for (const event of allEvents.filter((row) => /CAPITAL|PARAMETERS|PAUSED|RESUMED|KILL_SWITCH/.test(str(row.event_type)))) rules.push({
     effective_from: event.timestamp, environment: event.environment, asset: event.asset, symbol: event.symbol, cycle_id: event.cycle_id,
     parameter: event.event_type, value: event.next_state, unit: "event", source: event.source, version: 1, evidence_scope: "CONFIGURATION_EVENT", notes: "Evento histórico; parâmetros NEXT_CYCLE entram em vigor no ciclo seguinte, não neste instante." });

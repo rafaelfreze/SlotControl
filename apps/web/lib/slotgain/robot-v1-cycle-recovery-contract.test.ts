@@ -8,6 +8,7 @@ const migration = readFileSync(new URL("../../../../supabase/migrations/20260923
 const repairMigration = readFileSync(new URL("../../../../supabase/migrations/20260923032000_add_shadow_local_reentry_repair_rpc.sql", import.meta.url), "utf8");
 const repairStateMigration = readFileSync(new URL("../../../../supabase/migrations/20260923033000_repair_shadow_local_reentry_state.sql", import.meta.url), "utf8");
 const serviceRoleFixMigration = readFileSync(new URL("../../../../supabase/migrations/20260923034000_fix_testnet_restart_service_role_claim.sql", import.meta.url), "utf8");
+const phaseFourMigration = readFileSync(new URL("../../../../supabase/migrations/20260923072722_enable_btc_sol_testnet_profile.sql", import.meta.url), "utf8");
 
 test("Testnet terminal reset is atomic, locked, idempotent and copies compounded physical balances", () => {
   assert.match(migration, /pg_advisory_xact_lock/);
@@ -27,11 +28,22 @@ test("Testnet local recycle preserves the physical slot, same entry, compounding
   assert.match(server, /target_buy_price: previousEntryPrice/);
   assert.match(server, /operation_sequence: nextSequence/);
   assert.match(server, /amount\(desired\.balance_usdc\) \/ price/);
-  assert.match(server, /adapter\.cancelOwnedOrder\(SYMBOL, activeBuy\.exchange_order_id, activeBuy\.client_order_id\)/);
+  assert.match(server, /adapter\.cancelOwnedOrder\(run\.symbol, activeBuy\.exchange_order_id, activeBuy\.client_order_id\)/);
   assert.doesNotMatch(server, /cancelAllOrders/);
   assert.match(server, /BUY_REPLACED_FOR_REENTRY/);
   assert.match(server, /SLOT_REENTRY_PLANNED/);
   assert.match(server, /SLOT_REENTRY_ARMED/);
+});
+
+test("Phase 4 Testnet isolates BTC and SOL and freezes the active cycle profile", () => {
+  assert.match(phaseFourMigration, /asset in \('BTC', 'SOL'\)/);
+  assert.match(phaseFourMigration, /symbol = 'BTCUSDC'/);
+  assert.match(phaseFourMigration, /coinops_guard_testnet_cycle_snapshot/);
+  assert.match(phaseFourMigration, /restart_robot_v1_testnet_cycle_v2/);
+  assert.match(phaseFourMigration, /grant execute on function coinops\.restart_robot_v1_testnet_cycle_v2[^;]+to service_role/);
+  assert.match(server, /getSymbolInfo\(run\.symbol\)/);
+  assert.match(server, /feeTotals\(trades, run\.asset\)/);
+  assert.doesNotMatch(server, /cancelAllOrders/);
 });
 
 test("Shadow and Testnet share the local-versus-global transition policy", () => {

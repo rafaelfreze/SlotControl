@@ -38,7 +38,9 @@ function shadowAsset(data: Props, asset: Asset) {
   const accountValid = accounts.length > 0 && reconcileV1PhysicalSlotAccounts(accounts, operations);
   const healthy = Boolean(config?.last_engine_at && config.grid_status === "VALID" && !config.last_engine_error && accountValid && armed <= 1);
   const active = Boolean(cycle && config && !config.kill_switch && !config.pause_new_entries);
-  return { asset, config, cycle, accounts, active, healthy, armed, operations: operations.length,
+  const market = number(config?.last_market_price);
+  const openPnl = market === null ? null : slots.filter((row) => OPEN_SLOTS.has(row.status)).reduce((total, row) => total + (market - Number(row.average_fill_price || 0)) * Number(row.executed_quantity || 0), 0);
+  return { asset, config, cycle, accounts, active, healthy, armed, operations: operations.length, cycles: cycles.length, openPnl,
     capital: accounts.length ? sum(accounts.map((row) => number(row.balance_usdc))) : null,
     profit: accounts.length ? sum(accounts.map((row) => number(row.net_profit_usdc))) : null,
     gains: accounts.length ? accounts.reduce((total, row) => total + row.gain_count, 0) : null,
@@ -79,7 +81,8 @@ export function AutomationOverview({ data }: { data: Props }) {
   const shadowGains = shadowConfigured.length ? sum(shadowConfigured.map((row) => row.gains)) : null;
   const testnet = ASSETS.map((asset) => {
     const persisted = testnetAsset(data, asset);
-    const result = persisted ? summarizeTestnetResults(persisted.slots, persisted.orders, null, number(persisted.run.slot_notional_usdc)) : null;
+    const market = number(data.configs.find((row) => row.asset === asset)?.last_market_price);
+    const result = persisted ? summarizeTestnetResults(persisted.slots, persisted.orders, market, number(persisted.run.slot_notional_usdc)) : null;
     const history = (persisted?.history || []).map((bundle) => summarizeTestnetResults(bundle.slots, bundle.orders, null, number(bundle.run.slot_notional_usdc)));
     return { asset, persisted, result, lifetimeProfit: (result?.realizedProfit || 0) + history.reduce((total, item) => total + item.realizedProfit, 0), lifetimeGains: (result?.gains || 0) + history.reduce((total, item) => total + item.gains, 0), lifetimeOperations: (result?.completedOperations || 0) + history.reduce((total, item) => total + item.completedOperations, 0) };
   });
@@ -116,6 +119,15 @@ export function AutomationOverview({ data }: { data: Props }) {
         <footer className="aov-footer"><span>{realConnected ? "Binance conectada · GET" : "Conexão a verificar"}<time>{at(data.reconciliationAt || data.lastSyncedAt)}{data.mismatches ? ` · ${data.mismatches} itens a revisar` : ""}</time></span><a href="/automacao?view=live">Abrir Real <span aria-hidden="true">→</span></a></footer>
       </section>
     </div>
+
+    <section className="aov-comparison" aria-labelledby="aov-comparison-title"><header><h2 id="aov-comparison-title">Comparação de Teste</h2><span>Shadow × Testnet · perfil de teste 0,5% / 1% · 25 slots</span></header>
+      <div className="aov-comparison-scroll"><table><thead><tr><th>Ativo</th><th>Ambiente</th><th>Gains</th><th>Ciclos</th><th>P&amp;L</th><th>OPEN</th><th>NEXT BUY</th><th>Missed</th><th>Erros</th><th>Saúde</th></tr></thead><tbody>{ASSETS.flatMap((asset) => {
+        const sh = shadow.find((row) => row.asset === asset)!;
+        const tn = testnet.find((row) => row.asset === asset)!;
+        return [<tr key={`${asset}-shadow`}><th scope="row">{asset}</th><td>Shadow</td><td>{amount(sh.gains, 0)}</td><td>{sh.cycles}</td><td>{signed(sh.profit === null || sh.openPnl === null ? null : sh.profit + sh.openPnl)}</td><td>{sh.open}</td><td>{sh.armed}</td><td>{sh.missed}</td><td>{sh.config?.last_engine_error ? 1 : 0}</td><td>{sh.healthy ? "OK" : sh.state}</td></tr>,
+          <tr key={`${asset}-testnet`}><th scope="row">{asset}</th><td>Testnet</td><td>{tn.persisted ? tn.lifetimeGains : "—"}</td><td>{tn.persisted ? 1 + (tn.persisted.history?.length || 0) : "—"}</td><td>{signed(tn.persisted && tn.result?.openPnl != null ? tn.lifetimeProfit + tn.result.openPnl : null)}</td><td>{tn.result?.openSlots ?? "—"}</td><td>{tn.result?.armedSlots ?? "—"}</td><td>{tn.result?.missedLevels ?? "—"}</td><td>{tn.persisted?.run.last_error ? 1 : 0}</td><td>{tn.persisted?.run.last_error || (tn.persisted?.run.status === "ACTIVE" ? "Ativo" : "Não iniciado")}</td></tr>];
+      })}</tbody></table></div><small>Diferenças são esperadas: Shadow simula candles; Testnet usa fills e taxas da exchange fictícia. P&amp;L aberto requer preço de mercado disponível.</small>
+    </section>
 
     <section className="aov-activity" aria-labelledby="aov-activity-title"><header><h2 id="aov-activity-title">Atividade recente</h2><span>Trilhas separadas por ambiente</span><a href="/relatorios">Relatório completo <span aria-hidden="true">→</span></a></header>{activities.length ? <ol>{activities.map((event) => <li key={event.key}><span className={`aov-event-source ${event.environment}`}>{event.environment === "real" ? "REAL" : event.environment.toUpperCase()}</span><strong>{event.asset}</strong><span className="aov-event-label" title={event.label}>{event.label}</span><time dateTime={event.at}>{at(event.at)}</time></li>)}</ol> : <p className="aov-empty">Nenhum evento persistido disponível.</p>}</section>
   </div>;

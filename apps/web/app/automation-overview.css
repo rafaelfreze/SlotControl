@@ -1,4 +1,13 @@
 .aov-overview { display: grid; min-width: 0; gap: 10px; }
+.aov-comparison { min-width: 0; padding: 11px 13px; border: 1px solid var(--av-line); border-radius: 11px; background: #101c27; }
+.aov-comparison header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; margin-bottom: 8px; }
+.aov-comparison h2 { font-size: 15px; }
+.aov-comparison header span, .aov-comparison > small { color: var(--av-muted); font-size: 11px; }
+.aov-comparison-scroll { max-width: 100%; overflow-x: auto; }
+.aov-comparison table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 11px; }
+.aov-comparison th, .aov-comparison td { padding: 7px 8px; border-top: 1px solid var(--av-line); text-align: left; white-space: nowrap; }
+.aov-comparison thead th { color: var(--av-muted); font-size: 10px; }
+.aov-comparison > small { display: block; margin-top: 8px; }
 .aov-environments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
 .aov-environment { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--av-line); border-radius: 11px; background: linear-gradient(145deg, #12202c, #0c1620); }
 .aov-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; }

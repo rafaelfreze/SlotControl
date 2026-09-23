@@ -53,8 +53,34 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     const overlap = operationalCycles.some((cycle, index) => index > 0 && (!operationalCycles[index - 1]!.completed_at || Date.parse(s(operationalCycles[index - 1]!.completed_at)) > Date.parse(s(cycle.started_at))));
     add("CYCLES_DO_NOT_OVERLAP", incomplete(environment === "SHADOW" ? "robot_v1_cycles" : "robot_v1_testnet_runs") || !cycles.length ? "WARNING" : overlap ? environment === "TESTNET" ? "WARNING" : "FAIL" : "PASS", overlap ? "Há ciclos que se sobrepõem ou término não persistido; revisar a sequência e os motivos." : "Não há sobreposição identificada na sequência de ciclos disponível.", extra);
   }
+  for (const environment of context.filters.environments.filter((value) => value !== "REAL")) for (const asset of context.filters.assets) {
+    const symbol = `${asset}USDC`;
+    const cycles = datasets.cycles.filter((row) => row.environment === environment && row.asset === asset);
+    const current = cycles.filter((row) => !["CYCLE_COMPLETE", "COMPLETED", "FAILED"].includes(s(row.status)));
+    const slots = datasets.slots.filter((row) => row.environment === environment && row.asset === asset && current.some((cycle) => cycle.cycle_id === row.cycle_id));
+    const orders = datasets.orders.filter((row) => row.environment === environment && row.asset === asset && current.some((cycle) => cycle.cycle_id === row.cycle_id));
+    const missing = incomplete(environment === "SHADOW" ? "robot_v1_cycles" : "robot_v1_testnet_runs", environment === "SHADOW" ? "robot_v1_slots" : "robot_v1_testnet_slots");
+    const prefix = `${environment}_${asset}`;
+    const profileMatch = current.every((cycle) => same(cycle.gain_rate, 0.005) && same(cycle.entry_spacing, 0.01) && n(cycle.slot_count) === 25 && s(cycle.symbol) === symbol);
+    add(`${prefix}_PROFILE_MATCH`, missing || !current.length ? "WARNING" : profileMatch ? "PASS" : "FAIL", !current.length ? "Sem ciclo ativo para certificar o perfil de teste." : "Snapshot do ciclo ativo confrontado com 0,5% / 1% / 25 slots e par do ativo.", { environment, asset });
+    const armed = slots.filter((slot) => slot.entry_state === "ARMED").length;
+    const resident = orders.filter((order) => order.side === "BUY" && active(order.status)).length;
+    add(`SINGLE_ACTIVE_ENTRY_${asset}`, missing || !current.length ? "WARNING" : armed <= 1 && resident <= 1 ? "PASS" : "FAIL", `Snapshot ${environment}/${asset}: ${armed} slot(s) armados e ${resident} BUY(s) residentes.`, { environment, asset });
+    add("SLOT_COUNT_25", missing || !current.length ? "WARNING" : slots.length === 25 && new Set(slots.map((slot) => n(slot.physical_slot_number))).size === 25 ? "PASS" : "FAIL", "Ciclo ativo exige 25 identidades físicas distintas.", { environment, asset });
+    const summary = datasets.summary.find((row) => row.environment === environment && row.asset === asset);
+    const gains = datasets.gains.filter((row) => row.environment === environment && row.asset === asset && n(row.net_gain) > 0);
+    add("GAIN_COUNTS_RECONCILE", !summary || incomplete(environment === "SHADOW" ? "robot_v1_slot_operations" : "robot_v1_testnet_orders") ? "WARNING" : gains.length === n(summary.gains) ? "PASS" : "FAIL", "Contagem de gains positivos confrontada com o resumo do período.", { environment, asset });
+    const local = datasets.events.filter((row) => row.environment === environment && row.asset === asset && row.event_type === "SLOT_REENTRY_PLANNED");
+    add("LOCAL_REENTRY_RULE", !local.length ? "WARNING" : local.every((event) => same(event.previous_entry_price, event.reentry_price)) ? "PASS" : "FAIL", !local.length ? "Nenhuma reentrada local observada no período." : "Reentrada local conserva o preço anterior do slot físico.", { environment, asset });
+    const reset = datasets.events.filter((row) => row.environment === environment && row.asset === asset && ["CYCLE_RESTARTED", "NEW_CYCLE_STARTED"].includes(s(row.event_type)));
+    add("GLOBAL_RESET_RULE", !reset.length ? "WARNING" : cycles.some((cycle) => cycle.completion_reason || cycle.reset_reason) ? "PASS" : "FAIL", !reset.length ? "Nenhum reset global observado no período." : "Reset e novo ciclo confrontados com motivo persistido.", { environment, asset });
+  }
+  const testnetActive = datasets.cycles.filter((cycle) => cycle.environment === "TESTNET" && !["CYCLE_COMPLETE", "COMPLETED", "FAILED"].includes(s(cycle.status)));
+  const mixed = testnetActive.some((cycle) => s(cycle.symbol) !== `${s(cycle.asset)}USDC`) || duplicates(testnetActive, (cycle) => s(cycle.cycle_id));
+  add("BTC_SOL_ISOLATION", !testnetActive.length || incomplete("robot_v1_testnet_runs") ? "WARNING" : mixed ? "FAIL" : "PASS", "Ciclos Testnet ativos mantêm par, ativo e identificador independentes.", { environment: "TESTNET" });
   const ledgerBroken = datasets.capital.filter((row) => row.balance_before === null || row.net_profit === null || row.balance_after === null || !same(n(row.balance_before) + n(row.net_profit) + n(row.contribution) - n(row.withdrawal), row.balance_after));
   add("COMPOUNDING_BALANCE_FORMULA", !datasets.capital.length ? "WARNING" : ledgerBroken.length ? "FAIL" : "PASS", !datasets.capital.length ? "Nenhum crédito no período para avaliar a fórmula de compounding." : `${datasets.capital.length} créditos verificados; ${ledgerBroken.length} divergências na fórmula antes + lucro líquido + aporte − retirada = depois.`);
+  add("COMPOUNDING_RECONCILES", !datasets.capital.length ? "WARNING" : ledgerBroken.length ? "FAIL" : "PASS", "Compounding por slot confrontado com o ledger de créditos disponível.");
   for (const account of context.source.robot_v1_slot_accounts ?? []) {
     const config = (context.source.robot_v1_configs ?? []).find((row) => row.id === account.config_id);
     if (!context.filters.environments.includes("SHADOW") || !context.filters.assets.includes(s(config?.asset) as "BTC" | "SOL")) continue;
@@ -95,6 +121,7 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     const violations = datasets.real.filter((row) => row.row_type === "PRODUCTION_WRITE_GUARD_VIOLATION");
     add("PRODUCTION_PERSISTED_WRITE_GUARD", incomplete("exchange_order_intents") ? "WARNING" : violations.length ? "FAIL" : "PASS", violations.length ? `${violations.length} intent(s) com referência de submissão Production; investigar imediatamente.` : "Nenhum intent CoinOps com referência de envio LIVE/REAL encontrado no período carregado.", { environment: "REAL", evidence_scope: "PERSISTED_ORDER_INTENTS" });
     add("PRODUCTION_HTTP_WRITE_HISTORY", "WARNING", "Não existe log histórico completo de métodos HTTP neste banco; ausência histórica de write não pode ser certificada apenas com snapshots.", { environment: "REAL" });
+    add("PRODUCTION_NO_WRITE", violations.length ? "FAIL" : "WARNING", "Sem intent persistido de write CoinOps no escopo lido; histórico HTTP completo não está disponível.", { environment: "REAL" });
   }
   const triggerIncomplete = incomplete("robot_v1_audit_events", "robot_v1_market_candles") || datasets.market.some((row) => ["INCOMPLETE", "OBSERVED_WITHOUT_CANDLE", "PENDING_ENGINE_WINDOW"].includes(s(row.result)));
   const missing = datasets.market.filter((row) => row.result === "MISSING_ACTION");

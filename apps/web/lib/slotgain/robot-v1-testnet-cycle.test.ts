@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { planTerminalTestnetRestart, testnetOperationalState, testnetResetIdempotencyKey, type TestnetCycleOrderState } from "../execution/robot-v1-testnet-cycle.ts";
+import { planTerminalTestnetRestart, testnetClientOrderId, testnetOperationalState, testnetResetIdempotencyKey, type TestnetCycleOrderState } from "../execution/robot-v1-testnet-cycle.ts";
 
 const order = (value: Partial<TestnetCycleOrderState>): TestnetCycleOrderState => ({
   slot_number: 1, side: "BUY", purpose: "INITIAL", client_order_id: "buy-initial", exchange_order_id: "1",
@@ -31,6 +31,17 @@ test("restart idempotency is stable for duplicate stream, cron and reconciliatio
   assert.equal(key, testnetResetIdempotencyKey("old-cycle", "tp-terminal"));
   assert.notEqual(key, testnetResetIdempotencyKey("old-cycle", "another-fill"));
   assert.equal(key.length, 64);
+});
+
+test("BTC and SOL Testnet orders have isolated, stable ownership IDs", () => {
+  const runId = "00000000-0000-4000-8000-000000000001";
+  const btc = testnetClientOrderId(runId, "BTC", 1, "BUY", 1);
+  const sol = testnetClientOrderId(runId, "SOL", 1, "BUY", 1);
+  assert.match(btc, /^COV1-BTC-1-1-BUY-[a-f0-9]{18}$/);
+  assert.match(sol, /^COV1-SOL-1-1-BUY-[a-f0-9]{18}$/);
+  assert.notEqual(btc, sol);
+  assert.equal(btc, testnetClientOrderId(runId, "BTC", 1, "BUY", 1));
+  assert.notEqual(btc, testnetClientOrderId(runId, "BTC", 1, "SELL", 1));
 });
 
 test("multiple resident next BUYs fail closed", () => {
