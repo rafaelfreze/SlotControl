@@ -56,6 +56,41 @@ test("failed initialization remains a historical error without inventing overlap
   assert.equal(invalid.datasets.checks.find((row) => row.code === "PHYSICAL_SLOTS_25" && row.cycle_id === "failed-0")?.status, "FAIL");
   assert.equal(invalid.datasets.checks.find((row) => row.code === "CYCLES_DO_NOT_OVERLAP")?.status, "FAIL");
 });
+
+test("historical cycle completion stops triggers even without a terminal event", () => {
+  const input = fixture();
+  Object.assign(input.sources.robot_v1_cycles[0]!, { status: "CYCLE_COMPLETE", completed_at: at("00:10"), completion_reason: "TEST_RESTARTED" });
+  input.sources.robot_v1_audit_events.push({ ...owner, id: "early-buy", cycle_id: "cycle-1", slot_id: "slot-1", event_type: "BUY_TRIGGERED", observed_at: at("00:01"), next_state: { takeProfitPrice: 10.05 } });
+  input.sources.robot_v1_market_candles.push({ ...owner, symbol: "SOLUSDC", candle_open_at: at("00:20"), candle_close_at: at("00:21"), high_price: 11, low_price: 10 });
+  const report = buildAuditReport(input, filters), trigger = report.datasets.market.find((row) => row.trigger_type === "TP")!;
+  assert.equal(trigger.ended_at, "2026-09-22T00:10:00.001Z"); assert.notEqual(trigger.result, "MISSING_ACTION");
+  assert.ok(!report.datasets.alerts.some((row) => row.code === "TRIGGER_ACTION_NOT_FOUND"));
+});
+
+test("a slot snapshot from a reset cycle cannot reserve current capital or create open PnL", () => {
+  const input = fixture();
+  input.sources.robot_v1_cycles.push({ ...input.sources.robot_v1_cycles[0], id: "legacy-cycle", status: "CYCLE_COMPLETE", completed_at: at("01:00"), completion_reason: "TEST_RESTARTED" });
+  input.sources.robot_v1_slots.push({ ...input.sources.robot_v1_slots[0], id: "legacy-slot", cycle_id: "legacy-cycle", operation_sequence: 1, buy_triggered_at: at("00:05"), allocation_usdc: 10 });
+  const report = buildAuditReport(input, filters), summary = report.datasets.summary[0]!;
+  assert.equal(summary.open_operations, 1); assert.equal(summary.committed_capital, 20); assert.equal(summary.open_pnl, .02);
+  const preserved = report.datasets.slots.find((row) => row.slot_id === "legacy-slot")!;
+  assert.equal(preserved.status, "TP_ACTIVE"); assert.equal(preserved.context_active, false);
+  assert.equal(preserved.context_ended_at, at("01:00"));
+  const operation = report.datasets.operations.find((row) => row.slot_id === "legacy-slot")!;
+  assert.equal(operation.closed_at, null); assert.equal(operation.context_ended_at, at("01:00"));
+});
+
+test("a proven missing action stays FAIL even when another trigger has incomplete candles", () => {
+  const input = fixture();
+  input.sources.robot_v1_audit_events.push(
+    { ...owner, id: "buy-arm", cycle_id: "cycle-1", slot_id: "slot-2", event_type: "NEXT_BUY_ARMED", observed_at: at("00:01"), next_state: { buyPrice: 9.8 } },
+    { ...owner, id: "tp-arm", cycle_id: "cycle-1", slot_id: "slot-1", event_type: "BUY_TRIGGERED", observed_at: at("00:01"), next_state: { takeProfitPrice: 11.05 } }
+  );
+  input.sources.robot_v1_market_candles.push({ ...owner, symbol: "SOLUSDC", candle_open_at: at("00:20"), candle_close_at: at("00:21"), high_price: 10, low_price: 9.6 });
+  const report = buildAuditReport(input, filters);
+  assert.ok(report.datasets.market.some((row) => row.result === "INCOMPLETE"));
+  assert.equal(report.datasets.checks.find((row) => row.code === "ARMED_TRIGGER_ACTIONS")?.status, "FAIL");
+});
 test("period is end-exclusive; immutable credit uses operation time despite migration backfill", () => {
   const report = buildAuditReport(fixture(), { ...filters, start: at("01:00"), end: at("01:30") });
   assert.equal(report.datasets.gains.length, 1); assert.equal(report.datasets.gains[0]!.operation_id, "op-1"); assert.equal(report.datasets.capital.length, 1);

@@ -13,7 +13,7 @@ type View = "overview" | "shadow" | "testnet" | "real" | "exports";
 type Filters = { start: string; end: string; preset: Preset; asset: "ALL" | "BTC" | "SOL"; environment: Environment };
 type Check = { code: string; status: "PASS" | "WARNING" | "FAIL"; explanation: string; environment?: string; asset?: string };
 type ReportFile = { name: string; rows?: number; description?: string };
-type Preview = { reportVersion: number; generatedAt: string; summaries: Record<string, unknown>[]; checks: Check[]; warnings: string[]; incompleteSources: string[]; rowCounts: Record<string, number>; files: ReportFile[] };
+type Preview = { reportVersion: number; generatedAt: string; summaries: Record<string, unknown>[]; checks: Check[]; warnings: string[]; incompleteSources: string[]; rowCounts: Record<string, number>; files: ReportFile[]; totals?: { errors: number } };
 type Download = { name: string; generatedAt: string; start: string; end: string; environment: Environment; asset: string; size: number; reportVersion: number };
 type DownloadFormat = "zip" | "csv" | "json" | "markdown" | "candles";
 
@@ -122,6 +122,7 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
   const warnings = [...new Set([...(preview?.warnings || []), ...(preview?.incompleteSources || []).map((source) => `Fonte incompleta: ${source}`)])];
   const candleParts = partitionCandleExports(filters.start, filters.end);
   const totals = (key: string) => summaries.reduce((sum, row) => sum + (numeric(row[key]) || 0), 0);
+  const totalErrors = preview?.totals?.errors ?? totals("errors");
   const downloadButton = <button type="button" className="reports-primary" disabled={busy || loading || !preview} onClick={() => void download("zip")}><span aria-hidden="true">⇩</span>{downloading?.startsWith("zip-") ? "Preparando pacote…" : "Exportar relatório completo"}</button>;
   const content = (
     <div className="reports-center">
@@ -149,7 +150,7 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
           <Kpi label="Checks conformes" value={counts.PASS} helper={`${counts.WARNING} avisos · ${counts.FAIL} divergências`} tone={counts.FAIL ? "negative" : counts.WARNING ? "warning" : "positive"} />
           <Kpi label="Ciclos / operações" value={`${integer.format(totals("cycles"))} / ${integer.format(totals("operations"))}`} helper="Nos ambientes selecionados" />
           <Kpi label="Gains registrados" value={integer.format(totals("gains"))} helper="Resultado detalhado por ambiente" />
-          <Kpi label="Missed levels / erros" value={`${integer.format(totals("missed_levels"))} / ${integer.format(totals("errors"))}`} helper="Ausência de registro não prova ausência de erro" tone={totals("missed_levels") || totals("errors") ? "warning" : undefined} />
+          <Kpi label="Missed levels / erros" value={`${integer.format(totals("missed_levels"))} / ${integer.format(totalErrors)}`} helper="Ausência de registro não prova ausência de erro" tone={totals("missed_levels") || totalErrors ? "warning" : undefined} />
           <Kpi label="Evidências exportáveis" value={integer.format(totalRows)} helper={`${files.length} arquivos no pacote`} />
         </div>
         {view !== "exports" ? <div className="reports-overview-grid">

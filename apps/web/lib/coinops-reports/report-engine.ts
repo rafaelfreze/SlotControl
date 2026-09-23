@@ -151,6 +151,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     allOperations.push({ environment: str(cycle.execution_mode) || "SHADOW", asset: assetOf(cycle), symbol: cycle.symbol, operation_id: `open:${slot.id}:${slot.operation_sequence}`, cycle_id: slot.cycle_id, config_id: cycle.config_id, slot_id: slot.id,
       slot: slot.slot_number, physical_slot_number: slot.slot_number, logical_level: slot.logical_level, operation_sequence: slot.operation_sequence, sequence: slot.operation_sequence, side: "BUY→TP", entry_price: num(slot.average_fill_price), quantity: num(slot.executed_quantity), allocation: num(slot.allocation_usdc),
       take_profit_price: num(slot.take_profit_price), gain_target_percent: num(cycle.gain_rate) === null ? null : number(cycle.gain_rate) * 100, opened_at: iso(slot.buy_triggered_at), closed_at: null, gross_profit: null, fees: null, net_profit: null, result: "OPEN",
+      context_ended_at: iso(cycle.completed_at), context_end_reason: cycle.completion_reason ?? null,
       trigger_source: "PERSISTED_SHADOW_CANDLE", buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id, source: "robot_v1_slots", snapshot_at: input.generatedAt });
   }
   const observationEnd = new Date(Math.min(timestamp(filters.end), timestamp(input.generatedAt))).toISOString();
@@ -205,7 +206,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const history = allOperations.filter((row) => row.environment === (cycle.execution_mode ?? "SHADOW") && row.config_id === cycle.config_id && row.physical_slot_number === slot.slot_number && row.closed_at && timestamp(row.closed_at) < timestamp(observationEnd));
     const ownEvents = allEvents.filter((row) => row.slot_id === slot.id && timestamp(row.timestamp) < timestamp(observationEnd));
     const market = num(config.last_market_price), entry = num(slot.average_fill_price), quantity = num(slot.executed_quantity);
-    const open = ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(str(slot.status));
+    const contextEnded = Boolean(cycle.completed_at && timestamp(cycle.completed_at) <= timestamp(input.generatedAt));
+    const open = !contextEnded && ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(str(slot.status));
     return { environment: str(cycle.execution_mode) || "SHADOW", asset: assetOf(cycle), symbol: cycle.symbol, cycle_id: slot.cycle_id, config_id: cycle.config_id, slot_id: slot.id,
       physical_slot_number: slot.slot_number, logical_level: slot.logical_level, operation_sequence: slot.operation_sequence, entry_state: slot.entry_state, status: slot.status,
       gain_count_test: history.length, gain_count_cycle: history.filter((row) => row.cycle_id === slot.cycle_id).length, initial_balance: num(account?.initial_balance_usdc), current_balance: num(account?.balance_usdc),
@@ -213,7 +215,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       buy_status: slot.buy_status, tp_status: slot.take_profit_status, quantity, notional: entry === null || quantity === null ? null : entry * quantity, open_pnl: open && market !== null && entry !== null && quantity !== null ? (market - entry) * quantity : open ? null : 0,
       realized_pnl: sum(history.filter((row) => row.cycle_id === slot.cycle_id), "net_profit"), opened_at: iso(slot.buy_triggered_at), closed_at: iso(slot.tp_triggered_at), recycled_at: ownEvents.filter((row) => row.event_type === "SLOT_RECYCLED").at(-1)?.timestamp ?? null,
       armed_at: iso(slot.armed_at), missed_at: iso(slot.missed_at), buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id,
-      snapshot_at: input.generatedAt, state_basis: "LATEST_PERSISTED_PHYSICAL_SLOT; histórico de operações e eventos preservado separadamente" };
+      context_ended_at: iso(cycle.completed_at), context_active: !contextEnded,
+      snapshot_at: input.generatedAt, state_basis: "LATEST_PERSISTED_PHYSICAL_SLOT; status legado preservado, contexto encerrado não é posição ativa; histórico de operações e eventos preservado separadamente" };
   });
   for (const slot of testnetSlots) {
     const run = runById.get(str(slot.run_id)) ?? {}, orders = normalizedOrders.filter((order) => order.slot_id === slot.id), operation = allOperations.find((row) => row.slot_id === slot.id && row.environment === "TESTNET");
@@ -259,7 +262,12 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       && timestamp(candidate.timestamp) >= timestamp(event.timestamp) && candidate !== event
       && ((candidate.slot === event.slot && (isBuy ? ["BUY_TRIGGERED", "BUY_FILLED", "NEXT_BUY_DISARMED", "SLOT_RECYCLED"] : ["TP_TRIGGERED", "TP_FILLED", "SLOT_RECYCLED"]).includes(str(candidate.event_type))) || candidate.event_type === "CYCLE_COMPLETED"));
     const observed = stop && (isBuy ? ["BUY_TRIGGERED", "BUY_FILLED"] : ["TP_TRIGGERED", "TP_FILLED"]).includes(str(stop.event_type)) ? stop : null;
-    const end = stop && timestamp(stop.timestamp) < timestamp(observationEnd) ? new Date(timestamp(stop.timestamp) + 1).toISOString() : observationEnd;
+    // Historical restarts can close a cycle without a CYCLE_COMPLETED event.
+    // A trigger cannot remain armed after its owning cycle has ended.
+    const completedAt = timestamp(cycleById.get(str(event.cycle_id))?.completed_at);
+    const endTime = Math.min(timestamp(observationEnd), stop ? timestamp(stop.timestamp) + 1 : Infinity, Number.isFinite(completedAt) ? completedAt + 1 : Infinity);
+    if (endTime <= timestamp(event.timestamp)) continue;
+    const end = new Date(endTime).toISOString();
     if (!overlap(event.timestamp, end, filters)) continue;
     windows.push({ environment: "SHADOW", asset: str(event.asset), symbol: str(event.symbol), cycleId: str(event.cycle_id), slot: num(event.slot), operationId: str(event.operation_id) || null,
       type: isBuy ? "BUY" : "TP", price: trigger, armedAt: str(event.timestamp), endedAt: end, observedAt: observed ? str(observed.timestamp) : null, observedAction: observed ? str(observed.event_type) : null,
@@ -396,7 +404,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   for (const environment of filters.environments) for (const asset of filters.assets) {
     const gains = periodGains.filter((row) => row.environment === environment && row.asset === asset);
     const completed = allOperations.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.closed_at, filters));
-    const openAtEnd = allOperations.filter((row) => row.environment === environment && row.asset === asset && timestamp(row.opened_at) < timestamp(observationEnd) && (!row.closed_at || timestamp(row.closed_at) >= timestamp(observationEnd)));
+    const openAtEnd = allOperations.filter((row) => row.environment === environment && row.asset === asset && timestamp(row.opened_at) < timestamp(observationEnd) && (!row.closed_at || timestamp(row.closed_at) >= timestamp(observationEnd)) && (!row.context_ended_at || timestamp(row.context_ended_at) >= timestamp(observationEnd)));
     const ownCycles = relevantCycles.filter((row) => row.environment === environment && row.asset === asset), ownOrders = periodOrders.filter((row) => row.environment === environment && row.asset === asset);
     const ownEvents = allEvents.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.timestamp, filters));
     const ownAlerts = alerts.filter((row) => row.environment === environment && (!row.asset || row.asset === asset) && inPeriod(row.timestamp, filters));

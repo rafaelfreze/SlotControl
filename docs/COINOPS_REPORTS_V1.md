@@ -26,6 +26,8 @@ O ZIP usa DEFLATE/CRC32 e nomes fixos sem caminhos. O manifest informa SHA-256 e
 
 Snapshots atuais de slots/configuração/ordens não devem ser lidos como estado de uma data passada. Valores históricos só são reconstruídos com operações/créditos/eventos suficientes. Exportação por páginas não é snapshot transacional único: os instantes e a base da evidência são explícitos. Falha ou limite em uma fonte gera `incomplete_sources` e WARNING; não esconde registros nem certifica completude.
 
+Um reset pode preservar um slot com status antigo sem arquivar um TP. `context_ended_at` registra o encerramento do ciclo, sem inventar venda, `closed_at` ou ganho. Esse snapshot deixa de compor posições ativas, capital comprometido e janelas de gatilhos depois do encerramento. Falhas de inicialização sem slots ficam nos erros históricos; não são tratadas como grades simultâneas em execução.
+
 ## Evidência adicionada nesta versão
 
 A migration aditiva `20260923004502_add_report_runtime_observations.sql` cria observações de execução do motor e dos diagnósticos Testnet já existentes. Registra somente metadados permitidos, com identidade de escopo, versão e idempotência. RLS é obrigatória; usuários autenticados podem ler seu escopo, e somente o serviço pode inserir. UPDATE/DELETE não são concedidos. A coleta não altera decisões do robô nem faz consultas extras à exchange.
