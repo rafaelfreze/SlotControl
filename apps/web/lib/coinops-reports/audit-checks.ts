@@ -98,7 +98,11 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
   const terminalEvents = datasets.events.filter((event) => ["SLOT_CLOSED", "CYCLE_COMPLETED", "SLOT_PROFIT_CREDITED", "BUY_FILLED", "SELL_FILLED"].includes(s(event.event_type)));
   const terminalDuplicate = duplicates(terminalEvents, (row) => {
     const details = row.details as AuditRow | null;
-    const identity = row.operation_id ?? details?.clientOrderId ?? (row.event_type === "CYCLE_COMPLETED" ? row.cycle_id : row.event_type === "SLOT_CLOSED" ? `${row.cycle_id}:${row.slot}` : null);
+    // A Testnet slot can fill repeatedly in one cycle. Fill events predate
+    // operation_sequence in their payload, but retain the unique exchange ID.
+    const identity = ["BUY_FILLED", "SELL_FILLED"].includes(s(row.event_type))
+      ? details?.clientOrderId ?? row.operation_id
+      : row.operation_id ?? details?.clientOrderId ?? (row.event_type === "CYCLE_COMPLETED" ? row.cycle_id : row.event_type === "SLOT_CLOSED" ? `${row.cycle_id}:${row.slot}` : null);
     return identity ? `${row.environment}:${row.event_type}:${identity}` : "";
   });
   add("TERMINAL_EVENTS_UNIQUE", terminalDuplicate ? "FAIL" : incomplete("robot_v1_audit_events", "robot_v1_testnet_events") ? "WARNING" : "PASS", terminalDuplicate ? "Há evento terminal repetido para a mesma operação/ordem/ciclo." : "Nenhuma duplicação terminal encontrada nas identidades persistidas.");

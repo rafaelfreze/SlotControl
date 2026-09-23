@@ -306,6 +306,18 @@ test("duplicate operation IDs and terminal events fail audit", () => {
   for (let i = 0; i < 2; i++) input.sources.robot_v1_audit_events!.push({ ...owner, id: `terminal-${i}`, config_id: "config-sol", cycle_id: "cycle-1", slot_id: "slot-1", event_type: "SLOT_PROFIT_CREDITED", next_state: { operationId: "op-1" }, observed_at: at("01:00"), idempotency_key: `different-${i}` });
   const report = buildAuditReport(input, filters); assert.equal(report.datasets.checks.find((row) => row.code === "OPERATION_IDS_UNIQUE")!.status, "FAIL"); assert.equal(report.datasets.checks.find((row) => row.code === "TERMINAL_EVENTS_UNIQUE")!.status, "FAIL");
 });
+test("repeated Testnet fills of one physical slot use unique exchange order IDs", () => {
+  const input = addTestnet(fixture());
+  const first = input.sources.robot_v1_testnet_events![0]!;
+  input.sources.robot_v1_testnet_events!.push({ ...first, id: "bfilled-reentry", event_key: "bfilled-reentry",
+    observed_at: at("01:20"), details: { clientOrderId: "COV1-SOL-1-2-BUY-distinct" } });
+  const report = buildAuditReport(input, { ...filters, environments: ["TESTNET"] });
+  assert.equal(report.datasets.checks.find((row) => row.code === "TERMINAL_EVENTS_UNIQUE")?.status, "PASS");
+  input.sources.robot_v1_testnet_events!.push({ ...first, id: "bfilled-duplicate", event_key: "bfilled-duplicate",
+    observed_at: at("01:21") });
+  assert.equal(buildAuditReport(input, { ...filters, environments: ["TESTNET"] }).datasets.checks
+    .find((row) => row.code === "TERMINAL_EVENTS_UNIQUE")?.status, "FAIL");
+});
 test("missing accounting evidence creates warning and unknown capital, never a false pass", () => {
   const input = fixture(); input.incompleteSources.push("robot_v1_slot_profit_credits:truncated");
   const report = buildAuditReport(input, filters); assert.equal(report.datasets.summary[0]!.capital_end, null); assert.equal(report.datasets.checks.find((row) => row.code === "PERIOD_CAPITAL_LEDGER")!.status, "WARNING");

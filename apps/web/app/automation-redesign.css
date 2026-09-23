@@ -255,16 +255,10 @@
   .av2-kpi-grid article > strong { font-size: 16px; }
   .av2-slot-counts span { font-size: 10px; }
 }
-.av2-monthly-panel { display: grid; gap: 10px; padding: 12px; border-top: 1px solid var(--av-line); }
-.av2-monthly-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; align-items: center; }
-.av2-monthly-head > div { display: grid; gap: 3px; }
-.av2-monthly-head small, .av2-monthly-row small { color: var(--av-muted); font-size: 11px; }
-.av2-monthly-head > span { font-size: 12px; color: var(--av-gold); }
-.av2-monthly-filter { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.av2-monthly-filter select { min-height: 34px; max-width: 100%; border: 1px solid var(--av-line); border-radius: 8px; background: var(--av-panel); color: var(--av-text); padding: 4px 8px; }
-.av2-monthly-list { display: grid; gap: 5px; }
-.av2-monthly-row { display: grid; grid-template-columns: minmax(145px, 1fr) minmax(185px, 1fr) minmax(145px, 1fr); align-items: center; gap: 9px; padding: 9px; border: 1px solid var(--av-line); border-radius: 9px; }
-.av2-monthly-row > div { display: grid; gap: 3px; min-width: 0; }
-.av2-monthly-row strong { font-size: 12px; }
-.av2-monthly-row[data-reached="true"] { border-color: rgba(214, 170, 67, .55); background: rgba(214, 170, 67, .07); }
-@media (max-width: 620px) { .av2-monthly-panel { padding: 10px; } .av2-monthly-row { grid-template-columns: 1fr; gap: 5px; } }
+.av2-monthly-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 7px 12px; padding: 7px 12px; border-bottom: 1px solid var(--av-line); color: var(--av-muted); font-size: 11px; }
+.av2-monthly-toolbar strong { color: var(--av-gold); }
+.av2-monthly-toolbar label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.av2-monthly-toolbar select { min-height: 30px; max-width: 100%; border: 1px solid var(--av-line); border-radius: 7px; background: var(--av-panel); color: var(--av-text); padding: 3px 7px; font-size: 11px; }
+.av2-monthly-hint { display: block; margin-top: 3px; color: var(--av-muted); font-size: 10px; font-weight: 600; white-space: normal; }
+.av2-mobile-slot .av2-monthly-hint { margin: 0; color: var(--av-gold); }
+@media (max-width: 620px) { .av2-monthly-toolbar { padding: 7px 10px; } .av2-monthly-toolbar label { width: 100%; justify-content: space-between; } }

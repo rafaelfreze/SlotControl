@@ -58,3 +58,35 @@ test("monthly checks require source reconciliation and observed month rollover",
   assert.equal(buildMonthlyGoalChecks(data, source, ["robot_v1_monthly_slot_gains:row_limit_50000"], "2026-10-02T12:00:00Z")
     .find((row) => row.code === "MONTHLY_GAIN_COUNT_RECONCILES")?.status, "WARNING");
 });
+
+test("monthly audit preserves pre-4.2 reentry but flags any new post-adoption entry", () => {
+  const data = Object.fromEntries(REPORT_DATASET_KEYS.map((key) => [key, []])) as unknown as AuditDatasets;
+  data.monthly_goals = Array.from({ length: 25 }, (_, index) => ({ environment: "TESTNET", asset: "SOL",
+    physical_slot_number: index + 1, period_key: "2026-09", monthly_gain_count: index === 4 ? 2 : 0,
+    monthly_gain_target: 2, monthly_target_reached: index === 4, eligible_for_new_entry: index !== 4,
+    operational_rank: index === 4 ? null : index < 4 ? index + 1 : index,
+    lifetime_gain_count: index === 4 ? 2 : 0, physical_slot_id: `SOL:${index + 1}` }));
+  const source = {
+    robot_v1_monthly_slot_gains: [],
+    robot_v1_testnet_runs: [{ id: "run-sol", asset: "SOL" }],
+    robot_v1_strategy_decisions: [{ environment: "TESTNET", asset: "SOL", strategy_version: "4.2", created_at: "2026-09-23T18:22:00Z" }],
+    robot_v1_testnet_orders: [
+      { run_id: "run-sol", slot_number: 5, side: "SELL", purpose: "TP", status: "FILLED", operation_sequence: 1, revision: 1 },
+      { run_id: "run-sol", slot_number: 5, side: "SELL", purpose: "TP", status: "FILLED", operation_sequence: 2, revision: 1 },
+      { run_id: "run-sol", slot_number: 5, side: "BUY", created_at: "2026-09-23T16:42:00Z" }
+    ],
+    robot_v1_testnet_events: [
+      { run_id: "run-sol", slot_number: 5, event_type: "SLOT_CLOSED", observed_at: "2026-09-23T14:55:00Z", details: { profitUsdc: 0.05, operationSequence: 1 } },
+      { run_id: "run-sol", slot_number: 5, event_type: "SLOT_CLOSED", observed_at: "2026-09-23T16:07:00Z", details: { profitUsdc: 0.05, operationSequence: 2 } },
+      { run_id: "run-sol", slot_number: 5, event_type: "SLOT_REENTRY_PLANNED", observed_at: "2026-09-23T16:07:01Z" }
+    ]
+  };
+  const status = (code: string) => buildMonthlyGoalChecks(data, source, [], "2026-09-23T19:00:00Z")
+    .find((row) => row.code === code)?.status;
+  assert.equal(status("TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY"), "PASS");
+  assert.equal(status("TARGET_REACHED_SLOT_HAS_NO_REENTRY"), "PASS");
+  source.robot_v1_testnet_orders.push({ run_id: "run-sol", slot_number: 5, side: "BUY", created_at: "2026-09-23T18:30:00Z" });
+  assert.equal(status("TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY"), "FAIL");
+  source.robot_v1_testnet_events.push({ run_id: "run-sol", slot_number: 5, event_type: "SLOT_REENTRY_PLANNED", observed_at: "2026-09-23T18:31:00Z" });
+  assert.equal(status("TARGET_REACHED_SLOT_HAS_NO_REENTRY"), "FAIL");
+});

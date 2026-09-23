@@ -24,7 +24,7 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
     const sourceMissing = !Object.hasOwn(source, "robot_v1_monthly_slot_gains")
       || missing("robot_v1_monthly_slot_gains", environment === "SHADOW" ? "robot_v1_slot_profit_credits" : "robot_v1_testnet_events",
         environment === "SHADOW" ? "robot_v1_slot_operations" : "robot_v1_testnet_orders");
-    const entrySourceMissing = sourceMissing || missing(...(environment === "SHADOW"
+    const entrySourceMissing = sourceMissing || missing("robot_v1_strategy_decisions", ...(environment === "SHADOW"
       ? ["robot_v1_slots", "robot_v1_cycles", "robot_v1_configs"]
       : ["robot_v1_testnet_runs"]));
     const eventSourceMissing = entrySourceMissing || missing(environment === "SHADOW" ? "robot_v1_audit_events" : "robot_v1_testnet_events");
@@ -45,10 +45,22 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
     add("MONTHLY_GAIN_COUNT_RECONCILES", !current.length || sourceMissing || fallback ? "WARNING" : current.every((row) => n(row.monthly_gain_count) === actualFor(row).length) ? "PASS" : "FAIL",
       "Contador mensal confrontado com créditos/fechamentos confirmados, por slot físico e período.", scope);
     const reached = current.filter((row) => row.monthly_target_reached === true);
+    // A monthly target reached before 4.2 cannot retroactively make a 4.1
+    // reentry invalid. The first persisted 4.2 decision is the earliest
+    // verifiable enforcement point for this engine/asset.
+    const adoptionTimes = (source.robot_v1_strategy_decisions ?? []).filter((decision) => decision.environment === environment
+      && decision.asset === asset && decision.strategy_version === "4.2")
+      .map((decision) => at(decision.created_at)).filter(Number.isFinite);
+    const adoptedAt = adoptionTimes.length ? Math.min(...adoptionTimes) : NaN;
+    const legacyTarget = reached.some((row) => {
+      const credit = actualFor(row).sort((a, b) => at(environment === "SHADOW" ? a.credited_at : a.observed_at)
+        - at(environment === "SHADOW" ? b.credited_at : b.observed_at))[n(row.monthly_gain_target) - 1];
+      return credit && at(environment === "SHADOW" ? credit.credited_at : credit.observed_at) < adoptedAt;
+    });
     const reachedAt = (row: AuditRow) => actualFor(row).sort((a, b) => at(environment === "SHADOW" ? a.credited_at : a.observed_at)
       - at(environment === "SHADOW" ? b.credited_at : b.observed_at))[n(row.monthly_gain_target) - 1];
     const badEntry = reached.some((row) => {
-      const credit = reachedAt(row), threshold = at(environment === "SHADOW" ? credit?.credited_at : credit?.observed_at);
+      const credit = reachedAt(row), threshold = Math.max(at(environment === "SHADOW" ? credit?.credited_at : credit?.observed_at), adoptedAt);
       if (!Number.isFinite(threshold)) return false;
       return environment === "TESTNET"
         ? (source.robot_v1_testnet_orders ?? []).some((order) => order.side === "BUY"
@@ -61,10 +73,10 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
             && at(slot.buy_triggered_at) > threshold && source.robot_v1_cycles?.some((cycle) => cycle.id === slot.cycle_id
               && source.robot_v1_configs?.some((config) => config.id === cycle.config_id && config.asset === asset)));
     });
-    add("TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY", !current.length || entrySourceMissing || reached.some((row) => !reachedAt(row)) ? "WARNING" : badEntry ? "FAIL" : "PASS",
-      "Após o crédito que bateu a meta, não pode haver nova BUY desse slot; uma posição já OPEN conserva o TP.", scope);
+    add("TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY", !current.length || entrySourceMissing || !Number.isFinite(adoptedAt) || reached.some((row) => !reachedAt(row)) ? "WARNING" : badEntry ? "FAIL" : "PASS",
+      `Após o crédito que bateu a meta sob 4.2, não pode haver nova BUY; posição OPEN conserva o TP.${legacyTarget ? " Meta anterior à adoção 4.2: entradas legadas preservadas, sem retroatividade." : ""}`, scope);
     const badReentry = reached.some((row) => {
-      const credit = reachedAt(row), threshold = at(environment === "SHADOW" ? credit?.credited_at : credit?.observed_at);
+      const credit = reachedAt(row), threshold = Math.max(at(environment === "SHADOW" ? credit?.credited_at : credit?.observed_at), adoptedAt);
       if (!Number.isFinite(threshold)) return false;
       return environment === "TESTNET" ? (source.robot_v1_testnet_events ?? []).some((event) => event.event_type === "SLOT_REENTRY_PLANNED"
         && n(event.slot_number) === n(row.physical_slot_number) && at(event.observed_at) > threshold
@@ -74,8 +86,8 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
             && n(slot.slot_number) === n(row.physical_slot_number) && source.robot_v1_cycles?.some((cycle) => cycle.id === slot.cycle_id
               && source.robot_v1_configs?.some((config) => config.id === cycle.config_id && config.asset === asset))));
     });
-    add("TARGET_REACHED_SLOT_HAS_NO_REENTRY", !current.length || eventSourceMissing || reached.some((row) => !reachedAt(row)) ? "WARNING" : badReentry ? "FAIL" : "PASS",
-      "Nenhuma reentrada local é planejada após a meta mensal do slot.", scope);
+    add("TARGET_REACHED_SLOT_HAS_NO_REENTRY", !current.length || eventSourceMissing || !Number.isFinite(adoptedAt) || reached.some((row) => !reachedAt(row)) ? "WARNING" : badReentry ? "FAIL" : "PASS",
+      `Nenhuma reentrada local é planejada após a meta sob 4.2.${legacyTarget ? " Reentradas legadas anteriores à adoção permanecem no histórico." : ""}`, scope);
     const history = rows.filter((row) => row.period_key !== period);
     const priorReached = history.filter((row) => row.monthly_target_reached === true);
     const restored = priorReached.every((previous) => current.some((row) => row.physical_slot_number === previous.physical_slot_number
