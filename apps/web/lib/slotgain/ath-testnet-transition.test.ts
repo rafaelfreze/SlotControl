@@ -6,6 +6,7 @@ import ts from "typescript";
 
 import { planAthLadder } from "../execution/ath-ladder.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
+import { renewExecutionLease } from "../execution/execution-lease.ts";
 
 type Row = Record<string, any>;
 
@@ -14,7 +15,7 @@ type Row = Record<string, any>;
 function harness(partial = false) {
   const run: Row = { id: "run", product_id: "product", tenant_id: "tenant", user_id: "user",
     asset: "BTC", symbol: "BTCUSDC", gain_rate: .005, entry_spacing: .01,
-    lease_owner: "lease", entry_regime: "NORMAL", ath_transition_key: null, ath_period_key: null };
+    lease_owner: "lease", lease_until: new Date(Date.now() + 90_000).toISOString(), entry_regime: "NORMAL", ath_transition_key: null, ath_period_key: null };
   const slots: Row[] = Array.from({ length: 25 }, (_, index) => ({ id: `slot-${index + 1}`,
     slot_number: index + 1, operation_sequence: 1, entry_state: index === 0 ? "OPEN" : index === 1 ? "ARMED" : "PLANNED",
     target_buy_price: 105 - index, entry_reference_price: 105 - index,
@@ -33,7 +34,7 @@ function harness(partial = false) {
   const service = { from(table: string) { return {
     upsert(row: Row) { events.push({ table, ...row }); return Promise.resolve({ error: null }); },
     update(values: Row) {
-      const chain: Row = { eq() { return chain; }, select() { return chain; },
+      const chain: Row = { eq() { return chain; }, gt() { return chain; }, select() { return chain; },
         async maybeSingle() {
           if (table === "robot_v1_testnet_runs") Object.assign(run, values);
           return { data: { id: table === "robot_v1_testnet_runs" ? run.id : "ok" }, error: null };
@@ -58,6 +59,7 @@ function harness(partial = false) {
     if (name === "node:crypto") return nativeRequire(name);
     if (name === "./ath-ladder") return { planAthLadder };
     if (name === "./monthly-slot-policy") return { monthlyPeriodKey };
+    if (name === "./execution-lease") return { renewExecutionLease };
     if (name === "./monthly-slot-server") return { loadMonthlySlotStatuses: async () => monthly };
     if (name === "./robot-v1-testnet-cycle") return { TESTNET_ACTIVE_ORDER_STATUSES: new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]) };
     return {};

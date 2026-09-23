@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { parseAthPercent, type AthEnvironment } from "@/lib/execution/ath-regime";
-import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
+import { getCoinOpsServiceTenantId, getSupabaseDataSchema, getSupabaseEnv } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
@@ -16,7 +16,9 @@ const environmentOf = (raw: FormDataEntryValue | null): AthEnvironment => {
 /** Saves only queued percentages. It never toggles LIVE, changes an OPEN TP,
  * calls Binance or activates a profile within an active cycle. */
 export async function saveAthNextProfile(formData: FormData) {
-  if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_ATH_SCHEMA_INVALID");
+  if (getSupabaseDataSchema() !== "coinops"
+    || new URL(getSupabaseEnv().supabaseUrl).hostname !== "otdfpmsegjxpqrzisfmi.supabase.co")
+    throw new Error("COINOPS_ATH_SCHEMA_INVALID");
   const tenantId = getCoinOpsServiceTenantId();
   if (!tenantId) throw new Error("COINOPS_ATH_TENANT_INVALID");
   const client = createClient();
@@ -52,13 +54,6 @@ export async function saveAthNextProfile(formData: FormData) {
   }).eq("id", current.id).eq("product_id", scope.product_id).eq("tenant_id", tenantId)
     .eq("user_id", user.id).eq("updated_at", current.updated_at).select("id").maybeSingle();
   if (saveError || !saved) throw new Error("COINOPS_ATH_PROFILE_CONFLICT");
-  const { error: eventError } = await service.from("robot_v1_ath_events").upsert({
-    profile_id: current.id, product_id: scope.product_id, tenant_id: tenantId, user_id: user.id,
-    environment, asset, event_key: `STRATEGY_CONFIG_SAVED:${version}`,
-    event_type: "STRATEGY_CONFIG_SAVED", details: { next_config_version: version,
-      gain_rate: gainRate, normal_spacing_rate: normalSpacing, post_ath_spacing_rate: postAthSpacing,
-      floor_reference: floor },
-  }, { onConflict: "profile_id,event_key", ignoreDuplicates: true });
-  if (eventError) throw new Error("COINOPS_ATH_PROFILE_AUDIT_FAILED");
+  // The database trigger commits the audit event in this same update transaction.
   revalidatePath("/automacao");
 }

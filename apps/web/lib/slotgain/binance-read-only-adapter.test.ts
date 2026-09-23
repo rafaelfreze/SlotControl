@@ -73,7 +73,9 @@ test("Binance symbol filters and all read history representations remain GET-onl
       throw new Error(`unexpected ${url}`);
     }
   });
-  assert.deepEqual(await adapter.getSymbolInfo("SOLUSDT"), { symbol: "SOLUSDT", baseAsset: "SOL", quoteAsset: "USDT", minQuantity: 0.02, maxQuantity: 50000, minNotional: 5, quantityStep: 0.01, priceTick: 0.01 });
+  // Ladder entries and resident TPs are LIMIT orders: MARKET_LOT_SIZE must not
+  // replace their LOT_SIZE filter, even when the market filter is non-zero.
+  assert.deepEqual(await adapter.getSymbolInfo("SOLUSDT"), { symbol: "SOLUSDT", baseAsset: "SOL", quoteAsset: "USDT", minQuantity: 0.01, maxQuantity: 100000, minNotional: 5, quantityStep: 0.001, priceTick: 0.01 });
   assert.equal((await adapter.getOpenOrders("SOLUSDT"))[0]?.status, "NEW");
   assert.equal((await adapter.getTrades("SOLUSDT"))[0]?.side, "BUY");
   await assert.rejects(adapter.createOrder({ symbol: "SOLUSDT", side: "BUY", quantity: 1, clientOrderId: "blocked" }), /LIVE_EXECUTION_BLOCKED/);

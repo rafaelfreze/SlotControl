@@ -45,6 +45,8 @@ export type AthState = {
   floorSource: string | null;
   floorDefinedAt: string | null;
   transitionKey: string | null;
+  /** Persisted transition watermark; a floor may be newer than the last ATH. */
+  lastTransitionAt?: string | null;
 };
 
 export type AthObservation = { price: number; observedAt: string; source: string; fresh: boolean };
@@ -59,18 +61,22 @@ export function advanceAthState(state: AthState, observation: AthObservation): A
   if (!observation.fresh) return { state, events: [] };
   if (state.athObservedAt && Date.parse(observation.observedAt) <= Date.parse(state.athObservedAt))
     return { state, events: [] };
+  if (state.lastTransitionAt && Date.parse(observation.observedAt) <= Date.parse(state.lastTransitionAt))
+    return { state, events: [] };
   if (state.athPrice === null) return { state, events: [] };
   if (observation.price > state.athPrice) {
     const events: AthTransition["events"] = ["NEW_ATH_CONFIRMED"];
     if (state.regime === "NORMAL") events.push("POST_ATH_REGIME_ENTERED");
     return { state: { ...state, regime: "POST_ATH", previousAth: state.athPrice, athPrice: observation.price,
       athObservedAt: observation.observedAt, athSource: observation.source,
+      lastTransitionAt: observation.observedAt,
       transitionKey: `${observation.source}:${observation.observedAt}:${observation.price}` }, events };
   }
   if (state.regime === "POST_ATH" && state.floorReference !== null && state.floorReference > 0
     && state.floorReference < state.athPrice && state.floorSource && state.floorDefinedAt
     && observation.price <= state.floorReference) {
-    return { state: { ...state, regime: "NORMAL", transitionKey: `${observation.source}:${observation.observedAt}:FLOOR` },
+    return { state: { ...state, regime: "NORMAL", lastTransitionAt: observation.observedAt,
+      transitionKey: `${observation.source}:${observation.observedAt}:FLOOR` },
       events: ["ATH_FLOOR_REACHED", "NORMAL_REGIME_RESTORED"] };
   }
   return { state, events: [] };
@@ -85,6 +91,12 @@ export function reconcileHistoricalAth(state: AthState, historical: HistoricalAt
   if (state.athPrice === null) return { state: { ...state, athPrice: historical.price,
     athObservedAt: historical.observedAt, athSource: historical.source }, events: [] };
   if (historical.price <= state.athPrice) return { state, events: [] };
+  // A complete late scan can correct the historical high without replaying an
+  // old regime transition over a more recent, already observed floor.
+  if (state.lastTransitionAt && Date.parse(historical.observedAt) <= Date.parse(state.lastTransitionAt)) {
+    return { state: { ...state, previousAth: state.athPrice, athPrice: historical.price,
+      athObservedAt: historical.observedAt, athSource: historical.source }, events: [] };
+  }
   return advanceAthState(state, { price: historical.price, observedAt: historical.observedAt,
     source: historical.source, fresh: true });
 }

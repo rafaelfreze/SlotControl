@@ -86,7 +86,7 @@ test("deterministic isolated replay uses config and never alters input", () => {
   const input = { asset: "BTC" as const, initialPrice: 105, previousAth: 100, floorReference: null,
     parameters: { gainRate: .005, normalSpacing: .01, postAthSpacing: .02 },
     lifetimeGains: Array.from({ length: 25 }, (_, index) => index + 1), monthlyGains: Array(25).fill(0),
-    prices: [105, 102.9, 100.842] };
+    prices: [105, 102.9, 100.84] };
   const before = structuredClone(input);
   const first = simulateAth(input);
   assert.deepEqual(first, simulateAth(input));
@@ -103,7 +103,7 @@ test("scenario A/D consumes 15 primary before 10 reserve with one armed BUY", ()
   const result = simulateAth({ asset: "BTC", initialPrice: 105, previousAth: 100, floorReference: null,
     parameters: OFFICIAL_ATH_DEFAULTS.BTC, lifetimeGains: Array.from({ length: 25 }, (_, index) => index + 1),
     monthlyGains: Array(25).fill(0), prices: [105, ...Array.from({ length: 24 }, (_, index) =>
-      Number((105 * .95 ** (index + 1) - .000001).toFixed(8)))] });
+      Math.floor(105 * .95 ** (index + 1) * 100 + 1e-8) / 100)] });
   const buys = result.steps.filter((step) => ["INITIAL_MARKET_FILLED", "BUY_FILLED"].includes(step.event));
   assert.deepEqual(buys.map((step) => step.slot), [...Array.from({ length: 15 }, (_, index) => index + 11),
     ...Array.from({ length: 10 }, (_, index) => 10 - index)]);

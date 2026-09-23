@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TESTNET_TERMINAL_ORDER_STATUSES } from "./testnet-fill-accounting.ts";
 
 export const TESTNET_ACTIVE_ORDER_STATUSES = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
 
@@ -34,12 +35,14 @@ export function testnetOpenPositionQuantity(orders: TestnetCycleOrderState[], sl
   const bought = scoped.filter((order) => order.side === "BUY")
     .reduce((sum, order) => sum + amount(order.executed_quantity) - amount(order.fee_base), 0);
   const sold = scoped.filter((order) => order.side === "SELL")
-    .reduce((sum, order) => sum + amount(order.executed_quantity), 0);
+    .reduce((sum, order) => sum + amount(order.executed_quantity) + amount(order.fee_base), 0);
+  if (sold - bought > 1e-10) throw new Error("COINOPS_TESTNET_POSITION_OVERSOLD");
   return Math.max(0, bought - sold);
 }
 
 export function planTerminalTestnetRestart(orders: TestnetCycleOrderState[], quantityStep: number) {
-  const terminalFill = [...orders].reverse().find((order) => order.side === "SELL" && order.purpose === "TP" && order.status === "FILLED") || null;
+  const terminalFill = [...orders].reverse().find((order) => order.side === "SELL" && order.purpose === "TP"
+    && TESTNET_TERMINAL_ORDER_STATUSES.has(order.status) && amount(order.executed_quantity) > 0) || null;
   const activeNextBuys = orders.filter((order) => order.side === "BUY" && order.purpose === "ENTRY" && TESTNET_ACTIVE_ORDER_STATUSES.has(order.status));
   const openQuantity = testnetOpenPositionQuantity(orders);
   if (!terminalFill) return { shouldRestart: false as const, reason: "NO_TERMINAL_TP" as const, terminalFill: null, activeNextBuy: null, openQuantity };

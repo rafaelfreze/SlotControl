@@ -5,7 +5,7 @@ import type { ExchangeSymbolInfo } from "./types.ts";
 
 /** The same decision contract is consumed by the Shadow and Testnet adapters.
  * Transport, exchange credentials and execution environment never enter it. */
-export const STRATEGY_VERSION = "4.3" as const;
+export const STRATEGY_VERSION = "4.3.1" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
@@ -208,9 +208,11 @@ export function planStrategyPostAthNextEntry(context: StrategyContext,
   candidates: readonly StrategyCandidate[], observedFloor: number, residentBuy?: StrategyResidentBuy | null) {
   assertCandidates(candidates);
   const primaryAvailable = candidates.some((candidate) => candidate.postAthGroup === "PRIMARY"
-    && !candidate.monthlyTargetReached && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(candidate.state));
+    && !candidate.monthlyTargetReached && candidate.operationalRank !== null
+    && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(candidate.state));
   const allowed = primaryAvailable ? candidates.filter((candidate) => candidate.postAthGroup === "PRIMARY"
-    || candidate.entryOrigin === "REENTRY" || candidate.id === residentBuy?.candidateId) : candidates;
+    || candidate.entryOrigin === "REENTRY" || candidate.id === residentBuy?.candidateId
+    || candidate.state === "ARMED" || candidate.state === "PARTIALLY_FILLED") : candidates;
   return planStrategyNextEntry(context, allowed, observedFloor, residentBuy);
 }
 
@@ -234,6 +236,10 @@ export function planStrategyClosedSlot(context: StrategyContext, candidates: rea
     return { mode: "LOCAL_REENTRY", otherOpenPositions, decisions: [
       decision(context, recycled, "PLAN_LOCAL_REENTRY", closed.buyPrice, closed.balanceUsdc, 60, "OTHER_POSITION_REMAINS_OPEN", "PLANNED")
     ] };
+  }
+  if (!candidates.some((candidate) => !candidate.monthlyTargetReached && candidate.operationalRank !== null)) {
+    return { mode: "MONTHLY_HOLD", otherOpenPositions: 0, decisions: [wait(context, closed,
+      candidates.every((candidate) => candidate.monthlyTargetReached) ? "ALL_MONTHLY_TARGETS_REACHED" : "GAIN_EVIDENCE_INCOMPLETE")] };
   }
   return { mode: "GLOBAL_RESET", otherOpenPositions: 0, decisions: [
     decision(context, closed, "COMPLETE_CYCLE", null, null, 80, "LAST_OPEN_POSITION_CLOSED", "COMPLETED"),

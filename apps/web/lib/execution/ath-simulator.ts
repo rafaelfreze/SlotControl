@@ -1,6 +1,7 @@
 import { advanceAthState, athSimulationId, buildPostAthQueue, orderedPostAthSlots, validateAthParameters,
   type AthParameters, type AthRegime, type AthSlot, type AthState, type PostAthGroup, type PostAthSlot } from "./ath-regime.ts";
 import { MONTHLY_SLOT_TARGET } from "./monthly-slot-policy.ts";
+import { planAthLadder } from "./ath-ladder.ts";
 import { calculateStrategyTakeProfit, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry,
   planStrategyTakeProfit, type StrategyCandidate,
   type StrategyContext } from "./strategy-engine.ts";
@@ -29,6 +30,7 @@ export type AthSimulationStep = {
   group: PostAthGroup | null;
   groupRank: number | null;
   decisionId: string | null;
+  operationId: string | null;
   targetPrice: number | null;
   balanceUsdc: number | null;
   lifetimeGains: number | null;
@@ -89,31 +91,39 @@ export function simulateAth(input: AthSimulationInput) {
   let slots: SimSlot[] = Array.from({ length: 25 }, (_, index) => ({
     physicalSlotId: `${simulationId}:${input.asset}:${index + 1}`, physicalSlotNumber: index + 1,
     lifetimeGainCount: input.lifetimeGains[index]!, monthlyGainCount: input.monthlyGains[index]!,
-    entryState: "PLANNED", eligible: true, monthlyTargetReached: false, postAthGroup: null,
+    entryState: "PLANNED", eligible: input.monthlyGains[index]! < MONTHLY_SLOT_TARGET[input.asset],
+    monthlyTargetReached: input.monthlyGains[index]! >= MONTHLY_SLOT_TARGET[input.asset], postAthGroup: null,
     postAthGroupRank: null, operationalRank: index + 1, balanceUsdc: 10, entryPrice: null,
     takeProfit: null, buyPrice: input.initialPrice * (1 - input.parameters.normalSpacing) ** index,
     operationSequence: 1, committed: false, entryOrigin: "GRID", armedDecisionId: null,
   }));
   const steps: AthSimulationStep[] = [];
   let armed: number | null = null, cycleNumber = 1, missedLevels = 0;
+  const strategyContext = (index: number) => context(input.asset, `${simulationId}:CYCLE:${cycleNumber}`, index);
   let primaryExhausted = false, reserveActivated = false;
   const emit = (index: number, price: number, event: string, slot: SimSlot | null = null,
-    decisionId: string | null = null, targetPrice: number | null = null) =>
+    decisionId: string | null = null, targetPrice: number | null = null, operationId: string | null = null) =>
     steps.push({ index, price, regime: state.regime, athPrice: state.athPrice, event,
       slot: slot?.physicalSlotNumber ?? null, group: slot?.postAthGroup ?? null,
-      groupRank: slot?.postAthGroupRank ?? null, decisionId, targetPrice,
+      groupRank: slot?.postAthGroupRank ?? null, decisionId, operationId, targetPrice,
       balanceUsdc: slot?.balanceUsdc ?? null, lifetimeGains: slot?.lifetimeGainCount ?? null,
       monthlyGains: slot?.monthlyGainCount ?? null, nextBuy: armed,
       openCount: slots.filter((item) => item.entryState === "OPEN").length });
   const assignPrices = (anchor: number) => {
-    const pending = state.regime === "POST_ATH"
-      ? orderedPostAthSlots(slots).filter((slot) => !slot.committed)
-      : [...slots].filter((slot) => !slot.committed && !slot.monthlyTargetReached)
-        .sort((a, b) => b.lifetimeGainCount - a.lifetimeGainCount || a.physicalSlotNumber - b.physicalSlotNumber);
-    const spacing = state.regime === "POST_ATH" ? input.parameters.postAthSpacing : input.parameters.normalSpacing;
-    const offset = slots.some((slot) => slot.entryState === "OPEN") ? 1 : 0;
-    pending.forEach((slot, index) => { if (slot.entryOrigin !== "REENTRY" && slot.entryState !== "ARMED")
-      slot.buyPrice = Number((anchor * (1 - spacing) ** (index + offset)).toFixed(8)); });
+    const plans = planAthLadder(input.asset, state.regime, anchor, input.parameters, tick,
+      slots.map((slot) => ({ ...slot, status: slot.entryState === "OPEN" ? "TP_ACTIVE" : "PENDING" })));
+    for (const plan of plans) {
+      const slot = slots[plan.physicalSlotNumber - 1]!;
+      // A simulated resident unfilled GRID follows the same cancel/reprice
+      // contract as runtime transitions. OPEN and reentry prices stay frozen.
+      if (!plan.frozenReason && armed === slot.physicalSlotNumber) {
+        armed = null; slot.entryState = "PLANNED"; slot.armedDecisionId = null;
+      }
+      slot.buyPrice = plan.nextBuyPrice;
+      slot.operationalRank = plan.operationalRank;
+      slot.postAthGroup = plan.postAthGroup; slot.postAthGroupRank = plan.postAthGroupRank;
+      slot.eligible = plan.operationalRank !== null;
+    }
   };
   const chooseNext = (index: number, price: number) => {
     const pending = slots.filter((slot) => !slot.committed && slot.eligible && !slot.monthlyTargetReached
@@ -128,8 +138,8 @@ export function simulateAth(input: AthSimulationInput) {
     }
     const resident = armed === null ? null : { candidateId: slots[armed - 1]!.physicalSlotId, executedQuantity: 0 };
     const result = state.regime === "POST_ATH"
-      ? planStrategyPostAthNextEntry(context(input.asset, simulationId, index), pending.map(candidate), price, resident)
-      : planStrategyNextEntry(context(input.asset, simulationId, index), pending.map(candidate), price, resident);
+      ? planStrategyPostAthNextEntry(strategyContext(index), pending.map(candidate), price, resident)
+      : planStrategyNextEntry(strategyContext(index), pending.map(candidate), price, resident);
     missedLevels += result.missedCandidateIds.length;
     const next = result.nextCandidateId ? slots.find((slot) => slot.physicalSlotId === result.nextCandidateId) : null;
     if (next && armed !== next.physicalSlotNumber) {
@@ -137,7 +147,7 @@ export function simulateAth(input: AthSimulationInput) {
       armed = next.physicalSlotNumber;
       next.entryState = "ARMED";
       next.armedDecisionId = result.decision.decision_id;
-      emit(index, price, "NEXT_BUY_ARMED", next, result.decision.decision_id, next.buyPrice);
+      emit(index, price, "NEXT_BUY_ARMED", next, result.decision.decision_id, next.buyPrice, result.decision.operation_id);
     }
     if (!next && armed !== null && !pending.some((slot) => slot.physicalSlotNumber === armed)) {
       slots[armed - 1]!.entryState = "PLANNED"; slots[armed - 1]!.armedDecisionId = null; armed = null;
@@ -147,17 +157,18 @@ export function simulateAth(input: AthSimulationInput) {
     slot.entryState = "OPEN"; slot.committed = true; slot.entryPrice = price;
     slot.takeProfit = calculateStrategyTakeProfit(price, tick, { gainRate: input.parameters.gainRate, entrySpacing: input.parameters.normalSpacing });
     if (armed === slot.physicalSlotNumber) armed = null;
-    const decision = initial ? planStrategyInitialEntry(context(input.asset, simulationId, index),
+    const decision = initial ? planStrategyInitialEntry(strategyContext(index),
       { ...candidate(slot), state: "PLANNED", operationalRank: 1 }) : null;
     emit(index, price, initial ? "INITIAL_MARKET_FILLED" : "BUY_FILLED", slot,
-      decision?.decision_id ?? slot.armedDecisionId);
+      decision?.decision_id ?? slot.armedDecisionId, null, decision?.operation_id ?? null);
     slot.armedDecisionId = null;
-    const tpDecision = planStrategyTakeProfit(context(input.asset, simulationId, index), candidate(slot), price,
+    const tpDecision = planStrategyTakeProfit(strategyContext(index), candidate(slot), price,
       filters, { gainRate: input.parameters.gainRate, entrySpacing: input.parameters.normalSpacing });
     if (tpDecision.action_type !== "CREATE_TP" || tpDecision.target_price !== slot.takeProfit)
       throw new Error("COINOPS_ATH_SIMULATION_TP_DECISION_INVALID");
-    emit(index, price, "TP_RESIDENT", slot, tpDecision.decision_id, slot.takeProfit);
+    emit(index, price, "TP_RESIDENT", slot, tpDecision.decision_id, slot.takeProfit, tpDecision.operation_id);
   };
+  assignPrices(input.initialPrice);
   emit(-1, input.initialPrice, "ATH_SIMULATION_STARTED");
   for (let index = 0; index < input.prices.length; index++) {
     const price = input.prices[index]!;
@@ -194,7 +205,7 @@ export function simulateAth(input: AthSimulationInput) {
       if (slot.entryState === "ARMED" && price <= slot.buyPrice) open(index, slot.buyPrice, slot, false);
     }
     if (!slots.some((slot) => slot.entryState === "OPEN")) {
-      if (index > 0 && hadOpenBefore) {
+      if (index > 0 && hadOpenBefore && slots.some((slot) => !slot.monthlyTargetReached)) {
         if (armed !== null) { slots[armed - 1]!.entryState = "PLANNED"; armed = null; }
         cycleNumber++; emit(index, price, "GLOBAL_RESET");
         slots = slots.map((slot) => ({ ...slot, operationSequence: 1, entryOrigin: "GRID" as const,

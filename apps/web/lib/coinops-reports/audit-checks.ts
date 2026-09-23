@@ -31,14 +31,15 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     const slotsMissing = incomplete(environment === "SHADOW" ? "robot_v1_slots" : "robot_v1_testnet_slots", environment === "SHADOW" ? "robot_v1_cycles" : "robot_v1_testnet_orders");
     add("SINGLE_ACTIVE_ENTRY", slotsMissing || !currentSlots.length ? "WARNING" : armed.length <= 1 && activeBuys.length <= 1 ? "PASS" : "FAIL", slotsMissing || !currentSlots.length ? "Não há snapshot completo para verificar a próxima BUY." : `Snapshot observado: ${armed.length} slot(s) armados e ${activeBuys.length} BUY(s) residentes; limite de um por ativo/ambiente.`, { ...extra, evidence_scope: "CURRENT_PERSISTED_SNAPSHOT" });
     const localReentries = datasets.events.filter((event) => event.environment === environment && event.asset === asset && ["SLOT_REENTRY_PLANNED", "SLOT_REENTRY_ARMED", "SHADOW_STATE_REPAIRED"].includes(s(event.event_type)) && n(event.other_open_positions) > 0);
-    const brokenReentry = localReentries.some((event) => !same(event.previous_entry_price, event.reentry_price)
+    const incompleteReentry = localReentries.some((event) => event.previous_entry_price == null || event.reentry_price == null);
+    const brokenReentry = localReentries.some((event) => event.previous_entry_price != null && event.reentry_price != null && !same(event.previous_entry_price, event.reentry_price)
       || event.balance_before !== null && event.balance_before !== undefined && n(event.balance_after) < n(event.balance_before)
       || event.gain_count_before !== null && event.gain_count_before !== undefined && n(event.gain_count_after) < n(event.gain_count_before)
       || !n(event.physical_slot_number));
     const missingCurrentSlot = localReentries.some((event) => activeCycles.some((cycle) => cycle.cycle_id === event.cycle_id)
       && !currentSlots.some((slot) => slot.cycle_id === event.cycle_id && n(slot.physical_slot_number) === n(event.physical_slot_number)));
-    add("GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY", slotsMissing || !localReentries.length ? "WARNING" : brokenReentry || missingCurrentSlot ? "FAIL" : "PASS",
-      !localReentries.length ? "Nenhuma reciclagem local com outro OPEN foi observada no período; a regra não pôde ser exercitada." : brokenReentry || missingCurrentSlot ? "Um gain com outro OPEN perdeu identidade, preço de reentrada, saldo/gain ou o slot físico atual." : `${localReentries.length} evento(s) preservaram slot físico, preço anterior, compounding e ownership no mesmo ciclo.`, extra);
+    add("GAIN_WITH_OTHER_OPEN_MUST_PRESERVE_SLOT_REENTRY", brokenReentry || missingCurrentSlot ? "FAIL" : slotsMissing || !localReentries.length || incompleteReentry ? "WARNING" : "PASS",
+      !localReentries.length ? "Nenhuma reciclagem local com outro OPEN foi observada no período; a regra não pôde ser exercitada." : brokenReentry || missingCurrentSlot ? "Um gain com outro OPEN perdeu identidade, preço de reentrada, saldo/gain ou o slot físico atual." : incompleteReentry ? "Evento histórico sem preço anterior/novo comparável: falta de evidência não prova violação nem conformidade." : `${localReentries.length} evento(s) preservaram slot físico, preço anterior, compounding e ownership no mesmo ciclo.`, extra);
     const cycles = datasets.cycles.filter((cycle) => cycle.environment === environment && cycle.asset === asset).sort((a, b) => s(a.started_at).localeCompare(s(b.started_at)));
     const failedBeforeSlots = (cycle: AuditRow) => cycle.status === "FAILED"
       && !currentSlots.some((slot) => slot.cycle_id === cycle.cycle_id)
@@ -71,7 +72,9 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     const gains = datasets.gains.filter((row) => row.environment === environment && row.asset === asset && n(row.net_gain) > 0);
     add("GAIN_COUNTS_RECONCILE", !summary || incomplete(environment === "SHADOW" ? "robot_v1_slot_operations" : "robot_v1_testnet_orders") ? "WARNING" : gains.length === n(summary.gains) ? "PASS" : "FAIL", "Contagem de gains positivos confrontada com o resumo do período.", { environment, asset });
     const local = datasets.events.filter((row) => row.environment === environment && row.asset === asset && row.event_type === "SLOT_REENTRY_PLANNED");
-    add("LOCAL_REENTRY_RULE", !local.length ? "WARNING" : local.every((event) => same(event.previous_entry_price, event.reentry_price)) ? "PASS" : "FAIL", !local.length ? "Nenhuma reentrada local observada no período." : "Reentrada local conserva o preço anterior do slot físico.", { environment, asset });
+    const comparableLocal = local.filter((event) => event.previous_entry_price != null && event.reentry_price != null);
+    add("LOCAL_REENTRY_RULE", comparableLocal.some((event) => !same(event.previous_entry_price, event.reentry_price)) ? "FAIL"
+      : !local.length || comparableLocal.length !== local.length ? "WARNING" : "PASS", !local.length ? "Nenhuma reentrada local observada no período." : comparableLocal.length !== local.length ? "Parte do histórico não registra ambos os preços; ausência não equivale a zero ou violação." : "Reentrada local conserva o preço anterior do slot físico.", { environment, asset });
     const reset = datasets.events.filter((row) => row.environment === environment && row.asset === asset && ["CYCLE_RESTARTED", "NEW_CYCLE_STARTED"].includes(s(row.event_type)));
     add("GLOBAL_RESET_RULE", !reset.length ? "WARNING" : cycles.some((cycle) => cycle.completion_reason || cycle.reset_reason) ? "PASS" : "FAIL", !reset.length ? "Nenhum reset global observado no período." : "Reset e novo ciclo confrontados com motivo persistido.", { environment, asset });
   }
@@ -88,8 +91,11 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
     const creditOps = new Set(context.allCapital.filter((row) => row.config_id === account.config_id && row.slot === account.slot_number).map((row) => row.source_operation));
     const archived = history.filter((row) => creditOps.has(row.operation_id));
     const historical = Date.parse(s(account.updated_at)) >= Math.min(Date.parse(context.filters.end), Date.parse(context.generatedAt));
-    const bad = !same(n(account.initial_balance_usdc) + n(account.net_profit_usdc), account.balance_usdc) || !same(sum(archived, "net_profit"), account.net_profit_usdc) || archived.length !== n(account.gain_count);
-    add("PHYSICAL_SLOT_ACCOUNT_RECONCILES", historical || incomplete("robot_v1_slot_operations", "robot_v1_slot_profit_credits", "robot_v1_slot_accounts") ? "WARNING" : bad ? "FAIL" : "PASS", historical ? "Conta atual foi modificada depois do fim do período; comparação histórica com snapshot atual seria inválida." : "Saldo, lucro acumulado e contagem da conta física confrontados com seus créditos e operações imutáveis.", { environment: "SHADOW", asset: config?.asset, physical_slot_number: account.slot_number, evidence_scope: "CURRENT_PERSISTED_ACCOUNT" });
+    const manual = (context.source.robot_v1_manual_adjustments ?? []).filter((row) => row.environment === "SHADOW"
+      && row.physical_slot_id === `SHADOW:${account.config_id}:${account.slot_number}`);
+    const bad = !same(n(account.initial_balance_usdc) + n(account.net_profit_usdc) + n(account.manual_gain_usdc) + n(account.contribution_usdc), account.balance_usdc) || !same(sum(archived, "net_profit"), account.net_profit_usdc)
+      || archived.filter((row) => n(row.net_profit) > 0).length + sum(manual, "gain_units") !== n(account.gain_count);
+    add("PHYSICAL_SLOT_ACCOUNT_RECONCILES", historical || incomplete("robot_v1_slot_operations", "robot_v1_slot_profit_credits", "robot_v1_slot_accounts", "robot_v1_manual_adjustments") ? "WARNING" : bad ? "FAIL" : "PASS", historical ? "Conta atual foi modificada depois do fim do período; comparação histórica com snapshot atual seria inválida." : "Saldo, lucro de mercado e contagem total confrontados com operações e ajustes manuais assinados da mesma identidade física.", { environment: "SHADOW", asset: config?.asset, physical_slot_number: account.slot_number, evidence_scope: "CURRENT_PERSISTED_ACCOUNT" });
   }
   const operationDuplicate = duplicates(datasets.operations, (row) => `${row.environment}:${row.operation_id}`);
   add("OPERATION_IDS_UNIQUE", operationDuplicate ? "FAIL" : "PASS", operationDuplicate ? "Há operação repetida indevidamente no pacote." : "Cada operação tem uma identidade única por ambiente.");

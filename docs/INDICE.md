@@ -2,6 +2,7 @@
 
 ## Regras oficiais do CoinOps
 
+- [Auditoria adversarial pré-LIVE 5.0](./COINOPS_PRE_LIVE_AUDIT_5_0.md) — ledger, concorrência, recovery, metas, ATH, snapshots e gate somente leitura.
 - [Strategy Engine 4.1](./STRATEGY_ENGINE_4_1.md) — decisões únicas Shadow/Testnet, correção de cache, reactor de um minuto, missed e auditoria.
 - [Auditoria temporal 4.1.1](./COINOPS_PHASE_4_1_1_TEMPORAL_AUDIT.md) — evidência BTC/SOL, marco exato 4.1.0, histórico versus estado atual e limites da classificação.
 - [Metas mensais e rank 4.2](./COINOPS_PHASE_4_2_MONTHLY_GOALS.md) — ledger mensal, elegibilidade por slot físico, rank, prioridade de preço e auditoria Shadow/Testnet.

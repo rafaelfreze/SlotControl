@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { FX_SOURCE, previewManualAdjustment, validateFxQuote, type AdjustmentEnvironment,
+import { FX_SOURCE, adjustmentCommittedNotional, previewManualAdjustment, validateFxQuote, type AdjustmentEnvironment,
   type AdjustmentKind, type AdjustmentSnapshot, type AdjustmentPreview, type FxQuote } from "@/lib/execution/manual-adjustments";
 import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema, getSupabaseEnv } from "@/lib/supabase/env";
@@ -72,15 +72,17 @@ async function loadSnapshot(ctx: Scope, environment: AdjustmentEnvironment, asse
       .eq("tenant_id", ctx.tenantId).eq("user_id", ctx.userId).eq("slot_number", slotNumber).single();
     if (accountError || !account) throw new Error("COINOPS_ADJUSTMENT_SLOT_MISSING");
     balanceUsdc = Number(account.balance_usdc); gainRate = Number(config.gain_rate);
-    const { data: cycle } = await base.from("robot_v1_cycles").select("id")
+    const { data: cycle, error: cycleError } = await base.from("robot_v1_cycles").select("id")
       .eq("config_id", config.id).in("status", ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"])
       .order("started_at", { ascending: false }).limit(1).maybeSingle();
+    if (cycleError) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
     if (cycle) {
-      const { data: slot } = await base.from("robot_v1_slots")
+      const { data: slot, error: slotError } = await base.from("robot_v1_slots")
         .select("status,buy_price,executed_quantity").eq("cycle_id", cycle.id).eq("slot_number", slotNumber).maybeSingle();
+      if (slotError || !slot) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
       if (slot) {
         entryState = slot.status;
-        if (["OPEN", "TP_ACTIVE"].includes(slot.status))
+        if (["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status) && Number(slot.executed_quantity) > 0)
           committedNotionalUsdc = Number(slot.buy_price) * Number(slot.executed_quantity);
       }
     }
@@ -95,14 +97,11 @@ async function loadSnapshot(ctx: Scope, environment: AdjustmentEnvironment, asse
       .eq("user_id", ctx.userId).eq("slot_number", slotNumber).single();
     if (slotError || !slot) throw new Error("COINOPS_ADJUSTMENT_SLOT_MISSING");
     balanceUsdc = Number(slot.balance_usdc); entryState = slot.entry_state; gainRate = Number(run.gain_rate);
-    if (entryState === "OPEN") {
-      const { data: buys, error: buysError } = await base.from("robot_v1_testnet_orders")
-        .select("cumulative_quote").eq("run_id", run.id).eq("slot_id", slot.id)
-        .eq("operation_sequence", slot.operation_sequence).eq("side", "BUY").eq("status", "FILLED");
-      if (buysError) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
-      committedNotionalUsdc = (buys || []).reduce((total, buy) => total + Number(buy.cumulative_quote), 0);
-      if (committedNotionalUsdc <= 0) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
-    }
+    const { data: fills, error: fillsError } = await base.from("robot_v1_testnet_orders")
+      .select("side,executed_quantity,fee_base,cumulative_quote").eq("run_id", run.id).eq("slot_id", slot.id)
+      .eq("operation_sequence", slot.operation_sequence);
+    if (fillsError || !fills) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
+    committedNotionalUsdc = adjustmentCommittedNotional(fills);
   } else {
     const { data: profile, error: profileError } = await base.from("robot_v1_ath_profiles")
       .select("gain_rate").eq("product_id", ctx.productId).eq("tenant_id", ctx.tenantId)
@@ -213,7 +212,8 @@ export async function reverseCoinOpsManualAdjustment(input: {
   const ctx = await scope();
   const existing = await existingAdjustment(ctx, input.idempotencyKey);
   if (existing) {
-    if (existing.kind !== "REVERSAL" || existing.reversal_of !== input.adjustmentId)
+    if (existing.kind !== "REVERSAL" || existing.reversal_of !== input.adjustmentId
+      || existing.reason !== input.reason.trim())
       throw new Error("COINOPS_ADJUSTMENT_IDEMPOTENCY_CONFLICT");
     return { id: existing.id };
   }

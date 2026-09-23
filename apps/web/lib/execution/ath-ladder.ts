@@ -60,13 +60,15 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   if (!Number.isFinite(anchorPrice) || anchorPrice <= 0 || !Number.isFinite(tick) || tick <= 0
     || slots.length !== 25) throw new Error("COINOPS_ATH_LADDER_INPUT_INVALID");
   validateAthParameters(parameters);
-  const queue = regime === "POST_ATH" ? buildPostAthQueue(asset, slots) : null;
+  // Both regimes require the same physical identity and gain evidence checks.
+  const validatedQueue = buildPostAthQueue(asset, slots);
+  const queue = regime === "POST_ATH" ? validatedQueue : null;
   const ordered = queue ? orderedPostAthSlots(queue) : [...slots]
     .filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
       && slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset]
       && ["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"].includes(slot.entryState))
     .sort((left, right) => right.lifetimeGainCount - left.lifetimeGainCount
-      || left.physicalSlotId.localeCompare(right.physicalSlotId));
+      || left.physicalSlotNumber - right.physicalSlotNumber);
   const rankById = new Map(ordered.map((slot, index) => [slot.physicalSlotId, index + 1]));
   const grouped = new Map(queue?.map((slot) => [slot.physicalSlotId, slot]) ?? []);
   const hasOpen = slots.some((slot) => ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status));

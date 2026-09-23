@@ -9,14 +9,17 @@ import * as robot from "../execution/robot-v1.ts";
 import * as strategy from "../execution/strategy-engine.ts";
 import * as recovery from "../execution/strategy-testnet-recovery.ts";
 import * as fillEvidence from "../coinops-reports/testnet-fill-evidence.ts";
+import * as fillAccounting from "../execution/testnet-fill-accounting.ts";
+import * as executionLease from "../execution/execution-lease.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
+  syncOrder: (service: unknown, run: Row, slot: Row, order: Row, adapter: unknown) => Promise<void>;
   ensureTakeProfits: (service: unknown, run: Row, slots: Row[], orders: Row[], filters: Row, adapter: unknown) => Promise<void>;
   prepareOrder: (service: unknown, run: Row, slot: Row, side: string, purpose: string, revision: number, quantity: number | null, quote: number | null, price: number | null, decisionId?: string) => Promise<Row>;
 };
 
-const run = { id: "fixture-cycle", asset: "SOL", symbol: "SOLUSDC", product_id: "11111111-1111-1111-1111-111111111111", tenant_id: "22222222-2222-2222-2222-222222222222", user_id: "33333333-3333-3333-3333-333333333333", gain_rate: 0.005, entry_spacing: 0.01, previous_run_id: null };
+const run = { id: "fixture-cycle", asset: "SOL", symbol: "SOLUSDC", product_id: "11111111-1111-1111-1111-111111111111", tenant_id: "22222222-2222-2222-2222-222222222222", user_id: "33333333-3333-3333-3333-333333333333", gain_rate: 0.005, entry_spacing: 0.01, previous_run_id: null, status: "ACTIVE", lease_owner: "fixture-lease", lease_until: new Date(Date.now() + 90_000).toISOString() };
 const slot = { id: "physical-slot-5", run_id: run.id, tenant_id: run.tenant_id, slot_number: 5, operation_sequence: 2, entry_state: "OPEN", target_buy_price: 114.28, balance_usdc: 10.05046, missed_at: null };
 const filters = { symbol: "SOLUSDC", baseAsset: "SOL", quoteAsset: "USDC", quantityStep: 0.001, priceTick: 0.01, minQuantity: 0.001, maxQuantity: 10000, minNotional: 5 };
 function order(values: Row): Row {
@@ -31,20 +34,23 @@ function order(values: Row): Row {
 }
 
 function harness(seedOrders: Row[], status = "NEW") {
+  const monthly = [{ physicalSlotNumber: 5, eligibleForNewEntry: true, monthlyTargetReached: false, periodKey: "2026-09" }];
   const storedOrders = structuredClone(seedOrders);
   const slots = [structuredClone(slot)];
   const decisions: Row[] = [];
   const completions: Row[] = [];
   const requests: Row[] = [];
-  const tables: Record<string, Row[]> = { robot_v1_testnet_orders: storedOrders, robot_v1_testnet_slots: slots, robot_v1_testnet_events: [] };
+  const tables: Record<string, Row[]> = { robot_v1_testnet_runs: [structuredClone(run)], robot_v1_testnet_orders: storedOrders, robot_v1_testnet_slots: slots, robot_v1_testnet_events: [] };
   const service = {
     from(table: string) {
       assert.ok(tables[table], `Unexpected database access: ${table}`);
       let mutation: { type: "upsert" | "update"; value: Row | Row[]; conflict?: string } | null = null;
       const predicates: Array<[string, unknown]> = [];
+      const greaterThan: Array<[string, unknown]> = [];
       const result = () => {
         const rows = tables[table];
-        const matches = rows.filter((row) => predicates.every(([key, value]) => row[key] === value));
+        const matches = rows.filter((row) => predicates.every(([key, value]) => row[key] === value)
+          && greaterThan.every(([key, value]) => String(row[key]) > String(value)));
         if (mutation?.type === "update") {
           for (const row of matches) Object.assign(row, mutation.value);
           return { data: structuredClone(matches), error: null };
@@ -55,7 +61,7 @@ function harness(seedOrders: Row[], status = "NEW") {
             const keys = (mutation.conflict ?? "id").split(",");
             if (rows.some((row) => keys.every((key) => row[key] === payload[key]))) continue;
             const row = { id: `insert-${rows.length}`, status: "PREPARED", exchange_order_id: null,
-              executed_quantity: 0, cumulative_quote: 0, fee_base: 0, fee_quote: 0, fee_other: [], trades_reconciled: false, ...payload };
+              executed_quantity: 0, cumulative_quote: 0, fee_base: 0, fee_quote: 0, fee_other: [], trades_reconciled: false, submission_guarded_at: null, ...payload };
             rows.push(row); inserted.push(row);
           }
           return { data: structuredClone(inserted), error: null };
@@ -67,6 +73,8 @@ function harness(seedOrders: Row[], status = "NEW") {
         update(value: Row) { mutation = { type: "update", value }; return query; },
         select() { return query; },
         eq(key: string, value: unknown) { predicates.push([key, value]); return query; },
+        gt(key: string, value: unknown) { greaterThan.push([key, value]); return query; },
+        is(key: string, value: unknown) { predicates.push([key, value]); return query; },
         async maybeSingle() { const response = result(); return { ...response, data: response.data[0] ?? null }; },
         async single() { return query.maybeSingle(); },
         then(resolve: (value: ReturnType<typeof result>) => unknown) { return Promise.resolve(result()).then(resolve); },
@@ -75,7 +83,9 @@ function harness(seedOrders: Row[], status = "NEW") {
     },
   };
   const adapter = {
-    async ensureOwnedOrder(request: Row) {
+    async ensureOwnedOrder(request: Row, submission: { allowCreate: boolean; beforeCreate: () => Promise<void> }) {
+      assert.equal(submission.allowCreate, true);
+      await submission.beforeCreate();
       requests.push(request);
       const quantity = status === "FILLED" ? Number(request.quantity) : status === "PARTIALLY_FILLED" ? 0.04 : 0;
       return { orderId: "new-tp-exchange", clientOrderId: request.clientOrderId, symbol: request.symbol, side: request.side,
@@ -90,13 +100,14 @@ function harness(seedOrders: Row[], status = "NEW") {
   // Execute the actual private adapter functions, without widening production
   // exports. Every database/exchange dependency is local and explicitly mocked.
   const source = readFileSync(new URL("../execution/robot-v1-testnet-server.ts", import.meta.url), "utf8")
-    + "\nexport { ensureTakeProfits, prepareOrder };";
+    + "\nexport { ensureTakeProfits, prepareOrder, syncOrder };";
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const dependencies: Record<string, unknown> = {
     "./robot-v1-testnet-cycle": cycle, "./robot-v1": robot, "./strategy-engine": strategy,
     "./binance-spot-adapter": {}, "./ath-ladder": {}, "./ath-profile-server": {},
     "./strategy-testnet-recovery": recovery, "../coinops-reports/testnet-fill-evidence": fillEvidence,
-    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => [] }, "./monthly-slot-policy": {},
+    "./testnet-fill-accounting": fillAccounting, "./execution-lease": executionLease,
+    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => monthly }, "./monthly-slot-policy": {},
     "../supabase/env": {}, "../supabase/service-role": {}, "./binance-spot-testnet-adapter": {},
     "./strategy-decision-server": {
       persistStrategyDecision: async (_service: unknown, _scope: unknown, _environment: unknown, decision: Row) => { decisions.push(decision); },
@@ -112,9 +123,34 @@ function harness(seedOrders: Row[], status = "NEW") {
     assert.ok(Object.hasOwn(dependencies, name), `Unexpected module: ${name}`);
     return dependencies[name];
   }, runtime);
-  return { runtime, service, adapter, slots, storedOrders, decisions, completions, requests,
+  return { runtime, service, adapter, slots, storedOrders, decisions, completions, requests, monthly,
     async ensure(orders: Row[]) { await runtime.ensureTakeProfits(service, run, slots, orders, filters, adapter); } };
 }
+
+for (const purpose of ["INITIAL", "ENTRY"]) {
+  test(`manual gain reaching target after PREPARED blocks first ${purpose} BUY dispatch`, async () => {
+    const prepared = order({ purpose, operation_sequence: 2, status: "PREPARED", submission_guarded_at: null,
+      exchange_order_id: null, executed_quantity: 0, cumulative_quote: 0, trades_reconciled: false });
+    const h = harness([prepared]);
+    h.monthly[0].eligibleForNewEntry = false;
+    h.monthly[0].monthlyTargetReached = true;
+    await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter);
+    assert.equal(h.requests.length, 0, "no POST occurs after a manual gain made the slot ineligible");
+    assert.equal(h.storedOrders[0].status, "CANCELED");
+    assert.equal(h.storedOrders[0].submission_guarded_at, null, "no dispatch permit was consumed");
+  });
+}
+
+test("first PREPARED BUY revalidates the current period instead of holding a new-month eligible slot", async () => {
+  const prepared = order({ operation_sequence: 2, status: "PREPARED", submission_guarded_at: null,
+    exchange_order_id: null, executed_quantity: 0, cumulative_quote: 0, trades_reconciled: false });
+  const h = harness([prepared]);
+  h.monthly[0].periodKey = "2026-10";
+  await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.storedOrders[0].status, "NEW");
+  assert.equal(typeof h.storedOrders[0].submission_guarded_at, "string");
+});
 
 for (const status of ["NEW", "PARTIALLY_FILLED", "FILLED"]) {
   test(`reentry TP gets a new physical-slot SELL identity and remains idempotent when ${status}`, async () => {

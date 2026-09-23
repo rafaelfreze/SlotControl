@@ -164,11 +164,10 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
   async getSymbolInfo(symbol: string): Promise<ExchangeSymbolInfo> {
     const payload = await this.readMarketJson<BinanceExchangeInfo>("/api/v3/exchangeInfo", { symbol });
     const item = payload.symbols?.find((candidate) => candidate.symbol === symbol);
-    const marketLot = item?.filters?.find((filter) => filter.filterType === "MARKET_LOT_SIZE");
     const standardLot = item?.filters?.find((filter) => filter.filterType === "LOT_SIZE");
-    const marketLotIsUsable = [marketLot?.minQty, marketLot?.maxQty, marketLot?.stepSize]
-      .every((value) => Number.isFinite(Number(value)) && Number(value) > 0);
-    const lot = marketLotIsUsable ? marketLot : standardLot;
+    // This contract sizes the LIMIT ladder and resident TPs. MARKET entries use
+    // quoteOrderQty; their separate MARKET_LOT_SIZE must not size LIMIT orders.
+    const lot = standardLot;
     const notional = item?.filters?.find((filter) => filter.filterType === "MIN_NOTIONAL" || filter.filterType === "NOTIONAL");
     const price = item?.filters?.find((filter) => filter.filterType === "PRICE_FILTER");
     const minQuantity = finiteNumber(lot?.minQty, "BINANCE_SYMBOL_INFO_INVALID");

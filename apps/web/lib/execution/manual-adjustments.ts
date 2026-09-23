@@ -50,6 +50,26 @@ export function roundAdjustment(value: number): number {
   return Math.round((value + Number.EPSILON) * 1e8) / 1e8;
 }
 
+/** Fills, not the slot projection, prove an existing position. A partial BUY
+ * can still be ARMED while its executed capital already needs preservation. */
+export function adjustmentCommittedNotional(orders: readonly {
+  side: "BUY" | "SELL"; executed_quantity: number | string; fee_base: number | string;
+  cumulative_quote: number | string;
+}[]): number | null {
+  let remaining = 0, committed = 0;
+  for (const order of orders) {
+    const quantity = Number(order.executed_quantity), fee = Number(order.fee_base), quote = Number(order.cumulative_quote);
+    if (![quantity, fee, quote].every((value) => Number.isFinite(value) && value >= 0))
+      throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
+    remaining += (order.side === "BUY" ? quantity : -quantity) - fee;
+    if (order.side === "BUY") committed += quote;
+  }
+  if (remaining < -1e-10) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
+  if (remaining <= 1e-10) return null;
+  if (committed <= 0) throw new Error("COINOPS_ADJUSTMENT_POSITION_UNAVAILABLE");
+  return roundAdjustment(committed);
+}
+
 export function validateFxQuote(quote: FxQuote, now = Date.now()): FxQuote {
   const observed = Date.parse(quote.observedAt);
   if (quote.source !== FX_SOURCE || !Number.isFinite(quote.rateBrlPerUsdc) || quote.rateBrlPerUsdc <= 0

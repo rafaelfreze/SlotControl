@@ -118,7 +118,7 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   }), MAX_AUDIT_CANDLES));
   if (withTestnet) tasks.push(
     () => load("robot_v1_testnet_slots", source("id,run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,manual_gain_usdc,contribution_usdc,missed_at,operation_sequence,entry_origin,operational_rank,post_ath_group,post_ath_group_rank,entry_reference_price,last_take_profit_price,last_credited_sell_client_order_id,created_at,updated_at", ["run_id", "slot_number"], { related: relatedRuns })),
-    () => load("robot_v1_testnet_orders", source("id,run_id,slot_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,requested_quote,price,config_version,config_snapshot,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,trades_reconciled,created_at,updated_at", ["created_at", "id"], { related: relatedRuns, time: "created_at", until })),
+    () => load("robot_v1_testnet_orders", source("id,run_id,slot_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,requested_quote,price,config_version,config_snapshot,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,trades_reconciled,submission_guarded_at,created_at,updated_at", ["created_at", "id"], { related: relatedRuns, time: "created_at", until })),
     () => load("robot_v1_testnet_events", source("id,run_id,event_key,event_type,slot_number,details,observed_at", ["observed_at", "id"], { related: relatedRuns, time: "observed_at", until })),
   );
   if (withReal) tasks.push(

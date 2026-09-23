@@ -25,7 +25,7 @@ const toState = (profile: AthProfileRow): AthState => ({ regime: profile.regime,
   athObservedAt: profile.ath_observed_at, athSource: profile.ath_source,
   floorReference: profile.ath_floor_reference === null ? null : Number(profile.ath_floor_reference),
   floorSource: profile.ath_floor_source, floorDefinedAt: profile.ath_floor_defined_at,
-  transitionKey: profile.transition_key });
+  transitionKey: profile.transition_key, lastTransitionAt: profile.transition_observed_at });
 
 export async function loadAthProfile(service: Service, scope: Scope, environment: AthEnvironment,
   asset: V1Asset): Promise<AthProfileRow> {

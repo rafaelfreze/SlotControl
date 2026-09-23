@@ -8,6 +8,8 @@ import { buildMonthlyGoalChecks } from "./monthly-audit-checks.ts";
 import { buildAthAudit } from "./ath-audit.ts";
 import { buildManualAdjustmentChecks } from "./manual-adjustment-audit.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
+import { hasMonthlyTargetPolicy } from "./monthly-entry-evidence.ts";
+import { buildPreLiveAuditGate } from "./pre-live-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
@@ -63,6 +65,7 @@ for (const field of ["strategy_version", "decision_id", "root_cause", "first_cro
 for (const field of ["expected_interval_seconds", "fallback_interval_seconds", "age_before_ms", "started_at", "finished_at", "duration_ms", "outcome", "last_reconciled_at", "error", "app_commit_sha", "remedy"]) allowedDetails.add(field);
 for (const field of ["occurred_at", "occurred_at_basis", "occurred_by_at", "detected_at", "created_at", "strategy_effective_at", "temporal_classification", "is_active_issue", "resolved_at", "evidence_source", "fact_strategy_version", "source_event_at", "causal_evidence"]) allowedDetails.add(field);
 for (const field of ["operation_id", "original_event_id", "original_created_at", "strategy_version_at_occurrence", "detected_by_strategy_version", "external_evidence"]) allowedDetails.add(field);
+for (const field of ["execution", "quantityStep", "closingSellClientOrderId", "remainingDust", "terminalStatus", "uncoveredQuantity", "minQuantity", "minNotional", "recovery_action", "exchange_acknowledged"]) allowedDetails.add(field);
 function safeDetails(value: unknown): AuditRow {
   return Object.fromEntries(Object.entries(object(value)).filter(([key]) => allowedDetails.has(key)).map(([key, field]) => [key,
     typeof field === "string" && /bearer\s|(?:secret|password|api[_ -]?key|authorization)\s*[:=]|eyJ[A-Za-z0-9_-]+\./i.test(field) ? "[REDACTED]" : field
@@ -182,6 +185,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       order_type: row.purpose === "INITIAL" ? "MARKET" : "LIMIT", status: row.status, requested_price: num(row.price), average_fill_price: number(row.executed_quantity) > 0 ? number(row.cumulative_quote) / number(row.executed_quantity) : null,
       requested_quantity: num(row.requested_quantity), requested_quote: num(row.requested_quote), executed_quantity: num(row.executed_quantity), remaining_quantity: num(row.requested_quantity) === null ? null : Math.max(0, number(row.requested_quantity) - number(row.executed_quantity)),
       cumulative_quote: num(row.cumulative_quote), fee_base: num(row.fee_base), fee_quote: num(row.fee_quote), fee_other: Array.isArray(row.fee_other) ? row.fee_other.map((fee) => ({ asset: object(fee).asset, amount: object(fee).amount })) : [],
+      submission_guarded_at: iso(row.submission_guarded_at), submission_evidence_basis: row.submission_guarded_at ? "DISPATCH_PERMIT_CONSUMED_NOT_EXCHANGE_ACK" : null,
       created_at: iso(row.created_at), first_fill_at: object(firstFill?.details).filledAt ?? firstFill?.timestamp ?? null, filled_at: filled ? object(fillEvidence.at(-1)?.details).filledAt ?? filled.timestamp : null, canceled_at: canceled?.timestamp ?? null,
       replaced_by: object(replaced?.details).replacementClientOrderId ?? null, reason: row.purpose, reconciliation_status: row.trades_reconciled ? "TRADES_RECONCILED" : "PENDING_OR_NO_FILL", snapshot_at: input.generatedAt, updated_at: iso(row.updated_at),
       fill_time_basis: fillEvidence.at(-1) && object(fillEvidence.at(-1)?.details).filledAt ? "EXCHANGE_FILL_TIME" : "LOCAL_STATUS_OBSERVATION",
@@ -337,7 +341,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     rules.push({ effective_from: input.generatedAt, environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
       parameter: "strategy_version", value: cycle.strategy_version ?? null, unit: "version", source: cycle.environment === "TESTNET" ? "robot_v1_testnet_runs" : "robot_v1_cycles", version: 2,
       evidence_scope: "CURRENT_CYCLE_VERSION_SNAPSHOT", notes: "Versão adotada pelo ciclo no snapshot; vigência histórica vem das decisões, não da data de início do ciclo." });
-    if (cycle.environment !== "REAL" && cycle.strategy_version === "4.2") rules.push({ effective_from: input.generatedAt,
+    if (cycle.environment !== "REAL" && hasMonthlyTargetPolicy(cycle.strategy_version)) rules.push({ effective_from: input.generatedAt,
       environment: cycle.environment, asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.cycle_id,
       parameter: "monthly_gain_target_per_physical_slot", value: cycle.asset === "BTC" ? 7 : 2, unit: "gains/month/slot",
       source: "monthly-slot-policy.ts", version: 4, evidence_scope: "CURRENT_4_2_POLICY_SNAPSHOT",
@@ -689,6 +693,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       row.active_errors = number(row.active_errors) + currentFailures.length;
     } else if (row.environment === "TESTNET" && str(row.health).startsWith("Motor OK") && scopeChecks.some((check) => currentInvariantCodes.has(str(check.code)) && check.status === "WARNING")) row.health = "ATENÇÃO";
   }
+  datasets.checks.push(buildPreLiveAuditGate(datasets, incompleteSources));
   for (const check of datasets.checks.filter((row) => row.status !== "PASS")) warnings.push(`${check.code}: ${check.explanation}`);
   for (const key of REPORT_DATASET_KEYS) datasets[key].sort(byTime);
   return { datasets, warnings: [...new Set(warnings)].sort(), incompleteSources: [...new Set(incompleteSources)].sort() };

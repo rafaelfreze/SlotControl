@@ -40,6 +40,17 @@ function addTestnet(input: AuditInput) {
   return input;
 }
 
+test("physical Shadow account reconciles manual capital without classifying it as market profit", () => {
+  const input = fixture();
+  Object.assign(input.sources.robot_v1_slot_accounts[0]!, { balance_usdc: 17.1, manual_gain_usdc: 5, contribution_usdc: 2, gain_count: 3 });
+  input.sources.robot_v1_manual_adjustments = [{ ...owner, environment: "SHADOW", asset: "SOL", slot_number: 1,
+    physical_slot_id: "SHADOW:config-sol:1", gain_units: 1, kind: "MANUAL_TARGET_GAIN", id: "manual-1", converted_amount_usdc: 5, created_at: at("02:00") }];
+  const check = buildAuditReport(input, filters).datasets.checks.find((row) => row.code === "PHYSICAL_SLOT_ACCOUNT_RECONCILES" && row.physical_slot_number === 1);
+  assert.equal(check?.status, "PASS");
+  input.sources.robot_v1_slot_accounts[0]!.balance_usdc = 17.2;
+  assert.equal(buildAuditReport(input, filters).datasets.checks.find((row) => row.code === "PHYSICAL_SLOT_ACCOUNT_RECONCILES" && row.physical_slot_number === 1)?.status, "FAIL");
+});
+
 const temporalFilters: AuditFilters = { start: STRATEGY_4_1_EFFECTIVE_AT, end: "2026-09-24T04:00:00Z", assets: ["SOL"], environments: ["TESTNET"], temporalWindow: "SINCE_STRATEGY_4_1" };
 function temporalFixture() {
   const input = addTestnet(fixture()); input.generatedAt = "2026-09-23T14:40:00Z";

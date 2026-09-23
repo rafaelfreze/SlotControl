@@ -66,6 +66,14 @@ O pacote padrão inclui candles próximos a eventos/gatilhos para controlar tama
 
 ## Contrato obrigatório de evolução
 
+### Fase 5.0 — contrato v7
+
+O pacote v7 acrescenta o check `PRE_LIVE_AUDIT_READY`, sem criar permissão de trading. Ele separa falha ativa, recuperação histórica comprovada e falta de evidência. PASS nunca habilita LIVE. `submission_guarded_at` em `04_ORDENS.csv` representa consumo da permissão única de envio, não prova POST/ACK/fill. Eventos preservam prova quantitativa de fechamento parcial, dust e bloqueios de proteção/submissão.
+
+A auditoria mensal aplica a política 4.2 também nas versões posteriores e reconstrói o ledger assinado no instante de cada entrada/reentrada. Estorno anterior pode reabilitar; estorno posterior não apaga violação. Cotação do reversal pertence ao ajuste original. Contas físicas somam capital manual separadamente de lucro de mercado. Preço histórico ausente não equivale a zero e permanece WARNING, sem alterar eventos ou preencher evidência inventada.
+
+Evidências e limites completos: [Fase 5.0](./COINOPS_PRE_LIVE_AUDIT_5_0.md).
+
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 Para ampliar uma regra:
