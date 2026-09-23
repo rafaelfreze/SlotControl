@@ -2,7 +2,7 @@ import type { ReportFilters } from "./source-contract.ts";
 import { STRATEGY_4_1_EFFECTIVE_AT } from "./missed-level-temporal.ts";
 
 export const REPORT_TIMEZONE = "America/Campo_Grande";
-export const REPORT_VERSION = 5;
+export const REPORT_VERSION = 6;
 const DAY = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 

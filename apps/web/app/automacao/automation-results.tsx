@@ -32,13 +32,18 @@ export function TestnetResults({ data, children, asset }: { data: Props; childre
   const health = testnetPresentationHealth(result, data.testnetRun, Date.now(), testnetDiagnosticIssue(data.testnet, data.testnetActionError));
   const ledger = summarizeTestnetLedgerTotals(data.testnetRun ? { cycleId: data.testnetRun.id, slots: data.testnetSlots } : null,
     (data.testnetHistory || []).map((bundle) => ({ cycleId: bundle.run.id, slots: bundle.slots })));
+  const monthlyStatuses = (data.monthlyGoals || []).filter((row) => row.environment === "TESTNET" && row.asset === asset);
   const historicalRows = ledger.rows.filter((row) => !row.current);
   const lifetimeProfit = ledger.realizedProfit;
-  const lifetimeGains = ledger.gains;
+  const lifetimeGains = monthlyStatuses.length === 25
+    ? monthlyStatuses.reduce((total, row) => total + row.lifetimeGainCount, 0) : ledger.gains;
   const historicalGainsBySlot = new Map<number, number>();
   for (const row of historicalRows) historicalGainsBySlot.set(row.slot_number, (historicalGainsBySlot.get(row.slot_number) || 0) + row.gains);
+  // The signed monthly ledger is authoritative after cross-cycle manual reversal;
+  // cycle-local gain_count alone cannot represent that historical correction.
+  for (const row of monthlyStatuses) historicalGainsBySlot.set(row.physicalSlotNumber,
+    row.lifetimeGainCount - (result.rows.find((slot) => slot.slot_number === row.physicalSlotNumber)?.gains ?? 0));
   const hasLedger = Boolean(data.testnetRun && result.rows.length);
-  const monthlyStatuses = (data.monthlyGoals || []).filter((row) => row.environment === "TESTNET" && row.asset === asset);
   const monthlyBySlot = new Map(monthlyStatuses.map((row) => [row.physicalSlotNumber, row]));
   const orderedRows = orderMonthlySlotRows(result.rows, monthlyStatuses, (row) => row.slot_number, monthlyFilter);
   const displayed = orderedRows.slice(0, allSlots ? orderedRows.length : 5);

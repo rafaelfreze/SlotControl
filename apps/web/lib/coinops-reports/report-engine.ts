@@ -6,13 +6,14 @@ import { auditExecutionGaps, auditTriggerWindows, type AuditRow, type TriggerWin
 import { buildMonthlyAuditRows } from "./monthly-audit.ts";
 import { buildMonthlyGoalChecks } from "./monthly-audit-checks.ts";
 import { buildAthAudit } from "./ath-audit.ts";
+import { buildManualAdjustmentChecks } from "./manual-adjustment-audit.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "manual_adjustments"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -83,6 +84,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   const missing = (key: string) => incompleteSources.some((item) => item === key || item.startsWith(`${key}:`));
   const configs = source("robot_v1_configs"), cycles = source("robot_v1_cycles"), slots = source("robot_v1_slots");
   const accounts = source("robot_v1_slot_accounts"), credits = source("robot_v1_slot_profit_credits");
+  const manualAdjustments = source("robot_v1_manual_adjustments");
   const rawOperations = source("robot_v1_slot_operations"), testnetRuns = source("robot_v1_testnet_runs"), testnetSlots = source("robot_v1_testnet_slots"), testnetOrders = source("robot_v1_testnet_orders");
   const temporalOccurrences = testnetRuns.flatMap((run) => buildTestnetMissedOccurrences(
     source("robot_v1_testnet_events").filter((event) => event.run_id === run.id).map((event) => ({ ...event, event_type: str(event.event_type) })),
@@ -228,6 +230,18 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       balance_before: after === null || profit === null ? null : Number((after - profit).toFixed(12)), realized_profit: profit, gross_profit: operation?.gross_profit ?? null, fees: operation?.fees ?? null, net_profit: profit,
       contribution: 0, withdrawal: 0, balance_after: after, next_allocation: after, source_operation: event.operation_id, reason: "Crédito em fundos fictícios no slot Testnet.", source: "robot_v1_testnet_events" });
   }
+  const manualById = new Map(manualAdjustments.map((row) => [str(row.id), row]));
+  for (const row of manualAdjustments) {
+    const originalKind = row.kind === "REVERSAL" ? manualById.get(str(row.reversal_of))?.kind : row.kind;
+    allCapital.push({ timestamp: iso(row.created_at), credited_at: iso(row.created_at), environment: row.environment,
+      asset: row.asset, symbol: `${row.asset}USDC`, slot: row.slot_number, event: row.kind,
+      balance_before: num(row.balance_before_usdc), realized_profit: 0, gross_profit: 0, fees: 0, net_profit: 0,
+      manual_gain: originalKind === "MANUAL_TARGET_GAIN" ? num(row.converted_amount_usdc) : 0,
+      contribution: originalKind === "MANUAL_CONTRIBUTION" ? num(row.converted_amount_usdc) : 0,
+      withdrawal: 0, balance_after: num(row.balance_after_usdc), next_allocation: num(row.balance_after_usdc),
+      source_operation: null, adjustment_id: row.id, reason: row.reason,
+      source: "robot_v1_manual_adjustments", evidence_basis: "SIGNED_IMMUTABLE_MANUAL_LEDGER; NO_EXCHANGE_OPERATION" });
+  }
   const allGains: AuditRow[] = [];
   const cumulativeSlot = new Map<string, number>(), cumulativeAsset = new Map<string, number>();
   for (const operation of [...allOperations].filter((row) => row.closed_at && number(row.net_profit) > 0).sort((a, b) => str(a.closed_at).localeCompare(str(b.closed_at)) || str(a.operation_id).localeCompare(str(b.operation_id)))) {
@@ -237,7 +251,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     allGains.push({ environment: operation.environment, asset: operation.asset, symbol: operation.symbol, cycle_id: operation.cycle_id, operation_id: operation.operation_id, physical_slot: operation.physical_slot_number,
       operation_sequence: operation.operation_sequence, entry_price: operation.entry_price, tp_price: operation.take_profit_price, target_percent: operation.gain_target_percent, gross_gain: operation.gross_profit, fees: operation.fees, net_gain: operation.net_profit,
       balance_before: credit?.balance_before ?? null, balance_after: credit?.balance_after ?? null, opened_at: operation.opened_at, gain_at: operation.closed_at, exchange_gain_at: operation.exchange_closed_at ?? null, gain_time_basis: operation.environment === "TESTNET" ? "SLOT_CLOSED_LEDGER_OBSERVATION; exchange_gain_at is separate" : "SHADOW_OPERATION_CLOSED_AT", duration_ms: duration(operation.opened_at, operation.closed_at),
-      cumulative_slot_gains: cumulativeSlot.get(slotKey), cumulative_asset_gains: cumulativeAsset.get(assetKey), source: operation.source });
+      cumulative_slot_gains: cumulativeSlot.get(slotKey), cumulative_asset_gains: cumulativeAsset.get(assetKey),
+      gain_source: "MARKET", gain_units: 1, source: operation.source });
   }
   const normalizedCycles: AuditRow[] = cycles.map((row) => {
     const operations = allOperations.filter((operation) => operation.cycle_id === row.id && operation.closed_at && timestamp(operation.closed_at) < timestamp(observationEnd));
@@ -456,7 +471,16 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   const relevantCycles = normalizedCycles.filter((row) => selected(row, filters) && overlap(row.started_at, row.completed_at, filters));
   const cycleIds = new Set(relevantCycles.map((row) => row.cycle_id));
   const periodOperations = allOperations.filter((row) => selected(row, filters) && (inPeriod(row.closed_at, filters) || (!row.closed_at && overlap(row.opened_at, null, filters)) || (row.closed_at && overlap(row.opened_at, row.closed_at, filters))));
-  const periodGains = allGains.filter((row) => selected(row, filters) && inPeriod(row.gain_at, filters));
+  const periodGains = [
+    ...allGains.filter((row) => selected(row, filters) && inPeriod(row.gain_at, filters)),
+    ...manualAdjustments.filter((row) => number(row.gain_units) !== 0 && selected(row, filters) && inPeriod(row.created_at, filters))
+      .map((row) => ({ environment: row.environment, asset: row.asset, symbol: `${row.asset}USDC`, cycle_id: null,
+        operation_id: null, physical_slot: row.slot_number, gain_source: "MANUAL", gain_units: row.gain_units,
+        gross_gain: 0, fees: 0, net_gain: 0, manual_credit_usdc: row.converted_amount_usdc,
+        balance_before: row.balance_before_usdc, balance_after: row.balance_after_usdc,
+        gain_at: row.created_at, adjustment_id: row.id, reversal_of: row.reversal_of,
+        source: "robot_v1_manual_adjustments" }))
+  ];
   const periodOrders = normalizedOrders.filter((row) => selected(row, filters) && cycleIds.has(row.cycle_id) && timestamp(row.created_at) < timestamp(filters.end));
   for (const order of periodOrders) {
     const history = allEvents.filter((row) => row.environment === "TESTNET" && object(row.details).clientOrderId === order.client_order_id && timestamp(row.timestamp) < timestamp(observationEnd));
@@ -538,11 +562,15 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const periodRuns = [...testnetRuns].filter((row) => row.asset === asset && timestamp(row.created_at) < timestamp(observationEnd)).sort((a, b) => timestamp(a.created_at) - timestamp(b.created_at));
     const firstRun = periodRuns[0], run = periodRuns.at(-1);
     const ownAccounts = accounts.filter((row) => row.config_id === config?.id);
-    const starting = environment === "SHADOW" && ownAccounts.length ? sum(ownAccounts, "initial_balance_usdc") : environment === "TESTNET" && firstRun ? number(firstRun.slot_notional_usdc) * 25 : null;
+    const starting = environment === "SHADOW" && ownAccounts.length ? sum(ownAccounts, "initial_balance_usdc")
+      : environment === "TESTNET" && firstRun ? number(firstRun.slot_notional_usdc) * 25
+      : environment === "REAL" && source("robot_v1_ath_profiles").some((profile) => profile.environment === "REAL" && profile.asset === asset) ? 0 : null;
     const history = allCapital.filter((row) => row.environment === environment && row.asset === asset);
     const accountingIncomplete = environment === "SHADOW" && (missing("robot_v1_slot_profit_credits") || missing("robot_v1_slot_accounts") || missing("robot_v1_slot_operations")) || environment === "TESTNET" && missing("robot_v1_testnet_events");
-    const capitalStart = starting === null || accountingIncomplete ? null : starting + sum(history.filter((row) => timestamp(row.timestamp) < timestamp(filters.start)), "net_profit");
-    const capitalEnd = starting === null || accountingIncomplete ? null : starting + sum(history.filter((row) => timestamp(row.timestamp) < timestamp(observationEnd)), "net_profit");
+    const historicalCapital = (cutoff: string) => history.filter((row) => timestamp(row.timestamp) < timestamp(cutoff));
+    const capitalDelta = (rows: AuditRow[]) => sum(rows, "net_profit") + sum(rows, "manual_gain") + sum(rows, "contribution");
+    const capitalStart = starting === null || accountingIncomplete ? null : starting + capitalDelta(historicalCapital(filters.start));
+    const capitalEnd = starting === null || accountingIncomplete ? null : starting + capitalDelta(historicalCapital(observationEnd));
     const lastCandle = [...candles].filter((row) => assetOf(row) === asset && timestamp(row.candle_close_at) < timestamp(observationEnd)).sort((a, b) => timestamp(b.candle_close_at) - timestamp(a.candle_close_at))[0];
     const market = environment === "SHADOW" ? num(lastCandle?.close_price) ?? (timestamp(config?.last_market_observed_at) <= timestamp(observationEnd) ? num(config?.last_market_price) : null) : null;
     const currentEnough = timestamp(observationEnd) >= timestamp(input.generatedAt) - 1000;
@@ -569,8 +597,15 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       : temporal.historicalCount ? "Motor OK — ocorrências históricas preservadas" : "Motor OK";
     summary.push({ period_start: filters.start, period_end: filters.end, observed_until: observationEnd, environment, asset, symbol: environment === "REAL" ? asset === "SOL" ? "SOLBRL" : "BTCUSDT" : `${asset}USDC`, quote_asset: environment === "REAL" ? null : "USDC", mode: environment === "REAL" ? "READ_ONLY / LIVE BLOCKED" : environment,
       capital_start: capitalStart, capital_end: capitalEnd, free_capital: capitalEnd === null || committed === null ? null : capitalEnd - committed, committed_capital: committed,
-      capital_basis: environment === "REAL" ? "NOT_COINOPS_OPERATING_CAPITAL" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_IMMUTABLE_CREDITS; committed=executed position cost + reserved NEXT BUY; unknown historical reserve remains null", realized_pnl: sum(completed, "net_profit"), open_pnl: openPnl,
-      total_result: openPnl === null ? null : sum(completed, "net_profit") + openPnl, gains: gains.filter((row) => number(row.net_gain) > 0).length, operations: completed.length, open_operations: openAtEnd.length,
+      capital_basis: environment === "REAL" ? "PREPARED_LEDGER_ONLY; LIVE_BLOCKED" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_MARKET_PNL_PLUS_MANUAL_GAINS_PLUS_CONTRIBUTIONS; committed=executed position cost + reserved NEXT BUY", realized_pnl: sum(completed, "net_profit"), open_pnl: openPnl,
+      total_result: openPnl === null ? null : sum(completed, "net_profit") + openPnl,
+      gains: gains.filter((row) => number(row.net_gain) > 0).length,
+      manual_gains: manualAdjustments.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.created_at, filters)).reduce((total, row) => total + number(row.gain_units), 0),
+      total_gains: gains.filter((row) => number(row.net_gain) > 0).length
+        + manualAdjustments.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.created_at, filters)).reduce((total, row) => total + number(row.gain_units), 0),
+      manual_gain_usdc: history.reduce((total, row) => total + number(row.manual_gain), 0),
+      contributions_usdc: history.reduce((total, row) => total + number(row.contribution), 0),
+      operations: completed.length, open_operations: openAtEnd.length,
       cycles: ownCycles.length, completed_cycles: ownCycles.filter((row) => inPeriod(row.completed_at, filters)).length, slots: ownCycles.length ? Math.max(...ownCycles.map((row) => number(row.slot_count))) : 0,
       buys: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "BUY" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => ["BUY_TRIGGERED", "INITIAL_POSITION_OPENED"].includes(str(row.event_type))).length,
       take_profits: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "SELL" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => row.event_type === "TP_TRIGGERED").length,
@@ -608,7 +643,20 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     , missed_temporal: temporalOccurrences.map((row) => ({ ...row, environment: "TESTNET", symbol: `${row.asset}USDC`,
       context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.temporal_classification === "HISTORICAL_PRE_4_1", source: "robot_v1_testnet_events+current_slot_fallback" }))
       .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd))),
-    monthly_goals: monthlyGoals, ath_regime: []
+    monthly_goals: monthlyGoals, ath_regime: [],
+    manual_adjustments: manualAdjustments.filter((row) => selected(row, filters) && inPeriod(row.created_at, filters))
+      .map((row) => ({ adjustment_id: row.id, environment: row.environment, asset: row.asset,
+        physical_slot_number: row.slot_number, physical_slot_id: row.physical_slot_id, type: row.kind,
+        gain_units: row.gain_units, currency: row.currency, original_amount: row.original_amount,
+        fx_rate: row.fx_rate, fx_source: row.fx_source, fx_observed_at: row.fx_observed_at,
+        converted_amount_usdc: row.converted_amount_usdc, balance_before: row.balance_before_usdc,
+        balance_after: row.balance_after_usdc, monthly_before: row.monthly_before, monthly_after: row.monthly_after,
+        lifetime_before: row.lifetime_before, lifetime_after: row.lifetime_after,
+        open_position_at_time: row.open_position_at_time, position_committed_notional_usdc: row.position_committed_notional_usdc,
+        effective_for_next_operation: row.effective_for_next_operation, reason: row.reason, note: row.note,
+        created_by: row.created_by, timestamp: row.created_at, reversal_of: row.reversal_of,
+        idempotency_key: row.idempotency_key, strategy_version: row.strategy_version,
+        config_version: row.config_version, evidence_basis: "IMMUTABLE_MANUAL_ADJUSTMENT_LEDGER" }))
   };
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
   datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters, contextOrders: normalizedOrders, contextEvents: allEvents }));
@@ -616,6 +664,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   const athAudit = buildAthAudit(datasets, input.sources, incompleteSources, input.generatedAt);
   datasets.ath_regime.push(...athAudit.rows);
   datasets.checks.push(...athAudit.checks);
+  datasets.checks.push(...buildManualAdjustmentChecks(datasets, input.sources, incompleteSources, input.generatedAt));
   const liveParity = datasets.checks.find((row) => row.code === "LIVE_STRATEGY_PARITY_READY");
   if (liveParity) {
     const monthlyCodes = new Set(["MONTHLY_GAIN_COUNT_RECONCILES", "TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY",

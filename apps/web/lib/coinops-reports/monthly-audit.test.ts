@@ -67,7 +67,12 @@ test("monthly audit preserves pre-4.2 reentry but flags any new post-adoption en
     operational_rank: index === 4 ? null : index < 4 ? index + 1 : index,
     lifetime_gain_count: index === 4 ? 2 : 0, physical_slot_id: `SOL:${index + 1}` }));
   const source = {
-    robot_v1_monthly_slot_gains: [],
+    robot_v1_monthly_slot_gains: [
+      { environment: "TESTNET", asset: "SOL", slot_number: 5, period_key: "2026-09", gain_units: 1,
+        credited_at: "2026-09-23T14:55:00Z", effective_gain_at: "2026-09-23T14:55:00Z" },
+      { environment: "TESTNET", asset: "SOL", slot_number: 5, period_key: "2026-09", gain_units: 1,
+        credited_at: "2026-09-23T16:07:00Z", effective_gain_at: "2026-09-23T16:07:00Z" }
+    ],
     robot_v1_testnet_runs: [{ id: "run-sol", asset: "SOL" }],
     robot_v1_strategy_decisions: [{ environment: "TESTNET", asset: "SOL", strategy_version: "4.2", created_at: "2026-09-23T18:22:00Z" }],
     robot_v1_testnet_orders: [

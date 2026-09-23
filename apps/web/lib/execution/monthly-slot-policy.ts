@@ -38,6 +38,10 @@ export type MonthlySlotInput = {
   monthlyGainCount: number | null;
   balanceUsdc: number;
   entryState: string;
+  marketGainCount?: number | null;
+  manualGainCount?: number | null;
+  monthlyMarketGainCount?: number | null;
+  monthlyManualGainCount?: number | null;
 };
 
 export type MonthlySlotStatus = MonthlySlotInput & {
@@ -61,7 +65,12 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
       || !input.physicalSlotId || ids.has(input.physicalSlotId) || numbers.has(input.physicalSlotNumber)
       || !Number.isInteger(input.lifetimeGainCount) || input.lifetimeGainCount < 0
       || input.monthlyGainCount !== null && (!Number.isInteger(input.monthlyGainCount) || input.monthlyGainCount < 0 || input.monthlyGainCount > input.lifetimeGainCount)
-      || !Number.isFinite(input.balanceUsdc) || input.balanceUsdc <= 0) throw new Error("COINOPS_MONTHLY_SLOT_EVIDENCE_INVALID");
+      || !Number.isFinite(input.balanceUsdc) || input.balanceUsdc <= 0
+      || input.marketGainCount != null && input.manualGainCount != null
+        && input.marketGainCount + input.manualGainCount !== input.lifetimeGainCount
+      || input.monthlyGainCount != null && input.monthlyMarketGainCount != null && input.monthlyManualGainCount != null
+        && input.monthlyMarketGainCount + input.monthlyManualGainCount !== input.monthlyGainCount)
+      throw new Error("COINOPS_MONTHLY_SLOT_EVIDENCE_INVALID");
     ids.add(input.physicalSlotId); numbers.add(input.physicalSlotNumber);
     const reached = input.monthlyGainCount !== null && input.monthlyGainCount >= target;
     const blockedReason = input.monthlyGainCount === null ? "GAIN_EVIDENCE_INCOMPLETE" as const

@@ -38,6 +38,10 @@ export function buildMonthlyAuditRows(args: {
       const inputs = Array.from({ length: 25 }, (_, index) => {
         const slotNumber = index + 1;
         const facts = scopedCredits.filter((row) => count(row.slot_number) === slotNumber);
+        const gainUnits = (rows: AuditRow[]) => rows.reduce((total, row) => total + count(row.gain_units ?? 1), 0);
+        const currentFacts = facts.filter((row) => row.period_key === period);
+        const marketFacts = facts.filter((row) => !["MANUAL_TARGET_GAIN", "MANUAL_GAIN_REVERSAL"].includes(string(row.evidence_basis)));
+        const manualFacts = facts.filter((row) => ["MANUAL_TARGET_GAIN", "MANUAL_GAIN_REVERSAL"].includes(string(row.evidence_basis)));
         const account = environment === "SHADOW" ? shadowAccounts.find((row) => row.config_id === config?.id && count(row.slot_number) === slotNumber) : null;
         const slot = environment === "SHADOW" ? shadowSlots.find((row) => row.cycle_id === activeCycle?.id && count(row.slot_number) === slotNumber)
           : testnetSlots.find((row) => row.run_id === run?.id && count(row.slot_number) === slotNumber);
@@ -48,7 +52,10 @@ export function buildMonthlyAuditRows(args: {
           configId: string(config?.id)
         }, slotNumber) : string(facts[0]?.physical_slot_id) || `${environment}:${asset}:UNVERIFIED:${slotNumber}`;
         return { physicalSlotNumber: slotNumber, physicalSlotId,
-          lifetimeGainCount: facts.length, monthlyGainCount: incomplete ? null : facts.filter((row) => row.period_key === period).length,
+          lifetimeGainCount: gainUnits(facts), monthlyGainCount: incomplete ? null : gainUnits(currentFacts),
+          marketGainCount: gainUnits(marketFacts), manualGainCount: gainUnits(manualFacts),
+          monthlyMarketGainCount: gainUnits(currentFacts.filter((row) => marketFacts.includes(row))),
+          monthlyManualGainCount: gainUnits(currentFacts.filter((row) => manualFacts.includes(row))),
           balanceUsdc: current && Number.isFinite(balance) && balance > 0 ? balance : 1,
           entryState: current ? string(slot?.entry_state ?? slot?.status) || "UNKNOWN" : "UNKNOWN",
           currentBalance: current && Number.isFinite(balance) && balance > 0 ? balance : null,
@@ -63,6 +70,8 @@ export function buildMonthlyAuditRows(args: {
           physical_slot_number: status.physicalSlotNumber, physical_slot_id: status.physicalSlotId,
           operational_rank: status.operationalRank, lifetime_gain_count: status.lifetimeGainCount,
           monthly_gain_count: status.monthlyGainCount, monthly_gain_target: status.monthlyGainTarget,
+          market_gain_count: status.marketGainCount, manual_gain_count: status.manualGainCount,
+          monthly_market_gain_count: status.monthlyMarketGainCount, monthly_manual_gain_count: status.monthlyManualGainCount,
           monthly_target_reached: status.monthlyTargetReached, period_key: period, timezone: status.timezone,
           eligible_for_new_entry: status.eligibleForNewEntry, blocked_reason: status.blockedReason,
           status: status.monthlyTargetReached ? "META BATIDA" : status.blockedReason ? "EVIDÊNCIA INCOMPLETA" : "ELEGÍVEL",
@@ -72,7 +81,9 @@ export function buildMonthlyAuditRows(args: {
             : status.blockedReason ? "RECONCILIAR_EVIDENCIA"
             : raw.entryState === "MISSED" ? "AGUARDAR_PROXIMO_CICLO" : "AGUARDAR_OPORTUNIDADE_DE_PRECO",
           next_reset_at: nextReset, strategy_version: raw.strategyVersion,
-          gain_time_basis: incomplete ? null : scopedCredits.some((credit) => credit.evidence_basis === "TESTNET_CREDIT_FALLBACK"
+          gain_time_basis: incomplete ? null : scopedCredits.some((credit) => ["MANUAL_TARGET_GAIN", "MANUAL_GAIN_REVERSAL"].includes(string(credit.evidence_basis))
+            && count(credit.slot_number) === status.physicalSlotNumber && credit.period_key === period)
+            ? "MARKET_TP_AND_MANUAL_LEDGER_CREDIT_TIME" : scopedCredits.some((credit) => credit.evidence_basis === "TESTNET_CREDIT_FALLBACK"
             && count(credit.slot_number) === status.physicalSlotNumber && credit.period_key === period)
             ? "TESTNET_CREDIT_FALLBACK" : "CONFIRMED_TP_TIME",
           evidence_basis: incomplete ? "MONTHLY_LEDGER_INCOMPLETE" : "IMMUTABLE_CREDIT_LEDGER; CURRENT_BALANCE_ONLY_WHEN_CURRENT_SNAPSHOT",

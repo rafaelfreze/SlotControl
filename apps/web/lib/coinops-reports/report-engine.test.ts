@@ -306,6 +306,36 @@ test("duplicate operation IDs and terminal events fail audit", () => {
   for (let i = 0; i < 2; i++) input.sources.robot_v1_audit_events!.push({ ...owner, id: `terminal-${i}`, config_id: "config-sol", cycle_id: "cycle-1", slot_id: "slot-1", event_type: "SLOT_PROFIT_CREDITED", next_state: { operationId: "op-1" }, observed_at: at("01:00"), idempotency_key: `different-${i}` });
   const report = buildAuditReport(input, filters); assert.equal(report.datasets.checks.find((row) => row.code === "OPERATION_IDS_UNIQUE")!.status, "FAIL"); assert.equal(report.datasets.checks.find((row) => row.code === "TERMINAL_EVENTS_UNIQUE")!.status, "FAIL");
 });
+
+test("manual OPEN gain is capital and target credit, never market P&L or a fictitious operation", () => {
+  const input = fixture(), account = input.sources.robot_v1_slot_accounts[0]!;
+  Object.assign(account, { balance_usdc: "15.1", manual_gain_usdc: "5", contribution_usdc: "0", gain_count: 3 });
+  input.sources.robot_v1_manual_adjustments = [{ ...owner, id: "manual-1", product_id: "product",
+    environment: "SHADOW", asset: "SOL", slot_number: 1, physical_slot_id: "SHADOW:config-sol:1",
+    kind: "MANUAL_TARGET_GAIN", gain_units: 1, currency: "USD", original_amount: 5,
+    converted_amount_usdc: 5, balance_before_usdc: 10.1, balance_after_usdc: 15.1,
+    monthly_before: 2, monthly_after: 3, lifetime_before: 2, lifetime_after: 3,
+    open_position_at_time: true, position_committed_notional_usdc: 10,
+    reason: "meta operacional", created_at: at("02:00"), idempotency_key: "manual-fixture-key-1" }];
+  input.sources.robot_v1_monthly_slot_gains = [1, 2].map((index) => ({ ...owner, environment: "SHADOW",
+    asset: "SOL", slot_number: 1, physical_slot_id: "SHADOW:config-sol:1", source_id: `op-${index}`,
+    credited_at: at(index === 1 ? "01:00" : "01:30"), effective_gain_at: at(index === 1 ? "01:00" : "01:30"),
+    period_key: "2026-09", evidence_basis: "SHADOW_CONFIRMED_TP_CLOSE", gain_units: 1 }));
+  input.sources.robot_v1_monthly_slot_gains.push({ ...owner, environment: "SHADOW", asset: "SOL",
+    slot_number: 1, physical_slot_id: "SHADOW:config-sol:1", source_id: "manual-1", credited_at: at("02:00"),
+    effective_gain_at: at("02:00"), period_key: "2026-09", evidence_basis: "MANUAL_TARGET_GAIN", gain_units: 1 });
+  const report = buildAuditReport(input, filters);
+  const summary = report.datasets.summary.find((row) => row.environment === "SHADOW" && row.asset === "SOL")!;
+  assert.equal(summary.capital_end, 255.1);
+  assert.equal(summary.realized_pnl, .1);
+  assert.equal(summary.manual_gain_usdc, 5);
+  assert.equal(summary.manual_gains, 1);
+  assert.equal(report.datasets.operations.filter((row) => row.operation_id === "manual-1").length, 0);
+  assert.equal(report.datasets.gains.find((row) => row.adjustment_id === "manual-1")?.net_gain, 0);
+  assert.equal(report.datasets.monthly_goals.find((row) => row.environment === "SHADOW" && row.asset === "SOL"
+    && row.physical_slot_number === 1)?.monthly_manual_gain_count, 1);
+  assert.equal(report.datasets.manual_adjustments.length, 1);
+});
 test("repeated Testnet fills of one physical slot use unique exchange order IDs", () => {
   const input = addTestnet(fixture());
   const first = input.sources.robot_v1_testnet_events![0]!;

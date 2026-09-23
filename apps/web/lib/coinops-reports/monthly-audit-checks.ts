@@ -17,10 +17,7 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
     const rows = data.monthly_goals.filter((row) => row.environment === environment && row.asset === asset);
     if (!rows.length) continue;
     const current = rows.filter((row) => row.period_key === period), scope = { environment, asset, period_key: period };
-    const credits = (environment === "SHADOW" ? source.robot_v1_slot_profit_credits ?? [] : source.robot_v1_testnet_events ?? [])
-      .filter((row) => environment === "SHADOW" ? source.robot_v1_configs?.some((config) => config.id === row.config_id && config.asset === asset)
-        : row.event_type === "SLOT_CLOSED" && n((row.details as AuditRow | undefined)?.profitUsdc) > 0
-          && source.robot_v1_testnet_runs?.some((run) => run.id === row.run_id && run.asset === asset));
+    const credits = (source.robot_v1_monthly_slot_gains ?? []).filter((row) => row.environment === environment && row.asset === asset);
     const sourceMissing = !Object.hasOwn(source, "robot_v1_monthly_slot_gains")
       || missing("robot_v1_monthly_slot_gains", environment === "SHADOW" ? "robot_v1_slot_profit_credits" : "robot_v1_testnet_events",
         environment === "SHADOW" ? "robot_v1_slot_operations" : "robot_v1_testnet_orders");
@@ -28,22 +25,17 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
       ? ["robot_v1_slots", "robot_v1_cycles", "robot_v1_configs"]
       : ["robot_v1_testnet_runs"]));
     const eventSourceMissing = entrySourceMissing || missing(environment === "SHADOW" ? "robot_v1_audit_events" : "robot_v1_testnet_events");
-    const effectiveAt = (credit: AuditRow) => {
-      if (environment === "SHADOW") return source.robot_v1_slot_operations?.find((operation) => operation.id === credit.operation_id)?.closed_at;
-      const details = (credit.details ?? {}) as AuditRow;
-      const sell = [...(source.robot_v1_testnet_orders ?? [])].filter((order) => order.run_id === credit.run_id
-        && n(order.slot_number) === n(credit.slot_number) && order.side === "SELL" && order.purpose === "TP" && order.status === "FILLED"
-        && (!details.operationSequence || n(order.operation_sequence) === n(details.operationSequence)))
-        .sort((a, b) => n(b.revision) - n(a.revision))[0];
-      const fill = source.robot_v1_testnet_events?.find((event) => event.run_id === credit.run_id
-        && event.event_type === "TESTNET_FILL_OBSERVED" && ((event.details ?? {}) as AuditRow).clientOrderId === sell?.client_order_id);
-      return ((fill?.details ?? {}) as AuditRow).filledAt ?? credit.observed_at;
-    };
     const actualFor = (row: AuditRow) => credits.filter((credit) => n(credit.slot_number) === n(row.physical_slot_number)
-      && Number.isFinite(at(effectiveAt(credit))) && monthlyPeriodKey(s(effectiveAt(credit))) === row.period_key);
+      && credit.period_key === row.period_key && Number.isFinite(at(credit.effective_gain_at)));
+    const reachedAt = (row: AuditRow) => {
+      let total = 0;
+      return [...actualFor(row)].sort((a, b) => at(a.credited_at) - at(b.credited_at))
+        .find((credit) => { total += n(credit.gain_units ?? 1); return total >= n(row.monthly_gain_target); });
+    };
     const fallback = current.some((row) => row.gain_time_basis === "TESTNET_CREDIT_FALLBACK");
-    add("MONTHLY_GAIN_COUNT_RECONCILES", !current.length || sourceMissing || fallback ? "WARNING" : current.every((row) => n(row.monthly_gain_count) === actualFor(row).length) ? "PASS" : "FAIL",
-      "Contador mensal confrontado com créditos/fechamentos confirmados, por slot físico e período.", scope);
+    add("MONTHLY_GAIN_COUNT_RECONCILES", !current.length || sourceMissing || fallback ? "WARNING" : current.every((row) =>
+      n(row.monthly_gain_count) === actualFor(row).reduce((total, credit) => total + n(credit.gain_units ?? 1), 0)) ? "PASS" : "FAIL",
+      "Contador mensal confrontado com fatos de mercado e ajustes manuais assinados, por slot físico e período.", scope);
     const reached = current.filter((row) => row.monthly_target_reached === true);
     // A monthly target reached before 4.2 cannot retroactively make a 4.1
     // reentry invalid. The first persisted 4.2 decision is the earliest
@@ -53,14 +45,11 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
       .map((decision) => at(decision.created_at)).filter(Number.isFinite);
     const adoptedAt = adoptionTimes.length ? Math.min(...adoptionTimes) : NaN;
     const legacyTarget = reached.some((row) => {
-      const credit = actualFor(row).sort((a, b) => at(environment === "SHADOW" ? a.credited_at : a.observed_at)
-        - at(environment === "SHADOW" ? b.credited_at : b.observed_at))[n(row.monthly_gain_target) - 1];
-      return credit && at(environment === "SHADOW" ? credit.credited_at : credit.observed_at) < adoptedAt;
+      const credit = reachedAt(row);
+      return credit && at(credit.credited_at) < adoptedAt;
     });
-    const reachedAt = (row: AuditRow) => actualFor(row).sort((a, b) => at(environment === "SHADOW" ? a.credited_at : a.observed_at)
-      - at(environment === "SHADOW" ? b.credited_at : b.observed_at))[n(row.monthly_gain_target) - 1];
     const badEntry = reached.some((row) => {
-      const credit = reachedAt(row), threshold = Math.max(at(environment === "SHADOW" ? credit?.credited_at : credit?.observed_at), adoptedAt);
+      const credit = reachedAt(row), threshold = Math.max(at(credit?.credited_at), adoptedAt);
       if (!Number.isFinite(threshold)) return false;
       return environment === "TESTNET"
         ? (source.robot_v1_testnet_orders ?? []).some((order) => order.side === "BUY"
@@ -76,7 +65,7 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
     add("TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY", !current.length || entrySourceMissing || !Number.isFinite(adoptedAt) || reached.some((row) => !reachedAt(row)) ? "WARNING" : badEntry ? "FAIL" : "PASS",
       `Após o crédito que bateu a meta sob 4.2, não pode haver nova BUY; posição OPEN conserva o TP.${legacyTarget ? " Meta anterior à adoção 4.2: entradas legadas preservadas, sem retroatividade." : ""}`, scope);
     const badReentry = reached.some((row) => {
-      const credit = reachedAt(row), threshold = Math.max(at(environment === "SHADOW" ? credit?.credited_at : credit?.observed_at), adoptedAt);
+      const credit = reachedAt(row), threshold = Math.max(at(credit?.credited_at), adoptedAt);
       if (!Number.isFinite(threshold)) return false;
       return environment === "TESTNET" ? (source.robot_v1_testnet_events ?? []).some((event) => event.event_type === "SLOT_REENTRY_PLANNED"
         && n(event.slot_number) === n(row.physical_slot_number) && at(event.observed_at) > threshold
@@ -95,9 +84,12 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
     add("NEW_MONTH_REENABLES_SLOT", !current.length || !priorReached.length || sourceMissing || !restored ? "WARNING" : "PASS",
       "Reabilitação é comprovada quando o período anterior atingiu a meta e o snapshot atual mostra o slot elegível; se já bateu a nova meta, falta snapshot da virada.", scope);
     const regressed = rows.some((row) => rows.some((earlier) => earlier.physical_slot_number === row.physical_slot_number
-      && s(earlier.period_key) < s(row.period_key) && n(earlier.lifetime_gain_count) > n(row.lifetime_gain_count)));
+      && s(earlier.period_key) < s(row.period_key) && n(earlier.lifetime_gain_count) > n(row.lifetime_gain_count)
+      && !credits.some((credit) => credit.evidence_basis === "MANUAL_GAIN_REVERSAL"
+        && n(credit.slot_number) === n(row.physical_slot_number)
+        && at(credit.credited_at) > at(earlier.next_reset_at) && at(credit.credited_at) <= at(row.next_reset_at))));
     add("LIFETIME_GAIN_NEVER_RESETS", sourceMissing ? "WARNING" : regressed ? "FAIL" : "PASS",
-      "Lifetime não diminui entre períodos; o mês muda sem apagar fatos históricos.", scope);
+      "Lifetime não zera na virada do mês; redução só é legítima por estorno auditável de gain manual.", scope);
     const sorted = [...current].filter((row) => row.eligible_for_new_entry === true).sort((a, b) => n(a.operational_rank) - n(b.operational_rank));
     const correctRank = sorted.every((row, index) => n(row.operational_rank) === index + 1
       && (!index || n(sorted[index - 1]!.lifetime_gain_count) > n(row.lifetime_gain_count)

@@ -17,6 +17,7 @@ import { AutomationCenter } from "./automation-cockpit";
 import { AutomationPageShell } from "./automation-page-shell";
 import type { TestnetAssetData } from "./automation-mobile";
 import { AthProfilesPanel } from "./ath-profiles-panel";
+import { ManualAdjustmentsPanel, type RecentManualAdjustment } from "./manual-adjustments-panel";
 import "./ath-profiles.css";
 
 export const metadata: Metadata = { title: "Automação" };
@@ -33,7 +34,7 @@ type RobotV1SlotAccountRow = { config_id: string; slot_number: number; initial_b
 type RobotV1EventRow = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type RobotV1CandleRow = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 
-export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string } }) {
+export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string; adjust?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -69,7 +70,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     supabase.from("robot_v1_market_candles").select("symbol,candle_open_at,open_price,high_price,low_price,close_price").in("symbol", ["BTCUSDC", "SOLUSDC"]).order("candle_open_at", { ascending: false }).limit(180),
     supabase.from("exchange_order_intents").select("id").limit(12),
     supabase.from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle(),
-    supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key")
+    supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count")
       .eq("tenant_id", tenantId).eq("user_id", user.id),
     supabase.from("robot_v1_ath_profiles").select("id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,ath_observed_at,ath_source,ath_verified_at,ath_floor_reference,ath_floor_source")
       .eq("tenant_id", tenantId).eq("user_id", user.id)
@@ -79,6 +80,16 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (scopeResponse.error || !scopeResponse.data || monthlyResponse.error) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE");
   if (athProfilesResponse.error) throw new Error("COINOPS_ATH_PROFILES_UNAVAILABLE");
   const productId = scopeResponse.data.product_id;
+  const { data: manualAdjustments, error: manualError } = await supabase.from("robot_v1_manual_adjustments")
+    .select("id,environment,asset,slot_number,kind,gain_units,currency,original_amount,converted_amount_usdc,created_at,reversal_of,reason")
+    .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+    .order("created_at", { ascending: false }).limit(40);
+  if (manualError) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
+  const targetMatch = /^(SHADOW|TESTNET|REAL):(BTC|SOL):([1-9]|1\d|2[0-5])$/.exec(searchParams?.adjust || "");
+  const initialManualTarget = targetMatch ? {
+    environment: targetMatch[1] as "SHADOW" | "TESTNET" | "REAL",
+    asset: targetMatch[2] as "BTC" | "SOL", slotNumber: Number(targetMatch[3]),
+  } : null;
   const dailyCandles = (await Promise.all(["BTCUSDC", "SOLUSDC"].map(async (symbol) =>
     getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
   ))).flat();
@@ -135,7 +146,10 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
         : (item as TestnetAssetData["slots"][number]).entry_state;
       return { physicalSlotNumber: slotNumber, physicalSlotId: id, lifetimeGainCount: lifetime,
         monthlyGainCount: consistent ? Number(total?.monthly_gain_count ?? 0) : null,
-        balanceUsdc: Number(item.balance_usdc), entryState: slotState || "PLANNED" };
+        balanceUsdc: Number(item.balance_usdc), entryState: slotState || "PLANNED",
+        marketGainCount: Number(total?.market_gain_count ?? 0), manualGainCount: Number(total?.manual_gain_count ?? 0),
+        monthlyMarketGainCount: Number(total?.monthly_market_gain_count ?? 0),
+        monthlyManualGainCount: Number(total?.monthly_manual_gain_count ?? 0) };
     });
     monthlyGoals.push(...rankMonthlySlots(asset, monthlyNow, inputs).map((status) => ({ ...status, environment, asset })));
   }
@@ -200,7 +214,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetOperating: testnetHealth.some((health) => health.healthy),
     testnetError: testnetHealth.some((health) => health.tone === "error"),
     testnetAttention: testnetHealth.some((health) => health.tone === "attention") || Boolean(testnetDiagnosticIssue(testnet, searchParams?.testnetError))
-  }}><AthProfilesPanel profiles={(athProfilesResponse.data || []) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
+  }}><ManualAdjustmentsPanel recent={(manualAdjustments || []) as RecentManualAdjustment[]} initial={initialManualTarget} /><AthProfilesPanel profiles={(athProfilesResponse.data || []) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
     slots={athSlotRows} marketPrices={{
       BTC: Number((robotConfigsResponse.data || []).find((item) => item.asset === "BTC")?.last_market_price) || null,
       SOL: Number((robotConfigsResponse.data || []).find((item) => item.asset === "SOL")?.last_market_price) || null,

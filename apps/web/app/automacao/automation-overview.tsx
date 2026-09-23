@@ -85,7 +85,10 @@ export function AutomationOverview({ data }: { data: Props }) {
     const result = persisted ? summarizeTestnetResults(persisted.slots, persisted.orders, market, number(persisted.run.slot_notional_usdc), { asset, cycleId: persisted.run.id, events: persisted.events }) : null;
     const health = result && persisted ? testnetPresentationHealth(result, persisted.run, Date.now(), testnetDiagnosticIssue(data.testnet, data.testnetActionError)) : null;
     const history = (persisted?.history || []).map((bundle) => summarizeTestnetResults(bundle.slots, bundle.orders, null, number(bundle.run.slot_notional_usdc)));
-    return { asset, persisted, result, health, lifetimeProfit: (result?.realizedProfit || 0) + history.reduce((total, item) => total + item.realizedProfit, 0), lifetimeGains: (result?.gains || 0) + history.reduce((total, item) => total + item.gains, 0), lifetimeOperations: (result?.completedOperations || 0) + history.reduce((total, item) => total + item.completedOperations, 0) };
+    const gainFacts = (data.monthlyGoals || []).filter((row) => row.environment === "TESTNET" && row.asset === asset);
+    return { asset, persisted, result, health, lifetimeProfit: (result?.realizedProfit || 0) + history.reduce((total, item) => total + item.realizedProfit, 0), lifetimeGains: gainFacts.length === 25
+      ? gainFacts.reduce((total, row) => total + row.lifetimeGainCount, 0)
+      : (result?.gains || 0) + history.reduce((total, item) => total + item.gains, 0), lifetimeOperations: (result?.completedOperations || 0) + history.reduce((total, item) => total + item.completedOperations, 0) };
   });
   const testnetKnown = testnet.filter((row) => row.persisted && row.result?.rows.length);
   const testnetCapital = testnetKnown.length ? sum(testnetKnown.map((row) => row.result!.capital)) : null;
