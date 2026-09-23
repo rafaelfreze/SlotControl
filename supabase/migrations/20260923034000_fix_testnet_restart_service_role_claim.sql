@@ -1,56 +1,5 @@
--- Atomic TESTNET-only cycle rollover after the terminal TP. Production exchange
--- connections and Shadow tables are intentionally outside this function.
-alter table coinops.robot_v1_testnet_runs drop constraint if exists robot_v1_testnet_runs_previous_run_fk;
-alter table coinops.robot_v1_testnet_runs
-  add column if not exists previous_run_id uuid,
-  add column if not exists completed_at timestamptz,
-  add column if not exists completion_reason text,
-  add column if not exists terminal_fill_client_order_id text,
-  add column if not exists reset_idempotency_key text,
-  add column if not exists reset_started_at timestamptz,
-  add column if not exists reset_completed_at timestamptz,
-  add column if not exists recovery_source text;
-
-alter table coinops.robot_v1_testnet_runs
-  add constraint robot_v1_testnet_runs_previous_run_fk
-  foreign key (previous_run_id) references coinops.robot_v1_testnet_runs(id) on delete restrict;
-
-create unique index robot_v1_testnet_reset_idempotency
-  on coinops.robot_v1_testnet_runs(reset_idempotency_key)
-  where reset_idempotency_key is not null;
-
-alter table coinops.robot_v1_testnet_slots drop constraint if exists robot_v1_testnet_slots_entry_state_check;
-alter table coinops.robot_v1_testnet_slots add constraint robot_v1_testnet_slots_entry_state_check
-  check (entry_state in ('PLANNED', 'ARMED', 'OPEN', 'CLOSED', 'MISSED', 'CANCELLED'));
-
-alter table coinops.robot_v1_testnet_slots
-  add column if not exists operation_sequence integer not null default 1 check (operation_sequence > 0),
-  add column if not exists entry_origin text not null default 'GRID' check (entry_origin in ('GRID', 'REENTRY')),
-  add column if not exists entry_reference_price numeric(24, 8),
-  add column if not exists last_take_profit_price numeric(24, 8),
-  add column if not exists last_credited_sell_client_order_id text;
-
-update coinops.robot_v1_testnet_slots
-set entry_reference_price = target_buy_price
-where entry_reference_price is null;
-
-alter table coinops.robot_v1_testnet_slots
-  alter column entry_reference_price set not null;
-
-alter table coinops.robot_v1_testnet_orders
-  add column if not exists operation_sequence integer not null default 1 check (operation_sequence > 0);
-
-alter table coinops.robot_v1_audit_events drop constraint if exists robot_v1_audit_events_event_type_check;
-alter table coinops.robot_v1_audit_events add constraint robot_v1_audit_events_event_type_check check (event_type in (
-  'CAPITAL_CHANGED', 'CAPITAL_NEXT_CYCLE', 'PARAMETERS_NEXT_CYCLE',
-  'SHADOW_STARTED', 'PAUSED', 'RESUMED', 'KILL_SWITCH_ENABLED', 'KILL_SWITCH_DISABLED',
-  'CYCLE_STARTED', 'CYCLE_COMPLETED', 'CYCLE_RESTARTED', 'INITIAL_POSITION_OPENED',
-  'SLOT_RECYCLED', 'SLOT_REENTRY_PLANNED', 'SLOT_REENTRY_ARMED', 'SHADOW_STATE_REPAIRED',
-  'GRID_INVALID', 'RESET_ALLOWED', 'BUY_TRIGGERED', 'TP_TRIGGERED',
-  'SLOT_PROFIT_CREDITED', 'SLOT_BALANCE_UPDATED', 'NEXT_BUY_ARMED', 'NEXT_BUY_DISARMED',
-  'MISSED_LEVEL_DURING_REARM', 'INTRABAR_AMBIGUOUS', 'DATA_GAP'
-));
-
+-- Repair the service-role guard for PostgREST calls where request.jwt.claim.role is blank.
+-- EXECUTE remains restricted to service_role; Production exchange tables stay outside this RPC.
 create or replace function coinops.restart_robot_v1_testnet_cycle(
   p_old_run_id uuid,
   p_terminal_fill_client_order_id text,
