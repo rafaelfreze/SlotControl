@@ -25,7 +25,8 @@ type TestnetSlot = { slot_number: number; entry_state: string; target_buy_price?
 type TestnetOrderRow = { slot_number: number; side: string; purpose: string; revision: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; fee_base?: number | string; fee_quote?: number | string; fee_other?: unknown[]; created_at: string; updated_at: string };
 type TestnetEvent = { event_type: string; slot_number: number | null; observed_at: string; details: Record<string, unknown> };
 type TestnetDiagnostic = Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>>;
-export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; embedded?: boolean };
+export type TestnetAssetData = { run: NonNullable<TestnetRun>; slots: TestnetSlot[]; orders: TestnetOrderRow[]; events: TestnetEvent[] };
+export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; testnetAssetData?: Partial<Record<Asset, TestnetAssetData>>; embedded?: boolean };
 
 const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];
@@ -51,7 +52,7 @@ function eventLabel(event: Event, slotNumber?: number) {
 }
 function confirmKill(event: FormEvent<HTMLFormElement>) { if (!window.confirm("Ativar o kill switch pausa novas entradas deste robô Shadow. O ciclo e o histórico serão preservados. Continuar?")) event.preventDefault(); }
 
-function Sparkline({ candles, asset }: { candles: Candle[]; asset: Asset }) {
+export function Sparkline({ candles, asset }: { candles: Candle[]; asset: Asset }) {
   const values = candles.slice(-36).map((row) => Number(row.close_price)).filter(Number.isFinite);
   if (values.length < 2) return <span className="av2-no-trend">Tendência ainda indisponível</span>;
   const min = Math.min(...values), span = Math.max(...values) - min || 1;

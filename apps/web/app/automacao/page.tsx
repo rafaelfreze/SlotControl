@@ -12,6 +12,7 @@ import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observat
 import type { AutomationView } from "./automation-center";
 import { AutomationCenter } from "./automation-cockpit";
 import { AutomationPageShell } from "./automation-page-shell";
+import type { TestnetAssetData } from "./automation-mobile";
 
 export const metadata: Metadata = { title: "Automação" };
 export const dynamic = "force-dynamic";
@@ -32,11 +33,12 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
+  const tenantId = getCoinOpsServiceTenantId();
+  if (!tenantId) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
 
   let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
   const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "overview";
   if (view === "testnet" || searchParams?.testnet === "check") {
-    const tenantId = getCoinOpsServiceTenantId();
     const { data: scope, error: scopeError } = await createServiceRoleClient().from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
     if (scopeError || !scope) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
     const diagnosticStartedAt = new Date().toISOString();
@@ -67,15 +69,23 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const dailyCandles = (await Promise.all(["BTCUSDC", "SOLUSDC"].map(async (symbol) =>
     getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
   ))).flat();
-  const { data: testnetRun, error: testnetRunError } = await supabase.from("robot_v1_testnet_runs")
-    .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing").eq("asset", "SOL").order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (testnetRunError) throw testnetRunError;
-  const [testnetSlots, testnetOrders, testnetEvents] = testnetRun ? await Promise.all([
-    supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,created_at,updated_at").eq("run_id", testnetRun.id).order("slot_number"),
-    supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("run_id", testnetRun.id).order("created_at"),
-    supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", testnetRun.id).order("observed_at", { ascending: false }).limit(20)
-  ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
-  if (testnetSlots.error || testnetOrders.error || testnetEvents.error) throw testnetSlots.error || testnetOrders.error || testnetEvents.error;
+  // Each asset resolves its own latest persisted run through the authenticated
+  // RLS client. Viewing BTC must never reuse SOL's ledger or start an executor.
+  const testnetAssetData: Partial<Record<"BTC" | "SOL", TestnetAssetData>> = {};
+  await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
+    const { data: run, error } = await supabase.from("robot_v1_testnet_runs")
+      .select("id,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing").eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw error;
+    if (!run) return;
+    const [slots, orders, events] = await Promise.all([
+      supabase.from("robot_v1_testnet_slots").select("slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,created_at,updated_at").eq("run_id", run.id).order("slot_number"),
+      supabase.from("robot_v1_testnet_orders").select("slot_number,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("run_id", run.id).order("created_at"),
+      supabase.from("robot_v1_testnet_events").select("event_type,slot_number,observed_at,details").eq("run_id", run.id).order("observed_at", { ascending: false }).limit(20)
+    ]);
+    if (slots.error || orders.error || events.error) throw slots.error || orders.error || events.error;
+    testnetAssetData[asset] = { run, slots: slots.data || [], orders: orders.data || [], events: events.data || [] };
+  }));
+  const testnetRun = testnetAssetData.SOL?.run || null;
 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
@@ -100,14 +110,15 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetActionError: searchParams?.testnetError && /^COINOPS_TESTNET_[A-Z_]+$/.test(searchParams.testnetError) ? searchParams.testnetError : null,
     testnetEnabled: process.env.COINOPS_TESTNET_ENABLED === "true",
     testnetRun,
-    testnetSlots: testnetSlots.data || [],
-    testnetOrders: testnetOrders.data || [],
-    testnetEvents: testnetEvents.data || []
+    testnetSlots: testnetAssetData.SOL?.slots || [],
+    testnetOrders: testnetAssetData.SOL?.orders || [],
+    testnetEvents: testnetAssetData.SOL?.events || [],
+    testnetAssetData
   }} />;
 
   return <AutomationPageShell userLabel={user.email || "Usuário"} status={{
     shadowActive: (robotConfigsResponse.data || []).some((config) => !config.kill_switch && !config.pause_new_entries),
-    testnetOperating: testnetRun?.status === "ACTIVE" && !testnetRun.last_error,
-    testnetError: Boolean(testnetRun?.last_error || searchParams?.testnetError || (testnet && !testnet.ok))
+    testnetOperating: Object.values(testnetAssetData).some(({ run }) => run.status === "ACTIVE" && !run.last_error),
+    testnetError: Boolean(Object.values(testnetAssetData).some(({ run }) => run.last_error) || searchParams?.testnetError || (testnet && !testnet.ok))
   }}>{dashboard}</AutomationPageShell>;
 }

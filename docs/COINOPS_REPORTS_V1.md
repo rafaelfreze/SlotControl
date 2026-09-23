@@ -57,3 +57,7 @@ Para ampliar uma regra:
 5. Incluir teste que introduz a regra/estado e demonstra sua exportação e auditoria. Versionar mudança incompatível; não reinterpretar dados antigos silenciosamente.
 
 Testes da camada ficam em `apps/web/lib/coinops-reports/*.test.ts` e integram `npm test`. Smokes da central e downloads são somente leitura; nunca clicar em execução, gain manual ou cancelamento para testar relatórios.
+
+## Acompanhamento por ambiente e ativo
+
+Shadow, Testnet e Real usam a mesma composição visual de resultados na Automação: seleção BTC/SOL, KPIs, slots, gráfico diário, ganhos, eventos e reconciliação. A seleção troca somente a apresentação; não inicia nem modifica execução. Cada ativo Testnet carrega seu próprio run e ledger via cliente autenticado/RLS, sem reutilizar slots ou ordens de outro ativo. Sem run, o painel informa ausência de execução. Saldos fictícios da conta permanecem distintos do capital do robô. Real exibe consultas Production e ausência de operações CoinOps enquanto LIVE estiver bloqueado. A Visão Geral compara os três ambientes sem somar capitais ou lucros entre simulação, fundos fictícios e dinheiro real.
