@@ -17,6 +17,8 @@
 .aov-shadow .aov-state.is-active { border-color: #226f57; color: var(--av-green); background: #12352c; }
 .aov-testnet .aov-state { border-color: #655184; color: #d1b5ff; background: #271d3b; }
 .aov-state.is-warning { border-color: #7f6631; color: var(--av-gold); background: #342b19; }
+.aov-state.is-error { border-color: #85474b; color: var(--av-red); background: #382024; }
+.aov-history-note { margin: 8px 0 0; color: var(--av-muted); font-size: 11px; line-height: 1.5; }
 .aov-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 14px; margin: 0; padding: 8px 12px; border-top: 1px solid var(--av-line); border-bottom: 1px solid var(--av-line); background: rgba(22, 37, 50, .5); }
 .aov-metric { display: grid; min-width: 0; gap: 3px; }
 .aov-metric dt { color: var(--av-muted); font-size: 11px; line-height: 1.3; }

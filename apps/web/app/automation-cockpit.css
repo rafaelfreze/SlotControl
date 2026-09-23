@@ -2,8 +2,9 @@
 .cp-green { color: #3be3a0; }
 .cp-purple { color: #c6a4ff; }
 .cp-red { color: #ff929a; }
+.cp-attention { color: #f2c85a; }
 .cp-muted { color: #b4c2d1; }
-.cp-status-strip { display: flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.cp-status-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
 .cp-status-strip > span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #314557; border-radius: 6px; background: #10212e; font-size: 10px; font-weight: 750; }
 .cp-status-strip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .desktop-topbar-center { margin-inline: auto; }

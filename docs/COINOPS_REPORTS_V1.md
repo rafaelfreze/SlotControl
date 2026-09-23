@@ -1,6 +1,6 @@
-# CoinOps — relatórios auditáveis, versão 2
+# CoinOps — relatórios auditáveis, versão 3
 
-O nome histórico deste runbook é preservado. `report_version = 2` acrescenta a evidência de decisões da Strategy Engine 4.1; pacotes anteriores permanecem versão 1 e não são reinterpretados.
+O nome histórico deste runbook é preservado. `report_version = 3` acrescenta a auditoria temporal de missed e a janela exata da Strategy Engine 4.1.0. A versão 2 introduziu decisões; pacotes anteriores preservam sua versão e não são reinterpretados.
 
 Central: `/relatorios`. Legado de relatórios oficiais de ciclos: `/plano-crescimento/relatorios` (preservado, não misturado ao robô V1).
 
@@ -12,7 +12,7 @@ Downloads são respostas privadas `no-store`, sem URL pública persistente ou ar
 
 ## Pacote e formatos
 
-`coinops-report-AAAA-MM-DD_AAAA-MM-DD.zip` contém 16 CSVs numerados, `AUDITORIA_COMPLETA.json`, `manifest.json` e `RESUMO.md` (19 arquivos). Também há download individual e exportação separada de candles 1m completos.
+`coinops-report-AAAA-MM-DD_AAAA-MM-DD.zip` contém 17 CSVs numerados, `AUDITORIA_COMPLETA.json`, `manifest.json` e `RESUMO.md` (20 arquivos). Também há download individual e exportação separada de candles 1m completos.
 
 CSVs têm BOM UTF-8, separador `;`, CRLF, campos escapados entre aspas, ponto decimal e proteção contra fórmula em células textuais. No Excel brasileiro, importar como UTF-8, delimitador `;`, e usar localidade Inglês (Estados Unidos) para números. Datas ISO. Persistência UTC; datas de filtro são dias inclusivos de `America/Campo_Grande`, transformados em intervalo UTC com fim exclusivo. Janela máxima: 366 dias. Campos sem evidência são vazios/null, não zero.
 
@@ -38,7 +38,15 @@ Os checks incluem versão/paridade, decisão sem despacho/ACK, duplicação, pos
 
 Testnet registra `RECONCILIATION_STARTED`/`RECONCILIATION_FINISHED`, fonte FAST_REACTOR/WATCHDOG, intervalo esperado, duração, resultado e idade do checkpoint. O contrato atual é worker Testnet de 60 segundos e fallback de 300 segundos; Shadow permanece em 300 segundos. Detecção histórica de gaps só aplica 60 segundos a partir do primeiro evento comprovando a adoção, sem retroagir ao histórico de 5 minutos. Isso é polling serverless, não stream contínuo nem garantia de latência máxima.
 
-`MISSED_LEVEL_DIAGNOSED` acrescenta causa, timestamps e versão da correção sem modificar o missed, saldo, gain ou inventar fill. Horário do fill na exchange, coleta e primeiro cruzamento de preço são conceitos separados; primeiro cruzamento não conhecido fica null. A interface mantém a ocorrência histórica visível mesmo depois de tratar a causa e não apresenta `Motor OK` enquanto houver missed no snapshot. Os relatórios e a interface não executam recovery financeiro para gerar evidência.
+`MISSED_LEVEL_DIAGNOSED` acrescenta causa, timestamps e versão da correção sem modificar o missed, saldo, gain ou inventar fill. Horário do fill na exchange, coleta e primeiro cruzamento de preço são conceitos separados; primeiro cruzamento não conhecido fica null. Diagnósticos são vinculados à ocorrência original, não contados como novos missed. A interface pode apresentar `Motor OK — ocorrências históricas preservadas` quando a causa histórica foi comprovadamente tratada e os invariantes/checkpoint atuais estão saudáveis. Histórico não esconde latência, erro ou evidência insuficiente. Os relatórios e a interface não executam recovery financeiro para gerar evidência.
+
+### Auditoria temporal 4.1.1
+
+`16_MISSED_TEMPORAL.csv` e o dataset temporal JSON preservam `occurred_at`, sua base e limite superior (`occurred_by_at`), `first_cross_at`, `detected_at`, `created_at`, versão no fato versus versão da detecção, `strategy_effective_at`, classificação, atividade, causa, resolução e fonte. Um TP antigo inicia a janela causal, mas sozinho não prova cruzamento antigo; um fill Testnet posterior em preço inferior ao alvo comprova o limite superior. Inserção após deploy não muda a classificação do fato. Campos sem evidência permanecem null.
+
+Os checks `NO_NEW_ENGINE_MISSED_LEVELS`, `HISTORICAL_MISSED_NOT_ACTIVE` e `CURRENT_SLOT_STATE_NOT_OVERRIDDEN_BY_HISTORY` separam regressão, histórico resolvido e projeção operacional. OPEN/NEXT BUY/REENTRY WAITING/PLANNED/ACTIVE ERROR são categorias exclusivas; histórico é contador separado. `REENTRY_WAITING` de um slot legado MISSED sem ordem não significa BUY rearmada: aguarda ciclo futuro, mantendo estado bruto no detalhe.
+
+O preset **Desde Strategy 4.1.0** começa exatamente em `2026-09-23T14:32:20.558Z`, primeiro processamento com o commit 4.1, e não no início do dia nem somente no READY (`14:31:34.826Z`). A janela inclui decisões, fills pela hora da exchange, ganhos por TP, reentradas, resets, novos missed, falhas de paridade, avisos de latência e invariantes. Créditos de ledger coletados tardiamente são apresentados separadamente de ganhos produzidos no período. Inventário histórico fica como contexto; não reprova sozinho o gate atual. Fontes incompletas/causa desconhecida continuam WARNING. Nenhum check habilita LIVE. Evidências e limites: [auditoria temporal](./COINOPS_PHASE_4_1_1_TEMPORAL_AUDIT.md).
 
 A migration aditiva `20260923004502_add_report_runtime_observations.sql` cria observações de execução do motor e dos diagnósticos Testnet já existentes. Registra somente metadados permitidos, com identidade de escopo, versão e idempotência. RLS é obrigatória; usuários autenticados podem ler seu escopo, e somente o serviço pode inserir. UPDATE/DELETE não são concedidos. A coleta não altera decisões do robô nem faz consultas extras à exchange.
 

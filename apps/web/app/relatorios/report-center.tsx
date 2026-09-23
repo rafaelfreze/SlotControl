@@ -5,10 +5,12 @@ import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { DesktopWorkspace } from "@/components/app/desktop-workspace";
 import { AppHeader, MobileScreen } from "@/components/app/mobile-ui";
+import { STRATEGY_4_1_EFFECTIVE_AT } from "@/lib/coinops-reports/missed-level-temporal";
+import { REPORT_VERSION } from "@/lib/coinops-reports/filters";
 import { CANDLE_EXPORT_MAX_DAYS, partitionCandleExports } from "@/lib/coinops-reports/candle-export-parts";
 
 type Environment = "ALL" | "SHADOW" | "TESTNET" | "REAL";
-type Preset = "today" | "7d" | "30d" | "month" | "custom";
+type Preset = "today" | "7d" | "30d" | "month" | "custom" | "strategy4_1";
 type View = "overview" | "shadow" | "testnet" | "real" | "exports";
 type Filters = { start: string; end: string; preset: Preset; asset: "ALL" | "BTC" | "SOL"; environment: Environment };
 type Check = { code: string; status: "PASS" | "WARNING" | "FAIL"; explanation: string; environment?: string; asset?: string };
@@ -29,6 +31,7 @@ const descriptions: Record<string, string> = {
   "08_MERCADO_GATILHOS.csv": "Candles e evidências ao redor dos gatilhos", "09_RECONCILIACAO.csv": "Conferência do estado local e da exchange",
   "10_ALERTAS_ERROS.csv": "Erros, divergências e comportamento esperado", "11_REGRAS_CONFIGURACAO.csv": "Regras efetivas e configurações conhecidas",
   "12_CHECKS_AUDITORIA.csv": "Verificações automáticas e suas evidências", "13_TESTNET.csv": "Binance Testnet: fundos fictícios",
+  "15_ESTRATEGIA_DECISOES.csv": "Decisões, versão, despacho, ACK e latência", "16_MISSED_TEMPORAL.csv": "Histórico, fato gerador, diagnóstico e problemas atuais",
   "14_REAL.csv": "Production somente leitura e preparação LIVE", "AUDITORIA_COMPLETA.json": "Todas as relações para auditoria técnica ou IA",
   "manifest.json": "Versão, arquivos, contagens e fontes incompletas", "RESUMO.md": "Explicação simples do resultado e das limitações"
 };
@@ -86,7 +89,7 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
     if (environment) { setFilters((current) => ({ ...current, environment })); setDraft((current) => ({ ...current, environment })); }
   }
   function changePreset(preset: Preset) {
-    setDraft((current) => ({ ...current, preset, ...(preset === "custom" ? {} : { end: today, start: preset === "today" ? today : preset === "month" ? `${today.slice(0, 7)}-01` : shiftDate(today, preset === "7d" ? -6 : -29) }) }));
+    setDraft((current) => ({ ...current, preset, ...(preset === "custom" ? {} : { end: today, start: preset === "strategy4_1" ? STRATEGY_4_1_EFFECTIVE_AT.slice(0, 10) : preset === "today" ? today : preset === "month" ? `${today.slice(0, 7)}-01` : shiftDate(today, preset === "7d" ? -6 : -29) }) }));
   }
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -107,7 +110,7 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename;
       document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      setDownloads((current) => [{ name: filename, generatedAt: new Date().toISOString(), start: selected.start, end: selected.end, environment: selected.environment, asset: selected.asset, size: blob.size, reportVersion: preview?.reportVersion || 1 }, ...current].slice(0, 20));
+      setDownloads((current) => [{ name: filename, generatedAt: new Date().toISOString(), start: selected.start, end: selected.end, environment: selected.environment, asset: selected.asset, size: blob.size, reportVersion: preview?.reportVersion || REPORT_VERSION }, ...current].slice(0, 20));
     } catch (cause) { setDownloadError(cause instanceof Error ? cause.message : "Não foi possível baixar o arquivo."); }
     finally { setDownloading(null); }
   }
@@ -127,19 +130,19 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
   const content = (
     <div className="reports-center">
       <nav className="reports-tabs" aria-label="Ambientes dos relatórios">{views.map((item) => <button key={item.key} type="button" aria-current={view === item.key ? "page" : undefined} onClick={() => changeView(item.key)}>{item.label}</button>)}</nav>
-      <section className="reports-intro"><div><span className="reports-eyebrow">AUDITORIA DO ROBÔ · VERSÃO {preview?.reportVersion || 1}</span><h2>{view === "exports" ? "Um pacote. Toda a evidência." : "O que o robô fez neste período?"}</h2><p>Mercado, regras e resultados relacionados por ciclo e slot. Fundos e resultados de cada ambiente permanecem separados.</p></div>{downloadButton}</section>
+      <section className="reports-intro"><div><span className="reports-eyebrow">AUDITORIA DO ROBÔ · VERSÃO {preview?.reportVersion || REPORT_VERSION}</span><h2>{view === "exports" ? "Um pacote. Toda a evidência." : "O que o robô fez neste período?"}</h2><p>Mercado, regras e resultados relacionados por ciclo e slot. Fundos e resultados de cada ambiente permanecem separados.</p></div>{downloadButton}</section>
       <details className="reports-filter-panel" open>
         <summary>Filtros <span>{dateLabel(filters.start)} – {dateLabel(filters.end)} · {filters.asset === "ALL" ? "BTC + SOL" : filters.asset}</span></summary>
         <form className="reports-filters" onSubmit={applyFilters}>
-          <label>Período<select value={draft.preset} onChange={(event) => changePreset(event.target.value as Preset)}><option value="today">Hoje</option><option value="7d">7 dias</option><option value="30d">30 dias</option><option value="month">Mês atual</option><option value="custom">Personalizado</option></select></label>
-          <label>De<input type="date" required value={draft.start} max={draft.end || today} onChange={(event) => setDraft({ ...draft, start: event.target.value, preset: "custom" })} /></label>
-          <label>Até<input type="date" required value={draft.end} min={draft.start} max={today} onChange={(event) => setDraft({ ...draft, end: event.target.value, preset: "custom" })} /></label>
+          <label>Período<select value={draft.preset} onChange={(event) => changePreset(event.target.value as Preset)}><option value="strategy4_1">Desde Strategy 4.1.0</option><option value="today">Hoje</option><option value="7d">7 dias</option><option value="30d">30 dias</option><option value="month">Mês atual</option><option value="custom">Personalizado</option></select></label>
+          <label>De<input type="date" disabled={draft.preset === "strategy4_1"} required value={draft.start} max={draft.end || today} onChange={(event) => setDraft({ ...draft, start: event.target.value, preset: "custom" })} /></label>
+          <label>Até<input type="date" disabled={draft.preset === "strategy4_1"} required value={draft.end} min={draft.start} max={today} onChange={(event) => setDraft({ ...draft, end: event.target.value, preset: "custom" })} /></label>
           <label>Ativo<select value={draft.asset} onChange={(event) => setDraft({ ...draft, asset: event.target.value as Filters["asset"] })}><option value="ALL">BTC + SOL</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
           <label>Ambiente<select value={draft.environment} onChange={(event) => setDraft({ ...draft, environment: event.target.value as Environment })}><option value="ALL">Todos</option><option value="SHADOW">Shadow</option><option value="TESTNET">Testnet · fictício</option><option value="REAL">Real · leitura</option></select></label>
           <button type="submit" className="reports-secondary" disabled={loading}>Aplicar filtros</button>
         </form>{filterError ? <p className="reports-error" role="alert">{filterError}</p> : null}
       </details>
-      <div className="reports-context"><span>{dateLabel(filters.start)} a {dateLabel(filters.end)} · America/Campo_Grande</span><span>{loading ? "Consultando fontes persistidas…" : preview ? `Gerado em ${instant(preview.generatedAt)}` : "Sem relatório carregado"}</span></div>
+      <div className="reports-context"><span>{filters.preset === "strategy4_1" ? `Desde Strategy 4.1.0 · ${STRATEGY_4_1_EFFECTIVE_AT} (UTC, instante exato)` : `${dateLabel(filters.start)} a ${dateLabel(filters.end)} · America/Campo_Grande`}</span><span>{loading ? "Consultando fontes persistidas…" : preview ? `Gerado em ${instant(preview.generatedAt)}` : "Sem relatório carregado"}</span></div>
       {downloadError ? <p className="reports-error" role="alert">{downloadError}</p> : null}
       {error ? <div className="reports-message" role="alert"><strong>Não foi possível abrir o relatório</strong><p>{error}</p><button type="button" className="reports-secondary" onClick={() => setRefresh((current) => current + 1)}>Tentar novamente</button></div> : null}
       {loading ? <div className="reports-loading" role="status"><span className="reports-loader" />Relacionando ciclos, ordens, regras e eventos…</div> : null}
@@ -149,8 +152,12 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
         <div className="reports-kpis">
           <Kpi label="Checks conformes" value={counts.PASS} helper={`${counts.WARNING} avisos · ${counts.FAIL} divergências`} tone={counts.FAIL ? "negative" : counts.WARNING ? "warning" : "positive"} />
           <Kpi label="Ciclos / operações" value={`${integer.format(totals("cycles"))} / ${integer.format(totals("operations"))}`} helper="Nos ambientes selecionados" />
-          <Kpi label="Gains registrados" value={integer.format(totals("gains"))} helper="Resultado detalhado por ambiente" />
-          <Kpi label="Missed levels / erros" value={`${integer.format(totals("missed_levels"))} / ${integer.format(totalErrors)}`} helper="Ausência de registro não prova ausência de erro" tone={totals("missed_levels") || totalErrors ? "warning" : undefined} />
+          <Kpi label={filters.preset === "strategy4_1" ? "Gains pelo fato gerador" : "Gains registrados"} value={integer.format(totals(filters.preset === "strategy4_1" ? "since_strategy_gains_by_fill" : "gains"))} helper={filters.preset === "strategy4_1" ? `${integer.format(totals("ledger_credits_observed_since_strategy"))} créditos observados; ${integer.format(totals("since_strategy_gain_fill_unknown"))} gains sem horário exato do TP` : "Resultado detalhado por ambiente"} />
+          {filters.environment === "ALL" || filters.environment === "TESTNET" ? <>
+            <Kpi label="Missed históricos Testnet" value={integer.format(totals("historical_missed"))} helper="Preservados, separados do estado atual" />
+            <Kpi label="Missed Testnet após 4.1.0" value={integer.format(totals("missed_since_strategy"))} helper={`${integer.format(totals("unresolved_missed"))} pendente(s) de evidência temporal`} tone={totals("missed_since_strategy") || totals("unresolved_missed") ? "warning" : undefined} />
+            <Kpi label="Problemas atuais Testnet" value={integer.format(totals("active_errors"))} helper={`${integer.format(totalErrors)} erros registrados no período; não equivalem a erros ativos`} tone={totals("active_errors") ? "warning" : undefined} />
+          </> : <Kpi label="Missed / erros registrados" value={`${integer.format(totals("missed_levels"))} / ${integer.format(totalErrors)}`} helper="Registros do período; consulte os checks atuais" tone={totals("missed_levels") || totalErrors ? "warning" : undefined} />}
           <Kpi label="Evidências exportáveis" value={integer.format(totalRows)} helper={`${files.length} arquivos no pacote`} />
         </div>
         {view !== "exports" ? <div className="reports-overview-grid">
@@ -195,8 +202,16 @@ function SummaryCard({ row }: { row: Record<string, unknown> }) {
     ["Capital livre", financial("free_capital")], ["Comprometido", financial("committed_capital")], ["Lucro realizado", financial("realized_pnl")], ["P&L aberto", financial("open_pnl")],
     ["Gains / operações", `${valueLabel(row.gains, true)} / ${valueLabel(row.operations, true)}`], ["Ciclos / slots", `${valueLabel(row.cycles, true)} / ${valueLabel(row.slots ?? row.slot_count, true)}`],
     ["Ordens abertas", valueLabel(row.orders_open, true)], ["Concluídas / canceladas", `${valueLabel(row.orders_filled, true)} / ${valueLabel(row.orders_cancelled, true)}`],
-    ["Fills", valueLabel(row.fills, true)], ["Missed levels / erros", `${valueLabel(row.missed_levels, true)} / ${valueLabel(row.errors, true)}`]
+    ["Fills", valueLabel(row.fills, true)], ["Erros registrados", valueLabel(row.errors, true)],
+    ...(environment === "TESTNET" ? [
+      ["Missed históricos", valueLabel(row.historical_missed, true)], ["Missed após 4.1.0", valueLabel(row.missed_since_strategy, true)],
+      ["Missed ativos / não resolvidos", `${valueLabel(row.active_missed, true)} / ${valueLabel(row.unresolved_missed, true)}`], ["Problemas atuais", valueLabel(row.active_errors, true)],
+      ["OPEN / NEXT BUY", `${valueLabel(row.operational_open, true)} / ${valueLabel(row.operational_next_buy, true)}`],
+      ["REENTRY WAITING / PLANNED", `${valueLabel(row.operational_reentry_waiting, true)} / ${valueLabel(row.operational_planned, true)}`],
+      ["ACTIVE ERROR", valueLabel(row.operational_active_error, true)]
+    ] as Array<[string, ReactNode]> : [])
   ];
+  if (row.audit_window === "SINCE_STRATEGY_4_1") metrics.push(["Gains pelo TP / créditos observados", `${valueLabel(row.since_strategy_gains_by_fill, true)} / ${valueLabel(row.ledger_credits_observed_since_strategy, true)}`], ["Gains sem horário exato", valueLabel(row.since_strategy_gain_fill_unknown, true)]);
   return <article className="reports-summary-card" data-environment={environment}><header><div><strong>{symbol}</strong><span>{environmentLabel(environment)}</span></div><span className="reports-health">{text(row.health, "Saúde não determinada")}</span></header><div className="reports-capital"><div><span>Capital inicial</span><strong>{financial("capital_start")}</strong></div><span aria-hidden="true">→</span><div><span>Capital final</span><strong>{financial("capital_end")}</strong></div></div><dl className="reports-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><footer><span>Última execução <strong>{instant(row.last_execution)}</strong></span><span>Reconciliação <strong>{instant(row.last_reconciliation)}</strong></span></footer></article>;
 }
 function Pager({ page, total, size, onChange, label }: { page: number; total: number; size: number; onChange: (page: number) => void; label: string }) {

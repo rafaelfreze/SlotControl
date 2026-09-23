@@ -1,13 +1,14 @@
 import { buildAuditChecks } from "./audit-checks.ts";
 import { buildStrategyAuditChecks, normalizeStrategyDecisions } from "./strategy-audit.ts";
+import { buildTestnetMissedOccurrences, STRATEGY_4_1_EFFECTIVE_AT, summarizeTemporalMissed } from "./missed-level-temporal.ts";
 import { testnetClientOrderId } from "../execution/robot-v1-testnet-cycle.ts";
 import { auditExecutionGaps, auditTriggerWindows, type AuditRow, type TriggerWindow } from "./trigger-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
-export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[] };
+export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -55,6 +56,8 @@ for (const field of ["reset_after_last_tp", "old_next_buy_canceled", "new_cycle_
 for (const field of ["previousEntryPrice", "reentryPrice", "balanceBefore", "balanceAfter", "gainCountBefore", "gainCountAfter", "otherOpenPositions", "localRecycleVsGlobalReset", "physicalSlotNumber", "repairReason"]) allowedDetails.add(field);
 for (const field of ["strategy_version", "decision_id", "root_cause", "first_cross_at", "decision_created_at", "decision_dispatched_at", "exchange_ack_at", "order_resident_at", "latency_ms", "resolved_by_version", "expected_behavior", "observed_behavior", "operation_sequence", "target_price", "market_price", "filled_at", "collected_at", "source", "reconciliation_gap_ms"]) allowedDetails.add(field);
 for (const field of ["expected_interval_seconds", "fallback_interval_seconds", "age_before_ms", "started_at", "finished_at", "duration_ms", "outcome", "last_reconciled_at", "error", "app_commit_sha", "remedy"]) allowedDetails.add(field);
+for (const field of ["occurred_at", "occurred_at_basis", "occurred_by_at", "detected_at", "created_at", "strategy_effective_at", "temporal_classification", "is_active_issue", "resolved_at", "evidence_source", "fact_strategy_version", "source_event_at", "causal_evidence"]) allowedDetails.add(field);
+for (const field of ["operation_id", "original_event_id", "original_created_at", "strategy_version_at_occurrence", "detected_by_strategy_version", "external_evidence"]) allowedDetails.add(field);
 function safeDetails(value: unknown): AuditRow {
   return Object.fromEntries(Object.entries(object(value)).filter(([key]) => allowedDetails.has(key)).map(([key, field]) => [key,
     typeof field === "string" && /bearer\s|(?:secret|password|api[_ -]?key|authorization)\s*[:=]|eyJ[A-Za-z0-9_-]+\./i.test(field) ? "[REDACTED]" : field
@@ -77,6 +80,12 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   const configs = source("robot_v1_configs"), cycles = source("robot_v1_cycles"), slots = source("robot_v1_slots");
   const accounts = source("robot_v1_slot_accounts"), credits = source("robot_v1_slot_profit_credits");
   const rawOperations = source("robot_v1_slot_operations"), testnetRuns = source("robot_v1_testnet_runs"), testnetSlots = source("robot_v1_testnet_slots"), testnetOrders = source("robot_v1_testnet_orders");
+  const temporalOccurrences = testnetRuns.flatMap((run) => buildTestnetMissedOccurrences(
+    source("robot_v1_testnet_events").filter((event) => event.run_id === run.id).map((event) => ({ ...event, event_type: str(event.event_type) })),
+    { asset: assetOf(run), cycleId: str(run.id), fallbackSlots: testnetSlots.filter((slot) => slot.run_id === run.id).map((slot) => ({
+      slot_number: number(slot.slot_number), missed_at: iso(slot.missed_at), operation_sequence: number(slot.operation_sequence) || undefined, target_buy_price: number(slot.target_buy_price),
+    })) }
+  ));
   const configById = new Map(configs.map((row) => [str(row.id), row]));
   const cycleById = new Map(cycles.map((row) => [str(row.id), row]));
   const slotById = new Map(slots.map((row) => [str(row.id), row]));
@@ -104,6 +113,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       cycle_id: row.run_id, slot: row.slot_number ?? null, physical_slot_number: row.slot_number ?? null, operation_sequence: details.operationSequence ?? details.operation_sequence ?? null,
       operation_id: row.slot_number ? `testnet:${row.run_id}:${row.slot_number}:${details.operationSequence ?? details.operation_sequence ?? 1}` : null,
       event_type: row.event_type, previous_state: null, next_state: details, details, market_price: details.marketPrice ?? null, trigger_price: details.price ?? details.targetPrice ?? null,
+      occurred_at: row.event_type === "TESTNET_FILL_OBSERVED" ? iso(details.filledAt) : null,
+      occurred_at_basis: row.event_type === "TESTNET_FILL_OBSERVED" && details.filledAt ? "EXCHANGE_FILL_TIME" : null,
+      context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.event_type === "TESTNET_FILL_OBSERVED" && Boolean(details.filledAt) && timestamp(details.filledAt) < timestamp(filters.start),
       reset_after_last_tp: details.reset_after_last_tp ?? null, old_next_buy_canceled: details.old_next_buy_canceled ?? null,
       new_cycle_started: details.new_cycle_started ?? null, initial_reentry_filled: details.initial_reentry_filled ?? null,
       new_tp_created: details.new_tp_created ?? null, next_buy_armed: details.next_buy_armed ?? null,
@@ -120,6 +132,16 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       idempotency_key: row.event_key, source: "robot_v1_testnet_events", severity: /ERROR|FAILED/.test(str(row.event_type)) ? "ERROR" : /MISSED|DISCONNECTED/.test(str(row.event_type)) ? "WARNING" : "INFO" });
   }
   allEvents.sort(byTime);
+  for (const event of allEvents.filter((row) => row.environment === "TESTNET" && /MISSED_LEVEL/.test(str(row.event_type)))) {
+    const candidates = temporalOccurrences.filter((occurrence) => occurrence.cycle_id === event.cycle_id && occurrence.slot === event.slot);
+    const occurrence = event.operation_sequence != null ? candidates.find((row) => row.operation_sequence === event.operation_sequence) ?? (candidates.length === 1 ? candidates[0] : undefined) : candidates.length === 1 ? candidates[0] : undefined;
+    if (occurrence) Object.assign(event, {
+      occurred_at: occurrence.occurred_at, occurred_at_basis: occurrence.occurred_at_basis, occurred_by_at: occurrence.occurred_by_at,
+      detected_at: occurrence.detected_at, created_at: occurrence.created_at, strategy_effective_at: occurrence.strategy_effective_at,
+      temporal_classification: occurrence.temporal_classification, is_active_issue: occurrence.is_active_issue, fact_strategy_version: occurrence.strategy_version,
+      root_cause: occurrence.root_cause, resolved_at: occurrence.resolved_at, resolved_by_version: occurrence.resolved_by_version, evidence_source: occurrence.evidence_source,
+    });
+  }
   const observations = source("report_runtime_observations");
   for (const observation of observations) {
     const metrics = object(observation.metrics);
@@ -156,7 +178,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       cumulative_quote: num(row.cumulative_quote), fee_base: num(row.fee_base), fee_quote: num(row.fee_quote), fee_other: Array.isArray(row.fee_other) ? row.fee_other.map((fee) => ({ asset: object(fee).asset, amount: object(fee).amount })) : [],
       created_at: iso(row.created_at), first_fill_at: object(firstFill?.details).filledAt ?? firstFill?.timestamp ?? null, filled_at: filled ? object(fillEvidence.at(-1)?.details).filledAt ?? filled.timestamp : null, canceled_at: canceled?.timestamp ?? null,
       replaced_by: object(replaced?.details).replacementClientOrderId ?? null, reason: row.purpose, reconciliation_status: row.trades_reconciled ? "TRADES_RECONCILED" : "PENDING_OR_NO_FILL", snapshot_at: input.generatedAt, updated_at: iso(row.updated_at),
-      timestamp_basis: "Eventos são observações locais; horário exato de cada fill não foi persistido.", source: "robot_v1_testnet_orders" };
+      fill_time_basis: fillEvidence.at(-1) && object(fillEvidence.at(-1)?.details).filledAt ? "EXCHANGE_FILL_TIME" : "LOCAL_STATUS_OBSERVATION",
+      timestamp_basis: "filledAt da exchange quando persistido; fallback histórico para observação local identificado por fill_time_basis.", source: "robot_v1_testnet_orders" };
   });
   for (const slot of testnetSlots) {
     const run = runById.get(str(slot.run_id)) ?? {}, slotOrders = normalizedOrders.filter((order) => order.slot_id === slot.id);
@@ -167,10 +190,11 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       const closed = allEvents.find((event) => event.environment === "TESTNET" && event.cycle_id === slot.run_id && event.slot === slot.slot_number && event.event_type === "SLOT_CLOSED" && (number(object(event.details).operationSequence) || 1) === sequence);
       if (!buys.some((order) => number(order.executed_quantity) > 0)) continue;
       const quantity = sum(buys, "executed_quantity"), entryCost = sum(buys, "cumulative_quote"), fees = sum(orders, "fee_quote");
+      const exchangeClosedAt = closed ? sells.filter((order) => order.status === "FILLED" && order.fill_time_basis === "EXCHANGE_FILL_TIME" && order.filled_at).map((order) => str(order.filled_at)).sort().at(-1) ?? null : null;
       allOperations.push({ environment: "TESTNET", asset: assetOf(run), symbol: run.symbol, operation_id: `testnet:${slot.run_id}:${slot.slot_number}:${sequence}`, cycle_id: slot.run_id, slot_id: slot.id, slot: slot.slot_number, physical_slot_number: slot.slot_number,
         logical_level: slot.slot_number, operation_sequence: sequence, sequence, side: "BUY→TP", entry_price: quantity ? entryCost / quantity : null, quantity, allocation: buys[0]?.requested_quote ?? num(slot.balance_usdc),
         take_profit_price: sells.at(-1)?.requested_price ?? null, gain_target_percent: num(run.gain_rate) === null ? null : number(run.gain_rate) * 100, opened_at: buys.find((order) => order.first_fill_at)?.first_fill_at ?? null,
-        closed_at: closed?.timestamp ?? null, gross_profit: closed ? sum(sells, "cumulative_quote") - entryCost : null, fees: closed ? fees : null,
+        closed_at: closed?.timestamp ?? null, exchange_closed_at: exchangeClosedAt, closed_at_basis: "SLOT_CLOSED_LEDGER_OBSERVATION", gross_profit: closed ? sum(sells, "cumulative_quote") - entryCost : null, fees: closed ? fees : null,
         net_profit: closed ? num(object(closed.details).profitUsdc) : null, result: closed ? number(object(closed.details).profitUsdc) > 0 ? "GAIN" : "LOSS_OR_FLAT" : "OPEN",
         trigger_source: "BINANCE_TESTNET_FILLS", buy_client_order_id: buys.map((order) => order.client_order_id), sell_client_order_id: sells.map((order) => order.client_order_id), source: "robot_v1_testnet_orders+SLOT_CLOSED" });
     }
@@ -208,7 +232,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const credit = allCapital.find((row) => row.source_operation === operation.operation_id);
     allGains.push({ environment: operation.environment, asset: operation.asset, symbol: operation.symbol, cycle_id: operation.cycle_id, operation_id: operation.operation_id, physical_slot: operation.physical_slot_number,
       operation_sequence: operation.operation_sequence, entry_price: operation.entry_price, tp_price: operation.take_profit_price, target_percent: operation.gain_target_percent, gross_gain: operation.gross_profit, fees: operation.fees, net_gain: operation.net_profit,
-      balance_before: credit?.balance_before ?? null, balance_after: credit?.balance_after ?? null, opened_at: operation.opened_at, gain_at: operation.closed_at, duration_ms: duration(operation.opened_at, operation.closed_at),
+      balance_before: credit?.balance_before ?? null, balance_after: credit?.balance_after ?? null, opened_at: operation.opened_at, gain_at: operation.closed_at, exchange_gain_at: operation.exchange_closed_at ?? null, gain_time_basis: operation.environment === "TESTNET" ? "SLOT_CLOSED_LEDGER_OBSERVATION; exchange_gain_at is separate" : "SHADOW_OPERATION_CLOSED_AT", duration_ms: duration(operation.opened_at, operation.closed_at),
       cumulative_slot_gains: cumulativeSlot.get(slotKey), cumulative_asset_gains: cumulativeAsset.get(assetKey), source: operation.source });
   }
   const normalizedCycles: AuditRow[] = cycles.map((row) => {
@@ -254,7 +278,14 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   for (const slot of testnetSlots) {
     const run = runById.get(str(slot.run_id)) ?? {}, orders = normalizedOrders.filter((order) => order.slot_id === slot.id), operation = allOperations.find((row) => row.slot_id === slot.id && row.environment === "TESTNET");
     const buy = orders.filter((row) => row.side === "BUY").at(-1), sell = orders.filter((row) => row.side === "SELL").at(-1);
+    const occurrences = temporalOccurrences.filter((row) => row.cycle_id === slot.run_id && row.slot === slot.slot_number);
+    const temporal = summarizeTemporalMissed(occurrences);
+    const operationalState = slot.entry_state === "OPEN" ? "OPEN" : slot.entry_state === "ARMED" ? "NEXT_BUY"
+      : slot.entry_state === "MISSED" && temporal.activeIssueCount > 0 ? "ACTIVE_ERROR"
+      : slot.entry_state === "MISSED" || slot.entry_state === "CLOSED" || slot.entry_state === "PLANNED" && slot.entry_origin === "REENTRY" ? "REENTRY_WAITING" : "PLANNED";
     normalizedSlots.push({ environment: "TESTNET", asset: assetOf(run), symbol: run.symbol, cycle_id: slot.run_id, slot_id: slot.id, physical_slot_number: slot.slot_number, logical_level: slot.slot_number,
+      persisted_entry_state: slot.entry_state, operational_state: operationalState, historical_missed_count: temporal.historicalCount, missed_since_strategy_count: temporal.currentVersionCount,
+      active_missed_count: temporal.activeIssueCount, unresolved_missed_count: temporal.unresolvedCount, history_does_not_override_current_state: true,
       strategy_version: run.strategy_version ?? null, operation_sequence: slot.operation_sequence ?? 1, entry_state: slot.entry_state, entry_origin: slot.entry_origin ?? "GRID", entry_reference_price: num(slot.entry_reference_price), last_take_profit_price: num(slot.last_take_profit_price), status: slot.entry_state, gain_count_test: slot.gain_count, gain_count_cycle: slot.gain_count, initial_balance: num(run.slot_notional_usdc), current_balance: num(slot.balance_usdc),
       accumulated_profit: num(slot.net_profit_usdc), allocation: num(run.slot_notional_usdc), buy_price: num(slot.target_buy_price), current_price_snapshot: null, take_profit_price: sell?.requested_price ?? null, buy_status: buy?.status ?? "PLANNED", tp_status: sell?.status ?? "NONE",
       quantity: operation?.quantity ?? null, notional: operation?.allocation ?? null, open_pnl: null, realized_pnl: num(slot.net_profit_usdc), opened_at: operation?.opened_at ?? null, closed_at: operation?.closed_at ?? null, recycled_at: null,
@@ -360,7 +391,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   const alerts: AuditRow[] = allEvents.filter((row) => row.severity !== "INFO").map((event) => ({
     timestamp: event.timestamp, environment: event.environment, severity: event.severity, asset: event.asset, symbol: event.symbol, cycle_id: event.cycle_id, slot: event.slot,
     code: event.event_type, message: object(event.details).reason ?? event.event_type, expected_behavior: null, observed_behavior: event.details,
-    resolved: null, resolved_at: null, resolution: null, related_event: event.event_id, related_order: object(event.details).clientOrderId ?? null, related_operation: event.operation_id, source: event.source }));
+    occurred_at: event.occurred_at ?? null, detected_at: event.detected_at ?? null, strategy_effective_at: event.strategy_effective_at ?? null,
+    temporal_classification: event.temporal_classification ?? null, is_active_issue: event.is_active_issue ?? null,
+    root_cause: event.root_cause ?? null, evidence_source: event.evidence_source ?? null, resolved_by_version: event.resolved_by_version ?? null,
+    resolved: event.is_active_issue === false && event.resolved_by_version ? true : null, resolved_at: event.resolved_at ?? null, resolution: null, related_event: event.event_id, related_order: object(event.details).clientOrderId ?? null, related_operation: event.operation_id, source: event.source }));
   for (const cycle of cycles.filter((row) => row.status === "FAILED")) alerts.push({ timestamp: iso(cycle.completed_at ?? cycle.started_at), environment: "SHADOW", asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.id, severity: "ERROR", code: cycle.completion_reason || "CYCLE_INITIALIZATION_FAILED", message: cycle.completion_reason || "Ciclo histórico falhou; motivo não persistido.", expected_behavior: "Inicializar a grade e preservar o motivo de qualquer falha.", observed_behavior: "FAILED", resolved: null, source: "robot_v1_cycles" });
   for (const row of triggerResults.filter((result) => ["MISSING_ACTION", "AMBIGUOUS"].includes(str(result.result)))) alerts.push({
     timestamp: row.first_cross_at, environment: row.environment, asset: row.asset, symbol: row.symbol, cycle_id: row.cycle_id, slot: row.slot,
@@ -472,7 +506,14 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const openAtEnd = allOperations.filter((row) => row.environment === environment && row.asset === asset && timestamp(row.opened_at) < timestamp(observationEnd) && (!row.closed_at || timestamp(row.closed_at) >= timestamp(observationEnd)) && (!row.context_ended_at || timestamp(row.context_ended_at) >= timestamp(observationEnd)));
     const ownCycles = relevantCycles.filter((row) => row.environment === environment && row.asset === asset), ownOrders = periodOrders.filter((row) => row.environment === environment && row.asset === asset);
     const ownEvents = allEvents.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.timestamp, filters));
+    const exchangeFills = allEvents.filter((row) => row.environment === environment && row.asset === asset && row.event_type === "TESTNET_FILL_OBSERVED");
+    const fillsInWindow = exchangeFills.filter((row) => inPeriod(object(row.details).filledAt, filters));
+    const sinceStrategy = (value: unknown) => timestamp(value) >= timestamp(STRATEGY_4_1_EFFECTIVE_AT) && timestamp(value) < timestamp(observationEnd);
+    const assetGains = allGains.filter((row) => row.environment === environment && row.asset === asset);
     const ownAlerts = alerts.filter((row) => row.environment === environment && (!row.asset || row.asset === asset) && inPeriod(row.timestamp, filters));
+    const ownMissed = environment === "TESTNET" ? temporalOccurrences.filter((row) => row.asset === asset && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd))) : [];
+    const temporal = summarizeTemporalMissed(ownMissed);
+    const activeAlerts = ownAlerts.filter((row) => row.is_active_issue !== false && (row.is_active_issue === true || timestamp(row.timestamp) >= timestamp(STRATEGY_4_1_EFFECTIVE_AT)));
     const config = configs.find((row) => row.asset === asset && (!row.shadow_test_started_at && !row.created_at || timestamp(row.shadow_test_started_at ?? row.created_at) < timestamp(observationEnd)));
     const periodRuns = [...testnetRuns].filter((row) => row.asset === asset && timestamp(row.created_at) < timestamp(observationEnd)).sort((a, b) => timestamp(a.created_at) - timestamp(b.created_at));
     const firstRun = periodRuns[0], run = periodRuns.at(-1);
@@ -498,6 +539,14 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const lastExecution = environment === "SHADOW" ? persistedEngineExecution ?? (timestamp(checkpoint) <= timestamp(observationEnd) ? checkpoint : null) : environment === "TESTNET" ? persistedTestnetExecution ?? (timestamp(checkpoint) <= timestamp(observationEnd) ? checkpoint : null) : checkpoint;
     const errors = ownAlerts.filter((row) => row.severity === "ERROR").length;
     const hasEvidence = environment === "REAL" ? Boolean(latestRealRun || realRows.length) : environment === "TESTNET" ? Boolean(run) : Boolean(config);
+    const missedInWindow = ownMissed.filter((row) => filters.temporalWindow === "SINCE_STRATEGY_4_1" ? row.temporal_classification !== "HISTORICAL_PRE_4_1"
+      : inPeriod(row.occurred_at ?? row.occurred_by_at ?? row.detected_at, filters));
+    const currentTestnetSlots = normalizedSlots.filter((row) => row.environment === "TESTNET" && row.asset === asset && ownCycles.some((cycle) => cycle.cycle_id === row.cycle_id && cycle.status === "ACTIVE"));
+    const activeErrors = temporal.activeIssueCount + (environment === "TESTNET" && run?.last_error ? 1 : 0);
+    const engineStale = environment === "TESTNET" && run?.status === "ACTIVE" && (!lastExecution || timestamp(observationEnd) - timestamp(lastExecution) > 120_000);
+    const currentHealth = !hasEvidence ? "SEM_EVIDENCIA" : temporal.regressionCount || environment === "TESTNET" && run?.last_error ? "DIVERGÊNCIA ATIVA"
+      : temporal.unresolvedCount || temporal.externalCount || engineStale || activeAlerts.length || !currentEnough || missing("robot_v1_testnet_events") || missing("robot_v1_testnet_slots") || missing("robot_v1_testnet_orders") ? "ATENÇÃO"
+      : temporal.historicalCount ? "Motor OK — ocorrências históricas preservadas" : "Motor OK";
     summary.push({ period_start: filters.start, period_end: filters.end, observed_until: observationEnd, environment, asset, symbol: environment === "REAL" ? asset === "SOL" ? "SOLBRL" : "BTCUSDT" : `${asset}USDC`, quote_asset: environment === "REAL" ? null : "USDC", mode: environment === "REAL" ? "READ_ONLY / LIVE BLOCKED" : environment,
       capital_start: capitalStart, capital_end: capitalEnd, free_capital: capitalEnd === null || committed === null ? null : capitalEnd - committed, committed_capital: committed,
       capital_basis: environment === "REAL" ? "NOT_COINOPS_OPERATING_CAPITAL" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_IMMUTABLE_CREDITS; committed=executed position cost + reserved NEXT BUY; unknown historical reserve remains null", realized_pnl: sum(completed, "net_profit"), open_pnl: openPnl,
@@ -506,9 +555,28 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       buys: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "BUY" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => ["BUY_TRIGGERED", "INITIAL_POSITION_OPENED"].includes(str(row.event_type))).length,
       take_profits: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "SELL" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => row.event_type === "TP_TRIGGERED").length,
       orders_open: ownOrders.filter((row) => activeOrder(row.status_at_period_end)).length, orders_filled: ownOrders.filter((row) => row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length, orders_cancelled: ownOrders.filter((row) => ["CANCELED", "CANCELLED"].includes(str(row.status_at_period_end)) && inPeriod(row.canceled_at, filters)).length,
-      fills: ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? ownEvents.filter((row) => row.event_type === "TESTNET_FILL_OBSERVED").length : ownEvents.filter((row) => /_(PARTIALLY_FILLED|FILLED)$/.test(str(row.event_type))).length, fill_count_basis: ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? "PERSISTED_EXCHANGE_TRADE_EVENTS; coverage begins with Phase 3.9" : "OBSERVED_ORDER_STATUS_TRANSITIONS; individual legacy trade fills not persisted",
-      missed_levels: ownEvents.filter((row) => /MISSED_LEVEL/.test(str(row.event_type))).length, errors, last_price: market, last_event: ownEvents.at(-1)?.timestamp ?? null,
-      last_reconciliation: ownRecon.at(-1)?.timestamp ?? (environment === "SHADOW" ? null : iso(lastExecution)), last_execution: iso(lastExecution), health: !hasEvidence ? "SEM_EVIDENCIA" : errors ? "ERRO_REGISTRADO" : ownAlerts.length ? "REVISAR_ALERTAS" : "SEM_ERRO_REGISTRADO", health_basis: "EVIDENCIA_DISPONIVEL; ver checks e fontes incompletas", snapshot_at: input.generatedAt });
+      fills: filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? exchangeFills.length ? fillsInWindow.length : null : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? ownEvents.filter((row) => row.event_type === "TESTNET_FILL_OBSERVED").length : ownEvents.filter((row) => /_(PARTIALLY_FILLED|FILLED)$/.test(str(row.event_type))).length,
+      fill_count_basis: filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? "EXCHANGE_FILLED_AT; collection timestamp remains separate; missing exact evidence is null" : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? "PERSISTED_EXCHANGE_TRADE_OBSERVATIONS" : "OBSERVED_ORDER_STATUS_TRANSITIONS; exact legacy fills unavailable",
+      fills_without_exchange_time: exchangeFills.filter((row) => !object(row.details).filledAt && inPeriod(row.timestamp, filters)).length,
+      since_strategy_gains_by_fill: environment === "TESTNET" ? assetGains.filter((row) => sinceStrategy(row.exchange_gain_at)).length : environment === "SHADOW" ? assetGains.filter((row) => sinceStrategy(row.gain_at)).length : null,
+      since_strategy_gain_fill_unknown: environment === "TESTNET" ? assetGains.filter((row) => !row.exchange_gain_at && sinceStrategy(row.gain_at)).length : 0,
+      ledger_credits_observed_since_strategy: history.filter((row) => sinceStrategy(row.credited_at)).length,
+      gain_window_basis: "gains=existing ledger recognition; since_strategy_gains_by_fill=proven exchange TP time (Shadow closed_at); late credits do not become new strategy gains",
+      missed_levels: environment === "TESTNET" ? missedInWindow.length : ownEvents.filter((row) => /MISSED_LEVEL/.test(str(row.event_type))).length,
+      historical_missed: temporal.historicalCount, missed_since_strategy: temporal.currentVersionCount, active_missed: temporal.activeIssueCount, unresolved_missed: temporal.unresolvedCount,
+      active_errors: activeErrors, errors, last_price: market, last_event: ownEvents.at(-1)?.timestamp ?? null,
+      operational_open: currentTestnetSlots.filter((row) => row.operational_state === "OPEN").length,
+      operational_next_buy: currentTestnetSlots.filter((row) => row.operational_state === "NEXT_BUY").length,
+      operational_reentry_waiting: currentTestnetSlots.filter((row) => row.operational_state === "REENTRY_WAITING").length,
+      operational_planned: currentTestnetSlots.filter((row) => row.operational_state === "PLANNED").length,
+      operational_active_error: currentTestnetSlots.filter((row) => row.operational_state === "ACTIVE_ERROR").length,
+      strategy_effective_at: STRATEGY_4_1_EFFECTIVE_AT, audit_window: filters.temporalWindow ?? "CUSTOM_PERIOD",
+      local_reentries: ownEvents.filter((row) => row.event_type === "SLOT_REENTRY_PLANNED").length,
+      global_resets: ownEvents.filter((row) => ["CYCLE_RESTARTED", "NEW_CYCLE_STARTED"].includes(str(row.event_type))).length,
+      latency_warnings: activeAlerts.filter((row) => ["EXECUTION_GAP", "ENGINE_STALE", "DATA_GAP"].includes(str(row.code))).length,
+      last_reconciliation: ownRecon.at(-1)?.timestamp ?? (environment === "SHADOW" ? null : iso(lastExecution)), last_execution: iso(lastExecution),
+      health: environment === "TESTNET" ? currentHealth : !hasEvidence ? "SEM_EVIDENCIA" : errors ? "ERRO_REGISTRADO" : ownAlerts.length ? "REVISAR_ALERTAS" : "SEM_ERRO_REGISTRADO",
+      health_basis: "CURRENT_ISSUES_SEPARATE_FROM_HISTORICAL_OCCURRENCES; ver checks e fontes incompletas", snapshot_at: input.generatedAt });
   }
   const datasets: AuditDatasets = {
     summary, cycles: relevantCycles, slots: normalizedSlots.filter((row) => selected(row, filters) && cycleIds.has(row.cycle_id)), operations: periodOperations,
@@ -517,9 +585,24 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     reconciliation: reconciliation.filter((row) => selected(row, filters) && inPeriod(row.timestamp, filters)), alerts: alerts.filter((row) => selected(row, filters) && inPeriod(row.timestamp, filters)),
     rules: rules.filter((row) => selected(row, filters)), checks: [], testnet: testnetRows.filter((row) => filters.environments.includes("TESTNET") && (!assetOf(row) || filters.assets.includes(assetOf(row) as ReportAsset) || ["USDC", "USDT", "BRL"].includes(str(row.asset))) && (row.cycle_id ? cycleIds.has(row.cycle_id) : inPeriod(row.timestamp, filters))), real: realRows.filter((row) => filters.environments.includes("REAL") && (!assetOf(row) || filters.assets.includes(assetOf(row) as ReportAsset) || ["USDC", "USDT", "BRL"].includes(str(row.asset))))
     , decisions: normalizeStrategyDecisions(source("robot_v1_strategy_decisions")).filter((row) => selected(row, filters) && overlap(row.created_at, row.completed_at, filters))
+    , missed_temporal: temporalOccurrences.map((row) => ({ ...row, environment: "TESTNET", symbol: `${row.asset}USDC`,
+      context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.temporal_classification === "HISTORICAL_PRE_4_1", source: "robot_v1_testnet_events+current_slot_fallback" }))
+      .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd)))
   };
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
-  datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters }));
+  datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters, contextOrders: normalizedOrders, contextEvents: allEvents }));
+  const currentInvariantCodes = new Set(["SLOT_COUNT_25", "SINGLE_ACTIVE_ENTRY", "TP_HAS_POSITION", "TP_NOT_DUPLICATED", "OPEN_POSITION_HAS_RESIDENT_TP", "PRIORITY_REENTRY_MUST_BE_ARMED_BEFORE_LOWER_LEVEL", "CURRENT_SLOT_STATE_NOT_OVERRIDDEN_BY_HISTORY"]);
+  for (const row of summary) {
+    const scopeChecks = datasets.checks.filter((check) => check.environment === row.environment && (!check.asset || check.asset === row.asset));
+    const currentFailures = scopeChecks.filter((check) => currentInvariantCodes.has(str(check.code)) && check.status === "FAIL");
+    row.invariant_failures = currentFailures.length;
+    row.parity_failures = scopeChecks.filter((check) => str(check.code).startsWith("STRATEGY_") && check.status === "FAIL").length;
+    row.decisions = datasets.decisions.filter((decision) => decision.environment === row.environment && decision.asset === row.asset).length;
+    if (row.environment === "TESTNET" && currentFailures.length) {
+      row.health = "DIVERGÊNCIA ATIVA";
+      row.active_errors = number(row.active_errors) + currentFailures.length;
+    } else if (row.environment === "TESTNET" && str(row.health).startsWith("Motor OK") && scopeChecks.some((check) => currentInvariantCodes.has(str(check.code)) && check.status === "WARNING")) row.health = "ATENÇÃO";
+  }
   for (const check of datasets.checks.filter((row) => row.status !== "PASS")) warnings.push(`${check.code}: ${check.explanation}`);
   for (const key of REPORT_DATASET_KEYS) datasets[key].sort(byTime);
   return { datasets, warnings: [...new Set(warnings)].sort(), incompleteSources: [...new Set(incompleteSources)].sort() };

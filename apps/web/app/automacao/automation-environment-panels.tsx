@@ -1,7 +1,7 @@
 "use client";
 
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
-import { summarizeTestnetResults } from "@/lib/slotgain/testnet-results";
+import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "@/lib/slotgain/testnet-results";
 import { CandleChart, Sparkline, type Props } from "./automation-mobile";
 
 const amount = (value: number | string | null | undefined, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toLocaleString("pt-BR", { maximumFractionDigits: digits });
@@ -36,14 +36,11 @@ export function RealEvents({ data, asset }: { data: Props; asset: "BTC" | "SOL" 
 
 export function EnvironmentConnectionStrip({ data, environment, asset }: { data: Props; environment: "TESTNET" | "REAL"; asset: "BTC" | "SOL" }) {
   const probe = data.testnet?.ok ? data.testnet.probes.find((item) => item.symbol === (data.testnetRun?.symbol || `${asset}USDC`)) : null;
-  const result = summarizeTestnetResults(data.testnetSlots, data.testnetOrders, probe?.available ? probe.market.price : null, data.testnetRun?.slot_notional_usdc == null ? null : Number(data.testnetRun.slot_notional_usdc));
+  const result = summarizeTestnetResults(data.testnetSlots, data.testnetOrders, probe?.available ? probe.market.price : null, data.testnetRun?.slot_notional_usdc == null ? null : Number(data.testnetRun.slot_notional_usdc), { asset, cycleId: data.testnetRun?.id, events: data.testnetEvents });
   if (environment === "REAL") return <section className="av2-connection-panel"><div><strong>Binance Production · READ-ONLY</strong><small>{data.connectionStatus === "READ_ONLY" || data.connectionStatus === "CONNECTED" ? "Conectada" : "Conexão a verificar"} · consultas GET, sem envio ou cancelamento de ordens.</small></div><div><strong>{data.reconciliationStatus === "COMPLETED" ? "Reconciliação concluída" : "Reconciliação em acompanhamento"}</strong><small>{when(data.reconciliationAt || data.lastSyncedAt)} · {data.mismatches} itens para revisão.</small></div><div><strong>LIVE bloqueado · resultado Real 0 BRL</strong><small>0 gains · 0 operações CoinOps reais. Nenhum capital alocado ao robô.</small></div></section>;
   const hasLedger = Boolean(data.testnetRun && result.rows.length);
-  const error = data.testnetActionError || data.testnetRun?.last_error || (data.testnet && !data.testnet.ok ? data.testnet.error : null);
+  const error = testnetDiagnosticIssue(data.testnet, data.testnetActionError);
   const historyProfit = (data.testnetHistory || []).reduce((total, bundle) => total + summarizeTestnetResults(bundle.slots, bundle.orders, null, Number(bundle.run.slot_notional_usdc || 0)).realizedProfit, 0);
-  const activeTp = data.testnetOrders.filter((order) => order.side === "SELL" && ["PREPARED", "NEW", "PARTIALLY_FILLED"].includes(order.status)).length;
-  const operating = result.openSlots > 0 && result.armedSlots === 1 && activeTp > 0;
-  const restarting = Boolean(data.testnetRun?.previous_run_id && !data.testnetRun.reset_completed_at) || data.testnetRun?.status === "ACTIVE" && result.openSlots === 0;
-  const humanState = result.missedLevels ? "TESTNET · divergência em nível perdido" : error ? "TESTNET · atenção" : restarting ? "REINICIANDO CICLO · fundos fictícios" : operating ? "TESTNET OPERANDO · fundos fictícios" : data.testnet?.ok ? "TESTNET CONECTADO · fundos fictícios" : "Testnet · verificação pendente";
-  return <section className="av2-connection-panel"><div><strong>{humanState}</strong><small>{error || "Ordens exclusivas da Binance Spot Testnet. Production permanece READ-ONLY."}</small></div><div><strong>Reconciliação Testnet</strong><small>{when(data.testnetRun?.last_reconciled_at)} · {result.missedLevels} missed levels · LIVE bloqueado.</small></div><div><strong>Resultado Testnet total</strong><small>{hasLedger ? `Realizado ${signed(result.realizedProfit + historyProfit)} + P&L aberto ${signed(result.openPnl)} USDC · capital comprometido ${amount(result.committedCapital, 4)} / livre ${amount(result.freeCapital, 4)} USDC` : "Ledger indisponível para totalização."}</small></div></section>;
+  const health = testnetPresentationHealth(result, data.testnetRun, Date.now(), error);
+  return <section className="av2-connection-panel"><div><strong className={health.tone === "ok" ? "av2-positive" : health.tone === "error" ? "av2-negative" : "av2-warning"}>{health.label}</strong><small>{health.reason}</small></div><div><strong>Reconciliação Testnet</strong><small>{when(data.testnetRun?.last_reconciled_at)} · {result.temporalSummary.historicalCount} históricos · {result.temporalSummary.currentVersionCount} missed desde versão atual · {result.temporalSummary.activeIssueCount} ocorrências ativas.</small></div><div><strong>Resultado Testnet total</strong><small>{hasLedger ? `Realizado ${signed(result.realizedProfit + historyProfit)} + P&L aberto ${signed(result.openPnl)} USDC · capital comprometido ${amount(result.committedCapital, 4)} / livre ${amount(result.freeCapital, 4)} USDC` : "Ledger indisponível para totalização."}</small></div></section>;
 }

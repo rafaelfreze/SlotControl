@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
 import { selectTestnetAssetData } from "@/lib/slotgain/testnet-asset-view";
+import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "@/lib/slotgain/testnet-results";
 
 import { AutomationMobile, CandleChart, type Props } from "./automation-mobile";
 import { RealResults, TestnetResults } from "./automation-results";
@@ -57,17 +58,10 @@ function testnetEventLabel(type: string, slot: number | null) {
 }
 
 function testnetHumanState(data: Props) {
-  const error = data.testnetActionError || data.testnetRun?.last_error || (data.testnet && !data.testnet.ok ? data.testnet.error : null);
-  if (error) return "ERRO";
-  if (data.testnetRun?.status === "PAUSED") return "PAUSADO";
-  if (data.testnetRun?.reset_started_at && !data.testnetRun.reset_completed_at) return "REINICIANDO CICLO";
-  const initial = data.testnetOrders.find((order) => order.purpose === "INITIAL");
-  if (initial && openStatuses.has(initial.status)) return "AGUARDANDO FILL";
-  const open = data.testnetSlots.filter((slot) => slot.entry_state === "OPEN").length;
-  const tps = data.testnetOrders.filter((order) => order.purpose === "TP" && openStatuses.has(order.status)).length;
-  const next = data.testnetOrders.filter((order) => order.purpose === "ENTRY" && order.side === "BUY" && openStatuses.has(order.status)).length;
-  if (open === 1 && tps === 1 && next === 1) return "OPERANDO";
-  return data.testnetRun?.status === "ACTIVE" ? "RECONCILIANDO" : data.testnet?.ok ? "CONECTADO" : "AGUARDANDO VERIFICAÇÃO";
+  const result = summarizeTestnetResults(data.testnetSlots, data.testnetOrders, null, null,
+    { asset: data.testnetRun?.symbol.replace("USDC", ""), cycleId: data.testnetRun?.id, events: data.testnetEvents });
+  return testnetPresentationHealth(result, data.testnetRun, Date.now(),
+    testnetDiagnosticIssue(data.testnet, data.testnetActionError)).label;
 }
 
 function TestnetHero({ data }: { data: Props }) {
@@ -106,12 +100,12 @@ function ExecutionPanel({ data, asset = "SOL" }: { data: Props; asset?: "BTC" | 
   const filledTp = orders.filter((order) => order.purpose === "TP" && order.status === "FILLED").at(-1);
   const shownTp = residentTp || filledTp;
   const armedBuy = orders.find((order) => order.side === "BUY" && order.purpose === "ENTRY" && openStatuses.has(order.status));
-  const planned = data.testnetSlots.filter((slot) => slot.entry_state === "PLANNED").length;
+  const summary = summarizeTestnetResults(data.testnetSlots, data.testnetOrders, null, null, { asset, cycleId: data.testnetRun?.id, events: data.testnetEvents });
   return <section className="ac-panel ac-execution"><div className="ac-panel-heading"><div><span className="ac-kicker">SINGLE ACTIVE ENTRY</span><h2>Execução atual — {data.testnetRun?.symbol || `${asset}/USDC`}</h2></div><span className="ac-badge ac-badge--purple">{data.testnetRun?.status === "ACTIVE" ? "CICLO ATIVO" : data.testnetRun?.status || "SEM CICLO"}</span></div><div className="ac-execution-rows">
     <ExecutionStep number="1" label={firstBuy ? `BUY · Slot #${firstBuy.slot_number}` : "BUY inicial"} state={firstBuy ? "Preenchida" : "Aguardando"} detail={firstBuy ? `${format(orderQuantity(firstBuy), 6)} ${asset} @ ${format(orderPrice(firstBuy), 2)} USDC` : "Nenhum fill registrado"} at={firstBuy?.updated_at} tone="green" />
     <ExecutionStep number="2" label={shownTp ? `TAKE PROFIT · Slot #${shownTp.slot_number}` : "Take profit"} state={residentTp ? "Residente" : filledTp ? "Concluído" : "Aguardando"} detail={shownTp ? `${format(orderQuantity(shownTp), 6)} ${asset} @ ${format(orderPrice(shownTp), 2)} USDC` : "Sem TP registrado"} at={shownTp?.updated_at} tone={residentTp ? "purple" : filledTp ? "green" : "slate"} />
     <ExecutionStep number="3" label={armedBuy ? `BUY · Slot #${armedBuy.slot_number}` : "Próxima BUY"} state={armedBuy ? "Armada (LIMIT)" : "Aguardando"} detail={armedBuy ? `${format(orderQuantity(armedBuy), 6)} ${asset} @ ${format(orderPrice(armedBuy), 2)} USDC` : "Nenhuma BUY residente"} at={armedBuy?.created_at} tone="blue" />
-    <ExecutionStep number="4" label="Demais níveis" state="Planejados" detail={`${planned} slot(s) sem ordem enviada`} tone="slate" />
+    <ExecutionStep number="4" label="Demais níveis" state="Planejados" detail={`${summary.plannedSlots} planejados · ${summary.reentryWaitingSlots} reentradas em espera · ${summary.activeErrorSlots} ocorrências ativas`} tone="slate" />
   </div><small className="ac-panel-foot">Ordens próprias CoinOps · IDs e estado da exchange na tabela.</small></section>;
 }
 
@@ -143,15 +137,15 @@ function TestnetEvents({ data, asset = "SOL" }: { data: Props; asset?: "BTC" | "
 function Testnet({ data: source, initialAsset }: { data: Props; initialAsset: "BTC" | "SOL" }) {
   const [selectedAsset, setSelectedAsset] = useState(initialAsset);
   const data = { ...source, ...selectTestnetAssetData(source, selectedAsset) };
-  const missed = data.testnetSlots.filter((slot) => slot.missed_at).length;
-  const reconciliationAge = data.testnetRun?.last_reconciled_at ? Date.now() - Date.parse(data.testnetRun.last_reconciled_at) : Infinity;
-  const runState = testnetHumanState(data);
-  const healthy = data.testnet?.ok && runState === "OPERANDO" && reconciliationAge < 2 * 60_000 && missed === 0 && data.testnet?.tradePermission.ok && data.testnet.userStreamPermission.ok;
+  const result = summarizeTestnetResults(data.testnetSlots, data.testnetOrders, null, null, { asset: selectedAsset, cycleId: data.testnetRun?.id, events: data.testnetEvents });
+  const health = testnetPresentationHealth(result, data.testnetRun, Date.now(), testnetDiagnosticIssue(data.testnet, data.testnetActionError));
+  const runState = health.label;
+  const healthy = health.healthy;
   return <div className="coinops-automation ac-shadow ac-operational-layout" data-environment="TESTNET">
     <EnvironmentAssetCards data={data} environment="TESTNET" selectedAsset={selectedAsset} onSelect={setSelectedAsset} />
-    <TestnetResults key={selectedAsset} data={data} asset={selectedAsset} healthy={Boolean(healthy)}><div className="av2-bottom-grid"><EnvironmentDailyChart data={data} environment="TESTNET" asset={selectedAsset} /><TestnetEvents data={data} asset={selectedAsset} /></div></TestnetResults>
+    <TestnetResults key={selectedAsset} data={data} asset={selectedAsset}><div className="av2-bottom-grid"><EnvironmentDailyChart data={data} environment="TESTNET" asset={selectedAsset} /><TestnetEvents data={data} asset={selectedAsset} /></div></TestnetResults>
     <EnvironmentConnectionStrip data={data} environment="TESTNET" asset={selectedAsset} />
-    <details className="av2-controls ac-environment-controls"><summary>Configuração e controles <span>{selectedAsset} Testnet · ordens, execução e saldos fictícios</span></summary><div className="ac-environment-controls-body"><TestnetConfiguration data={data} asset={selectedAsset} /><TestnetHero data={data} /><BalanceCards data={data} asset={selectedAsset} /><div className="ac-environment-controls-grid"><OrdersTable key={selectedAsset} data={data} asset={selectedAsset} /><ExecutionPanel data={data} asset={selectedAsset} /></div><div className="ac-testnet-main ac-testnet-main--footer"><section className="ac-panel ac-actions"><div className="ac-panel-heading"><h2>Ações rápidas</h2></div><div className="ac-action-row"><a className="ac-button" href="/automacao?view=testnet&testnet=check">↻ &nbsp; Verificar Testnet</a>{data.testnetEnabled && data.testnetRun?.status === "ACTIVE" ? <form action={reconcileCoinOpsTestnet}><input type="hidden" name="run_id" value={data.testnetRun.id} /><button type="submit" className="ac-button">⟳ &nbsp; Reconciliar</button></form> : null}{data.testnetEnabled && data.testnet?.ok && (!data.testnetRun || data.testnetRun.status === "COMPLETED") ? <form action={startCoinOpsTestnet}><input type="hidden" name="asset" value={selectedAsset} /><button type="submit" className="ac-button">Iniciar Testnet fictício {selectedAsset}/USDC</button></form> : null}<button type="button" className="ac-button ac-button--disabled" disabled title="Pausa segura ainda não implementada; ordens residentes permanecem sob reconciliação">Pausar indisponível</button></div><small>Cancel/replace é restrito a ordens próprias e controlado pelo motor. Pausa segura depende de tratamento das ordens residentes.</small></section><section className="ac-panel ac-health"><div className="ac-panel-heading"><h2>Saúde Testnet</h2><span className={`ac-badge ${healthy ? "ac-badge--green" : "ac-badge--slate"}`}>{healthy ? "Tudo OK" : runState}</span></div><div className="ac-health-grid"><span>Conexão <strong>{data.testnet?.ok ? "Conectada" : "A verificar"}</strong></span><span>Reconciliação <strong>{time(data.testnetRun?.last_reconciled_at)}</strong></span><span>Ownership <strong>IDs CoinOps persistidos</strong></span><span>Missed levels <strong>{missed}</strong></span></div><details><summary>Detalhes técnicos</summary><p>Permissão USER_STREAM: {data.testnet?.ok && data.testnet.userStreamPermission.ok ? "confirmada" : "não confirmada nesta consulta"}. O runtime serverless não mantém stream contínuo; o worker rápido reconcilia a cada minuto e o cron de 5 minutos é somente fallback, e reconciliação manual/autenticada também recupera o mesmo estado idempotente.</p><p>Erros do ciclo: {data.testnetRun?.last_error || "nenhum registrado"}. Idempotência: clientOrderId único e reset vinculado ao ciclo anterior + fill terminal.</p></details></section></div></div></details>
+    <details className="av2-controls ac-environment-controls"><summary>Configuração e controles <span>{selectedAsset} Testnet · ordens, execução e saldos fictícios</span></summary><div className="ac-environment-controls-body"><TestnetConfiguration data={data} asset={selectedAsset} /><TestnetHero data={data} /><BalanceCards data={data} asset={selectedAsset} /><div className="ac-environment-controls-grid"><OrdersTable key={selectedAsset} data={data} asset={selectedAsset} /><ExecutionPanel data={data} asset={selectedAsset} /></div><div className="ac-testnet-main ac-testnet-main--footer"><section className="ac-panel ac-actions"><div className="ac-panel-heading"><h2>Ações rápidas</h2></div><div className="ac-action-row"><a className="ac-button" href="/automacao?view=testnet&testnet=check">↻ &nbsp; Verificar Testnet</a>{data.testnetEnabled && data.testnetRun?.status === "ACTIVE" ? <form action={reconcileCoinOpsTestnet}><input type="hidden" name="run_id" value={data.testnetRun.id} /><button type="submit" className="ac-button">⟳ &nbsp; Reconciliar</button></form> : null}{data.testnetEnabled && data.testnet?.ok && (!data.testnetRun || data.testnetRun.status === "COMPLETED") ? <form action={startCoinOpsTestnet}><input type="hidden" name="asset" value={selectedAsset} /><button type="submit" className="ac-button">Iniciar Testnet fictício {selectedAsset}/USDC</button></form> : null}<button type="button" className="ac-button ac-button--disabled" disabled title="Pausa segura ainda não implementada; ordens residentes permanecem sob reconciliação">Pausar indisponível</button></div><small>Cancel/replace é restrito a ordens próprias e controlado pelo motor. Pausa segura depende de tratamento das ordens residentes.</small></section><section className="ac-panel ac-health"><div className="ac-panel-heading"><h2>Saúde Testnet</h2><span className={`ac-badge ${healthy ? "ac-badge--green" : health.tone === "error" ? "av2-negative" : "av2-warning"}`}>{runState}</span></div><div className="ac-health-grid"><span>Conexão <strong>{data.testnet?.ok ? "Conectada" : "A verificar"}</strong></span><span>Reconciliação <strong>{time(data.testnetRun?.last_reconciled_at)}</strong></span><span>Ownership <strong>IDs CoinOps persistidos</strong></span><span>Históricos <strong>{result.temporalSummary.historicalCount}</strong></span><span>Missed desde versão atual <strong>{result.temporalSummary.currentVersionCount}</strong></span><span>Ocorrências ativas <strong>{result.temporalSummary.activeIssueCount}</strong></span></div><details><summary>Detalhes técnicos</summary><p>Permissão USER_STREAM: {data.testnet?.ok && data.testnet.userStreamPermission.ok ? "confirmada" : "não confirmada nesta consulta"}. O runtime serverless não mantém stream contínuo; o worker rápido reconcilia a cada minuto e o cron de 5 minutos é somente fallback, e reconciliação manual/autenticada também recupera o mesmo estado idempotente.</p><p>Erros do ciclo: {data.testnetRun?.last_error || "nenhum registrado"}. Idempotência: clientOrderId único e reset vinculado ao ciclo anterior + fill terminal.</p></details></section></div></div></details>
   </div>;
 }
 

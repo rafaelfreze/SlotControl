@@ -9,6 +9,7 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 import { TESTNET_MISSED_EVENT_TYPES } from "@/lib/coinops-reports/missed-level-evidence";
+import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "@/lib/slotgain/testnet-results";
 
 import type { AutomationView } from "./automation-center";
 import { AutomationCenter } from "./automation-cockpit";
@@ -84,8 +85,8 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     const [slots, orders, events, missedEvents] = await Promise.all([
       supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at").in("run_id", runIds).order("slot_number"),
       supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").in("run_id", runIds).order("created_at"),
-      supabase.from("robot_v1_testnet_events").select("run_id,event_type,slot_number,observed_at,details").in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
-      supabase.from("robot_v1_testnet_events").select("run_id,event_type,slot_number,observed_at,details").eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100)
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100)
     ]);
     if (slots.error || orders.error || events.error || missedEvents.error) throw slots.error || orders.error || events.error || missedEvents.error;
     const allSlots = slots.data || [], allOrders = orders.data || [];
@@ -93,7 +94,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       run,
       slots: allSlots.filter((item) => item.run_id === run.id),
       orders: allOrders.filter((item) => item.run_id === run.id),
-      events: [...new Map([...(events.data || []), ...(missedEvents.data || [])].map((event) => [`${event.run_id}:${event.event_type}:${event.slot_number}:${event.observed_at}`, event])).values()].sort((a, b) => b.observed_at.localeCompare(a.observed_at)),
+      events: [...new Map([...(events.data || []), ...(missedEvents.data || [])].map((event) => [event.id, event])).values()].sort((a, b) => b.observed_at.localeCompare(a.observed_at)),
       history: (runs || []).filter((item) => item.id !== run.id).map((historicalRun) => ({
         run: historicalRun,
         slots: allSlots.filter((item) => item.run_id === historicalRun.id),
@@ -132,9 +133,14 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetAssetData
   }} />;
 
+  const testnetHealth = Object.values(testnetAssetData).map(({ run, slots, orders, events }) => testnetPresentationHealth(
+    summarizeTestnetResults(slots, orders, null, Number(run.slot_notional_usdc || 0), { asset: run.symbol.replace("USDC", ""), cycleId: run.id, events }),
+    run, Date.now(), testnetDiagnosticIssue(testnet, searchParams?.testnetError)
+  ));
   return <AutomationPageShell userLabel={user.email || "Usuário"} status={{
     shadowActive: (robotConfigsResponse.data || []).some((config) => !config.kill_switch && !config.pause_new_entries),
-    testnetOperating: Object.values(testnetAssetData).some(({ run }) => run.status === "ACTIVE" && !run.last_error),
-    testnetError: Boolean(Object.values(testnetAssetData).some(({ run }) => run.last_error) || searchParams?.testnetError || (testnet && !testnet.ok))
+    testnetOperating: testnetHealth.some((health) => health.healthy),
+    testnetError: testnetHealth.some((health) => health.tone === "error"),
+    testnetAttention: testnetHealth.some((health) => health.tone === "attention") || Boolean(testnetDiagnosticIssue(testnet, searchParams?.testnetError))
   }}>{dashboard}</AutomationPageShell>;
 }

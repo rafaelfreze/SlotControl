@@ -2,7 +2,7 @@
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type SourceRow = Record<string, unknown>;
-export type ReportFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[] };
+export type ReportFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type ReportScope = { tenantId: string; userId: string; productId: string };
 export type RawReportSources = {
   sources: Record<string, SourceRow[]>;

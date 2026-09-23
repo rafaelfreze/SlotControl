@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { summarizeTestnetResults, type TestnetResultOrder, type TestnetResultSlot } from "./testnet-results.ts";
+import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth, type TestnetResultOrder, type TestnetResultSlot } from "./testnet-results.ts";
 
 const slot: TestnetResultSlot = { slot_number: 1, entry_state: "OPEN", target_buy_price: 100, balance_usdc: 10, gain_count: 0, net_profit_usdc: 0, missed_at: null };
 const order: TestnetResultOrder = { slot_number: 1, side: "BUY", purpose: "INITIAL", revision: 1, client_order_id: "owned-buy", exchange_order_id: "1", status: "FILLED", requested_quantity: 0.1, price: null, executed_quantity: 0.1, cumulative_quote: 10, created_at: "2026-09-22T12:00:00Z", updated_at: "2026-09-22T12:00:01Z", fee_base: 0, fee_quote: 0, fee_other: [] };
@@ -62,4 +62,124 @@ test("Testnet current row ignores completed orders from earlier operation sequen
   assert.equal(result.rows[0].remainingQuantity, 0);
   assert.equal(result.rows[0].reservedBuyCapital, 10);
   assert.equal(result.realizedProfit, .05);
+});
+
+const temporalNow = Date.parse("2026-09-23T16:00:00Z");
+const healthyRun = { status: "ACTIVE", last_error: null, last_reconciled_at: "2026-09-23T15:59:30Z" };
+function temporalFixture(asset: "BTC" | "SOL") {
+  const cycleId = `cycle-${asset}`;
+  const target = asset === "BTC" ? 85480.48 : 118.97;
+  const slots = Array.from({ length: 25 }, (_, index): TestnetResultSlot => ({
+    ...slot, slot_number: index + 1, entry_state: "PLANNED", target_buy_price: target * .99 ** index, operation_sequence: 1
+  }));
+  slots[0] = { ...slots[0]!, entry_state: "MISSED", entry_origin: "REENTRY", operation_sequence: 2, missed_at: "2026-09-23T15:00:00Z" };
+  slots[1]!.entry_state = "OPEN";
+  slots[2]!.entry_state = "ARMED";
+  const orders: TestnetResultOrder[] = [
+    { ...order, slot_number: 2, operation_sequence: 1, client_order_id: "current-open-buy" },
+    { ...order, slot_number: 2, operation_sequence: 1, side: "SELL", purpose: "TP", status: "NEW", client_order_id: "resident-tp", exchange_order_id: "2", price: target, executed_quantity: 0, cumulative_quote: 0 },
+    { ...order, slot_number: 3, operation_sequence: 1, purpose: "ENTRY", status: "NEW", client_order_id: "resident-next-buy", exchange_order_id: "3", price: target * .99 ** 2, executed_quantity: 0, cumulative_quote: 0 }
+  ];
+  const events = [
+    { id: "original-missed", run_id: cycleId, slot_number: 1, event_type: "MISSED_LEVEL", observed_at: "2026-09-23T15:00:00Z", created_at: "2026-09-23T15:00:01Z",
+      details: { operation_sequence: 2, target_price: target } },
+    { id: "diagnosis", run_id: cycleId, slot_number: 1, event_type: "MISSED_LEVEL_DIAGNOSED", observed_at: "2026-09-23T15:05:00Z",
+      details: { original_event_id: "original-missed", first_cross_at: "2026-09-23T13:00:00Z", detected_at: "2026-09-23T15:00:00Z",
+        root_cause: "STALE_CACHED_RUN_DISCOVERY", resolved_at: "2026-09-23T14:40:00Z", resolved_by_version: "4.1.0", evidence_source: "exchange-fill-and-strategy-checkpoint" } }
+  ];
+  return { slots, orders, context: { asset, cycleId, events } };
+}
+
+test("BTC and SOL historical missed keep 25 exclusive current states and a green evidenced motor", () => {
+  for (const asset of ["BTC", "SOL"] as const) {
+    const input = temporalFixture(asset);
+    const before = structuredClone(input);
+    const result = summarizeTestnetResults(input.slots, input.orders, 120, 10, input.context);
+    assert.equal(result.rows[0]!.operationalState, "REENTRY_WAITING");
+    assert.equal(result.rows[0]!.persisted_entry_state, "MISSED");
+    assert.equal(result.temporalSummary.historicalCount, 1);
+    assert.equal(result.temporalSummary.currentVersionCount, 0);
+    assert.equal(result.temporalSummary.activeIssueCount, 0);
+    assert.deepEqual([result.openSlots, result.armedSlots, result.reentryWaitingSlots, result.plannedSlots, result.activeErrorSlots], [1, 1, 1, 22, 0]);
+    assert.equal(result.openSlots + result.armedSlots + result.reentryWaitingSlots + result.plannedSlots + result.activeErrorSlots, 25);
+    const health = testnetPresentationHealth(result, healthyRun, temporalNow);
+    assert.equal(health.tone, "ok");
+    assert.equal(health.label, "Motor OK — ocorrências históricas preservadas");
+    assert.deepEqual(input, before);
+  }
+});
+
+test("historical missed can coexist with a current OPEN, NEXT BUY or PLANNED without overriding it", () => {
+  const input = temporalFixture("SOL");
+  input.slots[0] = { ...input.slots[0]!, entry_state: "OPEN", operation_sequence: 3 };
+  input.orders.push({ ...order, slot_number: 1, operation_sequence: 3, client_order_id: "new-operation-buy" });
+  let result = summarizeTestnetResults(input.slots, input.orders, 120, 10, input.context);
+  assert.equal(result.rows[0]!.operationalState, "OPEN");
+  assert.equal(result.rows[0]!.historicalOccurrences.length, 1);
+  input.orders.pop();
+  input.slots[0]!.entry_state = "ARMED";
+  result = summarizeTestnetResults(input.slots, input.orders, 120, 10, input.context);
+  assert.equal(result.rows[0]!.operationalState, "NEXT_BUY");
+  input.slots[0] = { ...input.slots[0]!, entry_state: "PLANNED", entry_origin: "GRID", operation_sequence: 1 };
+  result = summarizeTestnetResults(input.slots, input.orders, 120, 10, input.context);
+  assert.equal(result.rows[0]!.operationalState, "PLANNED");
+});
+
+test("post-version regression is a red current failure, while missing evidence stays yellow", () => {
+  const input = temporalFixture("BTC");
+  const regressionEvents = [{ ...input.context.events[0]!, details: { operation_sequence: 2, first_cross_at: "2026-09-23T15:00:00Z", root_cause: "ENGINE_PRIORITY_VIOLATION" } }];
+  let result = summarizeTestnetResults(input.slots, input.orders, 85000, 10, { ...input.context, events: regressionEvents });
+  assert.equal(result.rows[0]!.operationalState, "ACTIVE_ERROR");
+  assert.equal(result.temporalSummary.historicalCount, 0);
+  assert.equal(result.temporalSummary.currentVersionCount, 1);
+  assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow).tone, "error");
+  result = summarizeTestnetResults(input.slots, input.orders, 85000, 10, { ...input.context, events: [] });
+  assert.equal(result.temporalSummary.unresolvedCount, 1);
+  assert.equal(result.activeErrorSlots, 1);
+  assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow).tone, "attention");
+});
+
+test("resolved history never masks stale reconciliation, missing TP, duplicate BUY or runtime failure", () => {
+  const input = temporalFixture("SOL");
+  let result = summarizeTestnetResults(input.slots, input.orders, 120, 10, input.context);
+  assert.equal(testnetPresentationHealth(result, { ...healthyRun, last_reconciled_at: "2026-09-23T15:50:00Z" }, temporalNow).tone, "attention");
+  assert.equal(testnetPresentationHealth(result, { ...healthyRun, last_error: "COINOPS_TESTNET_RECOVERY_FAILED" }, temporalNow).tone, "error");
+  result = summarizeTestnetResults(input.slots, input.orders.filter((item) => item.purpose !== "TP"), 120, 10, input.context);
+  assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow).tone, "error");
+  result = summarizeTestnetResults(input.slots, [...input.orders, { ...input.orders[2]!, slot_number: 4, client_order_id: "duplicate-resident" }], 120, 10, input.context);
+  assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow).tone, "error");
+  result = summarizeTestnetResults(input.slots.slice(1), input.orders, 120, 10, input.context);
+  assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow).tone, "error");
+});
+
+test("a partial BUY is one OPEN physical slot, never counted twice as NEXT BUY", () => {
+  const partial = { ...order, status: "PARTIALLY_FILLED", executed_quantity: .04, cumulative_quote: 4 };
+  const result = summarizeTestnetResults([{ ...slot, entry_state: "ARMED" }], [partial], 101, 10);
+  assert.equal(result.openSlots, 1);
+  assert.equal(result.armedSlots, 0);
+  assert.equal(result.rows[0]!.operationalState, "OPEN");
+});
+
+test("explicit Testnet permission denials stay yellow even with an otherwise healthy reconciled ledger", () => {
+  const input = temporalFixture("SOL");
+  const result = summarizeTestnetResults(input.slots, input.orders, 120, 10, input.context);
+  const permitted = { ok: true, account: { canTrade: true }, tradePermission: { ok: true }, userStreamPermission: { ok: true } };
+  for (const snapshot of [null, undefined, permitted]) {
+    assert.equal(testnetDiagnosticIssue(snapshot), null);
+    assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow, testnetDiagnosticIssue(snapshot)).tone, "ok");
+  }
+  for (const snapshot of [
+    { ...permitted, tradePermission: { ok: false } },
+    { ...permitted, userStreamPermission: { ok: false } },
+    { ...permitted, account: { canTrade: false } },
+    { ok: false, error: "COINOPS_TESTNET_DIAGNOSTIC_FAILED" },
+    { ok: false }
+  ]) {
+    const issue = testnetDiagnosticIssue(snapshot);
+    assert.ok(issue);
+    assert.equal(testnetPresentationHealth(result, healthyRun, temporalNow, issue).tone, "attention");
+    assert.equal(testnetPresentationHealth(result, { ...healthyRun, last_error: "ENGINE_FAILURE" }, temporalNow, issue).tone, "error");
+  }
+  assert.equal(testnetDiagnosticIssue(permitted, "COINOPS_TESTNET_START_FAILED"), "COINOPS_TESTNET_START_FAILED");
+  assert.equal(testnetDiagnosticIssue(null, "COINOPS_TESTNET_START_FAILED"), "COINOPS_TESTNET_START_FAILED");
 });

@@ -3,7 +3,7 @@
 import { reconcileV1PhysicalSlotAccounts } from "@/lib/execution/robot-v1-audit";
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
 import { selectTestnetAssetData } from "@/lib/slotgain/testnet-asset-view";
-import { summarizeTestnetResults } from "@/lib/slotgain/testnet-results";
+import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "@/lib/slotgain/testnet-results";
 import type { Props, TestnetAssetData } from "./automation-mobile";
 import "../automation-overview.css";
 
@@ -55,8 +55,8 @@ function Metric({ label, value, unit, positive }: { label: string; value: string
   return <div className="aov-metric"><dt>{label}</dt><dd className={positive === true ? "av2-positive" : positive === false ? "av2-negative" : undefined}>{value}{unit ? <small>{unit}</small> : null}</dd></div>;
 }
 
-function AssetHeading({ asset, label, state, warning = false }: { asset: Asset; label: string; state: string; warning?: boolean }) {
-  return <header className="aov-asset-heading"><span className={`aov-coin ${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : "≋"}</span><strong>{label}</strong><small className={warning ? "av2-warning" : undefined}>{state}</small></header>;
+function AssetHeading({ asset, label, state, warning = false, error = false, healthy = false }: { asset: Asset; label: string; state: string; warning?: boolean; error?: boolean; healthy?: boolean }) {
+  return <header className="aov-asset-heading"><span className={`aov-coin ${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : "≋"}</span><strong>{label}</strong><small className={error ? "av2-negative" : warning ? "av2-warning" : healthy ? "av2-positive" : undefined}>{state}</small></header>;
 }
 
 const EVENT_LABELS: Record<string, string> = {
@@ -82,15 +82,17 @@ export function AutomationOverview({ data }: { data: Props }) {
   const testnet = ASSETS.map((asset) => {
     const persisted = testnetAsset(data, asset);
     const market = number(data.configs.find((row) => row.asset === asset)?.last_market_price);
-    const result = persisted ? summarizeTestnetResults(persisted.slots, persisted.orders, market, number(persisted.run.slot_notional_usdc)) : null;
+    const result = persisted ? summarizeTestnetResults(persisted.slots, persisted.orders, market, number(persisted.run.slot_notional_usdc), { asset, cycleId: persisted.run.id, events: persisted.events }) : null;
+    const health = result && persisted ? testnetPresentationHealth(result, persisted.run, Date.now(), testnetDiagnosticIssue(data.testnet, data.testnetActionError)) : null;
     const history = (persisted?.history || []).map((bundle) => summarizeTestnetResults(bundle.slots, bundle.orders, null, number(bundle.run.slot_notional_usdc)));
-    return { asset, persisted, result, lifetimeProfit: (result?.realizedProfit || 0) + history.reduce((total, item) => total + item.realizedProfit, 0), lifetimeGains: (result?.gains || 0) + history.reduce((total, item) => total + item.gains, 0), lifetimeOperations: (result?.completedOperations || 0) + history.reduce((total, item) => total + item.completedOperations, 0) };
+    return { asset, persisted, result, health, lifetimeProfit: (result?.realizedProfit || 0) + history.reduce((total, item) => total + item.realizedProfit, 0), lifetimeGains: (result?.gains || 0) + history.reduce((total, item) => total + item.gains, 0), lifetimeOperations: (result?.completedOperations || 0) + history.reduce((total, item) => total + item.completedOperations, 0) };
   });
   const testnetKnown = testnet.filter((row) => row.persisted && row.result?.rows.length);
   const testnetCapital = testnetKnown.length ? sum(testnetKnown.map((row) => row.result!.capital)) : null;
   const testnetProfit = testnetKnown.length ? sum(testnetKnown.map((row) => row.lifetimeProfit)) : null;
   const testnetGains = testnetKnown.length ? sum(testnetKnown.map((row) => row.lifetimeGains)) : null;
-  const testnetError = Boolean(data.testnetActionError || (data.testnet && !data.testnet.ok) || testnet.some((row) => row.persisted?.run.last_error));
+  const testnetError = Boolean(testnetDiagnosticIssue(data.testnet, data.testnetActionError) || testnet.some((row) => row.health && !row.health.healthy));
+  const testnetDivergence = testnet.some((row) => row.health?.tone === "error");
   const testnetActive = testnet.some((row) => row.persisted?.run.status === "ACTIVE");
   const testnetAt = latest(testnet.map((row) => row.persisted?.run.last_reconciled_at));
   const realConnected = data.connectionStatus === "READ_ONLY" || data.connectionStatus === "CONNECTED";
@@ -106,9 +108,9 @@ export function AutomationOverview({ data }: { data: Props }) {
       </section>
 
       <section className="aov-environment aov-testnet" aria-labelledby="aov-testnet-title">
-        <header className="aov-heading"><div><h2 id="aov-testnet-title">Testnet</h2><p>Binance · fundos fictícios</p></div><span className={`aov-state ${testnetError ? "is-warning" : ""}`}>{testnetError ? "ATENÇÃO" : testnetActive ? "OPERANDO" : "EM ESPERA"}</span></header>
+        <header className="aov-heading"><div><h2 id="aov-testnet-title">Testnet</h2><p>Binance · fundos fictícios</p></div><span className={`aov-state ${testnetDivergence ? "is-error" : testnetError ? "is-warning" : ""}`}>{testnetDivergence ? "DIVERGÊNCIA ATIVA" : testnetError ? "ATENÇÃO" : testnetActive ? "MOTOR OK" : "EM ESPERA"}</span></header>
         <dl className="aov-metrics"><Metric label="Capital do robô" value={amount(testnetCapital)} unit="USDC" /><Metric label="Lucro realizado" value={signed(testnetProfit)} unit="USDC" positive={testnetProfit == null ? undefined : testnetProfit >= 0} /><Metric label="Gains acumulados" value={amount(testnetGains, 0)} /><Metric label="Operações concluídas" value={testnetKnown.length ? amount(testnetKnown.reduce((total, row) => total + row.lifetimeOperations, 0), 0) : "—"} /></dl>
-        <div className="aov-assets">{testnet.map(({ asset, persisted, result, lifetimeProfit, lifetimeGains }) => <article className="aov-asset" key={asset}><AssetHeading asset={asset} label={persisted?.run.symbol.replace(/(USDC|USDT|BRL)$/, "/$1") || `${asset}/USDC`} state={!persisted ? "Sem ciclo Testnet" : persisted.run.last_error || result?.missedLevels ? "Revisar execução" : persisted.run.reset_started_at && !persisted.run.reset_completed_at ? "Reiniciando ciclo" : persisted.run.status === "ACTIVE" ? "Ciclo ativo" : "Ciclo registrado"} warning={Boolean(persisted?.run.last_error || result?.missedLevels)} /><dl className="aov-asset-metrics"><Metric label="Capital" value={amount(result?.rows.length ? result.capital : null)} unit="USDC" /><Metric label="Lucro" value={signed(result?.rows.length ? lifetimeProfit : null)} positive={result?.rows.length ? lifetimeProfit >= 0 : undefined} /><Metric label="Gains" value={result?.rows.length ? amount(lifetimeGains, 0) : "—"} /><Metric label="Ordens abertas" value={persisted ? String(persisted.orders.filter((order) => OPEN_ORDERS.has(order.status)).length) : "—"} /></dl><p className="aov-slot-state">{result?.rows.length ? <><strong>{result.openSlots}</strong> abertos <span>·</span> <strong>{result.armedSlots}</strong> próxima compra <span>·</span> <strong>{result.plannedSlots}</strong> planejados{result.missedLevels ? <em> · {result.missedLevels} níveis perdidos</em> : null}</> : "Sem saldo operacional persistido para este ativo"}</p></article>)}</div>
+        <div className="aov-assets">{testnet.map(({ asset, persisted, result, health, lifetimeProfit, lifetimeGains }) => <article className="aov-asset" key={asset}><AssetHeading asset={asset} label={persisted?.run.symbol.replace(/(USDC|USDT|BRL)$/, "/$1") || `${asset}/USDC`} state={health?.label || "Sem ciclo Testnet"} warning={Boolean(health && !health.healthy)} error={health?.tone === "error"} healthy={health?.healthy} /><dl className="aov-asset-metrics"><Metric label="Capital" value={amount(result?.rows.length ? result.capital : null)} unit="USDC" /><Metric label="Lucro" value={signed(result?.rows.length ? lifetimeProfit : null)} positive={result?.rows.length ? lifetimeProfit >= 0 : undefined} /><Metric label="Gains" value={result?.rows.length ? amount(lifetimeGains, 0) : "—"} /><Metric label="Ordens abertas" value={persisted ? String(persisted.orders.filter((order) => OPEN_ORDERS.has(order.status)).length) : "—"} /></dl><p className="aov-slot-state">{result?.rows.length ? <><strong>{result.openSlots}</strong> abertos <span>·</span> <strong>{result.armedSlots}</strong> próxima compra <span>·</span> <strong>{result.reentryWaitingSlots}</strong> reentradas em espera <span>·</span> <strong>{result.plannedSlots}</strong> planejados <span>·</span> <strong>{result.activeErrorSlots}</strong> erros atuais</> : "Sem saldo operacional persistido para este ativo"}</p>{result ? <p className="aov-history-note">{result.temporalSummary.historicalCount} ocorrências históricas · {result.temporalSummary.currentVersionCount} missed desde versão atual · {result.temporalSummary.activeIssueCount} ocorrências ativas</p> : null}</article>)}</div>
         <footer className="aov-footer"><span>Reconciliação <time>{at(testnetAt)}</time></span><a href="/automacao?view=testnet">Abrir Testnet <span aria-hidden="true">→</span></a></footer>
       </section>
 
@@ -121,11 +123,11 @@ export function AutomationOverview({ data }: { data: Props }) {
     </div>
 
     <section className="aov-comparison" aria-labelledby="aov-comparison-title"><header><h2 id="aov-comparison-title">Comparação de Teste</h2><span>Shadow × Testnet · perfil de teste 0,5% / 1% · 25 slots</span></header>
-      <div className="aov-comparison-scroll"><table><thead><tr><th>Ativo</th><th>Ambiente</th><th>Gains</th><th>Ciclos</th><th>P&amp;L</th><th>OPEN</th><th>NEXT BUY</th><th>Missed</th><th>Erros</th><th>Saúde</th></tr></thead><tbody>{ASSETS.flatMap((asset) => {
+      <div className="aov-comparison-scroll"><table><thead><tr><th>Ativo</th><th>Ambiente</th><th>Gains</th><th>Ciclos</th><th>P&amp;L</th><th>OPEN</th><th>NEXT BUY</th><th>Históricos</th><th>Missed atuais</th><th>Erros ativos</th><th>Saúde</th></tr></thead><tbody>{ASSETS.flatMap((asset) => {
         const sh = shadow.find((row) => row.asset === asset)!;
         const tn = testnet.find((row) => row.asset === asset)!;
-        return [<tr key={`${asset}-shadow`}><th scope="row">{asset}</th><td>Shadow</td><td>{amount(sh.gains, 0)}</td><td>{sh.cycles}</td><td>{signed(sh.profit === null || sh.openPnl === null ? null : sh.profit + sh.openPnl)}</td><td>{sh.open}</td><td>{sh.armed}</td><td>{sh.missed}</td><td>{sh.config?.last_engine_error ? 1 : 0}</td><td>{sh.healthy ? "OK" : sh.state}</td></tr>,
-          <tr key={`${asset}-testnet`}><th scope="row">{asset}</th><td>Testnet</td><td>{tn.persisted ? tn.lifetimeGains : "—"}</td><td>{tn.persisted ? 1 + (tn.persisted.history?.length || 0) : "—"}</td><td>{signed(tn.persisted && tn.result?.openPnl != null ? tn.lifetimeProfit + tn.result.openPnl : null)}</td><td>{tn.result?.openSlots ?? "—"}</td><td>{tn.result?.armedSlots ?? "—"}</td><td>{tn.result?.missedLevels ?? "—"}</td><td>{tn.persisted?.run.last_error ? 1 : 0}</td><td>{tn.persisted?.run.last_error || (tn.result?.missedLevels ? "Divergência: nível perdido" : null) || (tn.persisted?.run.status === "ACTIVE" ? "Ativo" : "Não iniciado")}</td></tr>];
+        return [<tr key={`${asset}-shadow`}><th scope="row">{asset}</th><td>Shadow</td><td>{amount(sh.gains, 0)}</td><td>{sh.cycles}</td><td>{signed(sh.profit === null || sh.openPnl === null ? null : sh.profit + sh.openPnl)}</td><td>{sh.open}</td><td>{sh.armed}</td><td>—</td><td>{sh.missed}</td><td>{sh.config?.last_engine_error ? 1 : 0}</td><td>{sh.healthy ? "OK" : sh.state}</td></tr>,
+          <tr key={`${asset}-testnet`}><th scope="row">{asset}</th><td>Testnet</td><td>{tn.persisted ? tn.lifetimeGains : "—"}</td><td>{tn.persisted ? 1 + (tn.persisted.history?.length || 0) : "—"}</td><td>{signed(tn.persisted && tn.result?.openPnl != null ? tn.lifetimeProfit + tn.result.openPnl : null)}</td><td>{tn.result?.openSlots ?? "—"}</td><td>{tn.result?.armedSlots ?? "—"}</td><td>{tn.result?.temporalSummary.historicalCount ?? "—"}</td><td>{tn.result?.temporalSummary.currentVersionCount ?? "—"}</td><td>{tn.result ? tn.result.activeErrorSlots + (tn.persisted?.run.last_error ? 1 : 0) : "—"}</td><td className={tn.health?.tone === "error" ? "av2-negative" : tn.health?.tone === "attention" ? "av2-warning" : "av2-positive"}>{tn.health?.label || "Não iniciado"}</td></tr>];
       })}</tbody></table></div><small>Diferenças são esperadas: Shadow simula candles; Testnet usa fills e taxas da exchange fictícia. P&amp;L aberto requer preço de mercado disponível.</small>
     </section>
 

@@ -3,6 +3,7 @@
 ## Regras oficiais do CoinOps
 
 - [Strategy Engine 4.1](./STRATEGY_ENGINE_4_1.md) — decisões únicas Shadow/Testnet, correção de cache, reactor de um minuto, missed e auditoria.
+- [Auditoria temporal 4.1.1](./COINOPS_PHASE_4_1_1_TEMPORAL_AUDIT.md) — evidência BTC/SOL, marco exato 4.1.0, histórico versus estado atual e limites da classificação.
 
 - [Marco do capital operacional](./MARCO_CAPITAL_OPERACIONAL.md) — reinício auditável dos contadores de aportes/gains adicionados, preservando saldos, posições, histórico e monitoramento.
 - [Estratégia oficial pós-baseline](./ESTRATEGIA_OFICIAL_2026.md) — corte em 27/08/2026, modos Normal/Defensivo, ciclos de 30 dias, filas, pools 1–25/26–50, relatórios e exportações auditáveis.

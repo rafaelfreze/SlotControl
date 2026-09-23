@@ -57,11 +57,11 @@ test("initial MARKET fill requires positive executed quantity, not a completed d
   assert.equal(get(data, "NEW_CYCLE_MUST_HAVE_INITIAL_MARKET_FILL")?.status, "PASS");
 });
 
-test("reported decision dataset and version2 package preserve exact persisted fields", () => {
+test("reported decision dataset and version3 package preserve exact persisted fields", () => {
   const report = buildAuditReport({ generatedAt: now, warnings: [], incompleteSources: [], scope: { tenantId: "tenant", userId: "user" }, sources: { robot_v1_strategy_decisions: [decision] } }, context.filters);
   assert.equal(report.datasets.decisions.length, 1);
   const pack = buildReportPackage(report, context.filters, now);
-  assert.equal(pack.manifest.report_version, 2);
+  assert.equal(pack.manifest.report_version, 3);
   assert.ok(pack.files.find((file) => file.name === "15_ESTRATEGIA_DECISOES.csv")?.content.includes("decision-1"));
   assert.equal(get(empty(), "LIVE_STRATEGY_PARITY_READY")?.live_enabled, false);
 });

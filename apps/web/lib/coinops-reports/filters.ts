@@ -1,7 +1,8 @@
 import type { ReportFilters } from "./source-contract.ts";
+import { STRATEGY_4_1_EFFECTIVE_AT } from "./missed-level-temporal.ts";
 
 export const REPORT_TIMEZONE = "America/Campo_Grande";
-export const REPORT_VERSION = 2;
+export const REPORT_VERSION = 3;
 const DAY = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -21,10 +22,10 @@ export function parseReportFilters(params: URLSearchParams, now = new Date()): R
     if (params.has(key)) throw new Error("REPORT_SCOPE_NOT_ACCEPTED");
   }
   const today = localDay(now), preset = params.get("preset") || "30d";
-  if (!["today", "7d", "30d", "month", "custom"].includes(preset)) throw new Error("REPORT_PRESET_INVALID");
+  if (!["today", "7d", "30d", "month", "custom", "strategy4_1"].includes(preset)) throw new Error("REPORT_PRESET_INVALID");
   let start = preset === "today" ? today : preset === "7d" ? shift(today, -6) : preset === "month" ? `${today.slice(0, 7)}-01` : shift(today, -29);
   let end = today;
-  if (preset === "custom" || params.has("start") || params.has("end")) {
+  if (preset !== "strategy4_1" && (preset === "custom" || params.has("start") || params.has("end"))) {
     if (!params.get("start") || !params.get("end")) throw new Error("REPORT_PERIOD_REQUIRED");
     start = validDay(params.get("start")!); end = validDay(params.get("end")!);
   }
@@ -32,8 +33,9 @@ export function parseReportFilters(params: URLSearchParams, now = new Date()): R
   const asset = params.get("asset") || "ALL", environment = params.get("environment") || "ALL";
   if (!["ALL", "BTC", "SOL"].includes(asset)) throw new Error("REPORT_ASSET_INVALID");
   if (!["ALL", "SHADOW", "TESTNET", "REAL"].includes(environment)) throw new Error("REPORT_ENVIRONMENT_INVALID");
+  if (preset === "strategy4_1" && now.getTime() <= Date.parse(STRATEGY_4_1_EFFECTIVE_AT)) throw new Error("REPORT_STRATEGY_WINDOW_UNAVAILABLE");
   // Campo Grande has UTC-04 throughout the supported reporting period (2020+).
-  return { start: new Date(`${start}T00:00:00-04:00`).toISOString(), end: new Date(`${shift(end, 1)}T00:00:00-04:00`).toISOString(), assets: asset === "ALL" ? ["BTC", "SOL"] : [asset as "BTC" | "SOL"], environments: environment === "ALL" ? ["SHADOW", "TESTNET", "REAL"] : [environment as "SHADOW" | "TESTNET" | "REAL"] };
+  return { start: preset === "strategy4_1" ? STRATEGY_4_1_EFFECTIVE_AT : new Date(`${start}T00:00:00-04:00`).toISOString(), end: new Date(`${shift(end, 1)}T00:00:00-04:00`).toISOString(), assets: asset === "ALL" ? ["BTC", "SOL"] : [asset as "BTC" | "SOL"], environments: environment === "ALL" ? ["SHADOW", "TESTNET", "REAL"] : [environment as "SHADOW" | "TESTNET" | "REAL"], ...(preset === "strategy4_1" ? { temporalWindow: "SINCE_STRATEGY_4_1" as const } : {}) };
 }
 
 export function reportDates(filters: ReportFilters) { return { start: localDay(new Date(filters.start)), end: localDay(new Date(Date.parse(filters.end) - 1)) }; }

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { buildAuditReport, REPORT_DATASET_KEYS, type AuditInput, type AuditFilters } from "./report-engine.ts";
 import { auditExecutionGaps, auditTriggerWindows, type TriggerWindow } from "./trigger-audit.ts";
+import { STRATEGY_4_1_EFFECTIVE_AT } from "./missed-level-temporal.ts";
 
 const at = (time: string) => `2026-09-22T${time}:00.000Z`;
 const filters: AuditFilters = { start: at("00:00"), end: at("03:00"), assets: ["SOL"], environments: ["SHADOW"] };
@@ -38,6 +39,99 @@ function addTestnet(input: AuditInput) {
   ];
   return input;
 }
+
+const temporalFilters: AuditFilters = { start: STRATEGY_4_1_EFFECTIVE_AT, end: "2026-09-24T04:00:00Z", assets: ["SOL"], environments: ["TESTNET"], temporalWindow: "SINCE_STRATEGY_4_1" };
+function temporalFixture() {
+  const input = addTestnet(fixture()); input.generatedAt = "2026-09-23T14:40:00Z";
+  Object.assign(input.sources.robot_v1_testnet_runs[0]!, { strategy_version: "4.1.0", last_reconciled_at: "2026-09-23T14:39:55Z" });
+  Object.assign(input.sources.robot_v1_testnet_slots[0]!, { entry_state: "MISSED", missed_at: "2026-09-23T12:30:07.235Z", operation_sequence: 2 });
+  input.sources.robot_v1_strategy_decisions = [{ ...owner, environment: "TESTNET", asset: "SOL", cycle_id: "run-1", decision_id: "v4.1-wait", strategy_version: "4.1.0", action_type: "WAIT", created_at: "2026-09-23T14:39:55Z", dispatched_at: "2026-09-23T14:39:55Z", completed_at: "2026-09-23T14:39:55Z", result: "COMPLETED", observed_next_state: { market_price: 10 } }];
+  input.sources.robot_v1_testnet_events.push(
+    { ...owner, id: "old-missed", run_id: "run-1", slot_number: 1, event_type: "MISSED_LEVEL_DURING_REARM", observed_at: "2026-09-23T12:30:07.235Z", details: { operationSequence: 2, targetPrice: 118.97, marketPrice: 117.01 } },
+    { ...owner, id: "diagnosis", run_id: "run-1", slot_number: 1, event_type: "MISSED_LEVEL_DIAGNOSED", observed_at: "2026-09-23T14:38:00Z", details: { original_event_id: "old-missed", operation_sequence: 2, occurred_at: "2026-09-23T04:23:36.439Z", occurred_at_basis: "TP_FILL_UNRECONCILED_WINDOW_START", occurred_by_at: "2026-09-23T12:30:07.235Z", detected_at: "2026-09-23T12:30:07.235Z", first_cross_at: null, root_cause: "STALE_CACHED_RUN_DISCOVERY", resolved_by_version: "4.1.0", resolved_at: "2026-09-23T14:33:00Z", evidence_source: "persisted original event + reconciler commit" } },
+    ...Array.from({ length: 9 }, (_, i) => ({ ...owner, id: `reconciled-${i}`, run_id: "run-1", event_type: "RECONCILED", observed_at: `2026-09-23T14:${String(31 + i).padStart(2, "0")}:55Z`, details: {} })),
+  );
+  return input;
+}
+
+test("temporal v3 report preserves one historical incident without counting late diagnosis as a new failure", () => {
+  const input = temporalFixture(), before = JSON.stringify(input), report = buildAuditReport(input, temporalFilters);
+  const summary = report.datasets.summary[0]!, occurrence = report.datasets.missed_temporal[0]!;
+  assert.equal(report.datasets.missed_temporal.length, 1); assert.equal(occurrence.context_only, true); assert.equal(occurrence.temporal_classification, "HISTORICAL_PRE_4_1");
+  assert.equal(occurrence.first_cross_at, null); assert.equal(occurrence.is_active_issue, false); assert.equal(occurrence.strategy_version, null);
+  assert.equal(summary.historical_missed, 1); assert.equal(summary.missed_since_strategy, 0); assert.equal(summary.missed_levels, 0); assert.equal(summary.active_missed, 0);
+  assert.equal(summary.active_errors, 0); assert.equal(summary.operational_reentry_waiting, 1); assert.equal(summary.operational_next_buy, 1); assert.equal(summary.operational_planned, 23);
+  assert.equal(summary.health, "Motor OK — ocorrências históricas preservadas");
+  for (const code of ["NO_NEW_ENGINE_MISSED_LEVELS", "HISTORICAL_MISSED_NOT_ACTIVE", "CURRENT_SLOT_STATE_NOT_OVERRIDDEN_BY_HISTORY", "MISSED_LEVEL_RECOVERY_EVIDENCE"]) assert.equal(report.datasets.checks.find((row) => row.code === code)?.status, "PASS", code);
+  const currentSlot = report.datasets.slots.find((row) => row.slot_id === "t-slot-1")!;
+  assert.equal(currentSlot.persisted_entry_state, "MISSED"); assert.equal(currentSlot.operational_state, "REENTRY_WAITING");
+  assert.equal(report.datasets.events.find((row) => row.event_id === "diagnosis")?.is_active_issue, false);
+  assert.equal(JSON.stringify(input), before); assert.ok(!report.datasets.events.some((row) => row.event_id === "old-missed"));
+});
+
+test("historical missed never overrides current OPEN, ARMED or PLANNED state and never erases balances", () => {
+  for (const [raw, expected] of [["OPEN", "OPEN"], ["ARMED", "NEXT_BUY"], ["PLANNED", "PLANNED"]]) {
+    const input = temporalFixture(), slot = input.sources.robot_v1_testnet_slots[0]!; slot.entry_state = raw;
+    const result = buildAuditReport(input, temporalFilters).datasets.slots.find((row) => row.slot_id === slot.id)!;
+    assert.equal(result.entry_state, raw); assert.equal(result.operational_state, expected); assert.equal(result.current_balance, 10.05); assert.equal(result.historical_missed_count, 1);
+  }
+});
+
+test("a new engine missed after 4.1 remains a real FAIL instead of borrowing the old remediation", () => {
+  const input = temporalFixture();
+  input.sources.robot_v1_testnet_events.push({ ...owner, id: "new-missed", run_id: "run-1", slot_number: 1, event_type: "MISSED_LEVEL", observed_at: "2026-09-23T14:39:00Z", details: { operation_sequence: 3, occurred_at: "2026-09-23T14:38:30Z", first_cross_at: "2026-09-23T14:38:30Z", root_cause: "ENGINE_RECONCILIATION_DELAY", strategy_version_at_occurrence: "4.1.0", evidence_source: "exchange-cross+reconciler" } });
+  const report = buildAuditReport(input, temporalFilters), summary = report.datasets.summary[0]!;
+  assert.equal(summary.historical_missed, 1); assert.equal(summary.missed_since_strategy, 1); assert.equal(summary.active_missed, 1); assert.equal(summary.health, "DIVERGÊNCIA ATIVA");
+  assert.equal(report.datasets.checks.find((row) => row.code === "NO_NEW_ENGINE_MISSED_LEVELS")?.status, "FAIL");
+  assert.equal(report.datasets.missed_temporal.find((row) => row.operation_sequence === 3)?.resolved_by_version, null);
+});
+
+test("missing temporal evidence remains WARNING and cannot certify the current version", () => {
+  const input = temporalFixture(); input.sources.robot_v1_testnet_events = []; input.incompleteSources = ["robot_v1_testnet_events"];
+  const report = buildAuditReport(input, temporalFilters);
+  assert.equal(report.datasets.checks.find((row) => row.code === "NO_NEW_ENGINE_MISSED_LEVELS")?.status, "WARNING");
+  assert.ok(!String(report.datasets.summary[0]!.health).startsWith("Motor OK"));
+});
+
+test("since-strategy gains use proven TP time while late ledger credit stays unchanged and explicit", () => {
+  const input = temporalFixture();
+  input.sources.robot_v1_testnet_events.find((row) => row.event_type === "SLOT_CLOSED")!.observed_at = "2026-09-23T14:33:00Z";
+  const sell = input.sources.robot_v1_testnet_orders.find((row) => row.side === "SELL")!;
+  const trade = { ...owner, id: "late-fill", run_id: "run-1", slot_number: 1, event_type: "TESTNET_FILL_OBSERVED", observed_at: "2026-09-23T14:32:25Z", details: { clientOrderId: sell.client_order_id, filledAt: "2026-09-23T14:01:00Z", side: "SELL" } };
+  input.sources.robot_v1_testnet_events.push(trade);
+  const report = buildAuditReport(input, temporalFilters), summary = report.datasets.summary[0]!;
+  assert.equal(summary.since_strategy_gains_by_fill, 0); assert.equal(summary.ledger_credits_observed_since_strategy, 1); assert.equal(summary.gains, 1); assert.equal(summary.fills, 0);
+  assert.equal(report.datasets.events.find((row) => row.event_id === "late-fill")?.context_only, true);
+  assert.equal(report.datasets.gains[0]!.gain_at, "2026-09-23T14:33:00.000Z"); assert.equal(report.datasets.gains[0]!.exchange_gain_at, "2026-09-23T14:01:00Z");
+  assert.equal(report.datasets.capital[0]!.timestamp, "2026-09-23T14:33:00.000Z");
+  trade.details.filledAt = "2026-09-23T14:32:21Z";
+  const genuine = buildAuditReport(input, temporalFilters).datasets.summary[0]!;
+  assert.equal(genuine.since_strategy_gains_by_fill, 1); assert.equal(genuine.fills, 1);
+});
+
+test("current proven slot count, single BUY and resident TP violations turn health red, not yellow", () => {
+  const cases: Array<[string, (input: AuditInput) => void]> = [
+    ["SLOT_COUNT_25", (input) => { input.sources.robot_v1_testnet_slots.pop(); }],
+    ["SINGLE_ACTIVE_ENTRY", (input) => { input.sources.robot_v1_testnet_slots[2]!.entry_state = "ARMED"; }],
+    ["OPEN_POSITION_HAS_RESIDENT_TP", (input) => { input.sources.robot_v1_testnet_slots[0]!.entry_state = "OPEN"; }],
+    ["TP_HAS_POSITION", (input) => { input.sources.robot_v1_testnet_orders.push({ ...owner, id: "orphan-tp", run_id: "run-1", slot_id: "t-slot-4", slot_number: 4, revision: 1, side: "SELL", purpose: "TP", status: "NEW", requested_quantity: 1, executed_quantity: 0, price: 10, created_at: "2026-09-23T14:37:00Z" }); }],
+  ];
+  for (const [code, mutate] of cases) {
+    const input = temporalFixture(); mutate(input);
+    const report = buildAuditReport(input, temporalFilters), summary = report.datasets.summary[0]!;
+    assert.equal(report.datasets.checks.find((row) => row.code === code)?.status, "FAIL", code);
+    assert.equal(summary.health, "DIVERGÊNCIA ATIVA", code); assert.ok(Number(summary.invariant_failures) > 0, code); assert.ok(Number(summary.active_errors) > 0, code);
+  }
+});
+
+test("exported event details preserve forensic identity and both versions without secrets", () => {
+  const input = temporalFixture(), diagnosis = input.sources.robot_v1_testnet_events.find((row) => row.id === "diagnosis")!;
+  Object.assign(diagnosis.details as Record<string, unknown>, { operation_id: "testnet:run-1:1:2", strategy_version_at_occurrence: null, detected_by_strategy_version: "4.1.0", apiKey: "SECRET_NOT_EXPORTABLE" });
+  const report = buildAuditReport(input, temporalFilters), details = report.datasets.events.find((row) => row.event_id === "diagnosis")!.details as Record<string, unknown>;
+  assert.equal(details.operation_id, "testnet:run-1:1:2"); assert.equal(details.original_event_id, "old-missed");
+  assert.ok(Object.hasOwn(details, "strategy_version_at_occurrence")); assert.equal(details.strategy_version_at_occurrence, null); assert.equal(details.detected_by_strategy_version, "4.1.0");
+  assert.ok(!JSON.stringify(report).includes("SECRET_NOT_EXPORTABLE"));
+});
 test("report has all versioned datasets; source reads are deterministic and inputs unchanged", () => {
   const input = fixture(), before = JSON.stringify(input), first = buildAuditReport(input, filters);
   assert.deepEqual(Object.keys(first.datasets), REPORT_DATASET_KEYS); assert.equal(JSON.stringify(first), JSON.stringify(buildAuditReport(input, filters))); assert.equal(JSON.stringify(input), before);
