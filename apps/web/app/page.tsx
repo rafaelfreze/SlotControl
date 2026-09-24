@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { CoinOpsBrand } from "@/components/app/coinops-brand";
+import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
 
 async function getSessionEmail() {
   if (!isSupabaseConfigured()) {
@@ -21,7 +22,7 @@ export default async function HomePage() {
   const email = await getSessionEmail();
 
   if (email) {
-    redirect("/dashboard");
+    redirect(AUTHENTICATED_HOME);
   }
 
   return (

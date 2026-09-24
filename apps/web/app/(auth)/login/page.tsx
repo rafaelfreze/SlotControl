@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { AuthForm } from "@/components/auth/auth-form";
 import { CoinOpsBrand } from "@/components/app/coinops-brand";
+import { getAuthDestination } from "@/lib/auth/navigation";
 
 export const metadata: Metadata = {
   title: "Entrar"
@@ -11,7 +12,7 @@ export const metadata: Metadata = {
 export default function LoginPage({
   searchParams
 }: {
-  searchParams?: { auth?: string; redirectTo?: string; setup?: string };
+  searchParams?: { auth?: string; redirectTo?: string; returnTo?: string; next?: string; setup?: string };
 }) {
   return (
     <main className="page-shell auth-shell">
@@ -42,7 +43,7 @@ export default function LoginPage({
           </div>
         ) : null}
 
-        <AuthForm mode="login" redirectTo={searchParams?.redirectTo || "/dashboard"} />
+        <AuthForm mode="login" redirectTo={getAuthDestination(searchParams)} />
 
         <p className="auth-switch">
           Ainda nao tem conta? <Link href="/cadastro">Criar conta</Link>

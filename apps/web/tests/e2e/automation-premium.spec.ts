@@ -74,7 +74,7 @@ async function mount(page: Page, view: View, width: number, height = 960, data: 
     const boundaries = {
       react: React,
       'react-dom': { ...window.ReactDOM, useFormStatus: () => ({ pending: false }) },
-      'next/link': { __esModule: true, default: ({ children, ...props }) => React.createElement('a', props, children) },
+      'next/link': { __esModule: true, default: ({ children, prefetch, ...props }) => React.createElement('a', props, children) },
       'next/image': { __esModule: true, default: ({ priority, fill, unoptimized, ...props }) => React.createElement('img', props) },
       'next/navigation': { usePathname: () => '/automacao', useSearchParams: () => new URLSearchParams('view=${view}'),
         useRouter: () => ({ refresh: () => {}, push: () => {}, replace: () => {} }) },
@@ -176,6 +176,63 @@ test("quatro ambientes sem overflow na matriz mobile e desktop", async ({ page }
     await noSideEffects(page, audit);
   }
 });
+
+for (const width of [360, 390, 430, 1024, 1280, 1440, 1920]) {
+  test(`workspace full-width e navegação global em ${width}px`, async ({ page }, testInfo) => {
+    const audit = await mount(page, "live", width, width < 761 ? 844 : 1000);
+    const content = page.locator(".px-dashboard");
+    const layout = await content.boundingBox();
+    expect(layout).not.toBeNull();
+    const rightMargin = width - (layout!.x + layout!.width);
+    expect(layout!.x).toBeGreaterThanOrEqual(width < 761 ? 14 : 16);
+    expect(layout!.x).toBeLessThanOrEqual(24);
+    expect(rightMargin).toBeGreaterThanOrEqual(width < 761 ? 14 : 16);
+    expect(rightMargin).toBeLessThanOrEqual(24);
+    await expect(page.getByRole("link", { name: "CoinOps · Automação", exact: true })).toHaveAttribute("href", "/automacao");
+    const trigger = page.getByRole("button", { name: "Navegação do CoinOps", exact: true });
+    const navigation = page.getByRole("navigation", { name: "Áreas do CoinOps", exact: true });
+    const triggerFrame = await trigger.boundingBox();
+    expect(triggerFrame!.width).toBeGreaterThanOrEqual(44);
+    expect(triggerFrame!.height).toBeGreaterThanOrEqual(44);
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(navigation).not.toBeVisible();
+    await screenshot(page, testInfo, `workspace-live-${width}`);
+    await trigger.click();
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(navigation).toBeVisible();
+    const links = navigation.getByRole("link");
+    await expect(links).toHaveCount(9);
+    expect(await links.evaluateAll((elements) => elements.map((element) => element.getAttribute("href"))))
+      .toEqual(["/automacao", "/dashboard", "/slots", "/plano-crescimento", "/historico", "/relatorios", "/ciclos", "/alertas", "/config"]);
+    for (const href of ["automacao", "dashboard", "slots", "plano-crescimento", "historico", "relatorios", "ciclos", "alertas", "config"])
+      expect(existsSync(resolve(appRoot, "app", href, "page.tsx")), `Rota real /${href}`).toBe(true);
+    const navigationFrame = await navigation.boundingBox();
+    const environments = page.getByLabel("Ambientes da Automação", { exact: true });
+    const toolbar = page.getByLabel("Ferramentas da Automação", { exact: true });
+    expect((await environments.boundingBox())!.y).toBeGreaterThanOrEqual(navigationFrame!.y + navigationFrame!.height);
+    await expect(environments).toBeVisible();
+    await expect(toolbar).toBeVisible();
+    await expect(environments.getByRole("link")).toHaveCount(4);
+    await expect(toolbar.getByRole("button")).toHaveCount(6);
+    await expect(toolbar.getByRole("link")).toHaveCount(1);
+    expect(await links.evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44))).toBe(true);
+    expect((await geometry(page)).overflow).toBe(0);
+    await screenshot(page, testInfo, `workspace-menu-${width}`);
+    await links.first().focus();
+    await page.keyboard.press("Escape");
+    await expect(navigation).not.toBeVisible();
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await trigger.click();
+    await page.getByRole("heading", { name: "Olá, Rafael!", exact: true }).click();
+    await expect(navigation).not.toBeVisible();
+    await trigger.click();
+    await links.filter({ hasText: "Resumo" }).click();
+    await expect(navigation).not.toBeVisible();
+    expect((await geometry(page)).overflow).toBe(0);
+    await noSideEffects(page, audit);
+  });
+}
 
 test("toolbar e detalhes preservam navegação sem submeter ações", async ({ page }, testInfo) => {
   const audit = await mount(page, "live", 390, 844);
@@ -345,7 +402,7 @@ test("multi-account: Todos nunca seleciona mutação e troca de conta descarta p
 
 test("onboarding é explícito, sem secrets nem PASS inventado e não executa no render", async ({ page }) => {
   const audit = await mount(page, "live", 390, 844, automationOperatorFixture());
-  await page.getByRole("button", { name: "Abrir menu", exact: true }).last().click();
+  await page.getByRole("button", { name: "Abrir menu da conta", exact: true }).click();
   await page.getByRole("button", { name: "Contas e onboarding", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("46.101.104.48");

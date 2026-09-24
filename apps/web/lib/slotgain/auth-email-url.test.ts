@@ -3,6 +3,12 @@ import test from "node:test";
 
 import { getCoinOpsAuthCallback } from "../auth-email-url.ts";
 
+test("CoinOps signup email can return to the operational home", () => {
+  const callback = new URL(getCoinOpsAuthCallback("/automacao"));
+  assert.equal(callback.pathname, "/auth/callback");
+  assert.equal(callback.searchParams.get("next"), "/automacao");
+});
+
 test("CoinOps Auth email callbacks use the canonical production origin", () => {
   const environment = process.env as Record<string, string | undefined>;
   const previousEnvironment = process.env.NODE_ENV;

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import { getCoinOpsAuthCallback } from "@/lib/auth-email-url";
+import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
 
@@ -67,7 +68,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
             data: {
               display_name: displayName
             },
-            emailRedirectTo: getCoinOpsAuthCallback("/dashboard")
+            emailRedirectTo: getCoinOpsAuthCallback(AUTHENTICATED_HOME)
           }
         });
 

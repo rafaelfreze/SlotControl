@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
+import { getAuthDestination } from "@/lib/auth/navigation";
 
 const protectedRoutes = ["/dashboard", "/slots", "/historico", "/config"];
 const authRoutes = ["/login", "/cadastro"];
@@ -69,9 +70,12 @@ export async function middleware(request: NextRequest) {
   }
 
   if (user && isRoute(pathname, authRoutes)) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    url.search = "";
+    const target = getAuthDestination({
+      redirectTo: request.nextUrl.searchParams.get("redirectTo"),
+      returnTo: request.nextUrl.searchParams.get("returnTo"),
+      next: request.nextUrl.searchParams.get("next")
+    });
+    const url = new URL(target, request.url);
     return NextResponse.redirect(url);
   }
 

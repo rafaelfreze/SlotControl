@@ -16,7 +16,7 @@ export function PremiumIcon({ name, className = "" }: { name: IconName; classNam
   return <svg className={`px-icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 export function PremiumBrand() {
-  return <a href="/dashboard" className="px-brand" aria-label="CoinOps · Resumo"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M19 4A16 16 0 1 0 34 15M26 5l8 7-10 1M25 15a8 8 0 1 0 1 11" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg><span><strong>CoinOps</strong><small>Automação cripto · Simples e eficiente</small></span></a>;
+  return <a href="/automacao" className="px-brand" aria-label="CoinOps · Automação"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M19 4A16 16 0 1 0 34 15M26 5l8 7-10 1M25 15a8 8 0 1 0 1 11" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg><span><strong>CoinOps</strong><small>Automação cripto · Simples e eficiente</small></span></a>;
 }
 export function AssetIcon({ asset }: { asset: "BTC" | "SOL" }) {
   return <span className={`px-coin px-coin--${asset.toLowerCase()}`} aria-hidden="true">{asset === "BTC" ? "₿" : <svg viewBox="0 0 32 32"><path d="m8 6-5 5h21l5-5zM3 14l5 5h21l-5-5zM8 22l-5 5h21l5-5z" fill="currentColor" /></svg>}</span>;

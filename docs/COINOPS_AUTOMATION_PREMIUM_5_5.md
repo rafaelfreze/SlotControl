@@ -52,3 +52,13 @@ Baseline operacional consultado antes do redesign: BTC e SOL ACTIVE, cada um com
 ## Rollback
 
 Reverter somente o commit de UI pelo fluxo Git normal. Não reiniciar executor, alterar flags LIVE, cancelar ordens ou reverter ledger. Nenhuma migration foi introduzida por esta fase.
+
+## Workspace e navegação global — complemento visual pós-5.6
+
+`/automacao` ocupa a largura disponível, sem o antigo limite central de 1320px. Em desktop, as margens laterais variam de 16 a 24px; grids mantêm suas proporções e tipografia. Em mobile, o shell mantém 14px e respeita os safe-area insets. As mudanças são locais a `.px-app`: o layout de `/dashboard` não é alterado.
+
+`premium-global-navigation.tsx` acrescenta um disclosure junto à marca, com os destinos reais Automação, Resumo, Slots, Plano, Histórico, Relatórios, Ciclos, Alertas e Configurações. Os nove links não disparam prefetch. O menu abre no fluxo do documento, sem sidebar fixa nem overlay sobre os cards. Tem alvos mínimos de 44px, `aria-expanded`, fechamento por Escape com retorno do foco, clique fora e saída de foco. O menu da conta/onboarding continua separado. A marca aponta a `/automacao`; Resumo permanece `/dashboard`.
+
+As duas barras internas — ambientes e ferramentas — continuam presentes e independentes desse menu. A barra de ferramentas conserva seu scroll horizontal próprio no celular; a página não deve produzir overflow horizontal.
+
+O harness offline agora cobre 24 casos: as quatro views, isolamento A/B, drawers e controles anteriores, mais sete casos de workspace/menu em 360, 390, 430, 1024, 1280, 1440 e 1920px. Cada novo caso confere margens, rotas existentes, touch targets, teclado, fechamento, não sobreposição e screenshots aberto/fechado. Rede, submissões e actions permanecem bloqueadas; screenshots não contêm dados produtivos. A emulação de largura não equivale a uma validação física de iPhone/PWA nem prova insets não nulos de um aparelho.

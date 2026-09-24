@@ -1,11 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { getAuthDestination } from "@/lib/auth/navigation";
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
-  const next = requestUrl.searchParams.get("next") || "/dashboard";
+  const next = getAuthDestination({ next: requestUrl.searchParams.get("next") });
 
   if (!isSupabaseConfigured()) {
     requestUrl.pathname = "/login";
@@ -24,7 +25,5 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  requestUrl.pathname = next.startsWith("/") ? next : "/dashboard";
-  requestUrl.search = "";
-  return NextResponse.redirect(requestUrl);
+  return NextResponse.redirect(new URL(next, requestUrl.origin));
 }

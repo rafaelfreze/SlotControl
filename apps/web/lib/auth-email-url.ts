@@ -14,7 +14,7 @@ function normalizeOrigin(value: string | undefined) {
   }
 }
 
-export function getCoinOpsAuthCallback(nextPath: "/dashboard" | "/redefinir-senha") {
+export function getCoinOpsAuthCallback(nextPath: "/automacao" | "/dashboard" | "/redefinir-senha") {
   const origin = normalizeOrigin(process.env.NEXT_PUBLIC_SITE_URL);
   const callback = new URL("/auth/callback", origin);
   callback.searchParams.set("next", nextPath);

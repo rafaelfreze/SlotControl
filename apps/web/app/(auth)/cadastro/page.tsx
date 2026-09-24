@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { AuthForm } from "@/components/auth/auth-form";
 import { CoinOpsBrand } from "@/components/app/coinops-brand";
+import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
 
 export const metadata: Metadata = {
   title: "Criar conta"
@@ -20,7 +21,7 @@ export default function CadastroPage() {
         <h1>Criar sua conta</h1>
         <p className="muted-text">Cada usuario tera seus proprios slots, historico e configuracoes.</p>
 
-        <AuthForm mode="signup" redirectTo="/dashboard" />
+        <AuthForm mode="signup" redirectTo={AUTHENTICATED_HOME} />
 
         <p className="auth-switch">
           Ja tem conta? <Link href="/login">Entrar</Link>
