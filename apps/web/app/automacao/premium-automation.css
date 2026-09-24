@@ -62,6 +62,12 @@
 .px-global-links>a>.px-icon{width:17px;height:17px;color:#54bde9}
 .px-global-links>a>.px-icon:last-child{margin-left:auto;width:14px;height:14px}
 .px-greeting p{max-width:65ch}
+@media(min-width:901px){
+  .px-context-bar{display:flex;align-items:center;justify-content:center;gap:clamp(18px,2vw,36px);border-bottom:1px solid #183044}
+  .px-context-bar .px-environments{flex:none;border-bottom:0}
+  .px-context-bar .px-environments>span,.px-context-bar .px-scope-filters small{display:none}
+  .px-context-bar .px-scope-filters{flex:none;flex-wrap:nowrap;padding:0}
+}
 @media(max-width:760px){
   .px-app{padding:env(safe-area-inset-top) max(14px,env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
   .px-global-navigation .px-topbar{gap:8px}

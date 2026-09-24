@@ -234,6 +234,29 @@ for (const width of [360, 390, 430, 1024, 1280, 1440, 1920]) {
   });
 }
 
+test("ambientes e filtros compartilham faixa central no desktop", async ({ page }, testInfo) => {
+  const audit = await mount(page, "live", 1024);
+  const environments = page.getByRole("navigation", { name: "Ambientes da Automação" });
+  const filters = page.getByLabel("Filtros da operação");
+  for (const width of [1024, 1280, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 960 });
+    const nav = (await environments.boundingBox())!;
+    const scope = (await filters.boundingBox())!;
+    expect(Math.abs(nav.y + nav.height / 2 - scope.y - scope.height / 2), `${width}px: alinhamento vertical`).toBeLessThan(3);
+    expect(Math.abs((nav.x + scope.x + scope.width) / 2 - width / 2), `${width}px: grupo centralizado`).toBeLessThan(3);
+    expect(nav.x + nav.width).toBeLessThan(scope.x);
+    expect((await geometry(page)).overflow).toBe(0);
+    if (width === 1440) await screenshot(page, testInfo, "automation-context-row-desktop");
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  const nav = (await environments.boundingBox())!;
+  const scope = (await filters.boundingBox())!;
+  expect(nav.y + nav.height).toBeLessThanOrEqual(scope.y);
+  expect((await geometry(page)).overflow).toBe(0);
+  await screenshot(page, testInfo, "automation-context-row-mobile");
+  await noSideEffects(page, audit);
+});
+
 test("toolbar e detalhes preservam navegação sem submeter ações", async ({ page }, testInfo) => {
   const audit = await mount(page, "live", 390, 844);
   const initialOverflow = await page.evaluate(() => document.documentElement.style.overflow);
