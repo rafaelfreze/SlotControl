@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
@@ -10,7 +10,20 @@ export function PasswordResetForm() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const configured = isSupabaseConfigured();
+
+  useEffect(() => {
+    if (!configured) return;
+    let active = true;
+    // getSession waits for the browser client's URL-fragment recovery flow.
+    void createClient().auth.getSession().then(({ data, error: sessionError }) => {
+      if (!active) return;
+      setSessionReady(Boolean(data.session));
+      if (sessionError || !data.session) setError("Link inválido ou expirado. Solicite um novo convite ou redefinição.");
+    });
+    return () => { active = false; };
+  }, [configured]);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,7 +64,7 @@ export function PasswordResetForm() {
       </label>
       <p className="auth-hint">Use pelo menos 8 caracteres.</p>
       {error ? <div className="form-error">{error}</div> : null}
-      <button className="solid-button" type="submit" disabled={isPending || !configured}>
+      <button className="solid-button" type="submit" disabled={isPending || !configured || !sessionReady}>
         {isPending ? "Atualizando..." : "Atualizar senha"}
       </button>
     </form>

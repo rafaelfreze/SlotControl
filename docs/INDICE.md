@@ -2,6 +2,7 @@
 
 ## Regras oficiais do CoinOps
 
+- [Meu CoinOps — acesso de cliente](./COINOPS_VIEWER_PORTAL.md) — vínculo de uma conta por VIEWER, Auth, RLS, fronteira somente leitura e semântica dos saldos.
 - [Operador multi-account/multi-market 5.6](./COINOPS_MULTI_ACCOUNT_OPERATOR_5_6.md) — identidade, isolamento por conta/motor/moeda, executor, onboarding e rollout compatível; gates dependem da evidência de fechamento.
 - [Automação premium 5.5](./COINOPS_AUTOMATION_PREMIUM_5_5.md) — design system dos quatro ambientes, paridade funcional, drawers e smoke sem ordens.
 - [Preparação LIVE 5.1 em BRL](./COINOPS_LIVE_PREPARATION_5_1.md) — BTCBRL/SOLBRL, filtros GET, capital, hard caps, preview e LIVE bloqueado.

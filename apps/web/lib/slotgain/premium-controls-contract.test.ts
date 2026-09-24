@@ -23,7 +23,7 @@ test("shared Shadow controls preserve all commands and explicit destructive-acti
   assert.doesNotMatch(legacyShadow, /action=\{(?:controlRobotV1Shadow|saveRobotV1Parameters)\}/);
   assert.equal((shadow.match(/action=\{controlRobotV1Shadow\}/g) || []).length, 4);
   assert.match(shadow, /name="command" value="start"[^]*?disabled=\{Boolean\(cycle\)\}/);
-  assert.match(shadow, /name="command" value=\{config\?\.pause_new_entries \? "resume" : "pause"\}/);
+  assert.match(shadow, /name="command" value=\{paused \? "resume" : "pause"\}/);
   assert.match(shadow, /onSubmit=\{confirmKill\}/);
   assert.match(shadow, /window\.confirm\("Ativar o kill switch pausa novas entradas deste robô Shadow\./);
   assert.match(shadow, /name="command" value="restart"/);
@@ -42,7 +42,9 @@ test("shared Testnet controls preserve execution gates and isolate virtual actio
   assert.equal((center.match(/action=\{startCoinOpsTestnet\}/g) || []).length, 1);
   assert.match(center, /data\.testnetEnabled && data\.testnetRun\?\.status === "ACTIVE" \? <form action=\{reconcileCoinOpsTestnet\}/);
   assert.match(center, /data\.testnetEnabled && data\.testnet\?\.ok && \(!data\.testnetRun \|\| data\.testnetRun\.status === "COMPLETED"\) \? <form action=\{startCoinOpsTestnet\}/);
-  assert.match(center, /disabled title="Pausa segura ainda não implementada/);
+  assert.match(center, /action=\{controlCoinOpsTestnet\}/);
+  assert.match(center, /data\.testnetRun\.status === "PAUSED" \? "resume" : "pause"/);
+  assert.match(center, /data\.testnetRun\.status === "PAUSED" \? "Iniciar Testnet" : "Pausar Testnet"/);
   assert.match(center, /<TestnetControls data=\{data\} asset=\{selectedAsset\}/);
   assert.doesNotMatch(shadow, /LIVE bloqueado|BTC LIVE OFF/);
   assert.doesNotMatch(controls, /LIVE BLOQUEADO|BTC LIVE OFF/);
