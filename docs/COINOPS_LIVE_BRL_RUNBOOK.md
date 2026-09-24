@@ -31,7 +31,8 @@ transferência, margem ou Futures.
    sem saques/transferências/margem/Futures. Testar somente `/api/v3/order/test`.
 3. Preparar os ciclos por ativo na rota autenticada
    `POST /api/coinops-live-activation` (`PREPARE`) ou no controle operacional
-   `POST /api/cron/live-control` com `CRON_SECRET`, ainda sem ordem. Confirmar
+   `POST /api/cron/live-control` com `COINOPS_LIVE_CONTROL_SECRET` exclusivo
+   de Production, ainda sem ordem. Confirmar
    25 slots, capital lógico e ausência de ordens próprias na Binance.
 4. Publicar o executor com `TRADING_ENABLED=true`, `KILL_SWITCH=ON` para manter
    proteção de posições sem novas BUYs; só após todas as provas, liberar

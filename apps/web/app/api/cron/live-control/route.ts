@@ -15,11 +15,12 @@ export const maxDuration = 60;
 
 const headers = { "cache-control": "no-store" };
 
-/** Operator-only control plane. CRON_SECRET already authorizes the execution
- * cron; this endpoint accepts no amounts, prices, order IDs, or user IDs. */
+/** Operator-only control plane with a dedicated Production secret. This
+ * endpoint accepts no amounts, prices, order IDs, or user IDs. */
 export async function POST(request: NextRequest) {
-  if (!process.env.CRON_SECRET
-    || request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`)
+  if (!process.env.COINOPS_LIVE_CONTROL_SECRET
+    || process.env.COINOPS_LIVE_CONTROL_SECRET.length < 32
+    || request.headers.get("authorization") !== `Bearer ${process.env.COINOPS_LIVE_CONTROL_SECRET}`)
     return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401, headers });
   if (process.env.VERCEL_ENV !== "production"
     || request.nextUrl.hostname !== "cripto-flax.vercel.app"
