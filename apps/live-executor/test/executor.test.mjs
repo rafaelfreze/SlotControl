@@ -8,6 +8,7 @@ import test from "node:test";
 import { buildLiveSizing, parseLiveRules } from "../../web/lib/execution/live-preparation.ts";
 import { STRATEGY_VERSION } from "../../web/lib/execution/strategy-engine.ts";
 import { buildExecutorDryRun, validateDryRunIntent } from "../src/preparation.mjs";
+import { getPublicMarket } from "../src/binance-readonly.mjs";
 import { createExecutorHandler, startExecutor } from "../src/server.mjs";
 import { requestSignature, sha256, verifySignedRequest, withDryRunIdempotency } from "../src/security.mjs";
 
@@ -163,4 +164,25 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
 test("unsafe deployment flags fail closed before listening", async () => {
   await assert.rejects(startExecutor({ TRADING_ENABLED: "true", KILL_SWITCH: "ON" }), /SAFETY_FLAGS_REQUIRED/);
   await assert.rejects(startExecutor({ TRADING_ENABLED: "false", KILL_SWITCH: "OFF" }), /SAFETY_FLAGS_REQUIRED/);
+});
+
+test("public Binance GET retries one transient failure without making a write", async () => {
+  const calls = [];
+  let failed = false;
+  const fetcher = async (url, init) => {
+    calls.push({ url, method: init.method });
+    if (url.includes("ticker/price") && !failed) {
+      failed = true;
+      return Response.json({}, { status: 503 });
+    }
+    if (url.includes("exchangeInfo")) return Response.json({ symbols: [raw("BTC"), raw("SOL")] });
+    if (url.includes("ticker/price")) return Response.json([
+      { symbol: "BTCBRL", price: "437457" }, { symbol: "SOLBRL", price: "597.7" }]);
+    if (url.endsWith("/api/v3/time")) return Response.json({ serverTime: FIXED_NOW });
+    throw new Error("Unexpected URL");
+  };
+  const snapshot = await getPublicMarket(fetcher, () => FIXED_NOW);
+  assert.deepEqual(snapshot.markets.map((item) => item.raw.symbol), ["BTCBRL", "SOLBRL"]);
+  assert.equal(calls.filter((item) => item.url.includes("ticker/price")).length, 2);
+  assert.ok(calls.every((item) => item.method === "GET"));
 });

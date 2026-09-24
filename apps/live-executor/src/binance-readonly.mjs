@@ -5,10 +5,22 @@ const BINANCE_SPOT = "https://api.binance.com";
 const SYMBOLS = ["BTCBRL", "SOLBRL"];
 
 async function getJson(fetcher, url) {
-  const response = await fetcher(url, { method: "GET", cache: "no-store", signal: AbortSignal.timeout(6_000),
-    headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error("EXECUTOR_BINANCE_GET_FAILED");
-  return response.json();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetcher(url, { method: "GET", cache: "no-store",
+        signal: AbortSignal.timeout(4_000), headers: { accept: "application/json" } });
+      if (response.ok) return response.json();
+      if (attempt === 0 && response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        continue;
+      }
+      throw new Error("EXECUTOR_BINANCE_GET_FAILED");
+    } catch (error) {
+      if (attempt === 1 || error instanceof Error && error.message === "EXECUTOR_BINANCE_GET_FAILED")
+        throw error;
+    }
+  }
+  throw new Error("EXECUTOR_BINANCE_GET_FAILED");
 }
 
 export async function getPublicMarket(fetcher = fetch, now = Date.now) {
