@@ -39,6 +39,7 @@ test("portal data is server-scoped and omits private order identifiers", () => {
   assert.doesNotMatch(page, /select\([^\n]*client_order_id/);
   assert.doesNotMatch(page, /select\([^\n]*credential_ref/);
   assert.match(middleware, /pathname\.startsWith\("\/api\/"\).*VIEWER_READ_ONLY/);
+  assert.match(middleware, /db: \{ schema: getSupabaseDataSchema\(\) \}/);
   assert.match(migration, /not exists \([\s\S]*coinops\.viewer_access viewer/);
   assert.match(migration, /create policy viewer_self_read/);
   assert.doesNotMatch(migration, /grant (?:insert|update|delete|all) on coinops\.viewer_access to authenticated/i);
