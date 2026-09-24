@@ -15,3 +15,23 @@
 @media(max-width:375px){.px-health p{font-size:11px}.px-health-check small{font-size:9px}.px-asset-facts strong{font-size:11px}.px-asset-facts span,.px-asset-facts small{font-size:10px}.px-metric>span{font-size:11px}.px-asset-facts>div{padding:0 4px}}
 .px-overview-bottom{display:grid;grid-template-columns:1.15fr 1fr;gap:16px}.px-overview-health{padding:18px}.px-overview-health>a{display:block;padding:12px 0;border-bottom:1px solid var(--px-border);color:inherit;text-decoration:none}.px-overview-health>a:last-child{border:0}.px-overview-health strong{display:flex;align-items:center;justify-content:space-between;font-size:13px}.px-overview-health span,.px-overview-health small{display:block;margin-top:5px;color:var(--px-muted);font-size:12px;line-height:1.5}.px-overview-health small{font-size:11px}@media(max-width:700px){.px-overview-bottom{grid-template-columns:1fr;gap:12px}}
 .px-overview-bottom>.px-activity{padding:18px}@media(max-width:700px){.px-overview-bottom>.px-activity{padding:14px}}
+
+/* Mobile slots keep all operational values in two compact rows. The existing
+   accessible action opens the full detail drawer from a 45px touch target. */
+@media(max-width:760px){
+  .px-slot-table tr{grid-template-columns:minmax(0,.95fr) repeat(2,minmax(0,1fr)) 45px;grid-template-rows:auto auto;column-gap:6px;row-gap:4px;padding:7px 0;min-height:98px}
+  .px-slot-table td{font-size:12px;line-height:1.35;align-self:start}
+  .px-slot-table td>small{font-size:12px;line-height:1.25;margin-top:2px}
+  .px-slot-table td:first-child{grid-column:1;grid-row:1;align-self:center}
+  .px-slot-table td:nth-child(2){grid-column:2;grid-row:1;justify-self:start;align-self:center}
+  .px-slot-table td:nth-child(3){grid-column:1;grid-row:2}
+  .px-slot-table td:nth-child(4){grid-column:2;grid-row:2}
+  .px-slot-table td:nth-child(5){grid-column:3;grid-row:2}
+  .px-slot-table td:nth-child(6){grid-column:3;grid-row:1}
+  .px-slot-table td:nth-child(6)>small{display:inline;margin:0 0 0 4px;white-space:nowrap}
+  .px-slot-table td:nth-child(7){grid-column:4;grid-row:1/3;align-self:center}
+  .px-slot-table td[data-label]:before{font-size:10px;line-height:1.2;margin-bottom:2px}
+  .px-slot-table .px-badge{font-size:11px;padding:3px 5px;line-height:1.2;overflow-wrap:anywhere}
+  .px-slot-table .px-row-link{font-size:0;min-width:45px;width:45px;min-height:45px;height:45px;padding:0;gap:0;justify-content:center}
+  .px-slot-table .px-row-link>span{margin:0;font-size:24px;line-height:1}
+}
