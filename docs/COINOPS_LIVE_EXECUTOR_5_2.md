@@ -17,6 +17,7 @@ O código oficial permanece em `github.com/rafaelfreze/SlotControl`, branch `mai
 - Defesa adicional: BTC R$ 450 total/R$ 18 por ordem; SOL R$ 275 total/R$ 11 por ordem; global R$ 725; 25 slots. Request não pode ampliar esses valores.
 - `POST /v1/dry-run` requer HMAC SHA-256 de método, rota, timestamp, nonce e hash do corpo. Janela de 30 segundos, nonce único e idempotência persistida em disco (conclusões e claims), com bloqueio de claims pendentes.
 - `GET /health` não contém segredo. Só marca `healthy=true` se os GETs públicos da Binance funcionam, o relógio tem drift <= 2 s, a chave Production consultada é somente leitura e o IPv4 observado coincide com o configurado.
+- Os GETs públicos repetem no máximo uma vez após falha de rede ou HTTP 5xx; HTTP 429 e demais 4xx falham fechados. O drift é medido no intervalo da própria consulta de horário, sem confundir uma cotação paralela lenta com atraso de relógio.
 - Os logs incluem request ID, decision ID, hash curto da chave de idempotência, symbol, resultado, latência, flags e horário, sem HMAC/segredo/cabeçalho de autorização.
 - A chave privada SSH dedicada reside apenas no perfil local deste PC, fora do Git. As credenciais Binance e HMAC devem residir somente em env de serviço restrito e configuração server-side Vercel, nunca no frontend, Git ou relatórios.
 
@@ -31,3 +32,11 @@ O botão “Validar dry-run BTC/SOL” faz um `POST` autenticado em `/api/coinop
 Comandos de diagnóstico no servidor: `systemctl status coinops-live-executor`, `systemctl status nginx`, `systemctl list-timers coinops-certbot-renew.timer`, `journalctl -u coinops-live-executor`, `ufw status` e `curl https://46.101.104.48/health`. Nunca copiar env/segredos para logs ou tickets.
 
 A Fase 5.3, separada, poderá pedir ao proprietário cadastrar o IPv4 na whitelist da Binance e habilitar somente Spot Trading. Esta fase **não** altera whitelist, permissões da API, LIVE ou saldo, e não cria/cancela ordens reais.
+
+## Evidência operacional da Fase 5.2
+
+- GET autenticado Binance Production executado no Droplet e reportado pelo health como `READ_ONLY`; IPv4 de saída `46.101.104.48` confirmado. `TRADING_ENABLED=false`, `KILL_SWITCH=ON` e porta de aplicação restrita a `127.0.0.1:8080`.
+- Vercel Production enviou HMAC server-side para o mesmo executor e recebeu `NO_WRITE` em BTCBRL e SOLBRL: 25/25 slots válidos em cada par. O primeiro diagnóstico sofreu falha transitória isolada em BTC; a leitura GET ganhou retry limitado e a medição de drift foi corrigida. O diagnóstico subsequente passou em ambos (BTC 1.310 ms, SOL 2.098 ms). São amostras de smoke, não SLA/p95.
+- TLS público válido; renovação Let's Encrypt com `certbot renew --dry-run` aprovada. Firewall libera apenas SSH, 80 e 443; SSH exige chave e desabilita senha. Arquivo de env do executor é `root:root` modo `600`, estado do serviço modo `700`.
+- Os testes do executor cobrem HMAC/tamper/anti-replay, idempotência, parity com Strategy Engine, hard caps, negação de create/cancel, retry GET e clock paralelo. A chave Binance Production foi copiada apenas para o env privado do servidor, sem mudança de permissões/whitelist e sem exposição no Git/UI/logs. A cópia original na Vercel permanece temporariamente para não quebrar o painel existente.
+- `LIVE_EXECUTOR_READY` é um gate de infraestrutura e não autorização de trading. Para a Fase 5.3, revalidar saldo, filtros, permissões, whitelist, relógio, certificado, configurações e caps; a execução real exige decisão e autorização separadas.

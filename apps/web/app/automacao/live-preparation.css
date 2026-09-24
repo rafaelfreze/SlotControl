@@ -1,5 +1,9 @@
 .lp-stack { display: grid; gap: 12px; }
 .lp-summary, .lp-asset { min-width: 0; }
+.lp-summary .ac-panel-heading { flex-wrap: wrap; }
+.lp-summary .ac-panel-heading > .ac-badge { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.lp-summary > button { min-height: 40px; padding: 8px 12px; border: 1px solid #48667a; border-radius: 8px; background: #1b3446; color: #e9f1f5; cursor: pointer; }
+.lp-summary > button:disabled { opacity: .65; cursor: wait; }
 .lp-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 8px; margin: 12px 0; }
 .lp-metrics span { display: flex; flex-direction: column; gap: 3px; padding: 10px; border: 1px solid #33414d; border-radius: 10px; color: #9ba9b5; font-size: .82rem; }
 .lp-metrics strong { color: #e9f1f5; font-size: .96rem; }
