@@ -24,6 +24,8 @@ O código oficial permanece em `github.com/rafaelfreze/SlotControl`, branch `mai
 
 O `LIVE_EXECUTOR_READY` requer, em conjunto: IPv4 confirmado, TLS público válido/renovação, health, HMAC/anti-replay, caps, allowlist, flags de bloqueio, GETs Binance Production pelo IP do executor, dry-run BTC/SOL igual ao da Fase 5.1, observabilidade e zero escrita. Se qualquer verificação faltar, o gate é `ATTENTION`/pendente. Mesmo em PASS, LIVE permanece bloqueado.
 
+O painel Real lê `LIVE_EXECUTOR_BASE_URL` e `LIVE_EXECUTOR_EGRESS_IP` **somente no servidor** e exibe o health. `LIVE_EXECUTOR_VALIDATED_VERSION` fica ausente até o smoke assinado e a validação READ-ONLY do SHA correspondente; a presença dessa variável apenas libera a exibição do gate quando o health ainda confirma os bloqueios e o IP. Nenhuma dessas variáveis habilita trading.
+
 Comandos de diagnóstico no servidor: `systemctl status coinops-live-executor`, `systemctl status nginx`, `systemctl list-timers coinops-certbot-renew.timer`, `journalctl -u coinops-live-executor`, `ufw status` e `curl https://46.101.104.48/health`. Nunca copiar env/segredos para logs ou tickets.
 
 A Fase 5.3, separada, poderá pedir ao proprietário cadastrar o IPv4 na whitelist da Binance e habilitar somente Spot Trading. Esta fase **não** altera whitelist, permissões da API, LIVE ou saldo, e não cria/cancela ordens reais.

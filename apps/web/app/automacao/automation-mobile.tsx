@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import type { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import type { buildLiveSizing, LiveConfig } from "@/lib/execution/live-preparation";
+import type { LiveExecutorStatus } from "@/lib/execution/live-executor-health";
 import { reconcileV1PhysicalSlotAccounts, summarizeV1ShadowOperations } from "@/lib/execution/robot-v1-audit";
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
 import type { MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
@@ -31,6 +32,7 @@ export type TestnetHistoryBundle = { run: NonNullable<TestnetRun>; slots: Testne
 export type TestnetAssetData = { run: NonNullable<TestnetRun>; slots: TestnetSlot[]; orders: TestnetOrderRow[]; events: TestnetEvent[]; history?: TestnetHistoryBundle[] };
 export type LivePresentation = { configs: LiveConfig[]; sizing: ReturnType<typeof buildLiveSizing>[];
   gate: "BLOCKED" | "BALANCE_UNKNOWN" | "BRL_INSUFFICIENT" | "LIVE_PREPARATION_READY";
+  executor: LiveExecutorStatus;
   nativeLedgerReady: boolean; reconciliationVerified: boolean; ownedDivergences: number;
   globalCapBrl: number; globalConfigVersion: number; brlFree: number | null; brlLocked: number | null;
   observedAt: string | null; balanceObservedAt: string | null; source: string | null;

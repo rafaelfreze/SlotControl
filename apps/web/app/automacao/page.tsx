@@ -5,6 +5,7 @@ import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet
 import { getDailyMarketCandles } from "@/lib/execution/market-daily-candles";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
 import { buildLiveSizing, liveOperationalDivergences, livePreparationGate, type LiveConfig } from "@/lib/execution/live-preparation";
+import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
 import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
@@ -181,7 +182,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
   let livePreparation: import("./automation-mobile").Props["livePreparation"] = null;
   if (view === "live") {
-    const [preparations, globalCap, nativeAccounts, legacyRealCredits, production] = await Promise.all([
+    const [preparations, globalCap, nativeAccounts, legacyRealCredits, production, executor] = await Promise.all([
       supabase.from("robot_v1_live_preparations")
         .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,updated_at")
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
@@ -194,6 +195,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
         .eq("environment", "REAL").limit(1),
       loadLiveProductionSnapshot().catch(() => null),
+      loadLiveExecutorStatus(),
     ]);
     if (preparations.error || globalCap.error || nativeAccounts.error || legacyRealCredits.error)
       throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
@@ -228,7 +230,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       activeDivergences: ownedDivergences, reconciliationVerified, nativeLedgerReady,
       productionPermission: production.permissions,
     }) : "BLOCKED";
-    livePreparation = { configs, sizing, gate, nativeLedgerReady, reconciliationVerified,
+    livePreparation = { configs, sizing, gate, executor, nativeLedgerReady, reconciliationVerified,
       ownedDivergences, globalCapBrl: globalBrl,
       globalConfigVersion: Number(globalCap.data?.config_version ?? 0),
       brlFree: production?.brlFree ?? null, brlLocked: production?.brlLocked ?? null,

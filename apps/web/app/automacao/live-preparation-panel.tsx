@@ -32,6 +32,18 @@ export function LivePreparationPanel({ data, asset }: {
     ["LIVE bloqueado", data.configs.length === 2 && data.configs.every((item) => item.live_enabled === false)],
   ] as const;
   return <div className="lp-stack">
+    <section className="ac-panel lp-summary" aria-label="Executor LIVE">
+      <div className="ac-panel-heading"><h2>Executor LIVE · somente leitura</h2>
+        <span className="ac-badge ac-badge--slate">{data.executor.gate.replaceAll("_", " ")}</span></div>
+      <div className="lp-metrics">
+        <span>IP para whitelist Binance <strong>{data.executor.ip ?? "não configurado"}</strong></span>
+        <span>Versão <strong>{data.executor.health?.version ?? "indisponível"}</strong></span>
+        <span>Binance Production <strong>{data.executor.health?.binance_connectivity ?? "indisponível"}</strong></span>
+        <span>API Spot <strong>{data.executor.health?.account_permission ?? "não verificada"}</strong></span>
+        <span>Latência health <strong>{data.executor.health ? `${num(data.executor.health.latency_ms, 0)} ms` : "—"}</strong></span>
+      </div>
+      <small>IPv4 de saída {data.executor.health?.egress_ipv4_verified ? "confirmado" : "não confirmado"} · trading {data.executor.health ? data.executor.health.trading_enabled ? "INSEGURO" : "desligado" : "não verificado"} · kill switch {data.executor.health?.kill_switch ? "ON" : "não verificado"} · whitelist Binance PENDENTE. Não cadastre o IP nem altere a chave nesta fase.</small>
+    </section>
     <section className="lp-summary ac-panel" aria-label="Preparação LIVE em BRL">
       <div className="ac-panel-heading"><h2>Preparação LIVE · BTC/BRL + SOL/BRL</h2>
         <span className="ac-badge ac-badge--slate">{data.gate.replaceAll("_", " ")}</span></div>
