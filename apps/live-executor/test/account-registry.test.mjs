@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { validateExecutorRegistry, resolveExecutorContext, assertEngineOrder, engineOrderPrefix,
   durableIntent, saveInactiveRegistryAccount, promotePreparedRegistryAccount,
-  loadCombinedRegistry } from "../src/account-registry.mjs";
+  loadCombinedRegistry, canReadDynamicRegistry } from "../src/account-registry.mjs";
 import { sha256, requestSignature, withWriteIdempotency } from "../src/security.mjs";
 import { createExecutorHandler } from "../src/server.mjs";
 import { liveClientOrderId } from "../../web/lib/execution/robot-v1-live-cycle.ts";
@@ -20,6 +20,16 @@ const engines = [ACCOUNT_A, ACCOUNT_B].flatMap((account, accountIndex) => market
   engineFixture(symbol, account, accountIndex * 10 + i + 1, account === ACCOUNT_A && symbol.endsWith("BRL"))));
 const registry = validateExecutorRegistry(registryFixture(engines));
 const NOW = Date.parse("2026-09-24T10:00:00Z"), SECRET = "fictional-test-HMAC-secret-never-production";
+
+test("promoted registry is readable only by root or its dedicated read-only group", () => {
+  const promoted = { uid: 0, gid: 988, mode: 0o100640 };
+  assert.equal(canReadDynamicRegistry(promoted, 999, 988), true);
+  assert.equal(canReadDynamicRegistry(promoted, 999, 987), false);
+  assert.equal(canReadDynamicRegistry(promoted, 0, 0), true);
+  assert.equal(canReadDynamicRegistry({ ...promoted, mode: 0o100660 }, 999, 988), false);
+  assert.equal(canReadDynamicRegistry({ ...promoted, mode: 0o100644 }, 999, 988), false);
+  assert.equal(canReadDynamicRegistry({ uid: 999, gid: 988, mode: 0o100600 }, 999, 988), true);
+});
 
 test("A/B and four native markets resolve exact credentials, never fallback", () => {
   for (const engine of engines) {

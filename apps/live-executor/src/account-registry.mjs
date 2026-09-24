@@ -1,4 +1,4 @@
-import { open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { chown, chmod, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ExecutorRejection, sha256 } from "./security.mjs";
@@ -101,16 +101,23 @@ export function resolveExecutorContext(registry, input, key, env = process.env,
   return { engine: row, apiKey, apiSecret, vault: reference.vault === true, input, legacyClient };
 }
 
+export function canReadDynamicRegistry(metadata, readerUid = process.getuid?.(), readerGid = process.getgid?.()) {
+  const permissions = metadata.mode & 0o777;
+  return (permissions & 0o077) === 0
+    || metadata.uid === 0 && permissions === 0o640
+      && (readerUid === 0 || metadata.gid === readerGid);
+}
+
 async function readDynamic(directory) {
   const path = join(directory, "dynamic-registry.json");
-  const content = await readFile(path, "utf8").catch((error) => {
+  const metadata = await stat(path).catch((error) => {
     if (error?.code === "ENOENT") return null;
     throw error;
   });
-  if (!content) return { version: 1, engines: [], credentials: {} };
-  const metadata = await stat(path);
-  if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)
+  if (!metadata) return { version: 1, engines: [], credentials: {} };
+  if (process.platform !== "win32" && !canReadDynamicRegistry(metadata))
     deny("EXECUTOR_REGISTRY_NOT_PRIVATE");
+  const content = await readFile(path, "utf8");
   const dynamic = JSON.parse(content);
   if (dynamic.version !== 1 || !Array.isArray(dynamic.engines) || !dynamic.credentials)
     deny("EXECUTOR_REGISTRY_INVALID");
@@ -207,7 +214,21 @@ export async function promotePreparedRegistryAccount(staticRegistry, directory, 
     const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
-    try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+    // Promotion is performed by root, while the unprivileged executor must
+    // read (never write) the resulting registry on each request.
+    try {
+      if (process.platform !== "win32" && process.getuid?.() === 0) {
+        const directoryMetadata = await stat(directory);
+        if (directoryMetadata.uid !== 0) {
+          await chown(temporary, 0, directoryMetadata.gid);
+          await chmod(temporary, 0o640);
+        }
+      }
+      await rename(temporary, target);
+    } catch (error) {
+      await unlink(temporary).catch(() => {});
+      throw error;
+    }
     return { status: "ACTIVE", promoted_engines: 2, replayed: false };
   } finally { await lock.close(); await unlink(lockPath).catch(() => {}); }
 }
