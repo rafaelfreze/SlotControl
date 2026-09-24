@@ -8,9 +8,9 @@ import test from "node:test";
 import { buildLiveSizing, parseLiveRules } from "../../web/lib/execution/live-preparation.ts";
 import { STRATEGY_VERSION } from "../../web/lib/execution/strategy-engine.ts";
 import { buildExecutorDryRun, validateDryRunIntent } from "../src/preparation.mjs";
-import { getPublicMarket } from "../src/binance-readonly.mjs";
+import { getProductionRestrictedSpotStatus, getPublicMarket } from "../src/binance-readonly.mjs";
 import { createExecutorHandler, startExecutor } from "../src/server.mjs";
-import { requestSignature, sha256, verifySignedRequest, withDryRunIdempotency } from "../src/security.mjs";
+import { requestSignature, sha256, verifySignedRequest, withDryRunIdempotency, withWriteIdempotency } from "../src/security.mjs";
 
 const SECRET = "test-only-long-hmac-secret-with-entropy-placeholder";
 const FIXED_NOW = Date.parse("2026-09-24T01:00:00.000Z");
@@ -54,6 +54,27 @@ function signedHeaders(body, nonce = randomUUID().replaceAll("-", ""), timestamp
     "x-coinops-idempotency-key": "COINOPS:REAL:BTC:preview:v2" });
 }
 
+test("Production Spot preflight rejects any withdrawal, transfer, margin or Futures permission", async () => {
+  const safe = { ipRestrict: true, enableReading: true, enableSpotAndMarginTrading: true,
+    enableWithdrawals: false, enableInternalTransfer: false, permitsUniversalTransfer: false,
+    enableMargin: false, enableFutures: false, enableVanillaOptions: false,
+    enablePortfolioMarginTrading: false, enableFixApiTrade: false };
+  const fetcher = async (url) => {
+    if (url.endsWith("/api/v3/time")) return Response.json({ serverTime: FIXED_NOW });
+    if (url.includes("/api/v3/account?")) return Response.json({ canTrade: true, balances: [] });
+    if (url.includes("/sapi/v1/account/apiRestrictions?")) return Response.json(safe);
+    throw new Error("UNEXPECTED_BINANCE_GET");
+  };
+  assert.equal(await getProductionRestrictedSpotStatus({ apiKey: "key", apiSecret: "secret", fetcher }), "SPOT_RESTRICTED");
+  for (const patch of [{ ipRestrict: false }, { enableWithdrawals: true },
+    { enableInternalTransfer: true }, { permitsUniversalTransfer: true },
+    { enableMargin: true }, { enableFutures: true }, { enablePortfolioMarginTrading: true }]) {
+    const unsafeFetcher = async (url) => url.includes("/apiRestrictions?")
+      ? Response.json({ ...safe, ...patch }) : fetcher(url);
+    assert.equal(await getProductionRestrictedSpotStatus({ apiKey: "key", apiSecret: "secret", fetcher: unsafeFetcher }), "UNSAFE");
+  }
+});
+
 test("HMAC rejects tamper, stale timestamp and nonce replay across store instances", async () => {
   const directory = await mkdtemp(join(tmpdir(), "coinops-exec-nonce-"));
   const body = JSON.stringify(intent("BTC"));
@@ -88,6 +109,26 @@ test("disk idempotency caches lost responses, denies changed bodies and concurre
   await assert.rejects(withDryRunIdempotency({ ...args, key: otherKey }), /IDEMPOTENCY_IN_PROGRESS/);
   release();
   assert.equal((await first).result, 1);
+});
+
+test("financial idempotency retains an uncertain claim until exact exchange recovery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-exec-write-idem-"));
+  const key = "COINOPS:REAL:BTC:order:1";
+  const args = { directory, key, bodyHash: sha256("same-order") };
+  let writes = 0;
+  await assert.rejects(withWriteIdempotency({ ...args, recover: async () => null,
+    execute: async () => { writes++; throw new Error("LOST_ACK"); } }), /LOST_ACK/);
+  await assert.rejects(withWriteIdempotency({ ...args, recover: async () => null,
+    execute: async () => { writes++; return { id: "second" }; } }), /WRITE_OUTCOME_UNKNOWN/);
+  assert.equal(writes, 1);
+  await assert.rejects(withWriteIdempotency({ ...args, bodyHash: sha256("changed"),
+    recover: async () => null, execute: async () => null }), /IDEMPOTENCY_CONFLICT/);
+  const recovered = await withWriteIdempotency({ ...args, recover: async () => ({ id: "first" }),
+    execute: async () => { writes++; return null; } });
+  assert.deepEqual(recovered, { result: { id: "first" }, replayed: true });
+  assert.deepEqual(await withWriteIdempotency({ ...args, recover: async () => null,
+    execute: async () => { writes++; return null; } }), recovered);
+  assert.equal(writes, 1);
 });
 
 test("BTC/SOL dry-run uses the exact shared Strategy Engine and rejects symbol/cap bypass", () => {
@@ -176,8 +217,10 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
 });
 
 test("unsafe deployment flags fail closed before listening", async () => {
-  await assert.rejects(startExecutor({ TRADING_ENABLED: "true", KILL_SWITCH: "ON" }), /SAFETY_FLAGS_REQUIRED/);
+  await assert.rejects(startExecutor({ TRADING_ENABLED: "yes", KILL_SWITCH: "ON" }), /SAFETY_FLAGS_REQUIRED/);
+  await assert.rejects(startExecutor({ TRADING_ENABLED: "false", KILL_SWITCH: "maybe" }), /SAFETY_FLAGS_REQUIRED/);
   await assert.rejects(startExecutor({ TRADING_ENABLED: "false", KILL_SWITCH: "OFF" }), /SAFETY_FLAGS_REQUIRED/);
+  await assert.rejects(startExecutor({ TRADING_ENABLED: "true", KILL_SWITCH: "ON" }), /AUTH_NOT_CONFIGURED/);
 });
 
 test("public Binance GET retries one transient failure without making a write", async () => {

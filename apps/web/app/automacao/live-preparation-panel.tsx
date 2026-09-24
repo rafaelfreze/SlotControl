@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import type { LivePresentation } from "./automation-mobile";
+import type { LiveAssetData, LivePresentation } from "./automation-mobile";
 import { saveLiveAssetCaps, saveLiveGlobalCap } from "./live-preparation-actions";
 import "./live-preparation.css";
 
@@ -12,6 +12,70 @@ const num = (value: number, digits = 8) => value.toLocaleString("pt-BR", { maxim
 const pct = (value: number | string) => `${num(Number(value) * 100, 3)}%`;
 const when = (value: string | null) => value ? new Intl.DateTimeFormat("pt-BR", {
   dateStyle: "short", timeStyle: "short", timeZone: "America/Campo_Grande" }).format(new Date(value)) : "não disponível";
+
+export function LiveOperationalPanel({ asset, data }: { asset: "BTC" | "SOL"; data: LiveAssetData }) {
+  const active = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
+  const open = data.slots.filter((slot) => slot.entry_state === "OPEN");
+  const next = data.orders.find((order) => order.side === "BUY" && order.purpose === "ENTRY"
+    && active.has(order.status));
+  const tps = data.orders.filter((order) => order.side === "SELL" && active.has(order.status));
+  const planned = data.slots.filter((slot) => slot.entry_state === "PLANNED").length;
+  const total = data.accounts.reduce((sum, account) => sum + Number(account.balance_brl), 0);
+  const committed = data.slots.reduce((sum, slot) => sum + Number(slot.position_committed_brl), 0);
+  const marketPnl = data.accounts.reduce((sum, account) => sum + Number(account.market_pnl_brl), 0);
+  const fees = data.accounts.reduce((sum, account) => sum + Number(account.fees_brl), 0);
+  const rows = [...data.slots].sort((left, right) => (left.operational_rank ?? 26)
+    - (right.operational_rank ?? 26) || left.slot_number - right.slot_number);
+  const target = asset === "BTC" ? 7 : 2;
+  return <section className="ac-panel lp-asset" aria-label={`Ciclo LIVE ${asset}/BRL`}>
+    <div className="ac-panel-heading"><h2>{asset}/BRL · ciclo LIVE</h2>
+      <span className="ac-badge ac-badge--slate">{data.run.status} · {data.run.entry_regime}</span></div>
+    {data.alerts.map((alert) => <p role="alert" className="lp-warning" key={alert.code}>
+      {alert.severity}: {alert.code} · {when(alert.last_seen_at)}</p>)}
+    {data.run.last_error ? <p role="alert" className="lp-warning">Reconciliação: {data.run.last_error}</p> : null}
+    <div className="lp-metrics">
+      <span>Posições OPEN <strong>{open.length}</strong></span>
+      <span>TP residente <strong>{tps.length}</strong></span>
+      <span>Próxima BUY <strong>{next ? `Slot #${next.slot_number}` : "nenhuma"}</strong></span>
+      <span>Níveis PLANNED <strong>{planned}</strong></span>
+      <span>Slots físicos <strong>{data.slots.length}/25</strong></span>
+      <span>Caixa lógico <strong>{brl(total)}</strong></span>
+      <span>Capital em posições <strong>{brl(committed)}</strong></span>
+      <span>P&L mercado líquido <strong>{brl(marketPnl - fees)}</strong></span>
+    </div>
+    <small>Ciclo {data.run.id} · reconciliação {when(data.run.last_reconciled_at)} ·
+      gain {pct(data.run.gain_rate)} · spacing {pct(data.run.entry_spacing)} · v{data.run.config_version}.
+      Caixa, posições e saldo Binance são conceitos separados.</small>
+    <div className="lp-table-wrap"><table><thead><tr><th>Físico</th><th>Estado</th><th>Rank</th>
+      <th>Gains mês</th><th>Entrada</th><th>Saldo</th><th>Detalhes</th></tr></thead><tbody>
+      {rows.map((slot) => {
+        const account = data.accounts.find((item) => item.slot_number === slot.slot_number);
+        const gains = data.monthlyGains.find((item) => item.slot_number === slot.slot_number);
+        const related = data.orders.filter((item) => item.slot_number === slot.slot_number);
+        return <tr key={slot.slot_number}><td>#{slot.slot_number}</td><td>{slot.entry_state}</td>
+          <td>{slot.operational_rank ?? "—"}</td>
+          <td>{gains?.monthly_gain_count ?? 0}/{target}</td>
+          <td>{brl(Number(slot.target_buy_price))}</td>
+          <td>{brl(Number(account?.balance_brl ?? 0))}</td>
+          <td><details><summary>Ver</summary><small>Grupo {slot.post_ath_group ?? "—"}
+            {slot.post_ath_group_rank ? ` #${slot.post_ath_group_rank}` : ""} · operação {slot.operation_sequence}
+            · gains totais {gains?.lifetime_gain_count ?? account?.gain_count ?? 0}
+            · quantidade {num(Number(slot.position_quantity))} {asset}
+            · P&L mercado {brl(Number(account?.market_pnl_brl ?? 0))}
+            · taxas {brl(Number(account?.fees_brl ?? 0))}
+            · residual {num(Number(account?.dust_quantity ?? 0))} {asset}.</small>
+            {related.map((order) => <p key={order.client_order_id}><small>{order.side} {order.purpose}
+              · {order.status} · {order.exchange_order_id ?? "sem exchange ID"}
+              · preço {order.price ? brl(Number(order.price)) : "MARKET"}
+              · quantidade {num(Number(order.executed_quantity))} {asset}</small></p>)}
+          </details></td></tr>;
+      })}</tbody></table></div>
+    <details><summary>Eventos e auditoria</summary>{data.events.map((entry, index) =>
+      <p key={`${entry.observed_at}:${index}`}><small>{when(entry.observed_at)} · {entry.event_type}
+        {entry.slot_number ? ` · Slot #${entry.slot_number}` : ""}</small></p>)}
+      <a href="/relatorios">Abrir relatórios →</a></details>
+  </section>;
+}
 
 export function LivePreparationPanel({ data, asset }: {
   data: LivePresentation; asset: "BTC" | "SOL" }) {
@@ -32,6 +96,7 @@ export function LivePreparationPanel({ data, asset }: {
     finally { setChecking(false); }
   }
   const config = data.configs.find((item) => item.asset === asset);
+  const operating = Boolean(config?.live_enabled);
   const sizing = data.sizing.find((item) => item.asset === asset);
   const required = data.sizing.reduce((sum, item) => sum + item.configuredCapitalBrl, 0);
   const shortage = data.brlFree === null ? null : Math.max(0, required - data.brlFree);
@@ -44,14 +109,14 @@ export function LivePreparationPanel({ data, asset }: {
     ["Saldo BRL suficiente", data.brlFree !== null && data.brlFree >= required],
     ["Ledger nativo BRL, sem crédito REAL legado", data.nativeLedgerReady],
     ["Sem divergência de ordens próprias CoinOps", data.reconciliationVerified && data.ownedDivergences === 0],
-    ["API Production READ-ONLY", data.permissions === "READ_ONLY"],
-    ["Spot Trading CoinOps desabilitado", data.configs.length === 2
-      && data.configs.every((item) => item.live_enabled === false)],
-    ["LIVE bloqueado", data.configs.length === 2 && data.configs.every((item) => item.live_enabled === false)],
+    ["Chave Spot com IP restrito e saques desabilitados", data.permissions === "SPOT_RESTRICTED"],
+    ["Executor em estado esperado", operating ? data.executor.gate === "LIVE_EXECUTOR_ACTIVE"
+      : data.executor.gate === "LIVE_EXECUTOR_READY" || data.executor.gate === "LIVE_EXECUTOR_PROTECTED"],
+    ["LIVE autorizado no ledger", operating],
   ] as const;
   return <div className="lp-stack">
     <section className="ac-panel lp-summary" aria-label="Executor LIVE">
-      <div className="ac-panel-heading"><h2>Executor LIVE · somente leitura</h2>
+      <div className="ac-panel-heading"><h2>Executor LIVE · IP fixo</h2>
         <span className="ac-badge ac-badge--slate">{data.executor.gate.replaceAll("_", " ")}</span></div>
       <div className="lp-metrics">
         <span>IP para whitelist Binance <strong>{data.executor.ip ?? "não configurado"}</strong></span>
@@ -61,14 +126,18 @@ export function LivePreparationPanel({ data, asset }: {
         <span>API Spot <strong>{data.executor.health?.account_permission ?? "não verificada"}</strong></span>
         <span>Latência health <strong>{data.executor.health ? `${num(data.executor.health.latency_ms, 0)} ms` : "—"}</strong></span>
       </div>
-      <small>IPv4 de saída {data.executor.health?.egress_ipv4_verified ? "confirmado" : "não confirmado"} · trading {data.executor.health ? data.executor.health.trading_enabled ? "INSEGURO" : "desligado" : "não verificado"} · kill switch {data.executor.health?.kill_switch ? "ON" : "não verificado"} · whitelist Binance PENDENTE. Não cadastre o IP nem altere a chave nesta fase.</small>
+      <small>IPv4 de saída {data.executor.health?.egress_ipv4_verified ? "confirmado" : "não confirmado"}
+        · trading {data.executor.health ? data.executor.health.trading_enabled ? "habilitado para Spot restrito" : "desligado" : "não verificado"}
+        · kill switch {data.executor.health ? data.executor.health.kill_switch ? "ON" : "OFF" : "não verificado"}
+        · whitelist {data.ipRestricted ? "confirmada" : "não verificada"}. Saques e transferências não fazem parte do executor.</small>
       <button type="button" onClick={checkExecutor} disabled={checking}>{checking ? "Validando..." : "Validar dry-run BTC/SOL"}</button>
       {diagnostic ? <p role="status">{diagnostic}</p> : null}
     </section>
     <section className="lp-summary ac-panel" aria-label="Preparação LIVE em BRL">
-      <div className="ac-panel-heading"><h2>Preparação LIVE · BTC/BRL + SOL/BRL</h2>
+      <div className="ac-panel-heading"><h2>Limites e preparação · BTC/BRL + SOL/BRL</h2>
         <span className="ac-badge ac-badge--slate">{data.gate.replaceAll("_", " ")}</span></div>
-      <p>Configuração e simulação apenas. Production somente GET; LIVE, compras, cancelamentos, transferências e saques permanecem bloqueados.</p>
+      <p>{operating ? "Ciclo LIVE gerido pelo executor com ledger, reconciliação e hard caps. Saques, transferências, margem e Futures continuam proibidos."
+        : "Preparação sem ordens nesta tela. A ativação exige ledger, executor e gates de segurança verificados."}</p>
       {data.error ? <p role="alert">{data.error}</p> : null}
       <div className="lp-metrics">
         <span>Capital CoinOps configurado <strong>{brl(required)}</strong></span>
@@ -94,7 +163,7 @@ export function LivePreparationPanel({ data, asset }: {
           <span>Recomendado 25 slots <strong>{brl(sizing.recommendedCapitalBrl)}</strong></span>
           <span>Slots elegíveis <strong>{sizing.validSlots}/25</strong></span>
         </div>
-        <small>Margem técnica: fee conservadora 0,2% + buffer 2%; inclui LOT_SIZE, MARKET_LOT_SIZE quando aplicável, NOTIONAL, TP e arredondamento. Fee específica da conta ainda não comprovada; nenhum valor é garantia de execução futura.</small>
+        <small>Margem técnica: fee conservadora 0,2% + buffer 2%; inclui LOT_SIZE, MARKET_LOT_SIZE quando aplicável, NOTIONAL, TP e arredondamento. O dimensionamento é prévia; fills e taxas efetivas vêm do ledger Binance.</small>
         <details><summary>Filtros oficiais e dry-run sem ordens</summary>
           <div className="lp-metrics"><span>tickSize <strong>{num(sizing.rules.priceTick)}</strong></span>
             <span>stepSize <strong>{num(sizing.rules.quantityStep)}</strong></span>

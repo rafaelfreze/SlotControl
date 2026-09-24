@@ -1,4 +1,5 @@
 import { BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
+import { createHmac } from "node:crypto";
 
 const BINANCE_PUBLIC = "https://data-api.binance.vision";
 const BINANCE_SPOT = "https://api.binance.com";
@@ -48,13 +49,28 @@ export async function getPublicMarket(fetcher = fetch, now = Date.now) {
   return { markets, observedAt, driftMs };
 }
 
-export async function getProductionReadOnlyStatus({ apiKey, apiSecret, fetcher = fetch }) {
+export async function getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher = fetch }) {
   if (!apiKey || !apiSecret) return "UNVERIFIED";
   try {
     const adapter = new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, maxReadRetries: 0 });
-    const [account, capabilities] = await Promise.all([adapter.getAccount(), adapter.getCapabilities()]);
-    return account && capabilities.readEnabled && !capabilities.tradingEnabled
-      && !capabilities.withdrawalsEnabled ? "READ_ONLY" : "UNSAFE";
+    const query = new URLSearchParams({ recvWindow: "5000", timestamp: String(await adapter.getServerTime()) });
+    query.set("signature", createHmac("sha256", apiSecret).update(query.toString()).digest("hex"));
+    const [account, response] = await Promise.all([
+      adapter.getAccount(),
+      fetcher(`${BINANCE_SPOT}/sapi/v1/account/apiRestrictions?${query}`, {
+        method: "GET", cache: "no-store", signal: AbortSignal.timeout(8000),
+        headers: { accept: "application/json", "X-MBX-APIKEY": apiKey },
+      }),
+    ]);
+    if (!response.ok) return "UNVERIFIED";
+    const flags = await response.json();
+    return account.canTrade && flags.enableReading === true
+      && flags.enableSpotAndMarginTrading === true && flags.ipRestrict === true
+      && flags.enableWithdrawals === false && flags.enableInternalTransfer === false
+      && flags.permitsUniversalTransfer === false && flags.enableMargin === false
+      && flags.enableFutures === false && flags.enableVanillaOptions === false
+      && flags.enablePortfolioMarginTrading === false && flags.enableFixApiTrade === false
+      ? "SPOT_RESTRICTED" : "UNSAFE";
   } catch { return "UNVERIFIED"; }
 }
 

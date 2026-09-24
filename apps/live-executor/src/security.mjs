@@ -94,6 +94,57 @@ export async function withDryRunIdempotency({ directory, key, bodyHash, execute 
   }
 }
 
+/** Unlike dry-runs, an uncertain financial dispatch is never released for a
+ * second POST. Only exact Binance ownership evidence may complete the claim. */
+export async function withWriteIdempotency({ directory, key, bodyHash, recover, execute }) {
+  if (!KEY_PATTERN.test(key ?? "")) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_KEY_INVALID");
+  await assertPrivateDirectory(directory);
+  const stem = join(directory, sha256(key));
+  const completed = `${stem}.json`, pending = `${stem}.pending`;
+  const previous = await readFile(completed, "utf8").then(JSON.parse).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (previous) {
+    if (previous.bodyHash !== bodyHash) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_CONFLICT", 409);
+    return { result: previous.result, replayed: true };
+  }
+  const observed = await readFile(pending, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (observed !== null) {
+    if (observed !== bodyHash) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_CONFLICT", 409);
+    const recovered = await recover();
+    if (!recovered) throw new ExecutorRejection("EXECUTOR_WRITE_OUTCOME_UNKNOWN", 503);
+    const handle = await open(completed, "wx", 0o600).catch((error) => {
+      if (error?.code === "EEXIST") return null;
+      throw error;
+    });
+    if (handle) { try { await handle.writeFile(JSON.stringify({ bodyHash, result: recovered })); } finally { await handle.close(); } }
+    await unlink(pending).catch(() => {});
+    return { result: recovered, replayed: true };
+  }
+  try {
+    const handle = await open(pending, "wx", 0o600);
+    try { await handle.writeFile(bodyHash); } finally { await handle.close(); }
+  } catch (error) {
+    if (error?.code === "EEXIST") throw new ExecutorRejection("EXECUTOR_WRITE_IN_PROGRESS", 409);
+    throw error;
+  }
+  try {
+    const result = await execute();
+    const handle = await open(completed, "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify({ bodyHash, result })); } finally { await handle.close(); }
+    await unlink(pending).catch(() => {});
+    return { result, replayed: false };
+  } catch (error) {
+    // Never unlink pending: Binance may have accepted the order despite a
+    // timeout, or persistence may have failed after its successful response.
+    throw error;
+  }
+}
+
 export async function assertPrivateDirectory(directory) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const details = await stat(directory);

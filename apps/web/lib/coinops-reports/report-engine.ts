@@ -16,7 +16,7 @@ export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "manual_adjustments"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -537,10 +537,42 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     order.evidence_basis = order.status_at_period_end_basis;
     order.context_only = !inPeriod(order.created_at, filters) && !inPeriod(order.filled_at ?? order.canceled_at ?? order.updated_at, filters);
   }
+  const liveRuns = source("robot_v1_live_runs").filter((row) => filters.assets.includes(str(row.asset) as ReportAsset));
+  const liveRunById = new Map(liveRuns.map((row) => [str(row.id), row]));
+  const liveOrders = source("robot_v1_live_orders").filter((row) => liveRunById.has(str(row.run_id)));
+  const liveOrderById = new Map(liveOrders.map((row) => [str(row.id), row]));
+  const own = (row: AuditRow) => {
+    const { product_id: _productId, tenant_id: _tenantId, user_id: _userId, ...fields } = row;
+    void _productId; void _tenantId; void _userId;
+    return fields;
+  };
+  const liveExecution: AuditRow[] = [];
+  const appendLive = (table: string, rowType: string, rows: AuditRow[], resolve: (row: AuditRow) => ReportAsset | null) => {
+    for (const row of rows) {
+      const asset = resolve(row);
+      if (asset && !filters.assets.includes(asset)) continue;
+      liveExecution.push({ environment: "REAL", row_type: rowType, asset,
+        symbol: asset ? `${asset}BRL` : null, source: `coinops.${table}`,
+        evidence_basis: "PERSISTED_COINOPS_LIVE_LEDGER", snapshot_at: input.generatedAt,
+        ...own(row) });
+    }
+  };
+  const runAsset = (row: AuditRow) => str(liveRunById.get(str(row.run_id))?.asset) as ReportAsset || null;
+  appendLive("robot_v1_live_runs", "RUN", liveRuns, (row) => str(row.asset) as ReportAsset);
+  appendLive("robot_v1_live_slots", "SLOT", source("robot_v1_live_slots").filter((row) => liveRunById.has(str(row.run_id))), runAsset);
+  appendLive("robot_v1_live_orders", "ORDER", liveOrders, runAsset);
+  appendLive("robot_v1_live_fills", "FILL", source("robot_v1_live_fills").filter((row) => liveOrderById.has(str(row.order_id))),
+    (row) => runAsset(liveOrderById.get(str(row.order_id))!));
+  appendLive("robot_v1_live_events", "EVENT", source("robot_v1_live_events").filter((row) => liveRunById.has(str(row.run_id))), runAsset);
+  appendLive("robot_v1_live_slot_accounts", "ACCOUNT", source("robot_v1_live_slot_accounts"), (row) => str(row.asset) as ReportAsset);
+  appendLive("robot_v1_live_alerts", "ALERT", source("robot_v1_live_alerts"), (row) => row.asset ? str(row.asset) as ReportAsset : null);
   const realRows: AuditRow[] = [];
   const productionWriteEvidence = source("exchange_order_intents").filter((row) => row.exchange_order_id || ["LIVE", "REAL"].includes(str(row.execution_mode)) && ["SUBMITTED", "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED"].includes(str(row.status)));
   for (const connection of source("exchange_connections")) realRows.push({ environment: "REAL", row_type: "CONNECTION", exchange: connection.exchange, connection_status: connection.connection_status,
-    mode: "PRODUCTION_READ_ONLY", live_status: "BLOCKED", coinops_real_orders: missing("exchange_order_intents") ? null : productionWriteEvidence.length, coinops_real_orders_basis: "PERSISTED_INTENTS_WITH_EXCHANGE_ID_OR_LIVE_SUBMISSION; não é um log HTTP histórico", last_reconciled_at: iso(connection.last_reconciled_at), last_synced_at: iso(connection.last_synced_at),
+    mode: liveRuns.length ? "PRODUCTION_SPOT_RESTRICTED" : "PRODUCTION_READ_ONLY",
+    live_status: liveRuns.some((row) => row.status === "ACTIVE") ? "ACTIVE" : "NOT_ACTIVE",
+    coinops_real_orders: liveOrders.length, coinops_real_orders_basis: "robot_v1_live_orders OWNED_LEDGER",
+    last_reconciled_at: iso(connection.last_reconciled_at), last_synced_at: iso(connection.last_synced_at),
     last_error: connection.last_error_code ?? null, snapshot_at: input.generatedAt, source: "exchange_connections" });
   for (const intent of productionWriteEvidence) {
     realRows.push({ environment: "REAL", timestamp: intent.updated_at ?? intent.created_at, row_type: "PRODUCTION_WRITE_GUARD_VIOLATION", asset: intent.asset, symbol: intent.symbol, intent_id: intent.id, exchange_order_id: intent.exchange_order_id ?? null,
@@ -562,7 +594,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       source: "exchange_reconciliation_runs.summary.filters" });
   }
   if (filters.environments.includes("REAL")) {
-    realRows.push({ environment: "REAL", row_type: "LIVE_READINESS", asset: "SOL", symbol: "SOLBRL", mode: "PRODUCTION_READ_ONLY", live_status: "BLOCKED", filters_status: object(realSnapshot.filters).SOLBRL ? "PERSISTED" : "NOT_PERSISTED", source: "runtime_contract_phase_4_1", notes: "Preparação somente. Este registro antigo é snapshot; a preparação 5.1 consulta GET, não cria ordens e não habilita LIVE." });
+    for (const run of liveRuns) realRows.push({ environment: "REAL", row_type: "LIVE_CYCLE",
+      asset: run.asset, symbol: run.symbol, cycle_id: run.id, live_status: run.status,
+      coinops_real_orders: liveOrders.filter((row) => row.run_id === run.id).length,
+      last_reconciliation: run.last_reconciled_at, source: "coinops.robot_v1_live_runs" });
     incompleteSources.push("production_http_write_history:not_persisted");
   }
   const testnetRows: AuditRow[] = [
@@ -594,6 +629,12 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   }
   const summary: AuditRow[] = [];
   for (const environment of filters.environments) for (const asset of filters.assets) {
+    const ownLiveRuns = environment === "REAL" ? liveRuns.filter((row) => row.asset === asset) : [];
+    const ownLiveOrders = environment === "REAL" ? liveOrders.filter((row) =>
+      ownLiveRuns.some((run) => run.id === row.run_id)) : [];
+    const ownLiveFills = environment === "REAL" ? source("robot_v1_live_fills").filter((row) =>
+      ownLiveOrders.some((order) => order.id === row.order_id)) : [];
+    const hasLiveLedger = ownLiveRuns.length > 0;
     const gains = periodGains.filter((row) => row.environment === environment && row.asset === asset);
     const completed = allOperations.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.closed_at, filters));
     const openAtEnd = allOperations.filter((row) => row.environment === environment && row.asset === asset && timestamp(row.opened_at) < timestamp(observationEnd) && (!row.closed_at || timestamp(row.closed_at) >= timestamp(observationEnd)) && (!row.context_ended_at || timestamp(row.context_ended_at) >= timestamp(observationEnd)));
@@ -644,9 +685,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const currentHealth = !hasEvidence ? "SEM_EVIDENCIA" : temporal.regressionCount || environment === "TESTNET" && run?.last_error ? "DIVERGÊNCIA ATIVA"
       : temporal.unresolvedCount || temporal.externalCount || engineStale || activeAlerts.length || !currentEnough || missing("robot_v1_testnet_events") || missing("robot_v1_testnet_slots") || missing("robot_v1_testnet_orders") ? "ATENÇÃO"
       : temporal.historicalCount ? "Motor OK — ocorrências históricas preservadas" : "Motor OK";
-    summary.push({ period_start: filters.start, period_end: filters.end, observed_until: observationEnd, environment, asset, symbol: environment === "REAL" ? asset === "SOL" ? "SOLBRL" : "BTCUSDT" : `${asset}USDC`, quote_asset: environment === "REAL" ? null : "USDC", mode: environment === "REAL" ? "READ_ONLY / LIVE BLOCKED" : environment,
+    summary.push({ period_start: filters.start, period_end: filters.end, observed_until: observationEnd, environment, asset, symbol: environment === "REAL" ? `${asset}BRL` : `${asset}USDC`, quote_asset: environment === "REAL" ? "BRL" : "USDC", mode: environment === "REAL" ? hasLiveLedger ? "LIVE SPOT RESTRITO" : "READ_ONLY / LIVE BLOCKED" : environment,
       capital_start: capitalStart, capital_end: capitalEnd, free_capital: capitalEnd === null || committed === null ? null : capitalEnd - committed, committed_capital: committed,
-      capital_basis: environment === "REAL" ? "PREPARED_LEDGER_ONLY; LIVE_BLOCKED" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_MARKET_PNL_PLUS_MANUAL_GAINS_PLUS_CONTRIBUTIONS; committed=executed position cost + reserved NEXT BUY", realized_pnl: sum(completed, "net_profit"), open_pnl: openPnl,
+      capital_basis: environment === "REAL" ? hasLiveLedger ? "LIVE_BRL_LEDGER; valores detalhados em LIVE_EXECUTION.csv" : "PREPARED_LEDGER_ONLY; LIVE_BLOCKED" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_MARKET_PNL_PLUS_MANUAL_GAINS_PLUS_CONTRIBUTIONS; committed=executed position cost + reserved NEXT BUY", realized_pnl: sum(completed, "net_profit"), open_pnl: openPnl,
       total_result: openPnl === null ? null : sum(completed, "net_profit") + openPnl,
       gains: gains.filter((row) => number(row.net_gain) > 0).length,
       manual_gains: manualAdjustments.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.created_at, filters)).reduce((total, row) => total + number(row.gain_units), 0),
@@ -655,12 +696,12 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       manual_gain_usdc: history.reduce((total, row) => total + number(row.manual_gain), 0),
       contributions_usdc: history.reduce((total, row) => total + number(row.contribution), 0),
       operations: completed.length, open_operations: openAtEnd.length,
-      cycles: ownCycles.length, completed_cycles: ownCycles.filter((row) => inPeriod(row.completed_at, filters)).length, slots: ownCycles.length ? Math.max(...ownCycles.map((row) => number(row.slot_count))) : 0,
+      cycles: hasLiveLedger ? ownLiveRuns.length : ownCycles.length, completed_cycles: hasLiveLedger ? ownLiveRuns.filter((row) => inPeriod(row.completed_at, filters)).length : ownCycles.filter((row) => inPeriod(row.completed_at, filters)).length, slots: hasLiveLedger ? 25 : ownCycles.length ? Math.max(...ownCycles.map((row) => number(row.slot_count))) : 0,
       buys: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "BUY" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => ["BUY_TRIGGERED", "INITIAL_POSITION_OPENED"].includes(str(row.event_type))).length,
       take_profits: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "SELL" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => row.event_type === "TP_TRIGGERED").length,
-      orders_open: ownOrders.filter((row) => activeOrder(row.status_at_period_end)).length, orders_filled: ownOrders.filter((row) => row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length, orders_cancelled: ownOrders.filter((row) => ["CANCELED", "CANCELLED"].includes(str(row.status_at_period_end)) && inPeriod(row.canceled_at, filters)).length,
-      fills: filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? exchangeFills.length ? fillsInWindow.length : null : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? ownEvents.filter((row) => row.event_type === "TESTNET_FILL_OBSERVED").length : ownEvents.filter((row) => /_(PARTIALLY_FILLED|FILLED)$/.test(str(row.event_type))).length,
-      fill_count_basis: filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? "EXCHANGE_FILLED_AT; collection timestamp remains separate; missing exact evidence is null" : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? "PERSISTED_EXCHANGE_TRADE_OBSERVATIONS" : "OBSERVED_ORDER_STATUS_TRANSITIONS; exact legacy fills unavailable",
+      orders_open: hasLiveLedger ? ownLiveOrders.filter((row) => activeOrder(row.status)).length : ownOrders.filter((row) => activeOrder(row.status_at_period_end)).length, orders_filled: hasLiveLedger ? ownLiveOrders.filter((row) => row.status === "FILLED").length : ownOrders.filter((row) => row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length, orders_cancelled: hasLiveLedger ? ownLiveOrders.filter((row) => row.status === "CANCELED").length : ownOrders.filter((row) => ["CANCELED", "CANCELLED"].includes(str(row.status_at_period_end)) && inPeriod(row.canceled_at, filters)).length,
+      fills: hasLiveLedger ? ownLiveFills.filter((row) => inPeriod(row.filled_at, filters)).length : filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? exchangeFills.length ? fillsInWindow.length : null : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? ownEvents.filter((row) => row.event_type === "TESTNET_FILL_OBSERVED").length : ownEvents.filter((row) => /_(PARTIALLY_FILLED|FILLED)$/.test(str(row.event_type))).length,
+      fill_count_basis: hasLiveLedger ? "PERSISTED_BINANCE_SPOT_TRADE_IDS" : filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? "EXCHANGE_FILLED_AT; collection timestamp remains separate; missing exact evidence is null" : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? "PERSISTED_EXCHANGE_TRADE_OBSERVATIONS" : "OBSERVED_ORDER_STATUS_TRANSITIONS; exact legacy fills unavailable",
       fills_without_exchange_time: exchangeFills.filter((row) => !object(row.details).filledAt && inPeriod(row.timestamp, filters)).length,
       since_strategy_gains_by_fill: environment === "TESTNET" ? assetGains.filter((row) => sinceStrategy(row.exchange_gain_at)).length : environment === "SHADOW" ? assetGains.filter((row) => sinceStrategy(row.gain_at)).length : null,
       since_strategy_gain_fill_unknown: environment === "TESTNET" ? assetGains.filter((row) => !row.exchange_gain_at && sinceStrategy(row.gain_at)).length : 0,
@@ -692,7 +733,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     , missed_temporal: temporalOccurrences.map((row) => ({ ...row, environment: "TESTNET", symbol: `${row.asset}USDC`,
       context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.temporal_classification === "HISTORICAL_PRE_4_1", source: "robot_v1_testnet_events+current_slot_fallback" }))
       .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd))),
-    monthly_goals: monthlyGoals, ath_regime: [], live_preparation: [],
+    monthly_goals: monthlyGoals, ath_regime: [], live_preparation: [], live_execution: liveExecution,
     manual_adjustments: manualAdjustments.filter((row) => selected(row, filters) && inPeriod(row.created_at, filters))
       .map((row) => ({ adjustment_id: row.id, environment: row.environment, asset: row.asset,
         physical_slot_number: row.slot_number, physical_slot_id: row.physical_slot_id, type: row.kind,

@@ -15,7 +15,8 @@ export type LiveExecutorHealth = {
 };
 
 export type LiveExecutorStatus = {
-  gate: "UNCONFIGURED" | "ATTENTION" | "LIVE_EXECUTOR_READY";
+  gate: "UNCONFIGURED" | "ATTENTION" | "LIVE_EXECUTOR_READY"
+    | "LIVE_EXECUTOR_PROTECTED" | "LIVE_EXECUTOR_ACTIVE";
   ip: string | null;
   health: LiveExecutorHealth | null;
 };
@@ -34,15 +35,19 @@ export async function loadLiveExecutorStatus(
       method: "GET", cache: "no-store", signal: AbortSignal.timeout(5_000),
     });
     const health = await response.json() as LiveExecutorHealth;
-    const ready = response.ok && health.healthy === true
+    const verified = response.ok && health.healthy === true
       && Boolean(validatedVersion) && health.version === validatedVersion
-      && health.environment === "BINANCE_PRODUCTION_READ_ONLY"
+      && health.environment === "BINANCE_PRODUCTION_PREPARED"
       && health.binance_connectivity === "OK"
-      && health.account_permission === "READ_ONLY"
+      && health.account_permission === "SPOT_RESTRICTED"
       && health.egress_ipv4 === expectedIp && health.egress_ipv4_verified === true
-      && health.trading_enabled === false && health.kill_switch === true
       && typeof health.clock_drift_ms === "number" && Math.abs(health.clock_drift_ms) <= 2_000;
-    return { gate: ready ? "LIVE_EXECUTOR_READY" : "ATTENTION", ip: expectedIp, health };
+    const gate = !verified ? "ATTENTION" as const
+      : health.trading_enabled && !health.kill_switch ? "LIVE_EXECUTOR_ACTIVE" as const
+        : health.trading_enabled && health.kill_switch ? "LIVE_EXECUTOR_PROTECTED" as const
+          : !health.trading_enabled && health.kill_switch ? "LIVE_EXECUTOR_READY" as const
+            : "ATTENTION" as const;
+    return { gate, ip: expectedIp, health };
   } catch {
     return { gate: "ATTENTION", ip: expectedIp, health: null };
   }

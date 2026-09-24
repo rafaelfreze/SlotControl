@@ -84,7 +84,7 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
   return statuses;
 }
 
-export function physicalSlotIdentity(environment: "SHADOW" | "TESTNET", scope: {
+export function physicalSlotIdentity(environment: "SHADOW" | "TESTNET" | "REAL", scope: {
   productId: string; tenantId: string; userId: string; asset: V1Asset; configId?: string;
 }, physicalSlotNumber: number): string {
   if (!Number.isInteger(physicalSlotNumber) || physicalSlotNumber < 1 || physicalSlotNumber > 25) {
@@ -94,5 +94,5 @@ export function physicalSlotIdentity(environment: "SHADOW" | "TESTNET", scope: {
     if (!scope.configId) throw new Error("COINOPS_MONTHLY_PHYSICAL_SLOT_INVALID");
     return `SHADOW:${scope.configId}:${physicalSlotNumber}`;
   }
-  return `TESTNET:${scope.productId}:${scope.tenantId}:${scope.userId}:${scope.asset}:${physicalSlotNumber}`;
+  return `${environment}:${scope.productId}:${scope.tenantId}:${scope.userId}:${scope.asset}:${physicalSlotNumber}`;
 }

@@ -67,7 +67,9 @@ test("config and live gate fail closed on stale price, insufficient BRL and exce
   assert.throws(() => buildLiveSizing(parseLiveRules(raw("BTC")), 437365, config("BTC"), 716.75,
     observedAt, Date.parse(observedAt) + 121_000), /MARKET_STALE/);
   assert.throws(() => buildLiveSizing(parseLiveRules(raw("BTC")), 437365,
-    { ...config("BTC"), live_enabled: true as false }, 716.75, observedAt, Date.parse(observedAt)), /CAP_INVALID/);
+    { ...config("BTC"), configured_live_capital_brl: 451 }, 716.75, observedAt, Date.parse(observedAt)), /CAP_INVALID/);
+  assert.throws(() => buildLiveSizing(parseLiveRules(raw("SOL")), 598,
+    config("SOL"), 726, observedAt, Date.parse(observedAt)), /CAP_INVALID/);
   const assets = [sizing("BTC"), sizing("SOL")].map((row) => ({ asset: row.asset,
     validSlots: row.validSlots, configuredCapitalBrl: row.configuredCapitalBrl,
     recommendedCapitalBrl: row.recommendedCapitalBrl, exposureCapBrl: row.exposureCapBrl }));

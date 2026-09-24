@@ -20,9 +20,9 @@ type SlotRow = { environment: "SHADOW" | "TESTNET"; asset: "BTC" | "SOL";
 const pct = (rate: number | string | null) => rate === null ? "—" : `${(Number(rate) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 4 })}%`;
 const inputPct = (rate: number | string | null) => rate === null ? "" : (Number(rate) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 4 });
 
-export function AthProfilesPanel({ profiles, slots, marketPrices, view }: { profiles: Profile[];
+export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLiveActive = false }: { profiles: Profile[];
   slots: SlotRow[]; marketPrices: Record<"BTC" | "SOL", number | null>;
-  view: "overview" | "shadow" | "testnet" | "live" }) {
+  view: "overview" | "shadow" | "testnet" | "live"; realLiveActive?: boolean }) {
   if (view === "overview") return null;
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
   return <section className="ath-profiles"><header><div><span>ESTRATÉGIA 4.3</span><h2>Regime ATH e percentuais · {environment}</h2></div><a href="/automacao/simulador-ath">Simular cenário ATH →</a></header>
@@ -45,7 +45,9 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view }: { prof
           <p>Atual: gain {pct(profile.gain_rate)} · queda normal {pct(profile.normal_spacing_rate)} · queda pós-ATH {pct(profile.post_ath_spacing_rate)} · meta {MONTHLY_SLOT_TARGET[asset]}/slot/mês · 25 slots.</p>
           {post ? <p>Primary: {primary.length} selecionados · {available(primary)} disponíveis. Reserve: {reserve.length} selecionados · {available(reserve)} disponíveis.</p> : null}
           {profile.next_config_version ? <p>Próximo ciclo preparado: v{profile.next_config_version} · gain {pct(profile.next_gain_rate)} · normal {pct(profile.next_normal_spacing_rate)} · pós-ATH {pct(profile.next_post_ath_spacing_rate)}.</p> : null}
-          {environment === "REAL" ? <p className="ath-profile-live-blocked">CONFIGURAÇÃO PREPARADA — LIVE BLOQUEADO. Binance Production somente leitura.</p> : null}
+          {environment === "REAL" ? <p className="ath-profile-live-blocked">{realLiveActive
+            ? "LIVE em operação: as alterações valem somente no próximo ciclo; posições e TPs atuais preservam o snapshot."
+            : "Configuração preparada; ainda sem ciclo LIVE ativo."}</p> : null}
           <form action={saveAthNextProfile}><input type="hidden" name="environment" value={environment} /><input type="hidden" name="asset" value={asset} />
             <label>Gain %<input name="gain_percent" type="text" inputMode="decimal" defaultValue={inputPct(profile.next_gain_rate ?? profile.gain_rate)} required /></label>
             <label>Queda normal %<input name="normal_spacing_percent" type="text" inputMode="decimal" defaultValue={inputPct(profile.next_normal_spacing_rate ?? profile.normal_spacing_rate)} required /></label>

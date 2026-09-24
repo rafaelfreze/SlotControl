@@ -3,7 +3,7 @@ import type { StrategyDecision } from "./strategy-engine";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Scope = { product_id: string; tenant_id: string; user_id: string };
-type Environment = "SHADOW" | "TESTNET";
+type Environment = "SHADOW" | "TESTNET" | "REAL";
 const conflict = "product_id,tenant_id,user_id,environment,decision_id";
 
 function query(service: Service, scope: Scope, environment: Environment, id: string) {

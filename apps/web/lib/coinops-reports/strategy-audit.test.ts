@@ -90,7 +90,7 @@ test("reported decision dataset and version8 package preserve exact persisted fi
   const report = buildAuditReport({ generatedAt: now, warnings: [], incompleteSources: [], scope: { tenantId: "tenant", userId: "user" }, sources: { robot_v1_strategy_decisions: [decision] } }, context.filters);
   assert.equal(report.datasets.decisions.length, 1);
   const pack = buildReportPackage(report, context.filters, now);
-  assert.equal(pack.manifest.report_version, 8);
+  assert.equal(pack.manifest.report_version, 9);
   assert.ok(pack.files.find((file) => file.name === "15_ESTRATEGIA_DECISOES.csv")?.content.includes("decision-1"));
   assert.equal(get(empty(), "LIVE_STRATEGY_PARITY_READY")?.live_enabled, false);
 });

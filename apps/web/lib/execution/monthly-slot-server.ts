@@ -6,14 +6,14 @@ import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlyS
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Scope = { product_id: string; tenant_id: string; user_id: string; asset: V1Asset; config_id?: string };
-type SlotSnapshot = { slot_number: number; balance_usdc: number | string; gain_count?: number; entry_state: string };
+type SlotSnapshot = { slot_number: number; balance_usdc?: number | string; balance_brl?: number | string; gain_count?: number; entry_state: string };
 type TotalRow = { slot_number: number; physical_slot_id: string; lifetime_gain_count: number;
   monthly_gain_count: number; period_key: string; market_gain_count: number; manual_gain_count: number;
   monthly_market_gain_count: number; monthly_manual_gain_count: number };
 
 /** One scoped snapshot of immutable credits. Missing or inconsistent evidence
  * fails closed before a new entry can be dispatched to either adapter. */
-export async function loadMonthlySlotStatuses(service: Service, environment: "SHADOW" | "TESTNET",
+export async function loadMonthlySlotStatuses(service: Service, environment: "SHADOW" | "TESTNET" | "REAL",
   scope: Scope, slots: readonly SlotSnapshot[], observedAt = new Date().toISOString()): Promise<MonthlySlotStatus[]> {
   if (slots.length !== 25) throw new Error("COINOPS_MONTHLY_SLOT_COUNT_INVALID");
   const { data, error } = await service.from("robot_v1_slot_gain_totals")
@@ -36,7 +36,7 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
     if (slot.gain_count != null && (environment === "SHADOW" ? slot.gain_count !== lifetime : slot.gain_count > lifetime))
       throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_MISMATCH");
     return { physicalSlotNumber: slot.slot_number, physicalSlotId, lifetimeGainCount: lifetime,
-      monthlyGainCount: monthly, balanceUsdc: Number(slot.balance_usdc), entryState: slot.entry_state,
+      monthlyGainCount: monthly, balanceUsdc: Number(environment === "REAL" ? slot.balance_brl : slot.balance_usdc), entryState: slot.entry_state,
       marketGainCount: Number(row?.market_gain_count ?? 0), manualGainCount: Number(row?.manual_gain_count ?? 0),
       monthlyMarketGainCount: Number(row?.monthly_market_gain_count ?? 0),
       monthlyManualGainCount: Number(row?.monthly_manual_gain_count ?? 0) };

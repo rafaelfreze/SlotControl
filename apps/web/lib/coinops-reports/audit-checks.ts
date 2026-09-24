@@ -139,7 +139,24 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
   if (context.filters.environments.includes("TESTNET")) add("TESTNET_OWNERSHIP", !datasets.orders.length || incomplete("robot_v1_testnet_orders", "robot_v1_testnet_slots") ? "WARNING" : datasets.orders.some((order) => order.ownership_verified !== true) ? "FAIL" : "PASS", "clientOrderId recalculado com run, slot, lado e revisão; vínculo ao slot/run verificado. Ordens manuais não são assumidas como CoinOps.", { environment: "TESTNET" });
   if (context.filters.environments.includes("REAL")) {
     const enabled = datasets.rules.some((rule) => ["production_write_enabled", "live_enabled"].includes(s(rule.parameter)) && rule.value === true);
-    add("PRODUCTION_LIVE_BLOCKED", enabled ? "FAIL" : "PASS", "A versão exportada mantém LIVE bloqueado e Production somente leitura; exportação não chama a Binance.", { environment: "REAL", evidence_scope: "CURRENT_CODE_CONTRACT" });
+    const liveRuns = datasets.live_execution.filter((row) => row.row_type === "RUN");
+    add("PRODUCTION_LIVE_BLOCKED", liveRuns.length ? "WARNING" : enabled ? "FAIL" : "PASS",
+      liveRuns.length ? "Gate pré-LIVE histórico não se aplica a ciclo LIVE; consulte LIVE_EXECUTION.csv e os checks de execução." :
+        "A versão exportada mantém LIVE bloqueado e Production somente leitura; exportação não chama a Binance.",
+      { environment: "REAL", evidence_scope: liveRuns.length ? "HISTORICAL_PRE_LIVE_GATE" : "CURRENT_CODE_CONTRACT" });
+    for (const run of liveRuns) {
+      const runId = s(run.id);
+      const slots = datasets.live_execution.filter((row) => row.row_type === "SLOT" && row.run_id === runId);
+      const orders = datasets.live_execution.filter((row) => row.row_type === "ORDER" && row.run_id === runId);
+      const activeBuys = orders.filter((row) => row.side === "BUY" && active(row.status));
+      const ownedIds = orders.map((row) => s(row.client_order_id));
+      add("PRODUCTION_LIVE_LEDGER", slots.length !== 25 || activeBuys.length > 1
+        || duplicates(orders, (row) => s(row.client_order_id)) ? "FAIL" : "PASS",
+      "Ciclo LIVE com 25 slots físicos, no máximo uma BUY ativa e IDs próprios únicos; reconciliação Binance é verificada separadamente pelo monitor.",
+      { environment: "REAL", asset: run.asset, cycle_id: runId,
+        slot_count: slots.length, active_buy_count: activeBuys.length,
+        own_order_count: ownedIds.length, evidence_scope: "PERSISTED_LIVE_LEDGER" });
+    }
     const violations = datasets.real.filter((row) => row.row_type === "PRODUCTION_WRITE_GUARD_VIOLATION");
     add("PRODUCTION_PERSISTED_WRITE_GUARD", incomplete("exchange_order_intents") ? "WARNING" : violations.length ? "FAIL" : "PASS", violations.length ? `${violations.length} intent(s) com referência de submissão Production; investigar imediatamente.` : "Nenhum intent CoinOps com referência de envio LIVE/REAL encontrado no período carregado.", { environment: "REAL", evidence_scope: "PERSISTED_ORDER_INTENTS" });
     add("PRODUCTION_HTTP_WRITE_HISTORY", "WARNING", "Não existe log histórico completo de métodos HTTP neste banco; ausência histórica de write não pode ser certificada apenas com snapshots.", { environment: "REAL" });

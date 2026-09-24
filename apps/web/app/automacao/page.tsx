@@ -18,7 +18,7 @@ import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlyS
 import type { AutomationView } from "./automation-center";
 import { AutomationCenter } from "./automation-cockpit";
 import { AutomationPageShell } from "./automation-page-shell";
-import type { TestnetAssetData } from "./automation-mobile";
+import type { LiveAssetData, TestnetAssetData } from "./automation-mobile";
 import { AthProfilesPanel } from "./ath-profiles-panel";
 import { ManualAdjustmentsPanel, type RecentManualAdjustment } from "./manual-adjustments-panel";
 import "./ath-profiles.css";
@@ -181,10 +181,11 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
   let livePreparation: import("./automation-mobile").Props["livePreparation"] = null;
+  const liveAssetData: Partial<Record<"BTC" | "SOL", LiveAssetData>> = {};
   if (view === "live") {
     const [preparations, globalCap, nativeAccounts, legacyRealCredits, production, executor] = await Promise.all([
       supabase.from("robot_v1_live_preparations")
-        .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,updated_at")
+        .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,kill_switch,updated_at")
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
       supabase.from("robot_v1_live_global_caps")
         .select("max_total_live_exposure_brl,config_version")
@@ -204,7 +205,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       const profile = profiles.find((item) => item.asset === row.asset);
       if (!profile) return [];
       return [{ ...row, asset: row.asset as "BTC" | "SOL", symbol: row.symbol as "BTCBRL" | "SOLBRL",
-        live_enabled: false as const, gain_rate: profile.next_gain_rate ?? profile.gain_rate,
+        live_enabled: Boolean(row.live_enabled), gain_rate: profile.next_gain_rate ?? profile.gain_rate,
         normal_spacing_rate: profile.next_normal_spacing_rate ?? profile.normal_spacing_rate,
         post_ath_spacing_rate: profile.next_post_ath_spacing_rate ?? profile.post_ath_spacing_rate,
         regime: profile.regime as "NORMAL" | "POST_ATH" } satisfies LiveConfig];
@@ -238,6 +239,44 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       source: production?.source ?? null, permissions: production?.permissions ?? "UNVERIFIED",
       ipRestricted: production?.ipRestricted ?? null,
       error: production ? sizing.length === 2 ? null : "Filtros ou cálculo de um dos pares indisponíveis." : "Consulta Production indisponível; preparação bloqueada." };
+    await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
+      const current = await supabase.from("robot_v1_live_runs")
+        .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing")
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+        .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"])
+        .maybeSingle();
+      if (current.error) throw new Error("COINOPS_LIVE_RUN_READ_FAILED");
+      if (!current.data) return;
+      const run = current.data;
+      const [slots, orders, accounts, events, alerts] = await Promise.all([
+        supabase.from("robot_v1_live_slots")
+          .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at")
+          .eq("run_id", run.id).eq("tenant_id", tenantId).order("slot_number"),
+        supabase.from("robot_v1_live_orders")
+          .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote")
+          .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
+        supabase.from("robot_v1_live_slot_accounts")
+          .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
+          .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+          .eq("asset", asset).order("slot_number"),
+        supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details")
+          .eq("run_id", run.id).eq("tenant_id", tenantId)
+          .order("observed_at", { ascending: false }).limit(20),
+        supabase.from("robot_v1_live_alerts").select("severity,code,last_seen_at")
+          .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+          .eq("asset", asset).is("resolved_at", null)
+          .order("last_seen_at", { ascending: false }).limit(10),
+      ]);
+      if (slots.error || orders.error || accounts.error || events.error || alerts.error)
+        throw new Error("COINOPS_LIVE_LEDGER_READ_FAILED");
+      liveAssetData[asset] = { run, slots: slots.data || [], orders: orders.data || [],
+        accounts: accounts.data || [], events: events.data || [], alerts: alerts.data || [],
+        monthlyGains: (monthlyResponse.data || []).filter((row) => row.environment === "REAL"
+          && row.asset === asset && row.period_key === monthlyPeriodKey(new Date()))
+          .map((row) => ({ slot_number: row.slot_number,
+            monthly_gain_count: row.monthly_gain_count,
+            lifetime_gain_count: row.lifetime_gain_count })) };
+    }));
   }
   const dashboard = <AutomationCenter view={view} data={{
     connectionStatus: connectionResponse.data?.connection_status,
@@ -266,6 +305,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetAssetData
     , monthlyGoals
     , livePreparation
+    , liveAssetData
   }} />;
 
   const testnetHealth = Object.values(testnetAssetData).map(({ run, slots, orders, events }) => testnetPresentationHealth(
@@ -278,6 +318,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetError: testnetHealth.some((health) => health.tone === "error"),
     testnetAttention: testnetHealth.some((health) => health.tone === "attention") || Boolean(testnetDiagnosticIssue(testnet, searchParams?.testnetError))
   }}><ManualAdjustmentsPanel recent={(manualAdjustments || []) as RecentManualAdjustment[]} initial={initialManualTarget} /><AthProfilesPanel profiles={(athProfilesResponse.data || []) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
+    realLiveActive={Object.values(liveAssetData).some((entry) => entry.run.status === "ACTIVE")}
     slots={athSlotRows} marketPrices={{
       BTC: Number((robotConfigsResponse.data || []).find((item) => item.asset === "BTC")?.last_market_price) || null,
       SOL: Number((robotConfigsResponse.data || []).find((item) => item.asset === "SOL")?.last_market_price) || null,

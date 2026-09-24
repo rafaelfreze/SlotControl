@@ -453,6 +453,27 @@ test("Real remains read-only; external observations and Shadow intents are never
   const report = buildAuditReport(input, { ...filters, environments: ["REAL"] }); assert.equal(report.datasets.orders.length, 0); assert.equal(report.datasets.operations.length, 0); assert.equal(report.datasets.summary[0]!.mode, "READ_ONLY / LIVE BLOCKED");
   assert.equal(report.datasets.checks.find((row) => row.code === "PRODUCTION_LIVE_BLOCKED")!.status, "PASS"); assert.equal(report.datasets.checks.find((row) => row.code === "PRODUCTION_HTTP_WRITE_HISTORY")!.status, "WARNING"); assert.ok(!JSON.stringify(report).includes("never-export"));
 });
+test("persisted LIVE BRL cycle is reported as LIVE, never as blocked or BTCUSDT", () => {
+  const input = fixture();
+  input.sources.robot_v1_live_runs = [{ ...owner, id: "live-sol", asset: "SOL", symbol: "SOLBRL",
+    status: "ACTIVE", created_at: at("00:00"), last_reconciled_at: at("02:59") }];
+  input.sources.robot_v1_live_slots = Array.from({ length: 25 }, (_, i) => ({ ...owner,
+    id: `live-slot-${i + 1}`, run_id: "live-sol", slot_number: i + 1,
+    entry_state: i === 0 ? "OPEN" : "PLANNED" }));
+  input.sources.robot_v1_live_orders = [{ ...owner, id: "live-buy", run_id: "live-sol",
+    slot_id: "live-slot-1", client_order_id: "COR1-SOL-1-1-BUY-0123456789abcd",
+    side: "BUY", status: "FILLED", created_at: at("01:00") }];
+  input.sources.robot_v1_live_fills = [{ ...owner, id: "live-fill", order_id: "live-buy",
+    filled_at: at("01:01"), exchange_trade_id: "123", quantity: ".01" }];
+  const report = buildAuditReport(input, { ...filters, environments: ["REAL"] });
+  assert.equal(report.datasets.summary[0]?.mode, "LIVE SPOT RESTRITO");
+  assert.equal(report.datasets.summary[0]?.symbol, "SOLBRL");
+  assert.equal(report.datasets.summary[0]?.quote_asset, "BRL");
+  assert.equal(report.datasets.summary[0]?.fills, 1);
+  assert.equal(report.datasets.checks.find((row) => row.code === "PRODUCTION_LIVE_LEDGER")?.status, "PASS");
+  assert.equal(report.datasets.checks.find((row) => row.code === "PRODUCTION_LIVE_BLOCKED")?.status, "WARNING");
+  assert.ok(report.datasets.live_execution.some((row) => row.row_type === "FILL"));
+});
 test("tenant mismatch is fail closed", () => {
   const input = fixture(); input.sources.robot_v1_slots![0]!.tenant_id = "another-tenant"; assert.throws(() => buildAuditReport(input, filters), /SCOPE_MISMATCH/);
 });

@@ -36,8 +36,32 @@ export type LivePresentation = { configs: LiveConfig[]; sizing: ReturnType<typeo
   nativeLedgerReady: boolean; reconciliationVerified: boolean; ownedDivergences: number;
   globalCapBrl: number; globalConfigVersion: number; brlFree: number | null; brlLocked: number | null;
   observedAt: string | null; balanceObservedAt: string | null; source: string | null;
-  permissions: "READ_ONLY" | "UNVERIFIED" | "UNSAFE"; ipRestricted: boolean | null; error: string | null };
-export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; testnetHistory?: TestnetHistoryBundle[]; testnetAssetData?: Partial<Record<Asset, TestnetAssetData>>; monthlyGoals?: Array<MonthlySlotStatus & { environment: "SHADOW" | "TESTNET"; asset: Asset }>; livePreparation?: LivePresentation | null; embedded?: boolean };
+  permissions: "READ_ONLY" | "SPOT_RESTRICTED" | "UNVERIFIED" | "UNSAFE";
+  ipRestricted: boolean | null; error: string | null };
+export type LiveAssetData = {
+  run: { id: string; status: string; symbol: string; entry_regime: string;
+    last_reconciled_at: string | null; last_error: string | null; config_version: number;
+    gain_rate: number | string; entry_spacing: number | string };
+  slots: Array<{ slot_number: number; entry_state: string; target_buy_price: number | string;
+    operational_rank: number | null; post_ath_group: string | null;
+    post_ath_group_rank: number | null; operation_sequence: number;
+    position_quantity: number | string; position_committed_brl: number | string;
+    missed_at: string | null }>;
+  orders: Array<{ side: string; purpose: string; status: string; slot_number: number;
+    client_order_id: string; exchange_order_id: string | null; price: number | string | null;
+    requested_quantity: number | string | null; requested_quote: number | string | null;
+    executed_quantity: number | string; cumulative_quote: number | string }>;
+  accounts: Array<{ slot_number: number; balance_brl: number | string;
+    market_pnl_brl: number | string; manual_gain_brl: number | string;
+    fees_brl: number | string; gain_count: number;
+    dust_quantity: number | string; dust_cost_brl: number | string }>;
+  monthlyGains: Array<{ slot_number: number; monthly_gain_count: number;
+    lifetime_gain_count: number }>;
+  events: Array<{ event_type: string; slot_number: number | null;
+    observed_at: string; details: Record<string, unknown> }>;
+  alerts: Array<{ severity: string; code: string; last_seen_at: string }>;
+};
+export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; testnetHistory?: TestnetHistoryBundle[]; testnetAssetData?: Partial<Record<Asset, TestnetAssetData>>; monthlyGoals?: Array<MonthlySlotStatus & { environment: "SHADOW" | "TESTNET"; asset: Asset }>; livePreparation?: LivePresentation | null; liveAssetData?: Partial<Record<Asset, LiveAssetData>>; embedded?: boolean };
 
 const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];

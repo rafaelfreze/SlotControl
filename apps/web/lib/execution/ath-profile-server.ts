@@ -54,7 +54,7 @@ async function ensureTransitionEvents(service: Service, profile: AthProfileRow) 
 /** Reconciles only the per-environment source state. No order or slot changes
  * happen here. The caller must activate the resulting regime under its own
  * cycle/run lease before permitting another entry. */
-export async function refreshAthProfile(service: Service, scope: Scope, environment: "SHADOW" | "TESTNET",
+export async function refreshAthProfile(service: Service, scope: Scope, environment: "SHADOW" | "TESTNET" | "REAL",
   asset: V1Asset, market: { price: number; observedAt: string }): Promise<AthProfileRow> {
   let profile = await loadAthProfile(service, scope, environment, asset);
   await ensureTransitionEvents(service, profile);

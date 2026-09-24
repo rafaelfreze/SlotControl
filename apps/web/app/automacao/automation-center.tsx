@@ -11,7 +11,7 @@ import { RealResults, TestnetResults } from "./automation-results";
 import { AutomationOverview } from "./automation-overview";
 import { EnvironmentAssetCards, EnvironmentConnectionStrip, EnvironmentDailyChart, RealEvents } from "./automation-environment-panels";
 import { reconcileCoinOpsTestnet, saveCoinOpsTestnetNextCycle, startCoinOpsTestnet } from "./testnet-actions";
-import { LivePreparationPanel } from "./live-preparation-panel";
+import { LiveOperationalPanel, LivePreparationPanel } from "./live-preparation-panel";
 
 export type AutomationView = "overview" | "shadow" | "testnet" | "live";
 type Order = Props["testnetOrders"][number];
@@ -182,11 +182,14 @@ function ProductionBalances({ data, asset }: { data: Props; asset: "BTC" | "SOL"
 
 function Live({ data, initialAsset }: { data: Props; initialAsset: "BTC" | "SOL" }) {
   const [selectedAsset, setSelectedAsset] = useState(initialAsset);
+  const live = data.liveAssetData?.[selectedAsset];
   return <div className="coinops-automation ac-shadow ac-operational-layout" data-environment="REAL">
     <EnvironmentAssetCards data={data} environment="REAL" selectedAsset={selectedAsset} onSelect={setSelectedAsset} />
-    <RealResults key={selectedAsset} data={data} asset={selectedAsset}><div className="av2-bottom-grid"><EnvironmentDailyChart data={data} environment="REAL" asset={selectedAsset} /><RealEvents data={data} asset={selectedAsset} /></div></RealResults>
+    {live ? <><LiveOperationalPanel key={selectedAsset} asset={selectedAsset} data={live} />
+      <div className="av2-bottom-grid"><EnvironmentDailyChart data={data} environment="REAL" asset={selectedAsset} /><RealEvents data={data} asset={selectedAsset} /></div></>
+      : <RealResults key={selectedAsset} data={data} asset={selectedAsset}><div className="av2-bottom-grid"><EnvironmentDailyChart data={data} environment="REAL" asset={selectedAsset} /><RealEvents data={data} asset={selectedAsset} /></div></RealResults>}
     <EnvironmentConnectionStrip data={data} environment="REAL" asset={selectedAsset} />
-    <details className="av2-controls ac-environment-controls"><summary>Configuração e controles <span>Production READ-ONLY · LIVE bloqueado</span></summary><div className="ac-environment-controls-body"><ProductionBalances data={data} asset={selectedAsset} /><LivePreparation data={data} asset={selectedAsset} /></div></details>
+    <details className="av2-controls ac-environment-controls"><summary>Configuração e controles <span>{live?.run.status ?? "LIVE não iniciado"}</span></summary><div className="ac-environment-controls-body"><ProductionBalances data={data} asset={selectedAsset} /><LivePreparation data={data} asset={selectedAsset} /></div></details>
   </div>;
 }
 

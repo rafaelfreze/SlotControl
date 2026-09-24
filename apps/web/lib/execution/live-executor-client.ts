@@ -3,15 +3,22 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { STRATEGY_VERSION } from "./strategy-engine.ts";
 import type { LiveConfig } from "./live-preparation.ts";
 
-export function signedDryRunHeaders(secret: string, body: string, idempotencyKey: string,
+export function signedExecutorHeaders(secret: string, path: string, body: string, idempotencyKey: string,
   timestamp = Date.now(), nonce = randomBytes(18).toString("base64url")): Headers {
   if (Buffer.byteLength(secret) < 32) throw new Error("EXECUTOR_AUTH_NOT_CONFIGURED");
+  if (!["/v1/dry-run", "/v1/state", "/v1/query-order", "/v1/trades",
+    "/v1/create-order", "/v1/cancel-order"].includes(path)) throw new Error("EXECUTOR_ROUTE_DENIED");
   const hash = createHash("sha256").update(body).digest("hex");
-  const canonical = ["POST", "/v1/dry-run", String(timestamp), nonce, hash].join("\n");
+  const canonical = ["POST", path, String(timestamp), nonce, hash].join("\n");
   const signature = createHmac("sha256", secret).update(canonical).digest("hex");
   return new Headers({ "content-type": "application/json", "x-coinops-timestamp": String(timestamp),
     "x-coinops-nonce": nonce, "x-coinops-body-sha256": hash,
     "x-coinops-signature": signature, "x-coinops-idempotency-key": idempotencyKey });
+}
+
+export function signedDryRunHeaders(secret: string, body: string, idempotencyKey: string,
+  timestamp = Date.now(), nonce = randomBytes(18).toString("base64url")): Headers {
+  return signedExecutorHeaders(secret, "/v1/dry-run", body, idempotencyKey, timestamp, nonce);
 }
 
 export async function requestExecutorDryRun(config: LiveConfig, portfolioCaps: { BTC: number; SOL: number },

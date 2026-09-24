@@ -25,9 +25,10 @@ export type LiveConfig = { asset: V1Asset; symbol: "BTCBRL" | "SOLBRL"; slot_cou
   gain_rate: number | string; normal_spacing_rate: number | string; post_ath_spacing_rate: number | string;
   regime: "NORMAL" | "POST_ATH"; monthly_target: number; configured_live_capital_brl: number | string;
   max_order_notional_brl: number | string; max_total_exposure_brl: number | string;
-  config_version: number; live_enabled: false; updated_at: string };
+  config_version: number; live_enabled: boolean; updated_at: string };
 export type LiveSlotPreview = { physicalSlotNumber: number; operationalRank: number | null;
-  postAthGroup: "PRIMARY" | "RESERVE" | null; capitalBrl: number; entryPriceBrl: number;
+  postAthGroup: "PRIMARY" | "RESERVE" | null; postAthGroupRank: number | null;
+  capitalBrl: number; entryPriceBrl: number;
   estimatedQuantity: number; sellQuantityAfterFee: number; tpPriceBrl: number; valid: boolean };
 
 function positive(value: unknown, code: string): number {
@@ -76,10 +77,14 @@ export function validateLiveConfig(config: LiveConfig, globalCapBrl: number) {
   const capital = positive(config.configured_live_capital_brl, "COINOPS_LIVE_CAP_INVALID");
   const orderCap = positive(config.max_order_notional_brl, "COINOPS_LIVE_CAP_INVALID");
   const exposure = positive(config.max_total_exposure_brl, "COINOPS_LIVE_CAP_INVALID");
-  if (config.symbol !== `${config.asset}BRL` || config.slot_count !== LIVE_SLOT_COUNT || config.live_enabled !== false
+  const assetHardCap = config.asset === "BTC" ? 450 : 275;
+  const orderHardCap = config.asset === "BTC" ? 18 : 11;
+  if (config.symbol !== `${config.asset}BRL` || config.slot_count !== LIVE_SLOT_COUNT
     || config.monthly_target !== (config.asset === "BTC" ? 7 : 2)
     || ![config.gain_rate, config.normal_spacing_rate, config.post_ath_spacing_rate].every((v) => Number(v) > 0 && Number(v) < 1)
-    || orderCap > exposure || exposure > capital || !Number.isFinite(globalCapBrl) || globalCapBrl <= 0)
+    || orderCap > exposure || orderCap > orderHardCap || exposure > capital
+    || capital > assetHardCap || exposure > assetHardCap
+    || !Number.isFinite(globalCapBrl) || globalCapBrl <= 0 || globalCapBrl > 725)
     throw new Error("COINOPS_LIVE_CAP_INVALID");
   return { capital, orderCap, exposure };
 }
@@ -135,7 +140,8 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
       && slotCapital <= caps.orderCap && estimatedQuantity * level.entry <= caps.orderCap
       && (rules.maxNotional === null || estimatedQuantity * level.entry <= rules.maxNotional);
     return { physicalSlotNumber: level.physicalSlotNumber, operationalRank: level.operationalRank,
-      postAthGroup: level.postAthGroup, capitalBrl: slotCapital, entryPriceBrl: level.entry,
+      postAthGroup: level.postAthGroup, postAthGroupRank: level.postAthGroupRank,
+      capitalBrl: slotCapital, entryPriceBrl: level.entry,
       estimatedQuantity, sellQuantityAfterFee, tpPriceBrl: level.tp, valid };
   });
   const candidates: StrategyCandidate[] = slots.map((slot) => ({ id: `LIVE_PREVIEW:${config.asset}:${slot.physicalSlotNumber}`,
@@ -179,12 +185,12 @@ function candidateBalanceForPreview(candidate: StrategyCandidate) { return candi
 export function livePreparationGate(input: { assets: Array<{ asset: V1Asset; validSlots: number; configuredCapitalBrl: number;
   recommendedCapitalBrl: number; exposureCapBrl: number }>; globalCapBrl: number;
   availableBrl: number | null; activeDivergences: number; reconciliationVerified: boolean;
-  nativeLedgerReady: boolean; productionPermission: "READ_ONLY" | "UNVERIFIED" | "UNSAFE" }) {
+  nativeLedgerReady: boolean; productionPermission: "READ_ONLY" | "SPOT_RESTRICTED" | "UNVERIFIED" | "UNSAFE" }) {
   if (input.assets.length !== 2 || new Set(input.assets.map((item) => item.asset)).size !== 2
     || input.assets.some((item) => item.validSlots !== 25 || item.configuredCapitalBrl < item.recommendedCapitalBrl)
     || input.assets.reduce((sum, item) => sum + item.exposureCapBrl, 0) > input.globalCapBrl
     || !input.reconciliationVerified || !input.nativeLedgerReady || input.activeDivergences !== 0
-    || input.productionPermission !== "READ_ONLY") return "BLOCKED" as const;
+    || !["READ_ONLY", "SPOT_RESTRICTED"].includes(input.productionPermission)) return "BLOCKED" as const;
   if (input.availableBrl === null) return "BALANCE_UNKNOWN" as const;
   if (input.availableBrl < input.assets.reduce((sum, item) => sum + item.configuredCapitalBrl, 0))
     return "BRL_INSUFFICIENT" as const;

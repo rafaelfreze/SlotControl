@@ -20,6 +20,14 @@
     "app/api/cron/testnet-reactor/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 60
+    },
+    "app/api/cron/live-execution/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 60
+    },
+    "app/api/cron/live-monitor/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 60
     }
   },
   "crons": [
@@ -38,6 +46,14 @@
     {
       "path": "/api/cron/testnet-reactor",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/live-execution",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/live-monitor",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
