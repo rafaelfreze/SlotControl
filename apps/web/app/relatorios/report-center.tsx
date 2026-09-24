@@ -32,7 +32,7 @@ const descriptions: Record<string, string> = {
   "10_ALERTAS_ERROS.csv": "Erros, divergências e comportamento esperado", "11_REGRAS_CONFIGURACAO.csv": "Regras efetivas e configurações conhecidas",
   "12_CHECKS_AUDITORIA.csv": "Verificações automáticas e suas evidências", "13_TESTNET.csv": "Binance Testnet: fundos fictícios",
   "15_ESTRATEGIA_DECISOES.csv": "Decisões, versão, despacho, ACK e latência", "16_MISSED_TEMPORAL.csv": "Histórico, fato gerador, diagnóstico e problemas atuais",
-  "14_REAL.csv": "Production somente leitura e preparação LIVE", "AUDITORIA_COMPLETA.json": "Todas as relações para auditoria técnica ou IA",
+  "14_REAL.csv": "Production somente leitura e preparação LIVE", "LIVE_PREPARATION.csv": "Filtros BTC/SOL BRL, capital, hard caps e dry-run sem ordens", "AUDITORIA_COMPLETA.json": "Todas as relações para auditoria técnica ou IA",
   "manifest.json": "Versão, arquivos, contagens e fontes incompletas", "RESUMO.md": "Explicação simples do resultado e das limitações"
 };
 const statusLabels = { PASS: "Conforme", WARNING: "Atenção", FAIL: "Divergência" };

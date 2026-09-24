@@ -4,6 +4,8 @@ import { redirect } from "next/navigation";
 import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import { getDailyMarketCandles } from "@/lib/execution/market-daily-candles";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
+import { buildLiveSizing, livePreparationGate, type LiveConfig } from "@/lib/execution/live-preparation";
+import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
@@ -177,6 +179,61 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
+  let livePreparation: import("./automation-mobile").Props["livePreparation"] = null;
+  if (view === "live") {
+    const [preparations, globalCap, nativeAccounts, legacyRealCredits, production] = await Promise.all([
+      supabase.from("robot_v1_live_preparations")
+        .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,updated_at")
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
+      supabase.from("robot_v1_live_global_caps")
+        .select("max_total_live_exposure_brl,config_version")
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id).maybeSingle(),
+      supabase.from("robot_v1_live_slot_accounts").select("asset,slot_number,quote_asset")
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
+      supabase.from("robot_v1_manual_adjustments").select("id")
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+        .eq("environment", "REAL").limit(1),
+      loadLiveProductionSnapshot().catch(() => null),
+    ]);
+    if (preparations.error || globalCap.error || nativeAccounts.error || legacyRealCredits.error)
+      throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
+    const profiles = (athProfilesResponse.data || []).filter((row) => row.environment === "REAL");
+    const configs = (preparations.data || []).flatMap((row) => {
+      const profile = profiles.find((item) => item.asset === row.asset);
+      if (!profile) return [];
+      return [{ ...row, asset: row.asset as "BTC" | "SOL", symbol: row.symbol as "BTCBRL" | "SOLBRL",
+        live_enabled: false as const, gain_rate: profile.next_gain_rate ?? profile.gain_rate,
+        normal_spacing_rate: profile.next_normal_spacing_rate ?? profile.normal_spacing_rate,
+        post_ath_spacing_rate: profile.next_post_ath_spacing_rate ?? profile.post_ath_spacing_rate,
+        regime: profile.regime as "NORMAL" | "POST_ATH" } satisfies LiveConfig];
+    });
+    const globalBrl = Number(globalCap.data?.max_total_live_exposure_brl ?? 0);
+    const sizing = production ? configs.flatMap((config) => {
+      const market = production.markets.find((item) => item.rules.asset === config.asset);
+      if (!market) return [];
+      try { return [buildLiveSizing(market.rules, market.priceBrl, config, globalBrl, production.observedAt)]; }
+      catch { return []; }
+    }) : [];
+    const nativeLedgerReady = (nativeAccounts.data || []).length === 50
+      && (nativeAccounts.data || []).every((row) => row.quote_asset === "BRL")
+      && (legacyRealCredits.data || []).length === 0;
+    const reconciliationVerified = latestRun?.status === "COMPLETED";
+    const gate = production && sizing.length === 2 ? livePreparationGate({
+      assets: sizing.map((item) => ({ asset: item.asset, validSlots: item.validSlots,
+        configuredCapitalBrl: item.configuredCapitalBrl, recommendedCapitalBrl: item.recommendedCapitalBrl,
+        exposureCapBrl: item.exposureCapBrl })),
+      globalCapBrl: globalBrl, availableBrl: production.brlFree,
+      activeDivergences: mismatches, reconciliationVerified, nativeLedgerReady,
+      productionPermission: production.permissions,
+    }) : "BLOCKED";
+    livePreparation = { configs, sizing, gate, nativeLedgerReady, reconciliationVerified, globalCapBrl: globalBrl,
+      globalConfigVersion: Number(globalCap.data?.config_version ?? 0),
+      brlFree: production?.brlFree ?? null, brlLocked: production?.brlLocked ?? null,
+      observedAt: production?.observedAt ?? null, balanceObservedAt: production?.balanceObservedAt ?? null,
+      source: production?.source ?? null, permissions: production?.permissions ?? "UNVERIFIED",
+      ipRestricted: production?.ipRestricted ?? null,
+      error: production ? sizing.length === 2 ? null : "Filtros ou cálculo de um dos pares indisponíveis." : "Consulta Production indisponível; preparação bloqueada." };
+  }
   const dashboard = <AutomationCenter view={view} data={{
     connectionStatus: connectionResponse.data?.connection_status,
     lastSyncedAt: connectionResponse.data?.last_synced_at || connectionResponse.data?.last_reconciled_at,
@@ -203,6 +260,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     testnetEvents: testnetAssetData.SOL?.events || [],
     testnetAssetData
     , monthlyGoals
+    , livePreparation
   }} />;
 
   const testnetHealth = Object.values(testnetAssetData).map(({ run, slots, orders, events }) => testnetPresentationHealth(

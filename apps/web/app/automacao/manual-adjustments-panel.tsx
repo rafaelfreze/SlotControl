@@ -26,7 +26,7 @@ export function ManualAdjustmentsPanel({ recent, initial }: {
   recent: RecentManualAdjustment[]; initial?: { environment: AdjustmentEnvironment; asset: "BTC" | "SOL"; slotNumber: number } | null;
 }) {
   const router = useRouter();
-  const [environment, setEnvironment] = useState<AdjustmentEnvironment>(initial?.environment ?? "SHADOW");
+  const [environment, setEnvironment] = useState<AdjustmentEnvironment>(initial?.environment === "REAL" ? "SHADOW" : initial?.environment ?? "SHADOW");
   const [asset, setAsset] = useState<"BTC" | "SOL">(initial?.asset ?? "BTC");
   const [slotNumber, setSlotNumber] = useState(initial?.slotNumber ?? 1);
   const [kind, setKind] = useState<AdjustmentDraft["kind"]>("MANUAL_TARGET_GAIN");
@@ -94,11 +94,11 @@ export function ManualAdjustmentsPanel({ recent, initial }: {
   };
   const reversedIds = new Set(recent.filter((row) => row.reversal_of).map((row) => row.reversal_of));
   return <details id="manual-adjustments" className="ma-panel" open={Boolean(initial) || undefined}>
-    <summary><span><strong>Ajustes manuais por slot</strong><small>Gain para meta ou aporte · Shadow, Testnet e Real preparado</small></span><span aria-hidden="true">⌄</span></summary>
+    <summary><span><strong>Ajustes manuais por slot</strong><small>Gain para meta ou aporte · Shadow e Testnet</small></span><span aria-hidden="true">⌄</span></summary>
     <div className="ma-body">
-      <p className="ma-notice">Ajuste de ledger, não é trade. Nenhuma transferência ou conversão é executada na Binance. Production permanece somente leitura e LIVE bloqueado.</p>
+      <p className="ma-notice">Ajuste de ledger, não é trade. Shadow e Testnet seguem em USDC. O antigo ajuste Real em USDC está bloqueado; a preparação LIVE usa BRL separado, sem movimentação financeira.</p>
       <div className="ma-grid">
-        <label>Ambiente<select value={environment} onChange={(event) => { setEnvironment(event.target.value as AdjustmentEnvironment); invalidate(); }}><option value="SHADOW">Shadow virtual</option><option value="TESTNET">Testnet fictício</option><option value="REAL">Real preparado (sem LIVE)</option></select></label>
+        <label>Ambiente<select value={environment} onChange={(event) => { setEnvironment(event.target.value as AdjustmentEnvironment); invalidate(); }}><option value="SHADOW">Shadow virtual</option><option value="TESTNET">Testnet fictício</option></select></label>
         <label>Ativo<select value={asset} onChange={(event) => { setAsset(event.target.value as "BTC" | "SOL"); invalidate(); }}><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
         <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>{Array.from({ length: 25 }, (_, i) => <option key={i + 1} value={i + 1}>#{i + 1}</option>)}</select></label>
         <label>Ação<select value={kind} onChange={(event) => { setKind(event.target.value as AdjustmentDraft["kind"]); invalidate(); }}><option value="MANUAL_TARGET_GAIN">Adicionar gain manual</option><option value="MANUAL_CONTRIBUTION">Adicionar aporte</option></select></label>

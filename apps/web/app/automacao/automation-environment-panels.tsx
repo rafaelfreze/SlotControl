@@ -14,19 +14,24 @@ export function EnvironmentAssetCards({ data, environment, selectedAsset, onSele
     const config = data.configs.find((item) => item.asset === asset);
     const candles = [...data.candles.filter((item) => item.symbol === symbol)].reverse();
     const probe = data.testnet?.ok ? data.testnet.probes.find((item) => item.symbol === symbol) : null;
-    const price = environment === "TESTNET" ? probe?.available ? probe.market.price : null : config?.last_market_price;
+    const price = environment === "TESTNET" ? probe?.available ? probe.market.price : null
+      : data.livePreparation?.sizing.find((item) => item.asset === asset)?.priceBrl ?? null;
     const balance = environment === "TESTNET" ? data.testnet?.ok ? data.testnet.balances.find((item) => item.asset === asset)?.free : null : data.balances.find((item) => item.asset === asset)?.total;
-    return <button type="button" key={asset} className={`av2-asset-card ${asset.toLowerCase()}`} data-selected={asset === selectedAsset} aria-pressed={asset === selectedAsset} onClick={() => onSelect(asset)} aria-label={`${asset}/USDC ${environment === "TESTNET" ? "Testnet, fundos fictícios" : "Production somente leitura"}`}>
-      <span className="av2-asset-heading"><b className="av2-asset-icon">{asset === "BTC" ? "₿" : "≋"}</b><strong>{asset}/USDC</strong><em>{environment === "TESTNET" ? "TESTNET" : "READ-ONLY"}</em></span>
-      <strong className="av2-asset-price">{amount(price, 2)} <small>USDC</small></strong>
+    return <button type="button" key={asset} className={`av2-asset-card ${asset.toLowerCase()}`} data-selected={asset === selectedAsset} aria-pressed={asset === selectedAsset} onClick={() => onSelect(asset)} aria-label={`${asset}/${environment === "TESTNET" ? "USDC" : "BRL"} ${environment === "TESTNET" ? "Testnet, fundos fictícios" : "Production somente leitura"}`}>
+      <span className="av2-asset-heading"><b className="av2-asset-icon">{asset === "BTC" ? "₿" : "≋"}</b><strong>{asset}/{environment === "TESTNET" ? "USDC" : "BRL"}</strong><em>{environment === "TESTNET" ? "TESTNET" : "READ-ONLY"}</em></span>
+      <strong className="av2-asset-price">{amount(price, 2)} <small>{environment === "TESTNET" ? "USDC" : "BRL"}</small></strong>
       <span className="av2-asset-trend">{environment === "TESTNET" ? "Testnet · curva Production" : "Mercado · somente leitura"}</span>
       <span className="av2-asset-balance">{environment === "TESTNET" ? "Saldo fictício disponível" : "Saldo Binance"}<strong>{amount(balance, 8)} {asset}</strong></span>
-      <Sparkline candles={candles} asset={asset} />
+      {environment === "TESTNET" ? <Sparkline candles={candles} asset={asset} /> : null}
     </button>;
   })}</div>;
 }
 
 export function EnvironmentDailyChart({ data, environment, asset }: { data: Props; environment: "TESTNET" | "REAL"; asset: "BTC" | "SOL" }) {
+  if (environment === "REAL") {
+    const market = data.livePreparation?.sizing.find((item) => item.asset === asset);
+    return <section className="av2-chart-panel"><header><h2>{asset}/BRL · cotação atual</h2></header><p>{market ? `R$ ${amount(market.priceBrl, 2)}` : "Cotação indisponível"}</p><small>GET público Binance, sem histórico BRL persistido neste painel. Nenhum gráfico USDC é tratado como preço BRL.</small></section>;
+  }
   return <section className="av2-chart-panel"><header><h2>Gráfico {asset}/USDC</h2><div className="av2-chart-options"><span>Diário · 30 dias</span></div></header><CandleChart candles={data.dailyCandles.filter((item) => item.symbol === `${asset}USDC`)} asset={asset} windowSize={30} /><small>{environment === "TESTNET" ? "Mercado Binance Production · referência visual; execução e P&L usam Testnet." : "Mercado Binance Production · somente consulta, sem execução LIVE."}</small></section>;
 }
 

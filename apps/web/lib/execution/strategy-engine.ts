@@ -9,13 +9,14 @@ export const STRATEGY_VERSION = "4.3.1" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
-export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string };
+export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: "USDC" | "BRL" };
 export type StrategyCandidate = {
   id: string;
   slotNumber: number;
   operationSequence: number;
   buyPrice: number;
-  balanceUsdc: number;
+  balanceUsdc?: number;
+  balanceQuote?: number;
   operationalRank?: number | null;
   monthlyTargetReached?: boolean;
   postAthGroup?: "PRIMARY" | "RESERVE" | null;
@@ -55,7 +56,9 @@ function assertCandidates(candidates: readonly StrategyCandidate[]) {
       || !Number.isInteger(candidate.slotNumber) || candidate.slotNumber < 1 || candidate.slotNumber > V1_SLOT_COUNT
       || !Number.isInteger(candidate.operationSequence) || candidate.operationSequence < 1
       || !Number.isFinite(candidate.buyPrice) || candidate.buyPrice <= 0
-      || !Number.isFinite(candidate.balanceUsdc) || candidate.balanceUsdc <= 0
+      || !Number.isFinite(candidate.balanceQuote ?? candidate.balanceUsdc)
+      || (candidate.balanceQuote ?? candidate.balanceUsdc ?? 0) <= 0
+      || (candidate.balanceQuote !== undefined && candidate.balanceUsdc !== undefined)
       || !["PLANNED", "ARMED", "PARTIALLY_FILLED", "OPEN", "CLOSED", "MISSED"].includes(candidate.state)) {
       throw new Error("COINOPS_STRATEGY_CANDIDATE_INVALID");
     }
@@ -63,6 +66,8 @@ function assertCandidates(candidates: readonly StrategyCandidate[]) {
     physicalSlots.add(candidate.slotNumber);
   }
 }
+
+function candidateBalance(candidate: StrategyCandidate) { return candidate.balanceQuote ?? candidate.balanceUsdc!; }
 
 export function strategyOperationId(context: StrategyContext, candidate: StrategyCandidate) {
   assertContext(context);
@@ -128,7 +133,7 @@ function decision(context: StrategyContext, candidate: StrategyCandidate | null,
 }
 
 function wait(context: StrategyContext, candidate: StrategyCandidate | null, reason: string) {
-  return decision(context, candidate, "WAIT", candidate?.buyPrice ?? null, candidate?.balanceUsdc ?? null, 0, reason, candidate?.state ?? "UNCHANGED");
+  return decision(context, candidate, "WAIT", candidate?.buyPrice ?? null, candidate ? candidateBalance(candidate) : null, 0, reason, candidate?.state ?? "UNCHANGED");
 }
 
 /** MARKET is allowed only for the highest-ranked eligible first operation in
@@ -139,17 +144,17 @@ export function planStrategyInitialEntry(context: StrategyContext, slot: Strateg
     || (slot.operationalRank === undefined ? slot.slotNumber !== 1 : slot.operationalRank !== 1))
     throw new Error("COINOPS_STRATEGY_INITIAL_SLOT_INVALID");
   if (slot.state !== "PLANNED") return wait(context, slot, "INITIAL_ENTRY_ALREADY_STARTED");
-  return decision(context, slot, "OPEN_INITIAL_MARKET", slot.buyPrice, slot.balanceUsdc, 100, "FIRST_ENTRY_OF_NEW_CYCLE", "OPEN");
+  return decision(context, slot, "OPEN_INITIAL_MARKET", slot.buyPrice, candidateBalance(slot), 100, "FIRST_ENTRY_OF_NEW_CYCLE", "OPEN");
 }
 
 export function planStrategyTakeProfit(context: StrategyContext, slot: StrategyCandidate, averageFillPrice: number,
   filters: ExchangeSymbolInfo, parameters: V1ShadowParameters, residentTakeProfit = false): StrategyDecision {
   assertCandidates([slot]);
-  if (filters.symbol !== `${context.asset}USDC`) throw new Error("COINOPS_STRATEGY_SYMBOL_MISMATCH");
+  if (filters.symbol !== `${context.asset}${context.quoteAsset ?? "USDC"}`) throw new Error("COINOPS_STRATEGY_SYMBOL_MISMATCH");
   if (slot.state !== "OPEN") return wait(context, slot, "BUY_FILL_NOT_COMPLETE");
   if (residentTakeProfit) return wait(context, slot, "TAKE_PROFIT_ALREADY_RESIDENT");
   const target = calculateStrategyTakeProfit(averageFillPrice, filters.priceTick, parameters);
-  return decision(context, slot, "CREATE_TP", target, slot.balanceUsdc, 90, "PROTECT_CONFIRMED_BUY_FILL", "TP_ACTIVE");
+  return decision(context, slot, "CREATE_TP", target, candidateBalance(slot), 90, "PROTECT_CONFIRMED_BUY_FILL", "TP_ACTIVE");
 }
 
 /** A SELL target rounds up so exchange precision never lowers the frozen gain.
@@ -195,7 +200,7 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
   if (!next) return { decision: wait(context, null, "NO_UNCROSSED_ENTRY_CANDIDATE"), missedCandidateIds, nextCandidateId: null };
   if (current?.id === next.id) return { decision: wait(context, current, "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT"), missedCandidateIds, nextCandidateId: current.id };
   return {
-    decision: decision(context, next, current ? "CANCEL_REPLACE_NEXT_BUY" : "ARM_NEXT_BUY", next.buyPrice, next.balanceUsdc, 50,
+    decision: decision(context, next, current ? "CANCEL_REPLACE_NEXT_BUY" : "ARM_NEXT_BUY", next.buyPrice, candidateBalance(next), 50,
       current ? "HIGHER_VALID_ENTRY_HAS_PRIORITY" : "HIGHEST_VALID_ENTRY_BELOW_MARKET", "ARMED"),
     missedCandidateIds,
     nextCandidateId: next.id
@@ -234,7 +239,7 @@ export function planStrategyClosedSlot(context: StrategyContext, candidates: rea
     };
     const recycled = { ...closed, operationSequence: closed.operationSequence + 1 };
     return { mode: "LOCAL_REENTRY", otherOpenPositions, decisions: [
-      decision(context, recycled, "PLAN_LOCAL_REENTRY", closed.buyPrice, closed.balanceUsdc, 60, "OTHER_POSITION_REMAINS_OPEN", "PLANNED")
+      decision(context, recycled, "PLAN_LOCAL_REENTRY", closed.buyPrice, candidateBalance(closed), 60, "OTHER_POSITION_REMAINS_OPEN", "PLANNED")
     ] };
   }
   if (!candidates.some((candidate) => !candidate.monthlyTargetReached && candidate.operationalRank !== null)) {
@@ -244,7 +249,7 @@ export function planStrategyClosedSlot(context: StrategyContext, candidates: rea
   return { mode: "GLOBAL_RESET", otherOpenPositions: 0, decisions: [
     decision(context, closed, "COMPLETE_CYCLE", null, null, 80, "LAST_OPEN_POSITION_CLOSED", "COMPLETED"),
     decision(context, null, "REANCHOR", null, Number([...candidates].sort((left, right) => left.slotNumber - right.slotNumber)
-      .reduce((total, candidate) => total + candidate.balanceUsdc, 0).toFixed(12)), 70,
+      .reduce((total, candidate) => total + candidateBalance(candidate), 0).toFixed(12)), 70,
       "REBUILD_AFTER_OWNED_PENDING_BUY_CANCELLATION", "READY_FOR_INITIAL_MARKET")
   ] };
 }

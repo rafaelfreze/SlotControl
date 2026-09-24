@@ -11,6 +11,7 @@ import { RealResults, TestnetResults } from "./automation-results";
 import { AutomationOverview } from "./automation-overview";
 import { EnvironmentAssetCards, EnvironmentConnectionStrip, EnvironmentDailyChart, RealEvents } from "./automation-environment-panels";
 import { reconcileCoinOpsTestnet, saveCoinOpsTestnetNextCycle, startCoinOpsTestnet } from "./testnet-actions";
+import { LivePreparationPanel } from "./live-preparation-panel";
 
 export type AutomationView = "overview" | "shadow" | "testnet" | "live";
 type Order = Props["testnetOrders"][number];
@@ -150,6 +151,7 @@ function Testnet({ data: source, initialAsset }: { data: Props; initialAsset: "B
 }
 
 function LivePreparation({ data, asset }: { data: Props; asset: "BTC" | "SOL" }) {
+  if (data.livePreparation) return <LivePreparationPanel data={data.livePreparation} asset={asset} divergences={data.mismatches} />;
   if (asset === "BTC") return <section className="ac-panel"><div className="ac-panel-heading"><h2>Preparação BTC · Real</h2><span className="ac-badge ac-badge--slate">LIVE BLOQUEADO</span></div><p>Nenhuma configuração de piloto BTC LIVE foi validada. Par, filtros, capital, proteções e autorização serão definidos antes de uma ativação futura.</p><p>Production permanece READ-ONLY. Não há botão de ativação ou envio de ordens reais.</p></section>;
   const pilot = data.solBrlPilot;
   const checks = [

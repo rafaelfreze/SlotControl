@@ -5,6 +5,7 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 
 import type { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
+import type { buildLiveSizing, LiveConfig } from "@/lib/execution/live-preparation";
 import { reconcileV1PhysicalSlotAccounts, summarizeV1ShadowOperations } from "@/lib/execution/robot-v1-audit";
 import { COINOPS_TIME_ZONE } from "@/lib/slotgain/format";
 import type { MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
@@ -28,7 +29,13 @@ type TestnetEvent = { id?: string; run_id?: string; event_type: string; slot_num
 type TestnetDiagnostic = Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>>;
 export type TestnetHistoryBundle = { run: NonNullable<TestnetRun>; slots: TestnetSlot[]; orders: TestnetOrderRow[] };
 export type TestnetAssetData = { run: NonNullable<TestnetRun>; slots: TestnetSlot[]; orders: TestnetOrderRow[]; events: TestnetEvent[]; history?: TestnetHistoryBundle[] };
-export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; testnetHistory?: TestnetHistoryBundle[]; testnetAssetData?: Partial<Record<Asset, TestnetAssetData>>; monthlyGoals?: Array<MonthlySlotStatus & { environment: "SHADOW" | "TESTNET"; asset: Asset }>; embedded?: boolean };
+export type LivePresentation = { configs: LiveConfig[]; sizing: ReturnType<typeof buildLiveSizing>[];
+  gate: "BLOCKED" | "BALANCE_UNKNOWN" | "BRL_INSUFFICIENT" | "LIVE_PREPARATION_READY";
+  nativeLedgerReady: boolean; reconciliationVerified: boolean;
+  globalCapBrl: number; globalConfigVersion: number; brlFree: number | null; brlLocked: number | null;
+  observedAt: string | null; balanceObservedAt: string | null; source: string | null;
+  permissions: "READ_ONLY" | "UNVERIFIED" | "UNSAFE"; ipRestricted: boolean | null; error: string | null };
+export type Props = { connectionStatus?: string | null; lastSyncedAt?: string | null; balances: Balance[]; reconciliationStatus?: string | null; reconciliationAt?: string | null; mismatches: number; configs: Config[]; cycles: Cycle[]; slots: Slot[]; operations: Operation[]; slotAccounts: SlotAccount[]; events: Event[]; candles: Candle[]; dailyCandles: Candle[]; intentCount: number; solBrlPilot: { observedAt: string; status: string; priceBrl: number; priceTick: number; quantityStep: number; minQuantity: number; minNotional: number; orderTypes: string[]; accepted: boolean; executableNotional: number; minimumPerSlotBrl: number; minimumCapitalFor25SlotsBrl: number }; testnet: ({ ok: true } & TestnetDiagnostic) | { ok: false; error: string } | null; testnetEnabled: boolean; testnetActionError: string | null; testnetRun: TestnetRun; testnetSlots: TestnetSlot[]; testnetOrders: TestnetOrderRow[]; testnetEvents: TestnetEvent[]; testnetHistory?: TestnetHistoryBundle[]; testnetAssetData?: Partial<Record<Asset, TestnetAssetData>>; monthlyGoals?: Array<MonthlySlotStatus & { environment: "SHADOW" | "TESTNET"; asset: Asset }>; livePreparation?: LivePresentation | null; embedded?: boolean };
 
 const ACTIVE_CYCLES = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
 const OPEN_SLOTS = ["TP_ACTIVE", "OPEN", "PARTIALLY_FILLED"];

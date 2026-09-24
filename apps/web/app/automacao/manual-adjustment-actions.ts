@@ -49,6 +49,9 @@ async function scope(): Promise<Scope> {
 }
 
 function validateDraft(draft: AdjustmentDraft) {
+  // 5.1 prepares REAL in BRL; the 4.4 adjustment RPC is USDC-denominated.
+  // It must not silently credit a BRL operation with an old USDC balance.
+  if (draft.environment === "REAL") throw new Error("COINOPS_REAL_BRL_ADJUSTMENT_NOT_ENABLED");
   if (!["SHADOW", "TESTNET", "REAL"].includes(draft.environment) || !["BTC", "SOL"].includes(draft.asset)
     || !Number.isInteger(draft.slotNumber) || draft.slotNumber < 1 || draft.slotNumber > 25
     || !["MANUAL_TARGET_GAIN", "MANUAL_CONTRIBUTION"].includes(draft.kind)
@@ -221,6 +224,7 @@ export async function reverseCoinOpsManualAdjustment(input: {
     .select("id,environment,asset,slot_number,kind").eq("id", input.adjustmentId)
     .eq("product_id", ctx.productId).eq("tenant_id", ctx.tenantId).eq("user_id", ctx.userId).maybeSingle();
   if (originalError || !original || original.kind === "REVERSAL") throw new Error("COINOPS_ADJUSTMENT_REVERSAL_INVALID");
+  if (original.environment === "REAL") throw new Error("COINOPS_REAL_BRL_ADJUSTMENT_NOT_ENABLED");
   const snapshot = await loadSnapshot(ctx, original.environment as AdjustmentEnvironment,
     original.asset as Asset, original.slot_number);
   if (snapshot.balanceUsdc !== expected.balanceUsdc
@@ -249,6 +253,7 @@ export async function previewCoinOpsManualReversal(adjustmentId: string) {
     .eq("id", adjustmentId).eq("product_id", ctx.productId).eq("tenant_id", ctx.tenantId)
     .eq("user_id", ctx.userId).maybeSingle();
   if (error || !original || original.kind === "REVERSAL") throw new Error("COINOPS_ADJUSTMENT_REVERSAL_INVALID");
+  if (original.environment === "REAL") throw new Error("COINOPS_REAL_BRL_ADJUSTMENT_NOT_ENABLED");
   const { data: alreadyReversed } = await ctx.service.from("robot_v1_manual_adjustments")
     .select("id").eq("reversal_of", adjustmentId).eq("product_id", ctx.productId)
     .eq("tenant_id", ctx.tenantId).eq("user_id", ctx.userId).maybeSingle();

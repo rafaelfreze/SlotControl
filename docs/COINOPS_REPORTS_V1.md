@@ -74,6 +74,10 @@ A auditoria mensal aplica a política 4.2 também nas versões posteriores e rec
 
 Evidências e limites completos: [Fase 5.0](./COINOPS_PRE_LIVE_AUDIT_5_0.md).
 
+### Fase 5.1 — contrato v8
+
+O pacote v8 acrescenta `LIVE_PREPARATION.csv` e o check `LIVE_PREPARATION_BRL_GATE`. Configurações Real BRL são lidas por escopo/RLS; filtros, preço, permissões e saldo BRL vêm de GET Binance no momento da exportação. Mínimo por slot inclui lote/notional de entrada e TP após reserva de fee; recomendado cobre a escada de 25 níveis e margem. `LIVE_PREPARATION_READY` não habilita trading. Saldo insuficiente, consulta indisponível ou dados contábeis não comprovados permanecem explícitos, nunca zero/PASS presumido. Consulte [a preparação 5.1](./COINOPS_LIVE_PREPARATION_5_1.md).
+
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 Para ampliar uma regra:

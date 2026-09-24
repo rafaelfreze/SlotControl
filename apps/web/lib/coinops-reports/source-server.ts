@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema, getSupabaseEnv } from "@/lib/supabase/env";
 import {
   readScopedPages, ReportSourceError, validateReportScope,
@@ -93,6 +94,12 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   const relatedRuns = { column: "run_id", ids: runIds };
   const tasks: Array<() => Promise<SourceRow[]>> = [];
   tasks.push(() => load("robot_v1_ath_profiles", source("id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,previous_ath,ath_observed_at,ath_source,ath_verified_at,ath_history_candle_count,ath_floor_reference,ath_floor_source,ath_floor_defined_at,transition_key,transition_observed_at,created_at,updated_at", ["environment", "asset"], { environmentColumn: true, assetColumn: "asset" })));
+  if (withReal) {
+    tasks.push(() => load("robot_v1_live_preparations", source("asset,symbol,quote_asset,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,compounding_enabled,single_active_entry,initial_market_enabled,local_reentry_enabled,kill_switch,live_enabled,config_version,updated_at", ["asset"], { assetColumn: "asset" })));
+    tasks.push(() => load("robot_v1_live_global_caps", source("max_total_live_exposure_brl,config_version,updated_at", ["updated_at"])));
+    tasks.push(() => load("robot_v1_live_slot_accounts", source("asset,slot_number,quote_asset,balance_brl,market_pnl_brl,manual_gain_brl,contribution_brl,fees_brl,gain_count,updated_at", ["asset", "slot_number"], { assetColumn: "asset" })));
+    tasks.push(() => load("robot_v1_live_preparation_events", source("id,asset,config_version,event_type,snapshot,observed_at", ["observed_at", "id"], { time: "observed_at", until })));
+  }
   tasks.push(() => load("robot_v1_ath_events", source("id,profile_id,environment,asset,event_key,event_type,cycle_id,details,observed_at", ["observed_at", "id"], { environmentColumn: true, assetColumn: "asset", time: "observed_at", until })));
   if (withShadow || withTestnet) tasks.push(() => load("robot_v1_strategy_decisions", source("id,environment,asset,decision_id,strategy_version,cycle_id,slot_id,operation_id,operation_sequence,action_type,target_price,target_notional,priority,reason,expected_next_state,observed_next_state,created_at,dispatched_at,exchange_ack_at,completed_at,result,error,latency_ms,root_cause,resolved_by_version", ["created_at", "id"], { assetColumn: "asset", environmentColumn: true, time: "created_at", until })));
   if (withShadow || withTestnet || withReal) tasks.push(() => load("robot_v1_monthly_slot_gains", source("environment,asset,slot_number,physical_slot_id,source_id,credited_at,effective_gain_at,evidence_basis,period_key,timezone,gain_units", ["effective_gain_at", "source_id"],
@@ -135,6 +142,14 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   await Promise.all(Array.from({ length: Math.min(5, tasks.length) }, async () => {
     while (taskIndex < tasks.length) { const task = tasks[taskIndex++]; await task(); }
   }));
+  if (withReal) {
+    const live = await loadLiveProductionSnapshot().catch(() => null);
+    if (live) sources.live_market_snapshot = [{ observed_at: live.observedAt, source: live.source,
+      markets: live.markets, available_brl: live.brlFree, locked_brl: live.brlLocked,
+      balance_observed_at: live.balanceObservedAt, permission: live.permissions }];
+    else { sources.live_market_snapshot = []; incompleteSources.push("live_market_snapshot:unavailable");
+      warnings.push("Consulta GET da Binance Production indisponível no relatório; filtros, preço e saldo BRL não foram inferidos."); }
+  }
   if (withShadow) {
     const firstEngineObservation = sources.report_runtime_observations.find((row) => row.source === "SHADOW_ENGINE");
     if (!firstEngineObservation || Date.parse(String(firstEngineObservation.started_at)) > Date.parse(filters.start) + 300_000) incompleteSources.push("shadow_engine_execution_history:before_first_observation_unavailable");
@@ -144,11 +159,11 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   if (withTestnet) {
     if (!sources.report_runtime_observations.some((row) => row.source === "TESTNET_DIAGNOSTIC")) incompleteSources.push("testnet_account_balances:no_snapshot_in_period");
     incompleteSources.push("testnet_user_stream:continuous_connection_history_not_persisted");
-    warnings.push("Snapshots de saldos e permissões Testnet são preservados desde a Fase 3.9 quando o diagnóstico existente é executado na Automação. Não há reconstrução de saldos livres anteriores nem conexão contínua USER_STREAM; exportar não consulta a exchange.");
+    warnings.push("Snapshots de saldos e permissões Testnet são preservados desde a Fase 3.9 quando o diagnóstico existente é executado na Automação. Não há reconstrução de saldos livres anteriores nem conexão contínua USER_STREAM; exportar não consulta a exchange Testnet.");
     warnings.push("Candles persistidos são do mercado Production usados pelo Shadow; não comprovam execução nem travessia de preço no mercado Binance Testnet.");
   }
   if (withReal) {
-    incompleteSources.push("production_http_write_log:not_persisted", "solbrl_exchange_filters:not_persisted");
+    incompleteSources.push("production_http_write_log:not_persisted");
     warnings.push("O banco não mantém um log de cada requisição HTTP Production. O relatório distingue a guarda READ-ONLY do código e a ausência de ordens CoinOps do histórico manual observado na exchange.");
     warnings.push("Política de tamanho: reconciliação inclui detalhes de QUANTITY_MISMATCH, PRICE_MISMATCH, STATUS_MISMATCH e UNKNOWN. MATCH, EXPECTED_ONLY e EXCHANGE_ONLY permanecem contados no resumo de cada execução; linhas externas repetidas não são duplicadas no pacote.");
   }

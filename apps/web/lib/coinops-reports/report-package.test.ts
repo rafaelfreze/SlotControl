@@ -68,11 +68,11 @@ test("texto livre com Basic, cookies ou segredo entre aspas não conserva sufixo
 });
 
 const sample: PackagedAudit = { datasets: { summary: [{ environment: "SHADOW", asset: "SOL", symbol: "SOLUSDC", gains: 2, operations: 2, cycles: 1, realized_pnl: .1, capital_start: 250, capital_end: 250.1, missed_levels: 0, errors: 0, health: "WARNING", new_audit_field: "evidência" }], checks: [{ code: "SOURCE_GAP", status: "WARNING", explanation: "Fonte histórica não registrada." }] }, warnings: ["Snapshot atual não é histórico."], incompleteSources: ["cron_history"] };
-test("pacote v7 contém REGIME_ATH e AJUSTES_MANUAIS com contagens e hashes", () => {
+test("pacote v8 contém LIVE_PREPARATION, REGIME_ATH e AJUSTES_MANUAIS com contagens e hashes", () => {
   const packaged = buildReportPackage(sample, filters, now.toISOString(), "abc123");
   const files = unzip(packaged.zip()), manifest = JSON.parse(files.get("manifest.json")!);
-  assert.equal(files.size, 23); assert.equal(manifest.report_version, 7); assert.equal(manifest.timezone, "America/Campo_Grande"); assert.equal(manifest.app_commit_sha, "abc123");
-  assert.equal(manifest.schema_version, "coinops/robot-v1/reports-v7"); assert.ok(files.has("16_MISSED_TEMPORAL.csv")); assert.ok(files.has("17_METAS_MENSAIS.csv")); assert.ok(files.has("REGIME_ATH.csv")); assert.ok(files.has("AJUSTES_MANUAIS.csv"));
+  assert.equal(files.size, 24); assert.equal(manifest.report_version, 8); assert.equal(manifest.timezone, "America/Campo_Grande"); assert.equal(manifest.app_commit_sha, "abc123");
+  assert.equal(manifest.schema_version, "coinops/robot-v1/reports-v8"); assert.ok(files.has("16_MISSED_TEMPORAL.csv")); assert.ok(files.has("17_METAS_MENSAIS.csv")); assert.ok(files.has("REGIME_ATH.csv")); assert.ok(files.has("AJUSTES_MANUAIS.csv")); assert.ok(files.has("LIVE_PREPARATION.csv"));
   for (const file of REPORT_FILES) assert.equal(manifest.row_counts[file.name], sample.datasets[file.key]?.length || 0);
   assert.deepEqual([...files.keys()].sort(), manifest.included_files.sort());
   for (const [name, metadata] of Object.entries(manifest.file_metadata) as Array<[string, { bytes: number; sha256: string }]>) { assert.equal(Buffer.byteLength(files.get(name)!), metadata.bytes); assert.equal(sha256(files.get(name)!), metadata.sha256); }

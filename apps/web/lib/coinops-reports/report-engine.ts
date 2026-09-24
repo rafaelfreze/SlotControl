@@ -10,12 +10,13 @@ import { buildManualAdjustmentChecks } from "./manual-adjustment-audit.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
 import { hasMonthlyTargetPolicy } from "./monthly-entry-evidence.ts";
 import { buildPreLiveAuditGate } from "./pre-live-audit.ts";
+import { buildLivePreparationAudit } from "./live-preparation-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "manual_adjustments"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "manual_adjustments"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -561,7 +562,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       source: "exchange_reconciliation_runs.summary.filters" });
   }
   if (filters.environments.includes("REAL")) {
-    realRows.push({ environment: "REAL", row_type: "LIVE_READINESS", asset: "SOL", symbol: "SOLBRL", mode: "PRODUCTION_READ_ONLY", live_status: "BLOCKED", filters_status: object(realSnapshot.filters).SOLBRL ? "PERSISTED" : "NOT_PERSISTED", source: "runtime_contract_phase_4_1", notes: "Preparação somente. Esta fase não consulta a exchange, não cria ordens e não habilita LIVE." });
+    realRows.push({ environment: "REAL", row_type: "LIVE_READINESS", asset: "SOL", symbol: "SOLBRL", mode: "PRODUCTION_READ_ONLY", live_status: "BLOCKED", filters_status: object(realSnapshot.filters).SOLBRL ? "PERSISTED" : "NOT_PERSISTED", source: "runtime_contract_phase_4_1", notes: "Preparação somente. Este registro antigo é snapshot; a preparação 5.1 consulta GET, não cria ordens e não habilita LIVE." });
     incompleteSources.push("production_http_write_history:not_persisted");
   }
   const testnetRows: AuditRow[] = [
@@ -691,7 +692,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     , missed_temporal: temporalOccurrences.map((row) => ({ ...row, environment: "TESTNET", symbol: `${row.asset}USDC`,
       context_only: filters.temporalWindow === "SINCE_STRATEGY_4_1" && row.temporal_classification === "HISTORICAL_PRE_4_1", source: "robot_v1_testnet_events+current_slot_fallback" }))
       .filter((row) => selected(row, filters) && (!row.detected_at || timestamp(row.detected_at) < timestamp(observationEnd))),
-    monthly_goals: monthlyGoals, ath_regime: [],
+    monthly_goals: monthlyGoals, ath_regime: [], live_preparation: [],
     manual_adjustments: manualAdjustments.filter((row) => selected(row, filters) && inPeriod(row.created_at, filters))
       .map((row) => ({ adjustment_id: row.id, environment: row.environment, asset: row.asset,
         physical_slot_number: row.slot_number, physical_slot_id: row.physical_slot_id, type: row.kind,
@@ -706,7 +707,18 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
         idempotency_key: row.idempotency_key, strategy_version: row.strategy_version,
         config_version: row.config_version, evidence_basis: "IMMUTABLE_MANUAL_ADJUSTMENT_LEDGER" }))
   };
+  const preparation = filters.environments.includes("REAL")
+    ? buildLivePreparationAudit(input.sources, input.generatedAt) : null;
+  if (preparation) {
+    datasets.live_preparation = preparation.rows.filter((row) => filters.assets.includes(row.asset as ReportAsset));
+  }
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
+  if (preparation) {
+    datasets.checks.push({ code: "LIVE_PREPARATION_BRL_GATE",
+      status: preparation.gate === "LIVE_PREPARATION_READY" ? "PASS" : "WARNING",
+      explanation: `Preparação BRL: ${preparation.gate}. PASS não habilita LIVE nem autoriza ordens reais.`,
+      environment: "REAL", asset: null, evidence: "CURRENT_DB_CONFIG+BINANCE_GET; no Production write" });
+  }
   datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters, contextOrders: normalizedOrders, contextEvents: allEvents }));
   datasets.checks.push(...buildMonthlyGoalChecks(datasets, input.sources, incompleteSources, input.generatedAt));
   const athAudit = buildAthAudit(datasets, input.sources, incompleteSources, input.generatedAt);
