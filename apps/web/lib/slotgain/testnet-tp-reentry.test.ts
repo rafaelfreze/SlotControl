@@ -36,7 +36,10 @@ function order(values: Row): Row {
 function harness(seedOrders: Row[], status = "NEW") {
   const monthly = [{ physicalSlotNumber: 5, eligibleForNewEntry: true, monthlyTargetReached: false, periodKey: "2026-09" }];
   const storedOrders = structuredClone(seedOrders);
-  const slots = [structuredClone(slot)];
+  const slots = [structuredClone(slot), ...Array.from({ length: 25 }, (_, index) => index + 1)
+    .filter((number) => number !== 5).map((number) => ({ ...structuredClone(slot),
+      id: `physical-slot-${number}`, slot_number: number, entry_state: "PLANNED", gain_count: 0 }))];
+  const monthlySnapshotLengths: number[] = [];
   const decisions: Row[] = [];
   const completions: Row[] = [];
   const requests: Row[] = [];
@@ -107,7 +110,12 @@ function harness(seedOrders: Row[], status = "NEW") {
     "./binance-spot-adapter": {}, "./ath-ladder": {}, "./ath-profile-server": {},
     "./strategy-testnet-recovery": recovery, "../coinops-reports/testnet-fill-evidence": fillEvidence,
     "./testnet-fill-accounting": fillAccounting, "./execution-lease": executionLease,
-    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => monthly }, "./monthly-slot-policy": {},
+    "./monthly-slot-server": { loadMonthlySlotStatuses: async (_service: unknown,
+      _environment: unknown, _scope: unknown, snapshot: Row[]) => {
+      monthlySnapshotLengths.push(snapshot.length);
+      assert.equal(snapshot.length, 25);
+      return monthly;
+    } }, "./monthly-slot-policy": {},
     "../supabase/env": {}, "../supabase/service-role": {}, "./binance-spot-testnet-adapter": {},
     "./strategy-decision-server": {
       persistStrategyDecision: async (_service: unknown, _scope: unknown, _environment: unknown, decision: Row) => { decisions.push(decision); },
@@ -124,6 +132,7 @@ function harness(seedOrders: Row[], status = "NEW") {
     return dependencies[name];
   }, runtime);
   return { runtime, service, adapter, slots, storedOrders, decisions, completions, requests, monthly,
+    monthlySnapshotLengths,
     async ensure(orders: Row[]) { await runtime.ensureTakeProfits(service, run, slots, orders, filters, adapter); } };
 }
 
@@ -135,6 +144,7 @@ for (const purpose of ["INITIAL", "ENTRY"]) {
     h.monthly[0].eligibleForNewEntry = false;
     h.monthly[0].monthlyTargetReached = true;
     await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter);
+    assert.deepEqual(h.monthlySnapshotLengths, [25]);
     assert.equal(h.requests.length, 0, "no POST occurs after a manual gain made the slot ineligible");
     assert.equal(h.storedOrders[0].status, "CANCELED");
     assert.equal(h.storedOrders[0].submission_guarded_at, null, "no dispatch permit was consumed");
@@ -147,6 +157,7 @@ test("first PREPARED BUY revalidates the current period instead of holding a new
   const h = harness([prepared]);
   h.monthly[0].periodKey = "2026-10";
   await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter);
+  assert.deepEqual(h.monthlySnapshotLengths, [25]);
   assert.equal(h.requests.length, 1);
   assert.equal(h.storedOrders[0].status, "NEW");
   assert.equal(typeof h.storedOrders[0].submission_guarded_at, "string");

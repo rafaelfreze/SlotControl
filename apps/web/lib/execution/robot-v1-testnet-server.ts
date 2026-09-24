@@ -306,7 +306,16 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
 }
 
 async function monthlyStatuses(service: Service, run: Run, slots: Slot[]) {
-  return loadMonthlySlotStatuses(service, "TESTNET", { ...owned(run), asset: run.asset }, slots);
+  // Submission callbacks may hold only the candidate slot. Ranking and
+  // monthly eligibility still require the complete physical 25-slot snapshot.
+  let snapshot = slots;
+  if (snapshot.length !== 25) {
+    const { data, error } = await service.from("robot_v1_testnet_slots").select("*")
+      .eq("run_id", run.id).eq("tenant_id", run.tenant_id);
+    if (error || !Array.isArray(data)) throw new Error("COINOPS_TESTNET_LEDGER_UNAVAILABLE");
+    snapshot = data as Slot[];
+  }
+  return loadMonthlySlotStatuses(service, "TESTNET", { ...owned(run), asset: run.asset }, snapshot);
 }
 
 async function renewTestnetLease(service: Service, run: Run) {
