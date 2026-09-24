@@ -5,7 +5,7 @@ import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet
 import { getDailyMarketCandles } from "@/lib/execution/market-daily-candles";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
 import { buildLiveSizing, liveOperationalDivergences, livePreparationGate, type LiveConfig } from "@/lib/execution/live-preparation";
-import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
+import { loadLiveEngineExecutorStatus, loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
 import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
@@ -41,6 +41,89 @@ type RobotV1SlotAccountRow = { config_id: string; slot_number: number; initial_b
 type RobotV1EventRow = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type RobotV1CandleRow = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 
+async function loadLegacyTestnetData(supabase: ReturnType<typeof createClient>, accountId: string,
+  engineIds: string[], tenantId: string, userId: string) {
+  // Reading each market is independent of the dashboard's other ledgers.
+  const entries = await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
+    const { data: runs, error } = await supabase.from("robot_v1_testnet_runs")
+      .select("id,strategy_version,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,next_capital_usdc,next_gain_rate,next_entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source")
+      .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+      .eq("tenant_id", tenantId).eq("user_id", userId).eq("asset", asset)
+      .order("created_at", { ascending: false }).limit(20);
+    if (error) throw error;
+    const run = runs?.find((item) => item.status === "ACTIVE" || item.status === "PAUSED") || runs?.[0];
+    if (!run) return { asset, data: null };
+    const runIds = (runs || []).map((item) => item.id);
+    const [slots, orders, events, missedEvents] = await Promise.all([
+      supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at,post_ath_group,post_ath_group_rank,operational_rank").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).in("run_id", runIds).order("slot_number"),
+      supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).in("run_id", runIds).order("created_at"),
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100),
+    ]);
+    if (slots.error || orders.error || events.error || missedEvents.error)
+      throw slots.error || orders.error || events.error || missedEvents.error;
+    const allSlots = slots.data || [], allOrders = orders.data || [];
+    return { asset, data: {
+      run,
+      slots: allSlots.filter((item) => item.run_id === run.id),
+      orders: allOrders.filter((item) => item.run_id === run.id),
+      events: [...new Map([...(events.data || []), ...(missedEvents.data || [])]
+        .map((event) => [event.id, event])).values()].sort((a, b) => b.observed_at.localeCompare(a.observed_at)),
+      history: (runs || []).filter((item) => item.id !== run.id).map((historicalRun) => ({
+        run: historicalRun,
+        slots: allSlots.filter((item) => item.run_id === historicalRun.id),
+        orders: allOrders.filter((item) => item.run_id === historicalRun.id),
+      })),
+    } };
+  }));
+  return Object.fromEntries(entries.filter((item) => item.data).map((item) => [item.asset, item.data])) as
+    Partial<Record<"BTC" | "SOL", TestnetAssetData>>;
+}
+
+async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, accountId: string,
+  engineIds: string[], productId: string, tenantId: string, userId: string) {
+  const entries = await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
+    const current = await supabase.from("robot_v1_live_runs")
+      .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing")
+      .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+      .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
+      .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle();
+    if (current.error) throw new Error("COINOPS_LIVE_RUN_READ_FAILED");
+    if (!current.data) return { asset, data: null };
+    const run = current.data;
+    const [slots, orders, accounts, events, alerts] = await Promise.all([
+      supabase.from("robot_v1_live_slots")
+        .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at")
+        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+        .eq("run_id", run.id).eq("tenant_id", tenantId).order("slot_number"),
+      supabase.from("robot_v1_live_orders")
+        .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl")
+        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+        .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
+      supabase.from("robot_v1_live_slot_accounts")
+        .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
+        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
+        .eq("asset", asset).order("slot_number"),
+      supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details")
+        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+        .eq("run_id", run.id).eq("tenant_id", tenantId)
+        .order("observed_at", { ascending: false }).limit(20),
+      supabase.from("robot_v1_live_alerts").select("severity,code,last_seen_at")
+        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
+        .eq("asset", asset).is("resolved_at", null)
+        .order("last_seen_at", { ascending: false }).limit(10),
+    ]);
+    if (slots.error || orders.error || accounts.error || events.error || alerts.error)
+      throw new Error("COINOPS_LIVE_LEDGER_READ_FAILED");
+    return { asset, data: { run, slots: slots.data || [], orders: orders.data || [],
+      accounts: accounts.data || [], events: events.data || [], alerts: alerts.data || [], monthlyGains: [] } };
+  }));
+  return Object.fromEntries(entries.filter((item) => item.data).map((item) => [item.asset, item.data])) as
+    Partial<Record<"BTC" | "SOL", LiveAssetData>>;
+}
+
 export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string; adjust?: string; account?: string; market?: string; engine?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
@@ -55,6 +138,23 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (!legacyAccount) throw new Error("COINOPS_LEGACY_ACCOUNT_UNAVAILABLE");
   const legacyEngineIds = registry.engines.filter((engine) => engine.legacy_compatible && engine.exchange_account_id === legacyAccount.id).map((engine) => engine.id);
   const legacyRealContexts = registry.engines.filter((engine) => engine.environment === "REAL" && engine.exchange_account_id === legacyAccount.id && engine.legacy_compatible).map((engine) => resolveEngineContext(registry, { environment: "REAL", exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id }));
+  const productId = registryScope.data.product_id;
+  // Start independent remote reads before the ledger fan-out. Previously each
+  // group waited for the previous group, adding their network latencies.
+  const manualAdjustmentsPromise = supabase.from("robot_v1_manual_adjustments")
+    .select("id,trading_engine_id,exchange_account_id,environment,asset,slot_number,kind,gain_units,currency,original_amount,converted_amount_usdc,created_at,reversal_of,reason").in("trading_engine_id", registry.engines.map((engine) => engine.id))
+    .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+    .order("created_at", { ascending: false }).limit(40);
+  const dailyCandlesPromise = Promise.all([
+    ...(["BTCUSDC", "SOLUSDC"] as const).map((symbol) => getDailyMarketCandles(symbol).catch(() => [])),
+    ...(["BTCBRL", "SOLBRL"] as const).map(getPremiumBrlCandles),
+  ]);
+  const productionPromise = loadLiveProductionSnapshot(legacyRealContexts).catch(() => null);
+  const executorPromise = loadLiveExecutorStatus();
+  const scopedHealthPromise = Promise.all(legacyRealContexts.map(async (context) =>
+    [context.trading_engine_id, await loadLiveEngineExecutorStatus(context)] as const));
+  const testnetDataPromise = loadLegacyTestnetData(supabase, legacyAccount.id, legacyEngineIds, tenantId, user.id);
+  const liveDataPromise = loadLegacyLiveData(supabase, legacyAccount.id, legacyEngineIds, productId, tenantId, user.id);
 
   let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
   const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "overview";
@@ -72,7 +172,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     });
   }
 
-  const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse, scopeResponse, monthlyResponse, athProfilesResponse] = await Promise.all([
+  const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse, monthlyResponse, athProfilesResponse] = await Promise.all([
     supabase.from("exchange_connections").select("connection_status,last_reconciled_at,last_synced_at").eq("exchange", "BINANCE_SPOT").maybeSingle(),
     supabase.from("exchange_reconciliation_runs").select("status,completed_at,summary").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("robot_v1_configs").select("id,strategy_version,asset,symbol,execution_mode,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,slot_count,kill_switch,pause_new_entries,shadow_test_started_at,shadow_test_target_end_at,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("asset"),
@@ -83,7 +183,6 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     supabase.from("robot_v1_audit_events").select("cycle_id,slot_id,event_type,next_state,observed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("observed_at", { ascending: false }).limit(40),
     supabase.from("robot_v1_market_candles").select("symbol,candle_open_at,open_price,high_price,low_price,close_price").in("symbol", ["BTCUSDC", "SOLUSDC"]).order("candle_open_at", { ascending: false }).limit(180),
     supabase.from("exchange_order_intents").select("id").limit(12),
-    supabase.from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle(),
     supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
       .eq("tenant_id", tenantId).eq("user_id", user.id),
     supabase.from("robot_v1_ath_profiles").select("id,trading_engine_id,exchange_account_id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,ath_observed_at,ath_source,ath_verified_at,ath_floor_reference,ath_floor_source").in("trading_engine_id", registry.engines.map((engine) => engine.id))
@@ -91,54 +190,19 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   ]);
   const shadowReadError = robotConfigsResponse.error || robotCyclesResponse.error || robotSlotsResponse.error || operationsResponse.error || accountsResponse.error || candlesResponse.error;
   if (shadowReadError) throw shadowReadError;
-  if (scopeResponse.error || !scopeResponse.data || monthlyResponse.error) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE");
+  if (monthlyResponse.error) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE");
   if (athProfilesResponse.error) throw new Error("COINOPS_ATH_PROFILES_UNAVAILABLE");
-  const productId = scopeResponse.data.product_id;
-  const { data: manualAdjustments, error: manualError } = await supabase.from("robot_v1_manual_adjustments")
-    .select("id,trading_engine_id,exchange_account_id,environment,asset,slot_number,kind,gain_units,currency,original_amount,converted_amount_usdc,created_at,reversal_of,reason").in("trading_engine_id", registry.engines.map((engine) => engine.id))
-    .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
-    .order("created_at", { ascending: false }).limit(40);
+  const { data: manualAdjustments, error: manualError } = await manualAdjustmentsPromise;
   if (manualError) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
   const targetMatch = /^(SHADOW|TESTNET|REAL):(BTC|SOL):([1-9]|1\d|2[0-5])$/.exec(searchParams?.adjust || "");
   const initialManualTarget = targetMatch ? {
     environment: targetMatch[1] as "SHADOW" | "TESTNET" | "REAL",
     asset: targetMatch[2] as "BTC" | "SOL", slotNumber: Number(targetMatch[3]),
   } : null;
-  const dailyCandles = (await Promise.all([
-    ...(["BTCUSDC", "SOLUSDC"] as const).map((symbol) => getDailyMarketCandles(symbol).catch(() => [])),
-    ...(["BTCBRL", "SOLBRL"] as const).map(getPremiumBrlCandles),
-  ])).flat();
-  // Each asset resolves its own latest persisted run through the authenticated
-  // RLS client. Viewing BTC must never reuse SOL's ledger or start an executor.
-  const testnetAssetData: Partial<Record<"BTC" | "SOL", TestnetAssetData>> = {};
-  await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
-    const { data: runs, error } = await supabase.from("robot_v1_testnet_runs")
-      .select("id,strategy_version,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,next_capital_usdc,next_gain_rate,next_entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-      .eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset).order("created_at", { ascending: false }).limit(20);
-    if (error) throw error;
-    const run = runs?.find((item) => item.status === "ACTIVE" || item.status === "PAUSED") || runs?.[0];
-    if (!run) return;
-    const runIds = (runs || []).map((item) => item.id);
-    const [slots, orders, events, missedEvents] = await Promise.all([
-      supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at,post_ath_group,post_ath_group_rank,operational_rank").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).in("run_id", runIds).order("slot_number"),
-      supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).in("run_id", runIds).order("created_at"),
-      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
-      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100)
-    ]);
-    if (slots.error || orders.error || events.error || missedEvents.error) throw slots.error || orders.error || events.error || missedEvents.error;
-    const allSlots = slots.data || [], allOrders = orders.data || [];
-    testnetAssetData[asset] = {
-      run,
-      slots: allSlots.filter((item) => item.run_id === run.id),
-      orders: allOrders.filter((item) => item.run_id === run.id),
-      events: [...new Map([...(events.data || []), ...(missedEvents.data || [])].map((event) => [event.id, event])).values()].sort((a, b) => b.observed_at.localeCompare(a.observed_at)),
-      history: (runs || []).filter((item) => item.id !== run.id).map((historicalRun) => ({
-        run: historicalRun,
-        slots: allSlots.filter((item) => item.run_id === historicalRun.id),
-        orders: allOrders.filter((item) => item.run_id === historicalRun.id)
-      }))
-    };
-  }));
+  const dailyCandles = (await dailyCandlesPromise).flat();
+  // Every asset is isolated by account/engine and was fetched alongside the
+  // other independent dashboard observations.
+  const testnetAssetData = await testnetDataPromise;
   const testnetRun = testnetAssetData.SOL?.run || null;
   const monthlyGoals: Array<MonthlySlotStatus & { environment: "SHADOW" | "TESTNET"; asset: "BTC" | "SOL" }> = [];
   const monthlyNow = new Date().toISOString(), periodKey = monthlyPeriodKey(monthlyNow);
@@ -193,7 +257,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
   let livePreparation: import("./automation-mobile").Props["livePreparation"] = null;
-  const liveAssetData: Partial<Record<"BTC" | "SOL", LiveAssetData>> = {};
+  const liveAssetData = await liveDataPromise;
   // The shared dashboard needs the same read-only LIVE snapshot in every view.
   // This does not dispatch or reconcile an order; the executor remains server-side.
   {
@@ -209,8 +273,8 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       supabase.from("robot_v1_manual_adjustments").select("id").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
         .eq("environment", "REAL").limit(1),
-      loadLiveProductionSnapshot(legacyRealContexts).catch(() => null),
-      loadLiveExecutorStatus(),
+      productionPromise,
+      executorPromise,
     ]);
     if (preparations.error || globalCap.error || nativeAccounts.error || legacyRealCredits.error)
       throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
@@ -253,44 +317,13 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       source: production?.source ?? null, permissions: production?.permissions ?? "UNVERIFIED",
       ipRestricted: production?.ipRestricted ?? null,
       error: production ? sizing.length === 2 ? null : "Filtros ou cálculo de um dos pares indisponíveis." : "Consulta Production indisponível; preparação bloqueada." };
-    await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
-      const current = await supabase.from("robot_v1_live_runs")
-        .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
-        .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"])
-        .maybeSingle();
-      if (current.error) throw new Error("COINOPS_LIVE_RUN_READ_FAILED");
-      if (!current.data) return;
-      const run = current.data;
-      const [slots, orders, accounts, events, alerts] = await Promise.all([
-        supabase.from("robot_v1_live_slots")
-          .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-          .eq("run_id", run.id).eq("tenant_id", tenantId).order("slot_number"),
-        supabase.from("robot_v1_live_orders")
-          .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-          .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
-        supabase.from("robot_v1_live_slot_accounts")
-          .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-          .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
-          .eq("asset", asset).order("slot_number"),
-        supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-          .eq("run_id", run.id).eq("tenant_id", tenantId)
-          .order("observed_at", { ascending: false }).limit(20),
-        supabase.from("robot_v1_live_alerts").select("severity,code,last_seen_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
-          .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
-          .eq("asset", asset).is("resolved_at", null)
-          .order("last_seen_at", { ascending: false }).limit(10),
-      ]);
-      if (slots.error || orders.error || accounts.error || events.error || alerts.error)
-        throw new Error("COINOPS_LIVE_LEDGER_READ_FAILED");
-      liveAssetData[asset] = { run, slots: slots.data || [], orders: orders.data || [],
-        accounts: accounts.data || [], events: events.data || [], alerts: alerts.data || [],
-        monthlyGains: (monthlyResponse.data || []).filter((row) => row.environment === "REAL"
-          && row.asset === asset && row.period_key === monthlyPeriodKey(new Date()))
-          .map((row) => ({ slot_number: row.slot_number,
-            monthly_gain_count: row.monthly_gain_count,
-            lifetime_gain_count: row.lifetime_gain_count })) };
-    }));
+    for (const asset of ["BTC", "SOL"] as const) if (liveAssetData[asset]) {
+      liveAssetData[asset]!.monthlyGains = (monthlyResponse.data || []).filter((row) => row.environment === "REAL"
+        && row.asset === asset && row.period_key === monthlyPeriodKey(new Date()))
+        .map((row) => ({ slot_number: row.slot_number,
+          monthly_gain_count: row.monthly_gain_count,
+          lifetime_gain_count: row.lifetime_gain_count }));
+    }
   }
   const presentation: Presentation = {
     connectionStatus: connectionResponse.data?.connection_status,
@@ -326,7 +359,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   };
   presentation.operator = await buildOperatorPresentation(supabase, presentation, registry, {
     accountId: searchParams?.account || "ALL", symbol: searchParams?.market || "ALL",
-  });
+  }, new Map(await scopedHealthPromise));
   const onboarding = await supabase.from("account_onboarding_checks")
     .select("exchange_account_id,trading_engine_id,check_key,status,checked_at")
     .eq("operator_id", registry.operator.id).order("checked_at", { ascending: false }).limit(200);

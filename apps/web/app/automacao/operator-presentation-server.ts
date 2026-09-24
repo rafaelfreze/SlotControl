@@ -5,7 +5,7 @@ import type { createServiceRoleClient } from "@/lib/supabase/service-role";
 import type { Props } from "./automation-mobile";
 import { buildPremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { monthlyPeriodKey, rankMonthlySlots } from "@/lib/execution/monthly-slot-policy";
-import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
+import { loadLiveExecutorStatus, type LiveExecutorStatus } from "@/lib/execution/live-executor-health";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
 
@@ -115,24 +115,24 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
 }
 
 export async function buildOperatorPresentation(client: Client, data: Props, registry: DomainRegistry,
-  selection: PremiumSelection): Promise<PremiumOperatorPresentation> {
+  selection: PremiumSelection, prefetchedHealth?: Map<string, LiveExecutorStatus>): Promise<PremiumOperatorPresentation> {
   if (selection.accountId !== "ALL" && !registry.accounts.some((account) => account.id === selection.accountId))
     throw new Error("COINOPS_ACCOUNT_SCOPE_DENIED");
   if (selection.symbol !== "ALL" && !registry.engines.some((engine) => engine.symbol === selection.symbol
     && (selection.accountId === "ALL" || engine.exchange_account_id === selection.accountId)))
     throw new Error("COINOPS_ENGINE_SCOPE_DENIED");
   const engineData: Record<string, Props> = {};
-  const caps = await client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
+  const capsPromise = client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
     .eq("operator_id", registry.operator.id);
-  if (caps.error) throw new Error("COINOPS_ACCOUNT_CAPS_UNAVAILABLE");
-  const loaded: Array<{ context: EngineContext; scoped: Props }> = [];
-  for (const row of registry.engines) {
+  const loaded = await Promise.all(registry.engines.map(async (row) => {
     const context = resolveEngineContext(registry, { environment: row.environment,
       exchange_account_id: row.exchange_account_id, trading_engine_id: row.id });
     const scoped = context.legacy_compatible ? legacyEnginePresentation(data, context)
       : await nativeEnginePresentation(client, data, context);
-    loaded.push({ context, scoped });
-  }
+    return { context, scoped };
+  }));
+  const caps = await capsPromise;
+  if (caps.error) throw new Error("COINOPS_ACCOUNT_CAPS_UNAVAILABLE");
   const live = loaded.filter(({ context, scoped }) => context.environment === "REAL" && scoped.livePreparation);
   // Two concurrent read-only health checks keep BTC/SOL within one UI budget,
   // while bounding fan-out if additional legitimate engines are introduced.
@@ -142,7 +142,8 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
       // contract during rollout. Only the authenticated, identity-validated
       // engine observation can attest this market's LIVE state and kill switch.
       scoped.livePreparation = { ...scoped.livePreparation!,
-        executor: await loadLiveExecutorStatus(undefined, undefined, fetchUiHealth, undefined, context) };
+        executor: prefetchedHealth?.get(context.trading_engine_id)
+          ?? await loadLiveExecutorStatus(undefined, undefined, fetchUiHealth, undefined, context) };
     }));
   }
   const engines = loaded.map(({ context, scoped }) => {
