@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 
-import { BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
+import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { ExecutorRejection } from "./security.mjs";
 import { EXECUTOR_CAPS } from "./preparation.mjs";
 import { getProductionRestrictedSpotStatus } from "./binance-readonly.mjs";
@@ -64,15 +64,26 @@ export class BinanceLiveTransport {
 
   async safetySnapshot(symbol) {
     if (symbol !== "BTCBRL" && symbol !== "SOLBRL") throw new ExecutorRejection("EXECUTOR_SYMBOL_DENIED", 403);
-    const [permission, account, filters, price, openOrders, bnbBrlPrice] = await Promise.all([
-      getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret, fetcher: this.fetcher }),
-      this.reads.getAccount(), this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
-      this.reads.getOpenOrders(symbol),
-      this.reads.getMarketPrice("BNBBRL").catch(() => null),
-    ]);
-    if (permission !== "SPOT_RESTRICTED" || !account.canTrade)
-      throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
-    return { account, filters, price, openOrders, bnbBrlPrice };
+    // Retry only a complete GET snapshot after a transient read failure. A
+    // partially observed snapshot is never reused for an order decision.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const [permission, account, filters, price, openOrders, bnbBrlPrice] = await Promise.all([
+          getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret, fetcher: this.fetcher }),
+          this.reads.getAccount(), this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
+          this.reads.getOpenOrders(symbol),
+          this.reads.getMarketPrice("BNBBRL").catch(() => null),
+        ]);
+        if (permission === "UNVERIFIED" && attempt === 0) continue;
+        if (permission !== "SPOT_RESTRICTED" || !account.canTrade)
+          throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
+        return { account, filters, price, openOrders, bnbBrlPrice };
+      } catch (error) {
+        if (attempt === 0 && error instanceof BinanceReadOnlyError && error.retryable) continue;
+        throw error;
+      }
+    }
+    throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
   }
 
   /** Existing Shadow-vs-Production audit reads through the whitelisted IPv4.

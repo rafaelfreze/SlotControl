@@ -6,9 +6,10 @@ import { BinanceLiveTransport } from "../src/binance-live.mjs";
 const NOW = Date.parse("2026-09-24T03:00:00.000Z");
 const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
 
-function fixture({ openOrders = [], existingOrder = null, trades = [] } = {}) {
+function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false } = {}) {
   const calls = [];
   let order = existingOrder;
+  let openOrderFailures = 0;
   const filters = { symbol: "BTCBRL", status: "TRADING", baseAsset: "BTC", quoteAsset: "BRL",
     filters: [
       { filterType: "LOT_SIZE", minQty: "0.00001", maxQty: "100", stepSize: "0.00001" },
@@ -38,7 +39,10 @@ function fixture({ openOrders = [], existingOrder = null, trades = [] } = {}) {
       const symbol = parsed.searchParams.get("symbol") ?? "BTCBRL";
       return Response.json({ symbol, price: symbol === "BNBBRL" ? "5000" : "437724" });
     }
-    if (parsed.pathname === "/api/v3/openOrders") return Response.json(openOrders);
+    if (parsed.pathname === "/api/v3/openOrders") {
+      if (failFirstOpenOrders && openOrderFailures++ === 0) throw new Error("transient read timeout");
+      return Response.json(openOrders);
+    }
     if (parsed.pathname === "/api/v3/myTrades") return Response.json(trades);
     if (parsed.pathname === "/api/v3/order" && init.method === "GET")
       return order ? Response.json(order) : Response.json({ code: -2013 }, { status: 400 });
@@ -73,6 +77,14 @@ test("Production transport rejects unsupported pairs and kill switch before Bina
   await assert.rejects(transport.createOwnedOrder(marketIntent(),
     { allowCreate: false, tradingEnabled: true, killSwitch: false }), /SUBMISSION_OUTCOME_UNKNOWN/);
   assert.equal(calls.filter((call) => call.method === "POST").length, 0);
+});
+
+test("complete safety snapshot retries one transient GET failure without any write", async () => {
+  const { transport, calls } = fixture({ failFirstOpenOrders: true });
+  const snapshot = await transport.safetySnapshot("BTCBRL");
+  assert.deepEqual(snapshot.openOrders, []);
+  assert.equal(calls.filter((call) => call.path === "/api/v3/openOrders").length, 2);
+  assert.ok(calls.every((call) => call.method === "GET"));
 });
 
 test("Production transport enforces per-order, asset and global exposure before create", async () => {
