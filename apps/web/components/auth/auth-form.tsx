@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
-import { getCoinOpsAuthCallback } from "@/lib/auth-email-url";
+import { getCoinOpsAuthCallback, getCoinOpsPasswordRedirect } from "@/lib/auth-email-url";
 import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
@@ -43,7 +43,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
 
       if (isRecovery) {
         const { error: recoveryError } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: getCoinOpsAuthCallback("/redefinir-senha")
+          redirectTo: getCoinOpsPasswordRedirect()
         });
 
         if (recoveryError) {

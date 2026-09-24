@@ -44,14 +44,13 @@ test("portal data is server-scoped and omits private order identifiers", () => {
   assert.doesNotMatch(migration, /grant (?:insert|update|delete|all) on coinops\.viewer_access to authenticated/i);
 });
 
-test("invitation and reset keep Supabase fragment tokens in the browser", () => {
+test("invitation and reset land directly on the browser password form", () => {
   const route = readFileSync(resolve(process.cwd(), "app/api/coinops-viewers/route.ts"), "utf8");
-  const callback = readFileSync(resolve(process.cwd(), "app/auth/callback/route.ts"), "utf8");
   const form = readFileSync(resolve(process.cwd(), "components/auth/password-reset-form.tsx"), "utf8");
-  assert.match(route, /viewerPasswordRedirect = \(origin: string\) => `\$\{origin\}\/auth\/callback\?next=%2Fredefinir-senha`/);
+  assert.match(route, /viewerPasswordRedirect = \(origin: string\) => `\$\{origin\}\/redefinir-senha`/);
   assert.match(route, /const redirectTo = viewerPasswordRedirect\(request\.nextUrl\.origin\)/);
   assert.match(route, /resetPasswordForEmail[\s\S]*viewerPasswordRedirect\(request\.nextUrl\.origin\)/);
-  assert.match(callback, /NextResponse\.redirect\(new URL\(next, requestUrl\.origin\)\)/);
+  assert.match(form, /auth\.onAuthStateChange\(/);
   assert.match(form, /auth\.getSession\(\)/);
   assert.match(form, /!sessionReady/);
 });

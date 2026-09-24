@@ -16,13 +16,19 @@ export function PasswordResetForm() {
   useEffect(() => {
     if (!configured) return;
     let active = true;
-    // getSession waits for the browser client's URL-fragment recovery flow.
-    void createClient().auth.getSession().then(({ data, error: sessionError }) => {
+    const client = createClient();
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
+      if (!active || !session) return;
+      setSessionReady(true);
+      setError(null);
+    });
+    // The browser client consumes the invite/recovery fragment on this page.
+    void client.auth.getSession().then(({ data, error: sessionError }) => {
       if (!active) return;
       setSessionReady(Boolean(data.session));
       if (sessionError || !data.session) setError("Link inválido ou expirado. Solicite um novo convite ou redefinição.");
     });
-    return () => { active = false; };
+    return () => { active = false; subscription.unsubscribe(); };
   }, [configured]);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {

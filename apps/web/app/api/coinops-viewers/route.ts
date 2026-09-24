@@ -7,10 +7,9 @@ import { assertViewerAccount, assertViewerIntent, assertViewerOrigin, type Viewe
 export const dynamic = "force-dynamic";
 const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers });
-// The shared Auth email hook allowlists CoinOps /auth/callback. Supabase's
-// fragment-based invite/recovery token is inherited by the browser redirect
-// to the password form; it must not be consumed by a server callback.
-const viewerPasswordRedirect = (origin: string) => `${origin}/auth/callback?next=%2Fredefinir-senha`;
+// Invite/recovery tokens are delivered in the URL fragment. A server-side
+// callback redirect loses that fragment before the browser Auth client sees it.
+const viewerPasswordRedirect = (origin: string) => `${origin}/redefinir-senha`;
 
 async function adminScope() {
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_VIEWER_SCHEMA_DENIED");

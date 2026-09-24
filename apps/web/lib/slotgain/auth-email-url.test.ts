@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getCoinOpsAuthCallback } from "../auth-email-url.ts";
+import { getCoinOpsAuthCallback, getCoinOpsPasswordRedirect } from "../auth-email-url.ts";
 
 test("CoinOps signup email can return to the operational home", () => {
   const callback = new URL(getCoinOpsAuthCallback("/automacao"));
@@ -9,7 +9,7 @@ test("CoinOps signup email can return to the operational home", () => {
   assert.equal(callback.searchParams.get("next"), "/automacao");
 });
 
-test("CoinOps Auth email callbacks use the canonical production origin", () => {
+test("CoinOps password links land directly on the browser form at the canonical origin", () => {
   const environment = process.env as Record<string, string | undefined>;
   const previousEnvironment = process.env.NODE_ENV;
   const previousSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
@@ -17,8 +17,8 @@ test("CoinOps Auth email callbacks use the canonical production origin", () => {
   environment.NEXT_PUBLIC_SITE_URL = "https://cripto-flax.vercel.app";
   try {
     assert.equal(
-      getCoinOpsAuthCallback("/redefinir-senha"),
-      "https://cripto-flax.vercel.app/auth/callback?next=%2Fredefinir-senha"
+      getCoinOpsPasswordRedirect(),
+      "https://cripto-flax.vercel.app/redefinir-senha"
     );
   } finally {
     environment.NODE_ENV = previousEnvironment;
