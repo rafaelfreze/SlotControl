@@ -29,8 +29,8 @@ export function ShadowControls({ data, asset }: { data: Props; asset: "BTC" | "S
     <form className="av2-parameters" action={saveRobotV1Parameters} key={config?.id + asset}>
       <input type="hidden" name="asset" value={asset} />
       <label>Capital do próximo ciclo (USDC)<input name="capital_usdc" type="number" min="0.01" max="2500" step="0.01" defaultValue={Number(config?.next_capital_usdc ?? config?.capital_usdc ?? 250)} required /></label>
-      <label>Gain %<input name="gain_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={percent(config?.next_gain_rate ?? config?.gain_rate)} required /></label>
-      <label>Queda entre compras %<input name="spacing_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={percent(config?.next_entry_spacing ?? config?.entry_spacing)} required /></label>
+      <label>Gain %<input name="gain_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={Number(config?.next_gain_rate ?? config?.gain_rate ?? 0) * 100} required /></label>
+      <label>Queda entre compras %<input name="spacing_percent" type="number" min="0.1" max="20" step="0.1" defaultValue={Number(config?.next_entry_spacing ?? config?.entry_spacing ?? 0) * 100} required /></label>
       <button type="submit">Salvar próximo ciclo</button><button type="submit" name="preset" value="quick" formNoValidate>Usar perfil rápido 0,5% / 1%</button>
     </form>
     <small>Gain: percentual de alta necessário para vender uma posição. Queda entre compras: distância entre entradas. O ciclo e os TPs abertos preservam seus parâmetros; alterações entram no próximo ciclo. Estes controles afetam somente o Shadow.</small>

@@ -41,7 +41,7 @@ const number = (value: unknown): number | null => value === null || value === un
 const sum = (values: Array<number | null>): number | null => values.some((value) => value === null) ? null : values.reduce<number>((total, value) => total + (value ?? 0), 0);
 const add = (left: number | null, right: number | null) => left === null || right === null ? null : left + right;
 const difference = (left: number | null, right: number | null) => left === null || right === null ? null : left - right;
-const fresh = (at: string | null | undefined, now: number) => Boolean(at && Number.isFinite(Date.parse(at)) && now - Date.parse(at) >= -60_000 && now - Date.parse(at) <= 180_000);
+const fresh = (at: string | null | undefined, now: number, maxAge = 180_000) => Boolean(at && Number.isFinite(Date.parse(at)) && now - Date.parse(at) >= -60_000 && now - Date.parse(at) <= maxAge);
 const rawField = (row: unknown, key: string): unknown => row && typeof row === "object" ? (row as Record<string, unknown>)[key] : undefined;
 const rawText = (row: unknown, key: string): string | null => typeof rawField(row, key) === "string" ? rawField(row, key) as string : null;
 
@@ -258,7 +258,9 @@ function shadowAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAss
   const activeIssue = Boolean(config.last_engine_error || config.grid_error || config.grid_status === "INVALID") || slots.some((row) => row.state === "MISSED");
   let accountingValid = false;
   try { accountingValid = reconcileV1PhysicalSlotAccounts(accounts, operations); } catch { /* malformed evidence remains attention */ }
-  const healthy = !activeIssue && Boolean(cycle) && !config.kill_switch && !config.pause_new_entries && accountingValid && config.grid_status === "VALID" && fresh(config.last_engine_at, now);
+  // Shadow is serviced by the five-minute market-regime cron, not the faster
+  // exchange reconciler. Allow its normal cadence plus one minute of tolerance.
+  const healthy = !activeIssue && Boolean(cycle) && !config.kill_switch && !config.pause_new_entries && accountingValid && config.grid_status === "VALID" && fresh(config.last_engine_at, now, 360_000);
   return { ...base, price, capital, committed: cycle ? committed : null, reserved: cycle ? reserved : null,
     exposure: cycle ? add(committed, reserved) : null, freeCapital: cycle ? difference(capital, add(committed, reserved)) : null,
     realizedPnl: accounts.length ? accounting.netProfit : null, fees: accounts.length ? accounting.estimatedFees : null,

@@ -151,6 +151,29 @@ test("Shadow presentation does not turn virtual orders into Binance-resident ord
   assert.equal(btc.monthlyGains, null);
 });
 
+test("Shadow freshness respects its five-minute cron cadence plus one-minute tolerance", () => {
+  const data = fixture({ configs: [{ id: "cfg", asset: "BTC", execution_mode: "SHADOW",
+    last_market_price: 110, last_engine_at: new Date(NOW - 240_000).toISOString(),
+    gain_rate: .005, entry_spacing: .01, grid_status: "VALID", kill_switch: false, pause_new_entries: false }],
+    cycles: [{ id: "cycle", config_id: "cfg", asset: "BTC", status: "POSITIONS_ACTIVE", started_at: AT }],
+    slots: Array.from({ length: 25 }, (_, index) => ({ id: `slot-${index + 1}`, cycle_id: "cycle",
+      slot_number: index + 1, status: index === 0 ? "TP_ACTIVE" : "PENDING", entry_state: index === 1 ? "ARMED" : "PLANNED",
+      operation_sequence: 1, buy_client_order_id: `virtual-buy-${index + 1}`,
+      sell_client_order_id: index === 0 ? "virtual-tp" : null, requested_quantity: 1,
+      executed_quantity: index === 0 ? 1 : 0, average_fill_price: index === 0 ? 100 : null,
+      buy_price: 100, take_profit_price: index === 0 ? 100.5 : null })),
+    slotAccounts: Array.from({ length: 25 }, (_, index) => ({ config_id: "cfg", slot_number: index + 1,
+      initial_balance_usdc: 100, balance_usdc: 100, gain_count: 0, gross_profit_usdc: 0,
+      net_profit_usdc: 0, fees_usdc: 0 })),
+  });
+  assert.equal(buildPremiumAssets(data, "SHADOW", NOW)[0].health.healthy, true);
+  data.configs[0].last_engine_at = new Date(NOW - 360_000).toISOString();
+  assert.equal(buildPremiumAssets(data, "SHADOW", NOW)[0].health.healthy, true);
+  data.configs[0].last_engine_at = new Date(NOW - 361_000).toISOString();
+  assert.equal(buildPremiumAssets(data, "SHADOW", NOW)[0].health.tone, "attention");
+  assert.equal(buildPremiumAssets(data, "SHADOW", NOW)[0].health.healthy, false);
+});
+
 test("a historical filled Testnet TP is never presented as current protection", () => {
   const data = fixture({ testnetAssetData: { BTC: {
     run: { id: "test", status: "ACTIVE", symbol: "BTCUSDC", last_reconciled_at: AT, slot_notional_usdc: 10 },

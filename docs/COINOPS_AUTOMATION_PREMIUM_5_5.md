@@ -27,6 +27,9 @@ Slots têm uma lista compacta com filtros operacionais/físicos/gains/meta/elegi
 - Shadow usa TP/BUY virtuais; Testnet usa fundos fictícios; Real usa apenas posições próprias CoinOps.
 - Ausência de evidência fica indisponível/atenção, nunca vira saldo ou saúde inventados.
 - Saúde é informativa, derivada das evidências existentes; não aciona controles financeiros.
+- O badge LIVE só fica verde com evidência operacional, não apenas um ciclo ACTIVE. Shadow respeita sua cadência de cinco minutos mais um minuto de tolerância visual; o cutoff LIVE permanece inalterado.
+- Visão Geral agrega os três ambientes, mercado e atividades sem repetir o dashboard Real. Histórico ordena os dois ativos por timestamp antes de limitar a lista.
+- Inputs numéricos Shadow recebem defaults numéricos (a vírgula localizada é reservada aos textos). Drawers bloqueiam o scroll de fundo e restauram o estado ao fechar.
 - O monitor 6h é a agenda já versionada, não uma alegação de execução verificada pela UI.
 
 ## Validação reproduzível

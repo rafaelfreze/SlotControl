@@ -28,6 +28,7 @@ export function PremiumControls({ data, view, asset }: { data: Props; view: Auto
     {environment === "shadow" ? <ShadowControls key={`shadow:${asset}`} data={data} asset={asset} /> : null}
     {testnetData ? <TestnetControls key={`testnet:${asset}`} data={testnetData} asset={asset} /> : null}
     {environment === "live" ? <>
+      <p className="px-caption">O painel de preparação abaixo avalia saldo livre para iniciar um novo ciclo. Durante um ciclo ativo, parte do capital já está em posições e reservas; esse gate não substitui a saúde operacional exibida no dashboard.</p>
       <details className="premium-controls-balances"><summary>Saldos Binance Production · somente consulta</summary><ProductionBalances data={data} asset={asset} /></details>
       {data.livePreparation ? <LivePreparationPanel key={`live:${asset}`} data={data.livePreparation} asset={asset} /> : <section className="ac-panel" role="status"><h2>Configuração Real indisponível</h2><p>Não foi possível carregar os limites e gates nesta consulta. Isso não confirma uma interrupção do executor. Consulte o estado operacional antes de qualquer ação.</p></section>}
     </> : null}

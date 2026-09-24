@@ -48,6 +48,13 @@ test("shared Testnet controls preserve execution gates and isolate virtual actio
   assert.doesNotMatch(controls, /LIVE BLOQUEADO|BTC LIVE OFF/);
 });
 
+test("Shadow number inputs receive numeric defaults instead of localized decimal commas", () => {
+  assert.match(shadow, /name="gain_percent"[^>]+defaultValue=\{Number\(config\?\.next_gain_rate \?\? config\?\.gain_rate \?\? 0\) \* 100\}/);
+  assert.match(shadow, /name="spacing_percent"[^>]+defaultValue=\{Number\(config\?\.next_entry_spacing \?\? config\?\.entry_spacing \?\? 0\) \* 100\}/);
+  assert.doesNotMatch(shadow, /defaultValue=\{percent\(/);
+  assert.match(shadow, /gain \{percent\(cycle\?\.gain_rate \?\? config\?\.gain_rate\)\}%/);
+});
+
 test("premium navigation is presentation-only and keeps operational actions behind existing panels", () => {
   assert.doesNotMatch(premium, /\b(?:createOrder|cancelOrder|reconcileCoinOpsTestnet|controlRobotV1Shadow|confirmCoinOpsManualAdjustment|reverseCoinOpsManualAdjustment)\s*\(/);
   assert.doesNotMatch(premium, /from ["'][^"']*-(?:actions|server)["']/);
@@ -66,4 +73,14 @@ test("premium drawer retains native modal semantics and an accessible close cont
   assert.match(primitives, /onCancel=\{onClose\}/);
   assert.match(primitives, /aria-label="Fechar" onClick=\{onClose\}/);
   assert.match(primitives, /<h2 id=\{titleId\}>\{title\}<\/h2>/);
+});
+
+test("isolated simulator copy does not claim the operating LIVE environment is blocked", () => {
+  const athSimulator = read("simulador-ath/simulator-client.tsx");
+  const adjustmentSimulator = read("simulador-ajustes/page.tsx");
+  assert.match(athSimulator, /Não envia ordens à Production nem altera o estado LIVE\./);
+  assert.match(adjustmentSimulator, /não altera Shadow, Testnet ou Production/);
+  for (const source of [athSimulator, adjustmentSimulator]) {
+    assert.doesNotMatch(source, /Production READ-ONLY|LIVE bloqueado|BTC LIVE OFF/);
+  }
 });

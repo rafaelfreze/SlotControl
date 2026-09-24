@@ -51,7 +51,7 @@ function clientModules() {
   return { entryId, code: [...modules].map(([id, code]) => `${JSON.stringify(id)}:function(require,module,exports){\n${code}\n}`).join(",\n") };
 }
 
-async function mount(page: Page, view: View, width: number, height = 960) {
+async function mount(page: Page, view: View, width: number, height = 960, data = automationPremiumFixture()) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
@@ -94,7 +94,7 @@ async function mount(page: Page, view: View, width: number, height = 960) {
       React.createElement('p',null,'Painel sintético; nenhuma operação será enviada.'),
       React.createElement('label',null,'Valor de demonstração',React.createElement('input',{defaultValue:'1',type:'number'})));
     window.ReactDOM.createRoot(document.getElementById('premium-fixture-root')).render(React.createElement(PremiumAutomation,{
-      view:${JSON.stringify(view)},data:${JSON.stringify(automationPremiumFixture())},userLabel:'Rafael Demo',
+      view:${JSON.stringify(view)},data:${JSON.stringify(data)},userLabel:'Rafael Demo',
       strategyPanel:panel('Estratégia e parâmetros'),adjustmentsPanel:panel('Ajustes manuais')
     }));
   })();` });
@@ -149,8 +149,14 @@ for (const view of views) for (const width of [1440, 390]) {
   test(`${view}: screenshot ${width >= 1024 ? "desktop" : "mobile"} e render sem efeitos colaterais`, async ({ page }, testInfo) => {
     const audit = await mount(page, view, width, width < 1024 ? 844 : 1000);
     await expect(page.getByText(view === "live" || view === "overview" ? "BTC/BRL" : "BTC/USDC", { exact: true }).first()).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Próximas BUYs (2)", exact: true })).toBeVisible();
-    await expect(page.locator(".px-asset-facts > div:last-child").first()).toContainText("Slot #3");
+    if (view === "overview") {
+      await expect(page.locator(".px-overview-card")).toHaveCount(3);
+      await expect(page.locator(".px-kpis")).toHaveCount(0);
+      await expect(page.locator(".px-position-table")).toHaveCount(0);
+    } else {
+      await expect(page.getByRole("tab", { name: "Próximas BUYs (2)", exact: true })).toBeVisible();
+      await expect(page.locator(".px-asset-facts > div:last-child").first()).toContainText("Slot #3");
+    }
     expect(await geometry(page)).toEqual({ overflow: 0, bodyOverflow: 0, invalidSvg: false, smallText: [] });
     await screenshot(page, testInfo, `automation-${view}-${width}`);
     await noSideEffects(page, audit);
@@ -171,12 +177,28 @@ test("quatro ambientes sem overflow na matriz mobile e desktop", async ({ page }
 
 test("toolbar e detalhes preservam navegação sem submeter ações", async ({ page }, testInfo) => {
   const audit = await mount(page, "live", 390, 844);
+  const initialOverflow = await page.evaluate(() => document.documentElement.style.overflow);
+  const assertDrawerFrame = async () => {
+    const frame = await page.getByRole("dialog").evaluate((dialog) => {
+      const rect = dialog.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, viewport: document.documentElement.clientWidth,
+        overflow: document.documentElement.style.overflow };
+    });
+    expect(frame.left).toBeGreaterThanOrEqual(0);
+    expect(frame.right).toBeLessThanOrEqual(frame.viewport);
+    expect(frame.overflow).toBe("hidden");
+  };
+  const assertScrollRestored = async () => {
+    await expect.poll(() => page.evaluate(() => document.documentElement.style.overflow)).toBe(initialOverflow);
+  };
   for (const label of [/^Estratégia$/, /^Ajustes$/, /^Configurações$/, /^Simulador$/]) {
     await page.getByRole("button", { name: label }).first().click();
     await expect(page.getByRole("dialog")).toBeVisible();
+    await assertDrawerFrame();
     expect((await geometry(page)).overflow).toBe(0);
     await page.getByRole("dialog").getByRole("button", { name: /fechar/i }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    await assertScrollRestored();
   }
   await page.getByRole("button", { name: /Ver BTC/i }).first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -186,9 +208,11 @@ test("toolbar e detalhes preservam navegação sem submeter ações", async ({ p
   await page.getByRole("button", { name: "Detalhes do slot 1", exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText("BTC · Slot físico #1");
   await expect(page.getByRole("dialog")).toContainText("synthetic-live-tp-BTC-1");
+  await assertDrawerFrame();
   expect((await geometry(page)).overflow).toBe(0);
   await screenshot(page, testInfo, "automation-mobile-slot-details");
   await page.getByRole("dialog").getByRole("button", { name: /fechar/i }).click();
+  await assertScrollRestored();
   for (const label of [/Próximas BUYs/i, /Histórico de operações/i, /^Alertas/]) {
     await page.getByRole("tab", { name: label }).first().click();
     expect((await geometry(page)).overflow).toBe(0);
@@ -249,4 +273,17 @@ test("tabs operacionais seguem Arrow Home End com foco e painel acessíveis", as
   await page.keyboard.press("Home");
   await expectSelected(0);
   await noSideEffects(page, audit);
+});
+
+test("ciclo ACTIVE não apresenta LIVE verde quando o executor está sem saúde", async ({ page }) => {
+  for (const view of ["live", "overview"] as const) {
+    const data = automationPremiumFixture();
+    data.livePreparation!.executor.health!.healthy = false;
+    data.livePreparation!.executor.gate = "ATTENTION";
+    const audit = await mount(page, view, 390, 844, data);
+    await expect(page.locator(".px-live")).toHaveText("LIVE · ATENÇÃO");
+    await expect(page.locator(".px-live")).not.toHaveClass(/is-live/);
+    await expect(page.locator(".px-alert-banner")).toBeVisible();
+    await noSideEffects(page, audit);
+  }
 });

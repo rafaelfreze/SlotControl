@@ -30,6 +30,12 @@ export function PremiumDrawer({ open, title, onClose, children }: { open: boolea
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    return () => { document.documentElement.style.overflow = previousOverflow; };
+  }, [open]);
   return <dialog ref={ref} className="px-drawer" aria-labelledby={titleId} onCancel={onClose} onClose={onClose} onClick={(event) => { if (event.target === event.currentTarget) { const box = event.currentTarget.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right) onClose(); } }}>
     <header><div><small>COINOPS · AUTOMAÇÃO</small><h2 id={titleId}>{title}</h2></div><button type="button" className="px-icon-button" aria-label="Fechar" onClick={onClose}><PremiumIcon name="close" /></button></header><div className="px-drawer-body">{children}</div>
   </dialog>;
