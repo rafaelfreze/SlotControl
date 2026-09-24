@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { runConfiguredBinanceReadOnlyReconciliation } from "@/lib/execution/binance-reconciliation-server";
 import { runConfiguredRobotV1Shadow } from "@/lib/execution/robot-v1-shadow-server";
+import { hasActiveNonRealEngine } from "@/lib/execution/nonreal-cron-gate";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,6 +18,8 @@ export async function GET(request: Request) {
   }
 
   try {
+    if (!await hasActiveNonRealEngine("SHADOW"))
+      return NextResponse.json({ ok: true, status: "PAUSED", processed: 0 });
     const reconciliation = await runConfiguredBinanceReadOnlyReconciliation();
     const robotV1 = await runConfiguredRobotV1Shadow();
     return NextResponse.json({

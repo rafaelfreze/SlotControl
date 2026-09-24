@@ -932,3 +932,118 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
 export async function replaceOwnedTestnetBuy(runId: string) {
   return advanceTestnetRun(runId, "MANUAL_PRIORITY_REPAIR");
 }
+
+/** Stop a fictitious cycle without erasing its ledger. Every resident CoinOps
+ * order is re-read and cancelled by exact owned ID before the run is paused. */
+export async function pauseTestnetRun(runId: string) {
+  assertTestnetEnvironment();
+  const service = createServiceRoleClient();
+  const existing = await queryRun(service, runId);
+  if (existing.status === "PAUSED") return { status: "PAUSED" };
+  if (existing.status !== "ACTIVE") throw new Error("COINOPS_TESTNET_PAUSE_RUN_INVALID");
+  const engine = await resolveRunEngine(service, existing);
+  const lock = await claim(service, runId);
+  if (!lock) throw new Error("COINOPS_TESTNET_PAUSE_LEASE_BUSY");
+  const { run, leaseOwner } = lock;
+  let errorCode: string | null = null;
+  try {
+    const stopped = await service.from("trading_engines").update({ status: "PAUSED", kill_switch: true })
+      .eq("id", engine.trading_engine_id).eq("environment", "TESTNET")
+      .eq("exchange_account_id", engine.exchange_account_id).select("id").single();
+    if (stopped.error || !stopped.data) throw new Error("COINOPS_TESTNET_PAUSE_ENGINE_FAILED");
+    const { slots, orders } = await rows(service, run);
+    if (slots.length !== 25) throw new Error("COINOPS_TESTNET_PAUSE_PLAN_INCOMPLETE");
+    const adapter = await scopedAdapter(service, run);
+    const exchange = await adapter.reads.getOpenOrders(run.symbol);
+    const resident = orders.filter((order) => ACTIVE_ORDER.has(order.status));
+    const ownedExchange = exchange.filter((order) => order.clientOrderId?.startsWith(`COV1-${run.asset}-`));
+    if (resident.some((order) => order.status !== "NEW" || !order.exchange_order_id || amount(order.executed_quantity) > 0)
+      || ownedExchange.length !== resident.length
+      || ownedExchange.some((actual) => !resident.some((order) => order.client_order_id === actual.clientOrderId
+        && order.exchange_order_id === actual.id && order.side === actual.side && actual.status === "NEW")))
+      throw new Error("COINOPS_TESTNET_PAUSE_EXCHANGE_LEDGER_DIVERGED");
+    await event(service, run, `PAUSE_SNAPSHOT:${new Date().toISOString()}`, "PAUSE_SNAPSHOT", null,
+      { ownedOpenOrders: ownedExchange.length, openSlots: slots.filter((slot) => slot.entry_state === "OPEN").length });
+    for (const order of resident) {
+      const actual = await adapter.getOwnedOrder(run.symbol, order.client_order_id);
+      if (!actual || actual.orderId !== order.exchange_order_id || actual.status !== "NEW" || actual.executedQuantity > 0)
+        throw new Error("COINOPS_TESTNET_PAUSE_ORDER_CHANGED");
+      const canceled = await adapter.cancelOwnedOrder(run.symbol, order.exchange_order_id!, order.client_order_id);
+      if (!canceled || canceled.status !== "CANCELED" || canceled.executedQuantity > 0)
+        throw new Error("COINOPS_TESTNET_PAUSE_CANCEL_UNCERTAIN");
+      await updateOrder(service, run, order, { status: "CANCELED", trades_reconciled: true });
+      if (order.side === "BUY") {
+        const slot = slots.find((item) => item.id === order.slot_id);
+        if (!slot) throw new Error("COINOPS_TESTNET_PAUSE_SLOT_MISSING");
+        await updateSlot(service, run, slot, { entry_state: "PLANNED" });
+      }
+      await event(service, run, `PAUSE_CANCEL:${order.client_order_id}`, "PAUSE_OWNED_ORDER_CANCELED",
+        order.slot_number, { clientOrderId: order.client_order_id, exchangeOrderId: canceled.orderId,
+          side: order.side, ownershipVerified: true });
+    }
+    const finalOrders = await adapter.reads.getOpenOrders(run.symbol);
+    if (finalOrders.some((order) => order.clientOrderId?.startsWith(`COV1-${run.asset}-`)))
+      throw new Error("COINOPS_TESTNET_PAUSE_RESIDENT_ORDER_REMAINS");
+    const saved = await service.from("robot_v1_testnet_runs").update({ status: "PAUSED" })
+      .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", leaseOwner)
+      .eq("status", "ACTIVE").select("id").maybeSingle();
+    if (saved.error || !saved.data) throw new Error("COINOPS_TESTNET_PAUSE_PERSIST_FAILED");
+    await event(service, run, "RUN_PAUSED", "RUN_PAUSED", null,
+      { canceledOrders: resident.length, openSlotsPreserved: slots.filter((slot) => slot.entry_state === "OPEN").length });
+    return { status: "PAUSED", canceledOrders: resident.length };
+  } catch (error) {
+    errorCode = error instanceof Error ? error.message : "COINOPS_TESTNET_PAUSE_FAILED";
+    throw error;
+  } finally { await release(service, run, leaseOwner, errorCode); }
+}
+
+/** Re-enter through exchange-first reconciliation while BUYs remain blocked.
+ * TP protection is restored before the engine may arm a new entry. */
+export async function resumeTestnetRun(runId: string) {
+  assertTestnetEnvironment();
+  const service = createServiceRoleClient();
+  const run = await queryRun(service, runId);
+  const engine = await resolveRunEngine(service, run);
+  if (run.status === "ACTIVE" && engine.status === "ACTIVE" && !engine.engine_kill_switch)
+    return { status: "ACTIVE" };
+  if (!(["ACTIVE", "PAUSED"].includes(run.status) && ["ACTIVE", "PAUSED"].includes(engine.status))
+    || engine.global_kill_switch || engine.account_kill_switch)
+    throw new Error("COINOPS_TESTNET_RESUME_SCOPE_INVALID");
+  const ledger = await rows(service, run);
+  if (ledger.slots.length !== 25 || ledger.orders.some((order) => ACTIVE_ORDER.has(order.status)))
+    throw new Error("COINOPS_TESTNET_RESUME_LEDGER_UNSAFE");
+  const adapter = await scopedAdapter(service, run);
+  const before = await adapter.reads.getOpenOrders(run.symbol);
+  if (before.some((order) => order.clientOrderId?.startsWith(`COV1-${run.asset}-`)))
+    throw new Error("COINOPS_TESTNET_RESUME_EXCHANGE_DIVERGED");
+  const activated = await service.from("trading_engines")
+    .update({ status: "ACTIVE", kill_switch: true }).eq("id", engine.trading_engine_id)
+    .eq("environment", "TESTNET").eq("exchange_account_id", engine.exchange_account_id)
+    .select("id").single();
+  if (activated.error || !activated.data) throw new Error("COINOPS_TESTNET_RESUME_ENGINE_FAILED");
+  if (run.status === "PAUSED") {
+    const saved = await service.from("robot_v1_testnet_runs").update({ status: "ACTIVE" })
+      .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("status", "PAUSED")
+      .is("lease_owner", null).select("id").maybeSingle();
+    if (saved.error || !saved.data) throw new Error("COINOPS_TESTNET_RESUME_RUN_FAILED");
+  }
+  const protectedResult = await advanceTestnetRun(runId, "RESUME_PROTECTION_ONLY");
+  if (protectedResult.status !== "OK" && protectedResult.status !== "NEW_ENTRIES_BLOCKED")
+    throw new Error("COINOPS_TESTNET_RESUME_PROTECTION_UNPROVEN");
+  const current = await rows(service, run);
+  const resident = await adapter.reads.getOpenOrders(run.symbol);
+  const openSlots = current.slots.filter((slot) => slot.entry_state === "OPEN");
+  if (openSlots.some((slot) => !current.orders.some((order) => order.slot_id === slot.id
+    && order.side === "SELL" && order.purpose === "TP" && order.status === "NEW"
+    && resident.some((actual) => actual.id === order.exchange_order_id && actual.clientOrderId === order.client_order_id)))
+    || resident.some((order) => order.clientOrderId?.startsWith(`COV1-${run.asset}-`) && order.side === "BUY"))
+    throw new Error("COINOPS_TESTNET_RESUME_TP_UNPROTECTED");
+  const allowed = await service.from("trading_engines").update({ kill_switch: false })
+    .eq("id", engine.trading_engine_id).eq("environment", "TESTNET")
+    .eq("status", "ACTIVE").eq("kill_switch", true).select("id").maybeSingle();
+  if (allowed.error || !allowed.data) throw new Error("COINOPS_TESTNET_RESUME_GATE_FAILED");
+  await event(service, run, `RUN_RESUMED:${new Date().toISOString()}`, "RUN_RESUMED", null,
+    { ownedTakeProfits: openSlots.length, exchangeVerified: true });
+  await advanceTestnetRun(runId, "RESUME_ENTRY_AFTER_PROTECTION");
+  return { status: "ACTIVE", protectedPositions: openSlots.length };
+}

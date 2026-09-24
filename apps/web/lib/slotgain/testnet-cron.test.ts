@@ -79,11 +79,11 @@ test("restart validates the new run checkpoint, never requiring the old cycle to
   assert.equal(result.status, "RESTARTED");
 });
 
-test("configuration keeps market regime unchanged and fast reactor separate from fallback", () => {
+test("paused Testnet keeps the fast reactivation gate without a redundant fallback schedule", () => {
   const config = JSON.parse(readFileSync(new URL("../../vercel.json", import.meta.url), "utf8"));
   const schedule = (path: string) => config.crons.find((entry: { path: string }) => entry.path === path)?.schedule;
   assert.equal(schedule("/api/cron/testnet-reactor"), "* * * * *");
-  assert.equal(schedule("/api/cron/testnet-execution"), "*/5 * * * *");
+  assert.equal(schedule("/api/cron/testnet-execution"), undefined);
   assert.equal(schedule("/api/cron/market-regime"), "*/5 * * * *");
   for (const route of ["testnet-reactor", "testnet-execution"]) {
     const code = readFileSync(new URL(`../../app/api/cron/${route}/route.ts`, import.meta.url), "utf8");

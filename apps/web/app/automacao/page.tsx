@@ -157,7 +157,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const liveDataPromise = loadLegacyLiveData(supabase, legacyAccount.id, legacyEngineIds, productId, tenantId, user.id);
 
   let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
-  const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "overview";
+  const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" || searchParams?.view === "overview" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "live";
   if (view === "testnet" || searchParams?.testnet === "check") {
     const { data: scope, error: scopeError } = await createServiceRoleClient().from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
     if (scopeError || !scope) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");

@@ -5,7 +5,7 @@ import { actionEngine } from "./engine-action-context";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { advanceTestnetRun, replaceOwnedTestnetBuy, startTestnetRun } from "@/lib/execution/robot-v1-testnet-server";
+import { advanceTestnetRun, pauseTestnetRun, replaceOwnedTestnetBuy, resumeTestnetRun, startTestnetRun } from "@/lib/execution/robot-v1-testnet-server";
 import { BinanceSpotTestnetAdapter } from "@/lib/execution/binance-spot-testnet-adapter";
 import { buildV1Grid, V1_TEST_PROFILE, type V1Asset } from "@/lib/execution/robot-v1";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
@@ -49,6 +49,31 @@ export async function startCoinOpsTestnet(formData: FormData) {
   const asset = assetOf(formData);
   try { await startTestnetRun(userId, asset, { exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id }); }
   catch (error) { redirect(`/automacao?view=testnet&testnet=check&testnetError=${error instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(error.message) ? error.message : "COINOPS_TESTNET_START_FAILED"}`); }
+  revalidatePath("/automacao");
+  redirect("/automacao?view=testnet&testnet=check");
+}
+
+export async function controlCoinOpsTestnet(formData: FormData) {
+  const userId = await currentUserId();
+  const asset = assetOf(formData);
+  const engine = await actionEngine(formData, "TESTNET", asset);
+  const command = String(formData.get("command") || "");
+  if (command !== "pause" && command !== "resume") throw new Error("COINOPS_TESTNET_COMMAND_INVALID");
+  const runId = String(formData.get("run_id") || "");
+  if (!/^[0-9a-f-]{36}$/.test(runId)) throw new Error("COINOPS_TESTNET_RUN_ID_INVALID");
+  const { data: run, error } = await createServiceRoleClient().from("robot_v1_testnet_runs")
+    .select("id,status").eq("id", runId).eq("tenant_id", getCoinOpsServiceTenantId())
+    .eq("user_id", userId).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id)
+    .eq("exchange_account_id", engine.exchange_account_id).in("status", ["ACTIVE", "PAUSED"]).single();
+  if (error || !run) throw new Error("COINOPS_TESTNET_RUN_NOT_OWNED");
+  try {
+    if (command === "pause") await pauseTestnetRun(run.id);
+    else await resumeTestnetRun(run.id);
+  } catch (failure) {
+    const code = failure instanceof Error && /^COINOPS_TESTNET_[A-Z_]+$/.test(failure.message)
+      ? failure.message : "COINOPS_TESTNET_CONTROL_FAILED";
+    redirect(`/automacao?view=testnet&testnet=check&testnetError=${code}`);
+  }
   revalidatePath("/automacao");
   redirect("/automacao?view=testnet&testnet=check");
 }

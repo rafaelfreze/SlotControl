@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { refreshBtcMarketRegime } from "@/lib/slotgain/market-regime-server";
+import { hasActiveNonRealEngine } from "@/lib/execution/nonreal-cron-gate";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,6 +13,8 @@ export async function GET(request: Request) {
   }
 
   try {
+    if (!await hasActiveNonRealEngine("SHADOW"))
+      return NextResponse.json({ ok: true, status: "PAUSED" });
     const state = await refreshBtcMarketRegime();
     return NextResponse.json({ ok: true, state });
   } catch (error) {

@@ -117,17 +117,26 @@ export async function controlRobotV1Shadow(formData: FormData) {
   const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const engine = await actionEngine(formData, "SHADOW", asset, { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId }); const command = String(formData.get("command") || ""); const config = await configFor(service, scope, asset, engine);
   if (!config) throw new Error("COINOPS_V1_CONFIG_REQUIRED");
   const updateConfig = (values: Record<string, unknown>) => service.from("robot_v1_configs").update(values).eq("id", config.id).eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId);
+  const updateEngine = (values: Record<string, unknown>) => service.from("trading_engines").update(values)
+    .eq("id", engine.trading_engine_id).eq("exchange_account_id", engine.exchange_account_id)
+    .eq("operator_id", engine.operator_id).eq("environment", "SHADOW").select("id").single();
   if (command === "start") {
     const now = new Date(); const target = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
     const { error } = await updateConfig({ kill_switch: false, pause_new_entries: false, shadow_test_started_at: config.shadow_test_started_at || now.toISOString(), shadow_test_target_end_at: config.shadow_test_target_end_at || target.toISOString() });
     if (error) throw error;
+    const activated = await updateEngine({ status: "ACTIVE", kill_switch: false });
+    if (activated.error || !activated.data) throw new Error("COINOPS_SHADOW_ENGINE_START_FAILED");
     await addAudit(service, scope, config.id, "SHADOW_STARTED", { killSwitch: config.kill_switch, paused: config.pause_new_entries }, { capitalUsdc: config.capital_usdc, durationDays: 30 });
 await runConfiguredRobotV1Shadow(now, engine);
   } else if (command === "pause") {
+    const stopped = await updateEngine({ status: "PAUSED", kill_switch: true });
+    if (stopped.error || !stopped.data) throw new Error("COINOPS_SHADOW_ENGINE_PAUSE_FAILED");
     const { error } = await updateConfig({ pause_new_entries: true }); if (error) throw error;
     await addAudit(service, scope, config.id, "PAUSED", { paused: config.pause_new_entries }, { paused: true });
   } else if (command === "resume") {
     const { error } = await updateConfig({ pause_new_entries: false, kill_switch: false }); if (error) throw error;
+    const activated = await updateEngine({ status: "ACTIVE", kill_switch: false });
+    if (activated.error || !activated.data) throw new Error("COINOPS_SHADOW_ENGINE_RESUME_FAILED");
     await addAudit(service, scope, config.id, "RESUMED", { paused: config.pause_new_entries, killSwitch: config.kill_switch }, { paused: false, killSwitch: false });
   } else if (command === "kill") {
     const { error } = await updateConfig({ kill_switch: true }); if (error) throw error;

@@ -26,6 +26,7 @@ export async function handleTestnetCron(request: NextRequest, mode: TestnetCronM
     const engines = await service.from("trading_engines").select("id")
       .in("operator_id", (operators.data || []).map((operator) => operator.id)).eq("environment", "TESTNET").eq("status", "ACTIVE");
     if (engines.error) throw new Error("COINOPS_TESTNET_ENGINE_DISCOVERY_FAILED");
+    if (!engines.data?.length) return NextResponse.json({ status: "PAUSED", mode, discovered: 0 }, { headers });
     const { data, error } = await service.from("robot_v1_testnet_runs").select(columns)
       .eq("tenant_id", tenantId).eq("status", "ACTIVE")
       .in("trading_engine_id", (engines.data || []).map((engine) => engine.id)).order("trading_engine_id");

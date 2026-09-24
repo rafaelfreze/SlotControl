@@ -23,10 +23,11 @@ function confirmKill(event: FormEvent<HTMLFormElement>) {
 export function ShadowControls({ data, asset }: { data: Props; asset: "BTC" | "SOL" }) {
   const config = data.configs.find((item) => item.asset === asset);
   const cycle = data.cycles.find((item) => item.asset === asset && activeCycles.has(item.status));
-  const active = Boolean(cycle) && !config?.kill_switch && !config?.pause_new_entries;
+  const paused = data.engineContext?.status === "PAUSED";
+  const active = Boolean(cycle) && !paused && !config?.kill_switch && !config?.pause_new_entries;
 
   return <section className="ac-panel premium-shadow-controls" aria-label={`Configuração Shadow ${asset}`}>
-    <div className="ac-panel-heading"><div><span className="ac-kicker">SIMULAÇÃO VIRTUAL</span><h2>Shadow · {asset}/{data.engineContext?.quote_asset ?? "USDC"}</h2></div><span className={`ac-badge ${active ? "ac-badge--green" : "ac-badge--slate"}`}>{active ? "ATIVO" : config?.kill_switch ? "KILL SWITCH" : "ENTRADAS PAUSADAS"}</span></div>
+    <div className="ac-panel-heading"><div><span className="ac-kicker">SIMULAÇÃO VIRTUAL</span><h2>Shadow · {asset}/{data.engineContext?.quote_asset ?? "USDC"}</h2></div><span className={`ac-badge ${active ? "ac-badge--green" : "ac-badge--slate"}`}>{paused ? "PAUSADO" : active ? "ATIVO" : config?.kill_switch ? "KILL SWITCH" : "ENTRADAS PAUSADAS"}</span></div>
     <p>Ciclo atual: capital {number(cycle?.capital_usdc ?? config?.capital_usdc, 2)} {data.engineContext?.quote_asset ?? "USDC"} · gain {percent(cycle?.gain_rate ?? config?.gain_rate)}% · queda entre compras {percent(cycle?.entry_spacing ?? config?.entry_spacing)}% · iniciado {date(cycle?.started_at)}.</p>
     <form className="av2-parameters" action={saveRobotV1Parameters} key={config?.id + asset}><EngineScopeFields context={data.engineContext} />
       <input type="hidden" name="asset" value={asset} />
@@ -38,7 +39,7 @@ export function ShadowControls({ data, asset }: { data: Props; asset: "BTC" | "S
     <small>Gain: percentual de alta necessário para vender uma posição. Queda entre compras: distância entre entradas. O ciclo e os TPs abertos preservam seus parâmetros; alterações entram no próximo ciclo. Estes controles afetam somente o Shadow.</small>
     <div className="av2-control-actions">
       <form action={controlRobotV1Shadow}><EngineScopeFields context={data.engineContext} /><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="start" /><button type="submit" disabled={Boolean(cycle)}>Iniciar Shadow</button></form>
-      <form action={controlRobotV1Shadow}><EngineScopeFields context={data.engineContext} /><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value={config?.pause_new_entries ? "resume" : "pause"} /><button type="submit">{config?.pause_new_entries ? "Retomar entradas" : "Pausar entradas"}</button></form>
+      <form action={controlRobotV1Shadow}><EngineScopeFields context={data.engineContext} /><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value={paused ? "resume" : "pause"} /><button type="submit">{paused ? "Iniciar Shadow" : "Pausar Shadow"}</button></form>
       <form action={controlRobotV1Shadow} onSubmit={confirmKill}><EngineScopeFields context={data.engineContext} /><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="kill" /><button type="submit" className="av2-danger">Kill switch</button></form>
       <form action={controlRobotV1Shadow} className="av2-restart"><EngineScopeFields context={data.engineContext} /><input type="hidden" name="asset" value={asset} /><input type="hidden" name="command" value="restart" /><label><input type="checkbox" name="restart_confirmed" value="yes" required /> Confirmo o reinício virtual e a preservação do histórico.</label><button type="submit">Reiniciar simulação</button></form>
     </div>
