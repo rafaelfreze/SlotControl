@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 import type { LivePresentation } from "./automation-mobile";
 import { saveLiveAssetCaps, saveLiveGlobalCap } from "./live-preparation-actions";
 import "./live-preparation.css";
@@ -13,6 +15,22 @@ const when = (value: string | null) => value ? new Intl.DateTimeFormat("pt-BR", 
 
 export function LivePreparationPanel({ data, asset }: {
   data: LivePresentation; asset: "BTC" | "SOL" }) {
+  const [checking, setChecking] = useState(false);
+  const [diagnostic, setDiagnostic] = useState<string | null>(null);
+  async function checkExecutor() {
+    setChecking(true);
+    setDiagnostic(null);
+    try {
+      const response = await fetch("/api/coinops-live-executor/diagnostic", {
+        method: "POST", cache: "no-store" });
+      const result = await response.json() as { gate?: string; error?: string;
+        results?: Array<{ asset: string; valid_slots: number; latency_ms: number }> };
+      setDiagnostic(response.ok && result.gate === "NO_WRITE"
+        ? `Dry-run sem ordens: ${result.results?.map((item) => `${item.asset} ${item.valid_slots}/25 · ${item.latency_ms} ms`).join("; ")}`
+        : result.error ?? "EXECUTOR_DIAGNOSTIC_UNAVAILABLE");
+    } catch { setDiagnostic("EXECUTOR_DIAGNOSTIC_UNAVAILABLE"); }
+    finally { setChecking(false); }
+  }
   const config = data.configs.find((item) => item.asset === asset);
   const sizing = data.sizing.find((item) => item.asset === asset);
   const required = data.sizing.reduce((sum, item) => sum + item.configuredCapitalBrl, 0);
@@ -43,6 +61,8 @@ export function LivePreparationPanel({ data, asset }: {
         <span>Latência health <strong>{data.executor.health ? `${num(data.executor.health.latency_ms, 0)} ms` : "—"}</strong></span>
       </div>
       <small>IPv4 de saída {data.executor.health?.egress_ipv4_verified ? "confirmado" : "não confirmado"} · trading {data.executor.health ? data.executor.health.trading_enabled ? "INSEGURO" : "desligado" : "não verificado"} · kill switch {data.executor.health?.kill_switch ? "ON" : "não verificado"} · whitelist Binance PENDENTE. Não cadastre o IP nem altere a chave nesta fase.</small>
+      <button type="button" onClick={checkExecutor} disabled={checking}>{checking ? "Validando..." : "Validar dry-run BTC/SOL"}</button>
+      {diagnostic ? <p role="status">{diagnostic}</p> : null}
     </section>
     <section className="lp-summary ac-panel" aria-label="Preparação LIVE em BRL">
       <div className="ac-panel-heading"><h2>Preparação LIVE · BTC/BRL + SOL/BRL</h2>
