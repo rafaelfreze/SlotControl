@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 
-import { signedDryRunHeaders } from "./live-executor-client.ts";
+import { signedDryRunHeaders, signedExecutorHeaders } from "./live-executor-client.ts";
 
 test("Vercel HMAC matches executor canonical method/path/timestamp/nonce/body hash", () => {
   const secret = "test-only-32-byte-minimum-secret-for-executor";
@@ -15,4 +15,9 @@ test("Vercel HMAC matches executor canonical method/path/timestamp/nonce/body ha
   assert.equal(headers.get("x-coinops-signature"),
     createHmac("sha256", secret).update(canonical).digest("hex"));
   assert.throws(() => signedDryRunHeaders("short", body, "key"), /EXECUTOR_AUTH_NOT_CONFIGURED/);
+  const reconciliation = signedExecutorHeaders(secret, "/v1/reconciliation",
+    JSON.stringify({ scope: "COINOPS_SHADOW_READ_ONLY" }), "READ:test", 1_780_000_000_000,
+    "deterministicnonce1234567890");
+  assert.ok(reconciliation.get("x-coinops-signature"));
+  assert.throws(() => signedExecutorHeaders(secret, "/v1/unknown", body, "key"), /EXECUTOR_ROUTE_DENIED/);
 });
