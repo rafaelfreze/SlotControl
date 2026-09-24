@@ -24,13 +24,18 @@ async function getJson(fetcher, url) {
 }
 
 export async function getPublicMarket(fetcher = fetch, now = Date.now) {
+  const clockRequest = async () => {
+    const started = now();
+    const value = await getJson(fetcher, `${BINANCE_SPOT}/api/v3/time`);
+    return { value, midpoint: (started + now()) / 2 };
+  };
   const [info, prices, clock] = await Promise.all([
     getJson(fetcher, `${BINANCE_PUBLIC}/api/v3/exchangeInfo?symbols=${encodeURIComponent(JSON.stringify(SYMBOLS))}`),
     getJson(fetcher, `${BINANCE_PUBLIC}/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(SYMBOLS))}`),
-    getJson(fetcher, `${BINANCE_SPOT}/api/v3/time`),
+    clockRequest(),
   ]);
   const observedAt = new Date(now()).toISOString();
-  const driftMs = Number(clock.serverTime) - now();
+  const driftMs = Number(clock.value.serverTime) - clock.midpoint;
   if (!Number.isFinite(driftMs) || Math.abs(driftMs) > 2_000)
     throw new Error("EXECUTOR_CLOCK_DRIFT");
   const markets = SYMBOLS.map((symbol) => {

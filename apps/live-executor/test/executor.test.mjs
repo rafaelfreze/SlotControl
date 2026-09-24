@@ -186,3 +186,21 @@ test("public Binance GET retries one transient failure without making a write", 
   assert.equal(calls.filter((item) => item.url.includes("ticker/price")).length, 2);
   assert.ok(calls.every((item) => item.method === "GET"));
 });
+
+test("clock drift uses its own request interval, not a slower parallel price GET", async () => {
+  let elapsed = 0;
+  const fetcher = async (url) => {
+    if (url.includes("exchangeInfo")) return Response.json({ symbols: [raw("BTC"), raw("SOL")] });
+    if (url.includes("ticker/price")) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      elapsed = 2_500;
+      return Response.json([{ symbol: "BTCBRL", price: "437457" },
+        { symbol: "SOLBRL", price: "597.7" }]);
+    }
+    if (url.endsWith("/api/v3/time")) return Response.json({ serverTime: FIXED_NOW });
+    throw new Error("Unexpected URL");
+  };
+  const snapshot = await getPublicMarket(fetcher, () => FIXED_NOW + elapsed);
+  assert.ok(Math.abs(snapshot.driftMs) < 2_000);
+  assert.equal(snapshot.markets.length, 2);
+});
