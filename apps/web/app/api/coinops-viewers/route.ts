@@ -7,6 +7,10 @@ import { assertViewerAccount, assertViewerIntent, assertViewerOrigin, type Viewe
 export const dynamic = "force-dynamic";
 const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers });
+// The shared Auth email hook allowlists CoinOps /auth/callback. Supabase's
+// fragment-based invite/recovery token is inherited by the browser redirect
+// to the password form; it must not be consumed by a server callback.
+const viewerPasswordRedirect = (origin: string) => `${origin}/auth/callback?next=%2Fredefinir-senha`;
 
 async function adminScope() {
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_VIEWER_SCHEMA_DENIED");
@@ -54,9 +58,7 @@ export async function POST(request: NextRequest) {
       const prior = await service.from("viewer_access").select("user_id")
         .eq("operator_id", operator.id).eq("email", email).maybeSingle();
       if (prior.error || prior.data) throw new Error("COINOPS_VIEWER_ALREADY_EXISTS");
-      // Default Supabase invite links carry the session in the URL fragment.
-      // A server callback cannot read that fragment; the browser reset form can.
-      const redirectTo = `${request.nextUrl.origin}/redefinir-senha`;
+      const redirectTo = viewerPasswordRedirect(request.nextUrl.origin);
       const invited = await service.auth.admin.inviteUserByEmail(email, { redirectTo });
       if (invited.error || !invited.data.user) throw new Error("COINOPS_VIEWER_INVITE_FAILED");
       const userId = invited.data.user.id;
@@ -81,7 +83,7 @@ export async function POST(request: NextRequest) {
     if (row.error || !row.data) throw new Error("COINOPS_VIEWER_USER_DENIED");
     if (input.operation === "RESET") {
       const result = await service.auth.resetPasswordForEmail(row.data.email,
-        { redirectTo: `${request.nextUrl.origin}/redefinir-senha` });
+        { redirectTo: viewerPasswordRedirect(request.nextUrl.origin) });
       if (result.error) throw new Error("COINOPS_VIEWER_RESET_FAILED");
       return json({ status: row.data.status, resetSent: true });
     }

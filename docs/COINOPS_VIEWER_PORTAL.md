@@ -14,6 +14,8 @@ O operador existente continua usando `/automacao`. Um `VIEWER` é uma identidade
 
 Em Automação → Configurações → Usuários / Acessos, o operador escolhe uma conta existente e envia convite. Também pode redefinir senha, desativar, reativar ou revogar acesso. O fluxo não cadastra terceiros automaticamente. Um e-mail já vinculado ao mesmo operador não cria novo vínculo.
 
+Convite e recuperação usam o redirect CoinOps `/auth/callback?next=%2Fredefinir-senha`, aceito pela allowlist do hook de e-mail compartilhado. O navegador preserva o fragmento de sessão no redirecionamento para o formulário de senha. Uma tentativa anterior com redirect direto para `/redefinir-senha` era rejeitada pelo hook (`AUTH_REDIRECT_NOT_ALLOWED`) antes de criar o usuário ou enviar e-mail. O hook existente usa o provedor transacional configurado da plataforma; aceitação pelo provedor não comprova entrega na caixa principal, então o recebimento deve ser confirmado com o destinatário sem criar convites de teste para pessoas reais.
+
 ## Semântica exibida
 
 O portal separa capital operacional do ledger, resultado de mercado realizado e P&L aberto estimado por moeda. A leitura direta do saldo Binance é assíncrona; quando falha, mostra somente o último snapshot de validação com horário e aviso de desatualização. O preço público é referência visual, não preço de execução. Valores de moedas distintas nunca são somados.
