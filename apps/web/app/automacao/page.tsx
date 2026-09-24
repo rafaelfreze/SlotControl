@@ -12,12 +12,12 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 import { TESTNET_MISSED_EVENT_TYPES } from "@/lib/coinops-reports/missed-level-evidence";
-import { summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "@/lib/slotgain/testnet-results";
 import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
 
 import type { AutomationView } from "./automation-center";
-import { AutomationCenter } from "./automation-cockpit";
-import { AutomationPageShell } from "./automation-page-shell";
+import { PremiumAutomation } from "./premium-automation";
+import { PremiumReferenceTicker } from "./premium-reference-ticker";
+import { getPremiumBrlCandles } from "./premium-market";
 import type { LiveAssetData, TestnetAssetData } from "./automation-mobile";
 import { AthProfilesPanel } from "./ath-profiles-panel";
 import { ManualAdjustmentsPanel, type RecentManualAdjustment } from "./manual-adjustments-panel";
@@ -93,9 +93,10 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     environment: targetMatch[1] as "SHADOW" | "TESTNET" | "REAL",
     asset: targetMatch[2] as "BTC" | "SOL", slotNumber: Number(targetMatch[3]),
   } : null;
-  const dailyCandles = (await Promise.all(["BTCUSDC", "SOLUSDC"].map(async (symbol) =>
-    getDailyMarketCandles(symbol as "BTCUSDC" | "SOLUSDC").catch(() => [])
-  ))).flat();
+  const dailyCandles = (await Promise.all([
+    ...(["BTCUSDC", "SOLUSDC"] as const).map((symbol) => getDailyMarketCandles(symbol).catch(() => [])),
+    ...(["BTCBRL", "SOLBRL"] as const).map(getPremiumBrlCandles),
+  ])).flat();
   // Each asset resolves its own latest persisted run through the authenticated
   // RLS client. Viewing BTC must never reuse SOL's ledger or start an executor.
   const testnetAssetData: Partial<Record<"BTC" | "SOL", TestnetAssetData>> = {};
@@ -182,7 +183,9 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
   let livePreparation: import("./automation-mobile").Props["livePreparation"] = null;
   const liveAssetData: Partial<Record<"BTC" | "SOL", LiveAssetData>> = {};
-  if (view === "live") {
+  // The shared dashboard needs the same read-only LIVE snapshot in every view.
+  // This does not dispatch or reconcile an order; the executor remains server-side.
+  {
     const [preparations, globalCap, nativeAccounts, legacyRealCredits, production, executor] = await Promise.all([
       supabase.from("robot_v1_live_preparations")
         .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,kill_switch,updated_at")
@@ -253,7 +256,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
           .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at")
           .eq("run_id", run.id).eq("tenant_id", tenantId).order("slot_number"),
         supabase.from("robot_v1_live_orders")
-          .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote")
+          .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl")
           .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
         supabase.from("robot_v1_live_slot_accounts")
           .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
@@ -278,7 +281,17 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
             lifetime_gain_count: row.lifetime_gain_count })) };
     }));
   }
-  const dashboard = <AutomationCenter view={view} data={{
+  return <PremiumAutomation view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
+    marketTicker={<PremiumReferenceTicker />}
+    initialAdjustments={Boolean(initialManualTarget)}
+    adjustmentsPanel={<ManualAdjustmentsPanel expanded recent={(manualAdjustments || []) as RecentManualAdjustment[]} initial={initialManualTarget} />}
+    strategyPanel={<AthProfilesPanel profiles={(athProfilesResponse.data || []) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
+      realLiveActive={Object.values(liveAssetData).some((entry) => entry.run.status === "ACTIVE")}
+      slots={athSlotRows} marketPrices={{
+        BTC: Number((robotConfigsResponse.data || []).find((item) => item.asset === "BTC")?.last_market_price) || null,
+        SOL: Number((robotConfigsResponse.data || []).find((item) => item.asset === "SOL")?.last_market_price) || null,
+      }} view={view} />}
+    data={{
     connectionStatus: connectionResponse.data?.connection_status,
     lastSyncedAt: connectionResponse.data?.last_synced_at || connectionResponse.data?.last_reconciled_at,
     balances: latestRun?.summary?.balances || [],
@@ -306,21 +319,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     , monthlyGoals
     , livePreparation
     , liveAssetData
+    , athProfiles: (athProfilesResponse.data || []).map(({ environment, asset, regime }) => ({ environment, asset, regime }))
+    , deploymentSha: process.env.VERCEL_GIT_COMMIT_SHA
   }} />;
-
-  const testnetHealth = Object.values(testnetAssetData).map(({ run, slots, orders, events }) => testnetPresentationHealth(
-    summarizeTestnetResults(slots, orders, null, Number(run.slot_notional_usdc || 0), { asset: run.symbol.replace("USDC", ""), cycleId: run.id, events }),
-    run, Date.now(), testnetDiagnosticIssue(testnet, searchParams?.testnetError)
-  ));
-  return <AutomationPageShell userLabel={user.email || "Usuário"} status={{
-    shadowActive: (robotConfigsResponse.data || []).some((config) => !config.kill_switch && !config.pause_new_entries),
-    testnetOperating: testnetHealth.some((health) => health.healthy),
-    testnetError: testnetHealth.some((health) => health.tone === "error"),
-    testnetAttention: testnetHealth.some((health) => health.tone === "attention") || Boolean(testnetDiagnosticIssue(testnet, searchParams?.testnetError))
-  }}><ManualAdjustmentsPanel recent={(manualAdjustments || []) as RecentManualAdjustment[]} initial={initialManualTarget} /><AthProfilesPanel profiles={(athProfilesResponse.data || []) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
-    realLiveActive={Object.values(liveAssetData).some((entry) => entry.run.status === "ACTIVE")}
-    slots={athSlotRows} marketPrices={{
-      BTC: Number((robotConfigsResponse.data || []).find((item) => item.asset === "BTC")?.last_market_price) || null,
-      SOL: Number((robotConfigsResponse.data || []).find((item) => item.asset === "SOL")?.last_market_price) || null,
-    }} view={view} />{dashboard}</AutomationPageShell>;
 }

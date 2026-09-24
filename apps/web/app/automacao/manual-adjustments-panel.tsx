@@ -22,8 +22,8 @@ const money = (value: number | string, digits = 4) => Number(value).toLocaleStri
 const date = (value: string) => new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Campo_Grande" }).format(new Date(value));
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : "Não foi possível concluir. Confira o preview e tente novamente.";
 
-export function ManualAdjustmentsPanel({ recent, initial }: {
-  recent: RecentManualAdjustment[]; initial?: { environment: AdjustmentEnvironment; asset: "BTC" | "SOL"; slotNumber: number } | null;
+export function ManualAdjustmentsPanel({ recent, initial, expanded = false }: {
+  recent: RecentManualAdjustment[]; initial?: { environment: AdjustmentEnvironment; asset: "BTC" | "SOL"; slotNumber: number } | null; expanded?: boolean;
 }) {
   const router = useRouter();
   const [environment, setEnvironment] = useState<AdjustmentEnvironment>(initial?.environment === "REAL" ? "SHADOW" : initial?.environment ?? "SHADOW");
@@ -93,7 +93,7 @@ export function ManualAdjustmentsPanel({ recent, initial }: {
     });
   };
   const reversedIds = new Set(recent.filter((row) => row.reversal_of).map((row) => row.reversal_of));
-  return <details id="manual-adjustments" className="ma-panel" open={Boolean(initial) || undefined}>
+  return <details id="manual-adjustments" className="ma-panel" open={expanded || Boolean(initial) || undefined}>
     <summary><span><strong>Ajustes manuais por slot</strong><small>Gain para meta ou aporte · Shadow e Testnet</small></span><span aria-hidden="true">⌄</span></summary>
     <div className="ma-body">
       <p className="ma-notice">Ajuste de ledger, não é trade. Shadow e Testnet seguem em USDC. O antigo ajuste Real em USDC está bloqueado; a preparação LIVE usa BRL separado, sem movimentação financeira.</p>
