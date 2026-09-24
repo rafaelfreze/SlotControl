@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew CoinOps IP TLS certificate
+
+[Service]
+Type=oneshot
+ExecStart=/opt/coinops-certbot/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx"

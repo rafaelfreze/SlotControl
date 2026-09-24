@@ -1,0 +1,13 @@
+{
+  "name": "coinops-live-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.mjs",
+    "test": "node --experimental-strip-types --test test/*.test.mjs"
+  }
+}
