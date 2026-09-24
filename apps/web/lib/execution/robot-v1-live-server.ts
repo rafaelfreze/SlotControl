@@ -833,6 +833,74 @@ export async function auditLiveRun(runId: string) {
   }
 }
 
+/** Operator recovery is read-only against Binance. The SQL BUY gate opens only
+ * after a fresh exchange/ledger match, protected positions and hard caps. */
+export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset) {
+  assertScope();
+  const service = createServiceRoleClient();
+  const run = await claim(service, runId);
+  if (!run) throw new Error("COINOPS_LIVE_RESUME_LEASE_BUSY");
+  let unlocked = false;
+  let errorCode: string | null = null;
+  try {
+    if (run.user_id !== userId || run.asset !== asset || run.status !== "ACTIVE"
+      || run.symbol !== `${asset}BRL` || run.strategy_version !== STRATEGY_VERSION
+      || run.last_error || !run.last_reconciled_at
+      || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
+      throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
+    const health = await loadLiveExecutorStatus();
+    if (health.gate !== "LIVE_EXECUTOR_ACTIVE")
+      throw new Error("COINOPS_LIVE_RESUME_EXECUTOR_NOT_ACTIVE");
+    const prep = await scopedPreparation(service, userId, asset);
+    if (!prep.live_enabled || !prep.kill_switch)
+      throw new Error("COINOPS_LIVE_RESUME_FLAGS_INVALID");
+    const ledger = await runRows(service, run);
+    const state = await readLiveExecutorState(run.symbol);
+    await assertAllPositionsProtected(run, ledger, state);
+    if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
+      && !order.trades_reconciled)
+      || ledger.orders.filter((order) => order.side === "BUY"
+        && LIVE_ACTIVE_ORDER_STATUSES.has(order.status)).length > 1)
+      throw new Error("COINOPS_LIVE_RESUME_LEDGER_UNRECONCILED");
+    await monthly(service, run, ledger.slots, ledger.accounts);
+    const global = await service.from("robot_v1_live_global_caps")
+      .select("max_total_live_exposure_brl")
+      .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
+      .eq("user_id", run.user_id).single();
+    if (global.error || !global.data) throw new Error("COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE");
+    const deployed = await exposure(service, run);
+    if (deployed[asset] > amount(prep.max_total_exposure_brl) + 1e-8
+      || deployed.global > amount(global.data.max_total_live_exposure_brl) + 1e-8)
+      throw new Error("COINOPS_LIVE_RESUME_HARD_CAP_EXCEEDED");
+    await renewLease(service, run);
+    const updated = await service.from("robot_v1_live_preparations")
+      .update({ kill_switch: false })
+      .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
+      .eq("user_id", run.user_id).eq("asset", asset)
+      .eq("live_enabled", true).eq("kill_switch", true)
+      .select("id,kill_switch").maybeSingle();
+    if (updated.error || !updated.data || updated.data.kill_switch)
+      throw new Error("COINOPS_LIVE_RESUME_GATE_UPDATE_FAILED");
+    unlocked = true;
+    await event(service, run, `RESUMED:${new Date().toISOString()}`, "LIVE_RESUMED",
+      null, { executor_version: health.health?.version, source: "OPERATOR_CONTROL" });
+    const alert = await service.from("robot_v1_live_alerts")
+      .update({ resolved_at: new Date().toISOString() })
+      .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
+      .eq("user_id", run.user_id).eq("alert_key", `LIVE_RUN:${run.id}:CRITICAL`)
+      .is("resolved_at", null);
+    if (alert.error) throw new Error("COINOPS_LIVE_RESUME_ALERT_UPDATE_FAILED");
+    return { status: "RESUMED", asset, cycle_id: run.id };
+  } catch (error) {
+    errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
+      ? error.message : "COINOPS_LIVE_RESUME_FAILED";
+    if (unlocked) await preventNewBuys(service, run, errorCode);
+    throw new Error(errorCode);
+  } finally {
+    await release(service, run, errorCode);
+  }
+}
+
 /** Stages the 25-slot BRL cycle while both kill switches remain ON. */
 export async function prepareLiveCycle(userId: string, asset: V1Asset) {
   assertScope();

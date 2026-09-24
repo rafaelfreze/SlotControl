@@ -67,3 +67,10 @@ Binance; as ordens seguem exclusivamente pelo cron normal.
   BUYs. Não apagar o ledger. Ordens de proteção SELL podem continuar sob
   `TRADING_ENABLED=true`; cancelamento protetivo só admite BUY própria com ID
   e orderId exatos. Revisar posições e TPs antes de retomar.
+- Para retomar um ciclo já `ACTIVE` após falha transitória, manter o kill switch
+  SQL ligado até o cron voltar a reconciliar sem erro. Desligar o kill switch do
+  executor somente após conferir as ordens próprias na Binance; então usar
+  `RESUME` no controle operacional autenticado. A rota exige versão e saúde do
+  executor, ledger de 25 slots, correspondência exata com ordens abertas,
+  OPEN coberto por TP, fills reconciliados e exposição dentro dos hard caps.
+  Se qualquer verificação falhar, novas BUYs permanecem bloqueadas.

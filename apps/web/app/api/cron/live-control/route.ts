@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
-import { prepareLiveCycle } from "@/lib/execution/robot-v1-live-server";
+import { prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "COINOPS_LIVE_SCOPE_DENIED" }, { status: 503, headers });
   const payload = await request.json().catch(() => null) as { action?: unknown; asset?: unknown } | null;
   if (!payload || Object.keys(payload).length !== 2
-    || !["PREPARE", "ACTIVATE"].includes(String(payload.action))
+    || !["PREPARE", "ACTIVATE", "RESUME"].includes(String(payload.action))
     || !["BTC", "SOL"].includes(String(payload.asset)))
     return NextResponse.json({ error: "COINOPS_LIVE_CONTROL_INVALID" }, { status: 400, headers });
   try {
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
       || owner.data.some((row) => row.tenant_id !== getCoinOpsServiceTenantId()))
       throw new Error("COINOPS_LIVE_OWNER_AMBIGUOUS");
     const asset = payload.asset as "BTC" | "SOL";
-    const action = payload.action as "PREPARE" | "ACTIVATE";
+    const action = payload.action as "PREPARE" | "ACTIVATE" | "RESUME";
     const health = await loadLiveExecutorStatus();
     if (health.gate !== (action === "PREPARE" ? "LIVE_EXECUTOR_READY" : "LIVE_EXECUTOR_ACTIVE"))
       throw new Error("COINOPS_LIVE_EXECUTOR_GATE_DENIED");
@@ -56,9 +56,14 @@ export async function POST(request: NextRequest) {
     const runs = await service.from("robot_v1_live_runs").select("id,status,product_id")
       .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", owner.data[0].user_id)
       .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"]);
-    if (runs.error || runs.data?.length !== 1 || runs.data[0].status !== "PREPARING"
+    const requiredStatus = action === "RESUME" ? "ACTIVE" : "PREPARING";
+    if (runs.error || runs.data?.length !== 1 || runs.data[0].status !== requiredStatus
       || runs.data[0].product_id !== owner.data[0].product_id)
       throw new Error("COINOPS_LIVE_RUN_GATE_DENIED");
+    if (action === "RESUME") {
+      const result = await resumeLiveRun(runs.data[0].id, owner.data[0].user_id, asset);
+      return NextResponse.json(result, { headers });
+    }
     const state = await readLiveExecutorState(`${asset}BRL`);
     if (Date.now() - Date.parse(state.observed_at) > 30_000
       || state.open_orders.some((order) => order.clientOrderId?.startsWith(`COR1-${asset}-`)))
