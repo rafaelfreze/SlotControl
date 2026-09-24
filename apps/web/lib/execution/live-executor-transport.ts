@@ -40,6 +40,17 @@ const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
 export function readLiveExecutorState(symbol: "BTCBRL" | "SOLBRL", fetcher?: typeof fetch) {
   return request<LiveExecutorState>("/v1/state", { symbol }, readKey(), fetcher);
 }
+export function readLegacyProductionReconciliation(fetcher?: typeof fetch) {
+  return request<{
+    capabilities: { readEnabled: boolean; tradingEnabled: boolean;
+      withdrawalsEnabled: boolean; ipRestricted: boolean | null };
+    account: { balances: Array<{ asset: string; free: number; locked: number; total: number }> };
+    filters: Record<"BTCUSDT" | "SOLUSDT", unknown>;
+    prices: Record<"BTCUSDT" | "SOLUSDT", unknown>;
+    orders: import("./types").ExchangeOrder[];
+    trades: import("./types").ExchangeTrade[];
+  }>("/v1/reconciliation", { scope: "COINOPS_SHADOW_READ_ONLY" }, readKey(), fetcher);
+}
 export async function readLiveExecutorOrder(symbol: "BTCBRL" | "SOLBRL", clientOrderId: string,
   orderId?: string | null, fetcher?: typeof fetch) {
   return request<{ order: LiveOrder | null }>("/v1/query-order",

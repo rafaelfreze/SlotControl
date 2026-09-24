@@ -30,7 +30,8 @@ transferência, margem ou Futures.
    verificada e versão alinhada à Vercel. Confirmar permissões restritas Spot,
    sem saques/transferências/margem/Futures. Testar somente `/api/v3/order/test`.
 3. Preparar os ciclos por ativo na rota autenticada
-   `POST /api/coinops-live-activation` (`PREPARE`), ainda sem ordem. Confirmar
+   `POST /api/coinops-live-activation` (`PREPARE`) ou no controle operacional
+   `POST /api/cron/live-control` com `CRON_SECRET`, ainda sem ordem. Confirmar
    25 slots, capital lógico e ausência de ordens próprias na Binance.
 4. Publicar o executor com `TRADING_ENABLED=true`, `KILL_SWITCH=ON` para manter
    proteção de posições sem novas BUYs; só após todas as provas, liberar
@@ -41,6 +42,14 @@ transferência, margem ou Futures.
    quantidades, TP, única próxima BUY, 23 planejados, exposição, saldo e
    ausência de duplicações. Inspecionar UI, CSV `LIVE_EXECUTION`, logs e
    alertas. Não usar ordens manuais como smoke.
+
+A reconciliação histórica Shadow versus Binance Production continua somente
+GET, mas suas consultas assinadas agora passam pelo executor de IPv4 fixo. A
+chave antiga presente na Vercel não é usada para esse cron depois da whitelist.
+O controle operacional não aceita usuário, preço, quantidade ou ordem do
+chamador: resolve o único proprietário CoinOps preparado e recusa escopo
+ambíguo. `ACTIVATE` apenas libera o ciclo no ledger após novo snapshot da
+Binance; as ordens seguem exclusivamente pelo cron normal.
 
 ## Recuperação e monitoramento
 

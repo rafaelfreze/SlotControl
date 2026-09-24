@@ -28,9 +28,16 @@ function fixture({ openOrders = [], existingOrder = null, trades = [] } = {}) {
       { asset: "BRL", free: "730", locked: "0" }, { asset: "BTC", free: "0", locked: "0" },
       { asset: "BNB", free: "0.005", locked: "0" }] });
     if (parsed.pathname === "/sapi/v1/account/apiRestrictions") return Response.json(restrictions);
-    if (parsed.pathname === "/api/v3/exchangeInfo") return Response.json({ symbols: [filters] });
-    if (parsed.pathname === "/api/v3/ticker/price") return Response.json(parsed.searchParams.get("symbol") === "BNBBRL"
-      ? { symbol: "BNBBRL", price: "5000" } : { symbol: "BTCBRL", price: "437724" });
+    if (parsed.pathname === "/api/v3/exchangeInfo") {
+      const symbol = parsed.searchParams.get("symbol") ?? "BTCBRL";
+      return Response.json({ symbols: [{ ...filters, symbol,
+        baseAsset: symbol.endsWith("USDT") ? symbol.slice(0, -4) : symbol.slice(0, -3),
+        quoteAsset: symbol.endsWith("USDT") ? "USDT" : "BRL" }] });
+    }
+    if (parsed.pathname === "/api/v3/ticker/price") {
+      const symbol = parsed.searchParams.get("symbol") ?? "BTCBRL";
+      return Response.json({ symbol, price: symbol === "BNBBRL" ? "5000" : "437724" });
+    }
     if (parsed.pathname === "/api/v3/openOrders") return Response.json(openOrders);
     if (parsed.pathname === "/api/v3/myTrades") return Response.json(trades);
     if (parsed.pathname === "/api/v3/order" && init.method === "GET")
@@ -124,4 +131,16 @@ test("Protective cancellation of partially filled own BUY works with kill switch
     { tradingEnabled: true, killSwitch: true });
   assert.equal(result.status, "CANCELED");
   assert.equal(calls.find((call) => call.method === "DELETE")?.params.has("cancelRestrictions"), false);
+});
+
+test("legacy Production reconciliation reads manual USDT pairs only from fixed-IP GET transport", async () => {
+  const { transport, calls } = fixture();
+  const snapshot = await transport.legacyReconciliationSnapshot();
+  assert.equal(snapshot.capabilities.ipRestricted, true);
+  assert.equal(snapshot.capabilities.withdrawalsEnabled, false);
+  assert.deepEqual(Object.keys(snapshot.filters).sort(), ["BTCUSDT", "SOLUSDT"]);
+  assert.deepEqual(snapshot.orders, []);
+  assert.deepEqual(snapshot.trades, []);
+  assert.equal(calls.filter((call) => call.path === "/api/v3/myTrades").length, 2);
+  assert.ok(calls.every((call) => call.method === "GET"));
 });

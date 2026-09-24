@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
-import { BinanceReadOnlyError, BinanceSpotAdapter } from "./binance-spot-adapter";
+import { readLegacyProductionReconciliation } from "./live-executor-transport";
 import { reconcileShadowWithExchange, type ReconciliationIntent } from "./reconciliation";
 
 type ConnectionRow = { id: string; product_id: string; tenant_id: string; user_id: string; exchange: "BINANCE_SPOT"; connection_status: string };
@@ -22,14 +22,14 @@ function reconciliationKey(connectionId: string, now: Date) {
 }
 
 function sanitizedErrorCode(error: unknown) {
-  if (error instanceof BinanceReadOnlyError) return error.code;
+  if (error instanceof Error && /^EXECUTOR_[A-Z0-9_]+$/.test(error.message)) return error.message;
   return "COINOPS_RECONCILIATION_FAILED";
 }
 
 /**
  * Processes only the connection explicitly pinned by an environment reference.
- * Credentials stay exclusively in server environment variables. Every Binance
- * request is issued by the adapter's GET-only read transport.
+ * Binance signed GETs are issued exclusively by the fixed-IP executor. The
+ * Vercel deployment never uses its historical Binance key after IP whitelisting.
  */
 export async function runConfiguredBinanceReadOnlyReconciliation(now = new Date()) {
   const connectionId = process.env.COINOPS_BINANCE_CONNECTION_ID?.trim();
@@ -65,18 +65,8 @@ export async function runConfiguredBinanceReadOnlyReconciliation(now = new Date(
   if (!run?.id) return { status: "ALREADY_RUNNING_OR_COMPLETED" as const, processed: 0 };
 
   try {
-    const adapter = BinanceSpotAdapter.fromEnvironment();
-    const [capabilities, account, btcInfo, solInfo, btcPrice, solPrice, btcOrders, solOrders, btcTrades, solTrades, intentResponse] = await Promise.all([
-      adapter.getCapabilities(),
-      adapter.getAccount(),
-      adapter.getSymbolInfo("BTCUSDT"),
-      adapter.getSymbolInfo("SOLUSDT"),
-      adapter.getMarketPrice("BTCUSDT"),
-      adapter.getMarketPrice("SOLUSDT"),
-      adapter.getOpenOrders("BTCUSDT"),
-      adapter.getOpenOrders("SOLUSDT"),
-      adapter.getTrades("BTCUSDT"),
-      adapter.getTrades("SOLUSDT"),
+    const [snapshot, intentResponse] = await Promise.all([
+      readLegacyProductionReconciliation(),
       supabase.from("exchange_order_intents")
         .select("id,idempotency_key,symbol,side,quantity,observed_market_price,status")
         .eq("product_id", scopedConnection.product_id)
@@ -98,11 +88,11 @@ export async function runConfiguredBinanceReadOnlyReconciliation(now = new Date(
     }));
     const reconciliation = reconcileShadowWithExchange({
       intents,
-      orders: [...btcOrders, ...solOrders],
-      trades: [...btcTrades, ...solTrades],
-      balances: account.balances
+      orders: snapshot.orders,
+      trades: snapshot.trades,
+      balances: snapshot.account.balances
     });
-    const relevantBalances = account.balances.filter((balance) => ["BTC", "SOL", "USDT"].includes(balance.asset));
+    const relevantBalances = snapshot.account.balances.filter((balance) => ["BTC", "SOL", "USDT", "BRL"].includes(balance.asset));
 
     const { error: itemError } = await supabase.from("exchange_reconciliation_items").insert(reconciliation.items.map((item) => ({
       run_id: run.id,
@@ -127,19 +117,18 @@ export async function runConfiguredBinanceReadOnlyReconciliation(now = new Date(
           ...reconciliation.summary,
           balances: relevantBalances,
           capabilities: {
-            readEnabled: capabilities.readEnabled,
-            tradingEnabled: capabilities.tradingEnabled,
-            withdrawalsEnabled: capabilities.withdrawalsEnabled,
-            ipRestricted: capabilities.ipRestricted
+            readEnabled: snapshot.capabilities.readEnabled,
+            tradingEnabled: snapshot.capabilities.tradingEnabled,
+            withdrawalsEnabled: snapshot.capabilities.withdrawalsEnabled,
+            ipRestricted: snapshot.capabilities.ipRestricted
           },
-          filters: { BTCUSDT: btcInfo, SOLUSDT: solInfo },
-          prices: { BTCUSDT: btcPrice, SOLUSDT: solPrice }
+          filters: snapshot.filters,
+          prices: snapshot.prices
         }
       }).eq("id", run.id),
       supabase.from("exchange_connections").update({
         connection_status: "READ_ONLY",
-        credential_reference: "SERVER_ENV:BINANCE_READ_ONLY",
-        api_key_masked: BinanceSpotAdapter.maskApiKey(process.env.BINANCE_API_KEY),
+        credential_reference: "FIXED_IP_EXECUTOR:SIGNED_GET",
         last_reconciled_at: completedAt,
         last_synced_at: completedAt,
         last_error_code: null

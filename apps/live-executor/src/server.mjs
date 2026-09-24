@@ -67,7 +67,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
     const action = path === "/health" ? "HEALTH" : path === "/v1/dry-run" ? "DRY_RUN"
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
-      : path === "/v1/trades" ? "READ_TRADES" : "DENIED";
+      : path === "/v1/trades" ? "READ_TRADES"
+      : path === "/v1/reconciliation" ? "READ_RECONCILIATION" : "DENIED";
     let outcome = "DENIED", status = 403, decisionId = null, symbol = null, keyHash = null;
     try {
       // No write can reach Binance under the default deployed flags.
@@ -82,7 +83,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         return;
       }
       if (request.method !== "POST" || !["/v1/dry-run", "/v1/state", "/v1/query-order",
-        "/v1/trades", "/v1/create-order", "/v1/cancel-order"].includes(path))
+        "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
       if (!request.headers["content-type"]?.startsWith("application/json"))
         throw new ExecutorRejection("EXECUTOR_CONTENT_TYPE_INVALID", 415);
@@ -97,6 +98,15 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       symbol = input.symbol === "BTCBRL" || input.symbol === "SOLBRL" ? input.symbol : null;
       const key = request.headers["x-coinops-idempotency-key"];
       keyHash = typeof key === "string" ? sha256(key).slice(0, 12) : null;
+      if (path === "/v1/reconciliation") {
+        if (input.scope !== "COINOPS_SHADOW_READ_ONLY" || Object.keys(input).length !== 1)
+          throw new ExecutorRejection("EXECUTOR_RECONCILIATION_SCOPE_DENIED", 403);
+        const transport = new BinanceLiveTransport({ apiKey, apiSecret, fetcher, now });
+        const snapshot = await transport.legacyReconciliationSnapshot();
+        outcome = "READ_ONLY"; status = 200;
+        writeJson(response, 200, snapshot);
+        return;
+      }
       if (path !== "/v1/dry-run") {
         const transport = new BinanceLiveTransport({ apiKey, apiSecret, fetcher, now });
         const symbol = input.symbol;

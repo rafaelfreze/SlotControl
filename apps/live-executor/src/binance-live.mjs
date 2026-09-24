@@ -75,6 +75,26 @@ export class BinanceLiveTransport {
     return { account, filters, price, openOrders, bnbBrlPrice };
   }
 
+  /** Existing Shadow-vs-Production audit reads through the whitelisted IPv4.
+   * Manual BTCUSDT/SOLUSDT orders are observed only; this path has no writes. */
+  async legacyReconciliationSnapshot() {
+    const [permission, account, capabilities, btcInfo, solInfo, btcPrice, solPrice,
+      btcOrders, solOrders, btcTrades, solTrades] = await Promise.all([
+      getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret, fetcher: this.fetcher }),
+      this.reads.getAccount(), this.reads.getCapabilities(),
+      this.reads.getSymbolInfo("BTCUSDT"), this.reads.getSymbolInfo("SOLUSDT"),
+      this.reads.getMarketPrice("BTCUSDT"), this.reads.getMarketPrice("SOLUSDT"),
+      this.reads.getOpenOrders("BTCUSDT"), this.reads.getOpenOrders("SOLUSDT"),
+      this.reads.getTrades("BTCUSDT"), this.reads.getTrades("SOLUSDT"),
+    ]);
+    if (permission !== "SPOT_RESTRICTED" || !account.canTrade || !capabilities.ipRestricted
+      || capabilities.withdrawalsEnabled)
+      throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
+    return { capabilities, account, filters: { BTCUSDT: btcInfo, SOLUSDT: solInfo },
+      prices: { BTCUSDT: btcPrice, SOLUSDT: solPrice },
+      orders: [...btcOrders, ...solOrders], trades: [...btcTrades, ...solTrades] };
+  }
+
   async queryOrder(symbol, clientOrderId, expectedOrderId = null) {
     ownedId(symbol, clientOrderId);
     const params = expectedOrderId
