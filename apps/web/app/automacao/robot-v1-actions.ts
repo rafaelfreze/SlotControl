@@ -41,10 +41,17 @@ async function userScope(): Promise<Scope> {
 }
 
 async function addAudit(service: ReturnType<typeof createServiceRoleClient>, scope: Scope, configId: string, type: string, previous: Record<string, unknown>, next: Record<string, unknown>) {
+  const { data: config, error: configError } = await service.from("robot_v1_configs")
+    .select("operator_id,exchange_account_id,trading_engine_id")
+    .eq("id", configId).eq("product_id", scope.productId).eq("tenant_id", scope.tenantId)
+    .eq("user_id", scope.userId).single();
+  if (configError || !config) throw new Error("COINOPS_V1_AUDIT_SCOPE_MISSING");
   const { error } = await service.from("robot_v1_audit_events").upsert({
     product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, config_id: configId, event_type: type,
+    operator_id: config.operator_id, exchange_account_id: config.exchange_account_id,
+    trading_engine_id: config.trading_engine_id,
     previous_state: previous, next_state: next, idempotency_key: auditKey(configId, type, `${JSON.stringify(previous)}:${JSON.stringify(next)}:${Date.now()}`)
-  }, { onConflict: "product_id,tenant_id,user_id,idempotency_key", ignoreDuplicates: true });
+  }, { onConflict: "trading_engine_id,idempotency_key", ignoreDuplicates: true });
   if (error) throw error;
 }
 
