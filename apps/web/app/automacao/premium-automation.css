@@ -106,6 +106,7 @@
   .px-global-navigation .px-scope-filters select{max-width:100%;width:100%;min-height:44px}
 }
 .px-viewer-row{display:grid;gap:6px;padding:12px 0;border-top:1px solid #24445a}
+.px-onboarding+.px-onboarding{margin-top:20px;padding-top:18px;border-top:1px solid #24445a}
 .px-viewer-row>small{overflow-wrap:anywhere}
 .px-viewer-row .px-account-actions{display:flex;flex-wrap:wrap;gap:7px}
 .px-loading .px-topbar{justify-content:space-between}
