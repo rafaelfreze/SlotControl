@@ -190,3 +190,13 @@ export function livePreparationGate(input: { assets: Array<{ asset: V1Asset; val
     return "BRL_INSUFFICIENT" as const;
   return "LIVE_PREPARATION_READY" as const;
 }
+
+/** Exchange-only legacy manual orders and UNKNOWN balance observations are
+ * visible in reconciliation, but are not CoinOps order divergences. */
+export function liveOperationalDivergences(summary: Record<string, unknown> | null, ownedIntentCount: number) {
+  if (!summary || !Number.isInteger(ownedIntentCount) || ownedIntentCount < 0) return Number.POSITIVE_INFINITY;
+  const keys = ["EXPECTED_ONLY", "QUANTITY_MISMATCH", "PRICE_MISMATCH", "STATUS_MISMATCH"];
+  const counts = keys.map((key) => Number(summary[key] ?? 0));
+  return counts.every((count) => Number.isInteger(count) && count >= 0)
+    ? counts.reduce((sum, count) => sum + count, ownedIntentCount) : Number.POSITIVE_INFINITY;
+}

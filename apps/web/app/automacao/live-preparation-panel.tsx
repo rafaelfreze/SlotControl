@@ -11,8 +11,8 @@ const pct = (value: number | string) => `${num(Number(value) * 100, 3)}%`;
 const when = (value: string | null) => value ? new Intl.DateTimeFormat("pt-BR", {
   dateStyle: "short", timeStyle: "short", timeZone: "America/Campo_Grande" }).format(new Date(value)) : "não disponível";
 
-export function LivePreparationPanel({ data, asset, divergences }: {
-  data: LivePresentation; asset: "BTC" | "SOL"; divergences: number }) {
+export function LivePreparationPanel({ data, asset }: {
+  data: LivePresentation; asset: "BTC" | "SOL" }) {
   const config = data.configs.find((item) => item.asset === asset);
   const sizing = data.sizing.find((item) => item.asset === asset);
   const required = data.sizing.reduce((sum, item) => sum + item.configuredCapitalBrl, 0);
@@ -25,7 +25,7 @@ export function LivePreparationPanel({ data, asset, divergences }: {
       && data.sizing.reduce((sum, item) => sum + item.exposureCapBrl, 0) <= data.globalCapBrl],
     ["Saldo BRL suficiente", data.brlFree !== null && data.brlFree >= required],
     ["Ledger nativo BRL, sem crédito REAL legado", data.nativeLedgerReady],
-    ["Reconciliação comprovada sem divergência ativa", data.reconciliationVerified && divergences === 0],
+    ["Sem divergência de ordens próprias CoinOps", data.reconciliationVerified && data.ownedDivergences === 0],
     ["API Production READ-ONLY", data.permissions === "READ_ONLY"],
     ["Spot Trading CoinOps desabilitado", data.configs.length === 2
       && data.configs.every((item) => item.live_enabled === false)],

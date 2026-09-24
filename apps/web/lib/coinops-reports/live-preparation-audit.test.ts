@@ -37,7 +37,8 @@ function sources(availableBrl: number | null): Record<string, Record<string, unk
     live_market_snapshot: [{ observed_at: observedAt, source: "BINANCE_GET",
       markets: [{ rules: rules("BTC"), priceBrl: 437365 }, { rules: rules("SOL"), priceBrl: 595.2 }],
       available_brl: availableBrl, permission: "READ_ONLY" }],
-    exchange_reconciliation_runs: [{ status: "COMPLETED", completed_at: observedAt, summary: {} }],
+    exchange_reconciliation_runs: [{ status: "COMPLETED", completed_at: observedAt,
+      summary: { EXCHANGE_ONLY: 165, UNKNOWN: 3 } }],
     robot_v1_manual_adjustments: [],
   };
 }
@@ -64,4 +65,6 @@ test("readiness requires BRL ledger, no legacy Real-USDC credit, caps and read-o
   assert.equal(buildLivePreparationAudit(permissions, at).gate, "BLOCKED");
   const noMarket = sources(716.75); noMarket.live_market_snapshot = [];
   assert.equal(buildLivePreparationAudit(noMarket, at).gate, "BLOCKED");
+  const owned = sources(716.75); owned.exchange_order_intents = [{ execution_mode: "REAL" }];
+  assert.equal(buildLivePreparationAudit(owned, at).gate, "BLOCKED");
 });

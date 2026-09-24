@@ -34,7 +34,8 @@ export async function loadLiveProductionSnapshot() {
   return { source: `${PUBLIC_SPOT}/api/v3/exchangeInfo + /api/v3/ticker/price; Binance signed GET /api/v3/account`,
     observedAt, markets, brlFree: account ? balance?.free ?? 0 : null,
     brlLocked: account ? balance?.locked ?? 0 : null,
-    balanceObservedAt: account?.updateTime ?? (account ? observedAt : null),
+    // Binance updateTime is the last account mutation, not the time of this GET.
+    balanceObservedAt: account ? observedAt : null,
     permissions: capabilities === null ? "UNVERIFIED" as const
       : capabilities.tradingEnabled || capabilities.withdrawalsEnabled ? "UNSAFE" as const : "READ_ONLY" as const,
     ipRestricted: capabilities?.ipRestricted ?? null };

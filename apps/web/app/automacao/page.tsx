@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import { getDailyMarketCandles } from "@/lib/execution/market-daily-candles";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
-import { buildLiveSizing, livePreparationGate, type LiveConfig } from "@/lib/execution/live-preparation";
+import { buildLiveSizing, liveOperationalDivergences, livePreparationGate, type LiveConfig } from "@/lib/execution/live-preparation";
 import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
@@ -217,16 +217,19 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     const nativeLedgerReady = (nativeAccounts.data || []).length === 50
       && (nativeAccounts.data || []).every((row) => row.quote_asset === "BRL")
       && (legacyRealCredits.data || []).length === 0;
-    const reconciliationVerified = latestRun?.status === "COMPLETED";
+    const reconciliationVerified = latestRun?.status === "COMPLETED" && latestRun.summary !== null;
+    const ownedDivergences = liveOperationalDivergences(latestRun?.summary ?? null,
+      intentsResponse.error ? -1 : (intentsResponse.data || []).length);
     const gate = production && sizing.length === 2 ? livePreparationGate({
       assets: sizing.map((item) => ({ asset: item.asset, validSlots: item.validSlots,
         configuredCapitalBrl: item.configuredCapitalBrl, recommendedCapitalBrl: item.recommendedCapitalBrl,
         exposureCapBrl: item.exposureCapBrl })),
       globalCapBrl: globalBrl, availableBrl: production.brlFree,
-      activeDivergences: mismatches, reconciliationVerified, nativeLedgerReady,
+      activeDivergences: ownedDivergences, reconciliationVerified, nativeLedgerReady,
       productionPermission: production.permissions,
     }) : "BLOCKED";
-    livePreparation = { configs, sizing, gate, nativeLedgerReady, reconciliationVerified, globalCapBrl: globalBrl,
+    livePreparation = { configs, sizing, gate, nativeLedgerReady, reconciliationVerified,
+      ownedDivergences, globalCapBrl: globalBrl,
       globalConfigVersion: Number(globalCap.data?.config_version ?? 0),
       brlFree: production?.brlFree ?? null, brlLocked: production?.brlLocked ?? null,
       observedAt: production?.observedAt ?? null, balanceObservedAt: production?.balanceObservedAt ?? null,

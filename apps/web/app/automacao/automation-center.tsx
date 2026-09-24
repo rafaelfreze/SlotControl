@@ -151,7 +151,7 @@ function Testnet({ data: source, initialAsset }: { data: Props; initialAsset: "B
 }
 
 function LivePreparation({ data, asset }: { data: Props; asset: "BTC" | "SOL" }) {
-  if (data.livePreparation) return <LivePreparationPanel data={data.livePreparation} asset={asset} divergences={data.mismatches} />;
+  if (data.livePreparation) return <LivePreparationPanel data={data.livePreparation} asset={asset} />;
   if (asset === "BTC") return <section className="ac-panel"><div className="ac-panel-heading"><h2>Preparação BTC · Real</h2><span className="ac-badge ac-badge--slate">LIVE BLOQUEADO</span></div><p>Nenhuma configuração de piloto BTC LIVE foi validada. Par, filtros, capital, proteções e autorização serão definidos antes de uma ativação futura.</p><p>Production permanece READ-ONLY. Não há botão de ativação ou envio de ordens reais.</p></section>;
   const pilot = data.solBrlPilot;
   const checks = [
@@ -169,8 +169,14 @@ function LivePreparation({ data, asset }: { data: Props; asset: "BTC" | "SOL" })
 
 function ProductionBalances({ data, asset }: { data: Props; asset: "BTC" | "SOL" }) {
   return <div className="ac-production-balances" aria-label="Saldos Production somente leitura">{["BRL", "USDT", "USDC", asset].map((currency) => {
-    const balance = data.balances.find((item) => item.asset === currency);
-    return <MetricCard key={currency} label={"Saldo " + currency} value={format(balance?.total, currency === "BTC" || currency === "SOL" ? 8 : 2)} note={"Disponível " + format(balance?.free, 8) + " · bloqueado " + format(balance?.locked, 8)} />;
+    const reconciliationBalance = data.balances.find((item) => item.asset === currency);
+    const freshBrl = currency === "BRL" && data.livePreparation?.brlFree !== null
+      && data.livePreparation?.brlFree !== undefined;
+    const balance = freshBrl ? { free: data.livePreparation!.brlFree!, locked: data.livePreparation!.brlLocked ?? 0,
+      total: data.livePreparation!.brlFree! + (data.livePreparation!.brlLocked ?? 0) } : reconciliationBalance;
+    return <MetricCard key={currency} label={"Saldo " + currency + (freshBrl ? " · GET atual" : "")}
+      value={format(balance?.total, currency === "BTC" || currency === "SOL" ? 8 : 2)}
+      note={"Disponível " + format(balance?.free, 8) + " · bloqueado " + format(balance?.locked, 8)} />;
   })}</div>;
 }
 

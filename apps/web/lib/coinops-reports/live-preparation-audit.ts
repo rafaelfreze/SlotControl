@@ -1,4 +1,4 @@
-import { buildLiveSizing, livePreparationGate, type LiveConfig, type LiveRules } from "../execution/live-preparation.ts";
+import { buildLiveSizing, liveOperationalDivergences, livePreparationGate, type LiveConfig, type LiveRules } from "../execution/live-preparation.ts";
 import { STRATEGY_VERSION } from "../execution/strategy-engine.ts";
 
 type Row = Record<string, unknown>;
@@ -64,12 +64,12 @@ export function buildLivePreparationAudit(sources: Sources, generatedAt: string)
   const latestReconciliation = [...(sources.exchange_reconciliation_runs ?? [])]
     .sort((a, b) => String(b.completed_at ?? "").localeCompare(String(a.completed_at ?? "")))[0];
   const summary = record(latestReconciliation?.summary);
-  const mismatches = ["EXPECTED_ONLY", "EXCHANGE_ONLY", "QUANTITY_MISMATCH", "PRICE_MISMATCH", "STATUS_MISMATCH"]
-    .reduce((sum, key) => sum + (number(summary[key]) || 0), 0);
+  const ownedIntents = (sources.exchange_order_intents ?? []).filter((row) => row.execution_mode === "REAL").length;
+  const mismatches = liveOperationalDivergences(latestReconciliation?.summary ? summary : null, ownedIntents);
   const nativeReady = rows.length === 2 && rows.every((row) => row.brl_native_ledger === true && row.legacy_real_usdc_credits === 0);
   const gate = nativeReady && market ? livePreparationGate({ assets: sizing, globalCapBrl: globalCap,
     availableBrl: market.available_brl === null ? null : number(market.available_brl),
-    activeDivergences: mismatches, reconciliationVerified: latestReconciliation?.status === "COMPLETED",
+    activeDivergences: mismatches, reconciliationVerified: latestReconciliation?.status === "COMPLETED" && Boolean(latestReconciliation.summary),
     nativeLedgerReady: nativeReady,
     productionPermission: market.permission === "READ_ONLY" ? "READ_ONLY"
       : market.permission === "UNSAFE" ? "UNSAFE" : "UNVERIFIED" }) : "BLOCKED";

@@ -10,6 +10,8 @@ Configuração Real inicial: BTCBRL 25 slots, gain 1,2%, spacing normal 1%, pós
 
 Valores iniciais de cap derivados do snapshot público Binance de 23/09/2026 23:46 UTC: BTC R$ 17,88 por ordem, R$ 447,00 capital/exposição de 25 slots; SOL R$ 10,79 por ordem, R$ 269,75 capital/exposição; limite global R$ 716,75. São valores iniciais versionados, **não garantia de ordem futura**. O gate recalcula filtros e preços em toda visualização/exportação; se ficarem insuficientes, bloqueia. Saldo físico BRL livre da Binance é consultado separadamente por GET assinado.
 
+Após o primeiro smoke publicado, a cotação fresca elevou o recomendado. Os formulários auditados ajustaram o estado Production para BTC R$ 18/ordem e R$ 450 de capital/exposição, SOL R$ 11/ordem e R$ 275 de capital/exposição, cap global R$ 725 (config_version 2 em cada escopo). Foi mudança de orçamento lógico, sem transferência ou autorização de trade. Filtros e preço continuam sendo revalidados a cada consulta; esses valores podem voltar a ficar insuficientes.
+
 ## Cálculo e preview
 
 `exchangeInfo` e `ticker/price` públicos fornecem status, pares, tick, lote LIMIT, lote MARKET, notional, precisão, tipos de ordem e permissão `quoteOrderQty`. O dimensionamento testa os 25 níveis usando o mesmo `planAthLadder` e as decisões puras `planStrategyInitialEntry`, `planStrategyTakeProfit` e `planStrategyNextEntry`/`planStrategyPostAthNextEntry`. Para cada nível, procura a menor quantidade discreta que cumpre mínimo de compra e mínimo do TP depois de reservar 0,2% de fee em base. O maior mínimo da escada recebe mais 0,2% de fee em quote e 2% de margem de preço/arredondamento, com teto de centavo. Fee específica da conta não foi comprovada; 0,2% é hipótese conservadora, não tarifa certificada. `PERCENT_PRICE_BY_SIDE`, volatilidade, liquidez e preço médio usado por MARKET devem ser revalidados em uma fase de execução separada.
@@ -17,6 +19,8 @@ Valores iniciais de cap derivados do snapshot público Binance de 23/09/2026 23:
 O preview de 25 slots mostra identidade física, rank, grupo Top15/Reserve quando POST_ATH, entrada, quantidade estimada, TP e elegibilidade. A posição inicial, TP e próxima BUY são apenas decisões `NO_WRITE`; o mesmo núcleo também ensaia reentrada local após +R$ 5 hipotéticos no próximo saldo, bloqueio por meta mensal e reset global. `OPEN=0`, sem ledger financeiro ou ordens reais. Preço/filtros com mais de 120 segundos, par não-TRADING, cap incorreto ou prova ausente bloqueiam o gate.
 
 `LIVE_PREPARATION_READY` significa apenas preparação técnica suficiente no snapshot atual; `BRL_INSUFFICIENT` distingue o caso de saldo livre abaixo do capital CoinOps. `BALANCE_UNKNOWN` e `BLOCKED` são fail-closed. Nenhum estado muda permissões da Binance ou remove o kill switch.
+
+A reconciliação Production inclui ordens/trades manuais `EXCHANGE_ONLY` e saldos observados `UNKNOWN`; esses registros permanecem visíveis para auditoria, mas não são divergências de ordens próprias CoinOps. O gate bloqueia se houver intent própria, `EXPECTED_ONLY`, divergência de quantidade/preço/status, reconciliação ausente ou ledger BRL inconsistente. O horário de saldo exibido é o instante do GET assinado, não o `updateTime` da última atividade da conta Binance.
 
 ## Fronteira contábil e legado
 

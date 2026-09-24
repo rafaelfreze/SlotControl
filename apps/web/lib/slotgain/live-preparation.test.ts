@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildLiveSizing, livePreparationGate, parseLiveRules, type LiveConfig, type RawLiveSymbol } from "../execution/live-preparation.ts";
+import { buildLiveSizing, liveOperationalDivergences, livePreparationGate, parseLiveRules, type LiveConfig, type RawLiveSymbol } from "../execution/live-preparation.ts";
 import { BinanceSpotAdapter } from "../execution/binance-spot-adapter.ts";
 import { LiveExecutionBlockedError } from "../execution/types.ts";
 
@@ -87,4 +87,11 @@ test("Production create and cancel remain structurally unavailable", async () =>
   const adapter = new BinanceSpotAdapter(null, { fetcher: async () => { throw new Error("GET should not run"); } });
   await assert.rejects(adapter.createOrder({ symbol: "BTCBRL", side: "BUY", quantity: 1, clientOrderId: "never" }), LiveExecutionBlockedError);
   await assert.rejects(adapter.cancelOrder("SOLBRL", "never"), LiveExecutionBlockedError);
+});
+
+test("manual exchange-only orders and observed balances do not masquerade as owned divergences", () => {
+  assert.equal(liveOperationalDivergences({ EXCHANGE_ONLY: 165, UNKNOWN: 3 }, 0), 0);
+  assert.equal(liveOperationalDivergences({ EXCHANGE_ONLY: 165, STATUS_MISMATCH: 1 }, 0), 1);
+  assert.equal(liveOperationalDivergences({ EXCHANGE_ONLY: 165 }, 1), 1);
+  assert.equal(liveOperationalDivergences(null, 0), Number.POSITIVE_INFINITY);
 });

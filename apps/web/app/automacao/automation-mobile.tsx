@@ -31,7 +31,7 @@ export type TestnetHistoryBundle = { run: NonNullable<TestnetRun>; slots: Testne
 export type TestnetAssetData = { run: NonNullable<TestnetRun>; slots: TestnetSlot[]; orders: TestnetOrderRow[]; events: TestnetEvent[]; history?: TestnetHistoryBundle[] };
 export type LivePresentation = { configs: LiveConfig[]; sizing: ReturnType<typeof buildLiveSizing>[];
   gate: "BLOCKED" | "BALANCE_UNKNOWN" | "BRL_INSUFFICIENT" | "LIVE_PREPARATION_READY";
-  nativeLedgerReady: boolean; reconciliationVerified: boolean;
+  nativeLedgerReady: boolean; reconciliationVerified: boolean; ownedDivergences: number;
   globalCapBrl: number; globalConfigVersion: number; brlFree: number | null; brlLocked: number | null;
   observedAt: string | null; balanceObservedAt: string | null; source: string | null;
   permissions: "READ_ONLY" | "UNVERIFIED" | "UNSAFE"; ipRestricted: boolean | null; error: string | null };
