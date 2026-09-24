@@ -2,6 +2,13 @@
 -- executor deployment are READY. The preceding expand migration already added
 -- every replacement key; no rows, financial history or exchange IDs are changed.
 begin;
+set local lock_timeout='3s';
+set local statement_timeout='30s';
+-- Account-wide alerts have no engine. NULL does not participate in the
+-- engine UNIQUE key, so keep an independent account-level deduplication key.
+create unique index robot_v1_live_account_alert_key_unique
+ on coinops.robot_v1_live_alerts(exchange_account_id,alert_key)
+ where trading_engine_id is null;
 do $$declare r record;begin
  for r in select c.conname,t.relname from pg_constraint c
  join pg_class t on t.oid=c.conrelid join pg_namespace n on n.oid=t.relnamespace

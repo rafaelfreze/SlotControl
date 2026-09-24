@@ -70,7 +70,7 @@ before(async()=>{
   union all select 'TESTNET_ORDERS',to_jsonb(o) from coinops.robot_v1_testnet_orders o;`);
  invoke(["-f",join(path,migration)]);
  invoke(["-f",join(path,"20260924142810_optimize_operator_rls_allowed_set.sql")]);
- invoke(["-f",join(path,"20260924150000_finalize_multi_account_engine_idempotency.sql")]);
+ invoke(["-f",join(path,"20260924144559_finalize_multi_account_engine_idempotency.sql")]);
  operator=sql("select id from coinops.operators");account=sql("select id from coinops.exchange_accounts where is_legacy_default");
  engine=sql("select id from coinops.trading_engines where environment='REAL' and symbol='BTCBRL'");
  testEngine=sql("select id from coinops.trading_engines where environment='TESTNET' and symbol='SOLUSDC'");
@@ -196,6 +196,13 @@ check("5.6 SQL: immutable engine identity cannot be moved to another account or 
  assert.throws(()=>tx(`${fixtureB()}update coinops.trading_engines set quote_asset='USDC',symbol='SOLUSDC' where id='${engineB}'`),/COINOPS_ENGINE_IDENTITY_IMMUTABLE/);
 });
 check("5.6 SQL: identical decision and reset keys are isolated after contract migration",()=>{
+ assert.equal(sql(`select count(*)=6 and bool_and(i.indisvalid and i.indisready)
+ from (values('robot_v1_strategy_decisions','decision_id'),('robot_v1_audit_events','idempotency_key'),
+ ('robot_v1_slots','idempotency_key'),('robot_v1_live_alerts','alert_key'),
+ ('robot_v1_live_runs','reset_idempotency_key'),('robot_v1_testnet_runs','reset_idempotency_key')) expected(table_name,key_column)
+ join pg_constraint c on c.conrelid=('coinops.'||expected.table_name)::regclass
+  and c.contype='u' and pg_get_constraintdef(c.oid)='UNIQUE (trading_engine_id, '||expected.key_column||')'
+ join pg_index i on i.indexrelid=c.conindid`),"t");
  const hash="e".repeat(64);
  const out=tx(`${fixtureB()}
  insert into coinops.robot_v1_strategy_decisions(product_id,tenant_id,user_id,environment,asset,decision_id,strategy_version,cycle_id,action_type,priority,reason,expected_next_state)
@@ -206,6 +213,21 @@ check("5.6 SQL: identical decision and reset keys are isolated after contract mi
  select ${scope},asset,symbol,trading_engine_id,quote_asset,'COMPLETED',anchor_price,slot_notional_usdc,gain_rate,entry_spacing,id,'${hash}'
  from coinops.robot_v1_testnet_runs where trading_engine_id in ('${testEngine}','${engineB}');
  select count(*)=2 and count(distinct trading_engine_id)=2 from coinops.robot_v1_testnet_runs where reset_idempotency_key='${hash}';`);
+ assert.equal(out.split("\n").filter(x=>x==="t").length,2);
+});
+check("5.6 SQL: NULL-engine alerts deduplicate per account without colliding with another account or engine",()=>{
+ const key="ACCOUNT_ALERT_FIXTURE";
+ const alert=(selectedAccount:string,selectedEngine:string|null)=>`insert into coinops.robot_v1_live_alerts
+ (product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,asset,alert_key,severity,code)
+ values(${scope},'${operator}','${selectedAccount}',${selectedEngine?`'${selectedEngine}'`:"null"},${selectedEngine?"'BTC'":"null"},'${key}','WARNING','COINOPS_TEST_ALERT')`;
+ assert.throws(()=>tx(`${alert(account,null)};${alert(account,null)}`),/robot_v1_live_account_alert_key_unique/);
+ const out=tx(`insert into coinops.exchange_accounts(id,operator_id,display_name)values('${accountB}','${operator}','Account alert fixture');
+ ${alert(account,null)};
+ ${alert(account,null)} on conflict(exchange_account_id,alert_key) where trading_engine_id is null do update set code='COINOPS_TEST_REPLAY';
+ ${alert(accountB,null)};${alert(account,engine)};
+ select count(*)=3 and count(*)filter(where trading_engine_id is null)=2 and count(distinct exchange_account_id)=2
+ from coinops.robot_v1_live_alerts where alert_key='${key}';
+ select code='COINOPS_TEST_REPLAY' from coinops.robot_v1_live_alerts where exchange_account_id='${account}' and trading_engine_id is null and alert_key='${key}';`);
  assert.equal(out.split("\n").filter(x=>x==="t").length,2);
 });
 check("5.6 SQL: onboarding is append-only, actor-scoped and never enables engine",()=>{

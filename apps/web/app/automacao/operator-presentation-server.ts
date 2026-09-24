@@ -5,6 +5,7 @@ import type { createServiceRoleClient } from "@/lib/supabase/service-role";
 import type { Props } from "./automation-mobile";
 import { buildPremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { monthlyPeriodKey, rankMonthlySlots } from "@/lib/execution/monthly-slot-policy";
+import { loadLiveEngineExecutorStatus } from "@/lib/execution/live-executor-health";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
 
@@ -126,6 +127,13 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
       exchange_account_id: row.exchange_account_id, trading_engine_id: row.id });
     const scoped = context.legacy_compatible ? legacyEnginePresentation(data, context)
       : await nativeEnginePresentation(client, data, context);
+    if (context.environment === "REAL" && scoped.livePreparation) {
+      // Public /health can intentionally advertise the old compatibility
+      // contract during rollout. Only the authenticated, identity-validated
+      // engine observation can attest this market's LIVE state and kill switch.
+      scoped.livePreparation = { ...scoped.livePreparation,
+        executor: await loadLiveEngineExecutorStatus(context) };
+    }
     engineData[row.id] = scoped;
     engines.push(buildPremiumEngine(scoped, context));
   }
