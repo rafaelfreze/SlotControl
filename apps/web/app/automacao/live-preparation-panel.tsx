@@ -1,5 +1,8 @@
 "use client";
 
+import type { EngineContext } from "@/lib/execution/operator-context";
+import { EngineScopeFields } from "./engine-scope-fields";
+
 import { useState } from "react";
 
 import type { LiveAssetData, LivePresentation } from "./automation-mobile";
@@ -77,8 +80,8 @@ export function LiveOperationalPanel({ asset, data }: { asset: "BTC" | "SOL"; da
   </section>;
 }
 
-export function LivePreparationPanel({ data, asset }: {
-  data: LivePresentation; asset: "BTC" | "SOL" }) {
+export function LivePreparationPanel({ data, asset, context }: {
+  data: LivePresentation; asset: "BTC" | "SOL"; context?: EngineContext }) {
   const [checking, setChecking] = useState(false);
   const [diagnostic, setDiagnostic] = useState<string | null>(null);
   async function checkExecutor() {
@@ -86,7 +89,7 @@ export function LivePreparationPanel({ data, asset }: {
     setDiagnostic(null);
     try {
       const response = await fetch("/api/coinops-live-executor/diagnostic", {
-        method: "POST", cache: "no-store" });
+        method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify({ exchange_account_id: context?.exchange_account_id, trading_engine_id: context?.trading_engine_id }) });
       const result = await response.json() as { gate?: string; error?: string;
         results?: Array<{ asset: string; valid_slots: number; latency_ms: number }> };
       setDiagnostic(response.ok && result.gate === "NO_WRITE"
@@ -176,13 +179,13 @@ export function LivePreparationPanel({ data, asset }: {
         </details>
         <details><summary>Ver os 25 slots, rank, grupo, preço e quantidade</summary><div className="lp-table-wrap"><table><thead><tr><th>Físico</th><th>Rank</th><th>Grupo</th><th>Capital BRL</th><th>Entrada BRL</th><th>Qtd.</th><th>TP BRL</th><th>Válido</th></tr></thead><tbody>{sizing.slots.map((slot) => <tr key={slot.physicalSlotNumber}><td>#{slot.physicalSlotNumber}</td><td>{slot.operationalRank ?? "—"}</td><td>{slot.postAthGroup ?? "—"}</td><td>{brl(slot.capitalBrl)}</td><td>{brl(slot.entryPriceBrl)}</td><td>{num(slot.estimatedQuantity)}</td><td>{brl(slot.tpPriceBrl)}</td><td>{slot.valid ? "sim" : "não"}</td></tr>)}</tbody></table></div></details>
       </> : <p role="alert">Dimensionamento indisponível: par, filtros, preço ou configuração inválidos.</p>}
-      <details><summary>Editar capital e hard caps de {asset}</summary><form action={saveLiveAssetCaps} className="lp-form">
+      <details><summary>Editar capital e hard caps de {asset}</summary><form action={saveLiveAssetCaps} className="lp-form"><EngineScopeFields context={context} />
         <input type="hidden" name="asset" value={asset} />
         <label>Capital CoinOps BRL<input name="capital_brl" type="number" min="0.01" step="0.01" defaultValue={Number(config.configured_live_capital_brl)} required /></label>
         <label>Máximo por ordem BRL<input name="order_cap_brl" type="number" min="0.01" step="0.01" defaultValue={Number(config.max_order_notional_brl)} required /></label>
         <label>Exposição máxima {asset} BRL<input name="exposure_cap_brl" type="number" min="0.01" step="0.01" defaultValue={Number(config.max_total_exposure_brl)} required /></label>
         <button type="submit">Salvar limites · não ativa LIVE</button></form></details>
     </section> : <section className="ac-panel" role="alert">Configuração Real {asset} não encontrada. LIVE bloqueado.</section>}
-    <section className="ac-panel"><details><summary>Editar limite global BRL</summary><form action={saveLiveGlobalCap} className="lp-form"><label>Exposição máxima total BRL<input name="global_cap_brl" type="number" min="0.01" step="0.01" defaultValue={data.globalCapBrl} required /></label><button type="submit">Salvar limite global · não ativa LIVE</button></form></details></section>
+    <section className="ac-panel"><details><summary>Editar limite global BRL</summary><form action={saveLiveGlobalCap} className="lp-form"><EngineScopeFields context={context} /><label>Exposição máxima total BRL<input name="global_cap_brl" type="number" min="0.01" step="0.01" defaultValue={data.globalCapBrl} required /></label><button type="submit">Salvar limite global · não ativa LIVE</button></form></details></section>
   </div>;
 }

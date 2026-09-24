@@ -15,6 +15,10 @@ import { TESTNET_MISSED_EVENT_TYPES } from "@/lib/coinops-reports/missed-level-e
 import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
 
 import type { AutomationView } from "./automation-center";
+import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
+import { resolveEngineContext } from "@/lib/execution/operator-context";
+import { buildOperatorPresentation } from "./operator-presentation-server";
+import type { Presentation } from "./premium-automation";
 import { PremiumAutomation } from "./premium-automation";
 import { PremiumReferenceTicker } from "./premium-reference-ticker";
 import { getPremiumBrlCandles } from "./premium-market";
@@ -37,13 +41,20 @@ type RobotV1SlotAccountRow = { config_id: string; slot_number: number; initial_b
 type RobotV1EventRow = { cycle_id: string; slot_id: string | null; event_type: string; next_state: Record<string, unknown> | null; observed_at: string };
 type RobotV1CandleRow = { symbol: string; candle_open_at: string; open_price: number | string; high_price: number | string; low_price: number | string; close_price: number | string };
 
-export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string; adjust?: string } }) {
+export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string; adjust?: string; account?: string; market?: string; engine?: string } }) {
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
   const tenantId = getCoinOpsServiceTenantId();
   if (!tenantId) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
+  const registryScope = await supabase.from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
+  if (registryScope.error || !registryScope.data) throw new Error("COINOPS_OPERATOR_SCOPE_UNAVAILABLE");
+  const registry = await loadOperatorRegistry(supabase, { product_id: registryScope.data.product_id, tenant_id: tenantId, user_id: user.id });
+  const legacyAccount = registry.accounts.find((account) => account.is_legacy_default);
+  if (!legacyAccount) throw new Error("COINOPS_LEGACY_ACCOUNT_UNAVAILABLE");
+  const legacyEngineIds = registry.engines.filter((engine) => engine.legacy_compatible && engine.exchange_account_id === legacyAccount.id).map((engine) => engine.id);
+  const legacyRealContexts = registry.engines.filter((engine) => engine.environment === "REAL" && engine.exchange_account_id === legacyAccount.id && engine.legacy_compatible).map((engine) => resolveEngineContext(registry, { environment: "REAL", exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id }));
 
   let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
   const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "overview";
@@ -64,18 +75,18 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const [connectionResponse, runsResponse, robotConfigsResponse, robotCyclesResponse, robotSlotsResponse, operationsResponse, accountsResponse, eventsResponse, candlesResponse, intentsResponse, scopeResponse, monthlyResponse, athProfilesResponse] = await Promise.all([
     supabase.from("exchange_connections").select("connection_status,last_reconciled_at,last_synced_at").eq("exchange", "BINANCE_SPOT").maybeSingle(),
     supabase.from("exchange_reconciliation_runs").select("status,completed_at,summary").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("robot_v1_configs").select("id,strategy_version,asset,symbol,execution_mode,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,slot_count,kill_switch,pause_new_entries,shadow_test_started_at,shadow_test_target_end_at,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl").order("asset"),
-    supabase.from("robot_v1_cycles").select("id,strategy_version,config_id,asset,status,anchor_price,slot_notional_usdc,capital_usdc,gain_rate,entry_spacing,started_at,completed_at,completion_reason").order("started_at", { ascending: false }),
-    supabase.from("robot_v1_slots").select("id,cycle_id,slot_number,logical_level,operation_sequence,entry_state,armed_at,missed_at,buy_client_order_id,sell_client_order_id,allocation_usdc,buy_price,requested_quantity,buy_status,executed_quantity,average_fill_price,take_profit_price,take_profit_status,status,realized_quote_pnl,buy_triggered_at,tp_triggered_at,post_ath_group,post_ath_group_rank,operational_rank").order("slot_number"),
-    supabase.from("robot_v1_slot_operations").select("id,cycle_id,slot_id,physical_slot_number,logical_level,operation_sequence,allocation_usdc,entry_price,executed_quantity,take_profit_price,gross_quote_pnl,estimated_quote_fees,net_quote_pnl,opened_at,closed_at").order("closed_at", { ascending: false }),
-    supabase.from("robot_v1_slot_accounts").select("config_id,slot_number,initial_balance_usdc,balance_usdc,gain_count,gross_profit_usdc,fees_usdc,net_profit_usdc,last_operation_id").order("slot_number"),
-    supabase.from("robot_v1_audit_events").select("cycle_id,slot_id,event_type,next_state,observed_at").order("observed_at", { ascending: false }).limit(40),
+    supabase.from("robot_v1_configs").select("id,strategy_version,asset,symbol,execution_mode,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,slot_count,kill_switch,pause_new_entries,shadow_test_started_at,shadow_test_target_end_at,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("asset"),
+    supabase.from("robot_v1_cycles").select("id,strategy_version,config_id,asset,status,anchor_price,slot_notional_usdc,capital_usdc,gain_rate,entry_spacing,started_at,completed_at,completion_reason").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("started_at", { ascending: false }),
+    supabase.from("robot_v1_slots").select("id,cycle_id,slot_number,logical_level,operation_sequence,entry_state,armed_at,missed_at,buy_client_order_id,sell_client_order_id,allocation_usdc,buy_price,requested_quantity,buy_status,executed_quantity,average_fill_price,take_profit_price,take_profit_status,status,realized_quote_pnl,buy_triggered_at,tp_triggered_at,post_ath_group,post_ath_group_rank,operational_rank").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("slot_number"),
+    supabase.from("robot_v1_slot_operations").select("id,cycle_id,slot_id,physical_slot_number,logical_level,operation_sequence,allocation_usdc,entry_price,executed_quantity,take_profit_price,gross_quote_pnl,estimated_quote_fees,net_quote_pnl,opened_at,closed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("closed_at", { ascending: false }),
+    supabase.from("robot_v1_slot_accounts").select("config_id,slot_number,initial_balance_usdc,balance_usdc,gain_count,gross_profit_usdc,fees_usdc,net_profit_usdc,last_operation_id").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("slot_number"),
+    supabase.from("robot_v1_audit_events").select("cycle_id,slot_id,event_type,next_state,observed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("observed_at", { ascending: false }).limit(40),
     supabase.from("robot_v1_market_candles").select("symbol,candle_open_at,open_price,high_price,low_price,close_price").in("symbol", ["BTCUSDC", "SOLUSDC"]).order("candle_open_at", { ascending: false }).limit(180),
     supabase.from("exchange_order_intents").select("id").limit(12),
     supabase.from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle(),
-    supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count")
+    supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
       .eq("tenant_id", tenantId).eq("user_id", user.id),
-    supabase.from("robot_v1_ath_profiles").select("id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,ath_observed_at,ath_source,ath_verified_at,ath_floor_reference,ath_floor_source")
+    supabase.from("robot_v1_ath_profiles").select("id,trading_engine_id,exchange_account_id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,ath_observed_at,ath_source,ath_verified_at,ath_floor_reference,ath_floor_source").in("trading_engine_id", registry.engines.map((engine) => engine.id))
       .eq("tenant_id", tenantId).eq("user_id", user.id)
   ]);
   const shadowReadError = robotConfigsResponse.error || robotCyclesResponse.error || robotSlotsResponse.error || operationsResponse.error || accountsResponse.error || candlesResponse.error;
@@ -84,7 +95,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (athProfilesResponse.error) throw new Error("COINOPS_ATH_PROFILES_UNAVAILABLE");
   const productId = scopeResponse.data.product_id;
   const { data: manualAdjustments, error: manualError } = await supabase.from("robot_v1_manual_adjustments")
-    .select("id,environment,asset,slot_number,kind,gain_units,currency,original_amount,converted_amount_usdc,created_at,reversal_of,reason")
+    .select("id,trading_engine_id,exchange_account_id,environment,asset,slot_number,kind,gain_units,currency,original_amount,converted_amount_usdc,created_at,reversal_of,reason").in("trading_engine_id", registry.engines.map((engine) => engine.id))
     .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
     .order("created_at", { ascending: false }).limit(40);
   if (manualError) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
@@ -102,17 +113,17 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const testnetAssetData: Partial<Record<"BTC" | "SOL", TestnetAssetData>> = {};
   await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
     const { data: runs, error } = await supabase.from("robot_v1_testnet_runs")
-      .select("id,strategy_version,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,next_capital_usdc,next_gain_rate,next_entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source")
+      .select("id,strategy_version,status,symbol,last_reconciled_at,last_error,created_at,slot_notional_usdc,gain_rate,entry_spacing,next_capital_usdc,next_gain_rate,next_entry_spacing,previous_run_id,completed_at,completion_reason,reset_started_at,reset_completed_at,recovery_source").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
       .eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset).order("created_at", { ascending: false }).limit(20);
     if (error) throw error;
     const run = runs?.find((item) => item.status === "ACTIVE" || item.status === "PAUSED") || runs?.[0];
     if (!run) return;
     const runIds = (runs || []).map((item) => item.id);
     const [slots, orders, events, missedEvents] = await Promise.all([
-      supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at,post_ath_group,post_ath_group_rank,operational_rank").in("run_id", runIds).order("slot_number"),
-      supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").in("run_id", runIds).order("created_at"),
-      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
-      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100)
+      supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at,post_ath_group,post_ath_group_rank,operational_rank").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).in("run_id", runIds).order("slot_number"),
+      supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).in("run_id", runIds).order("created_at"),
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100)
     ]);
     if (slots.error || orders.error || events.error || missedEvents.error) throw slots.error || orders.error || events.error || missedEvents.error;
     const allSlots = slots.data || [], allOrders = orders.data || [];
@@ -188,22 +199,22 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   {
     const [preparations, globalCap, nativeAccounts, legacyRealCredits, production, executor] = await Promise.all([
       supabase.from("robot_v1_live_preparations")
-        .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,kill_switch,updated_at")
+        .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,kill_switch,updated_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
       supabase.from("robot_v1_live_global_caps")
-        .select("max_total_live_exposure_brl,config_version")
+        .select("max_total_live_exposure_brl,config_version").eq("exchange_account_id", legacyAccount.id)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id).maybeSingle(),
-      supabase.from("robot_v1_live_slot_accounts").select("asset,slot_number,quote_asset")
+      supabase.from("robot_v1_live_slot_accounts").select("asset,slot_number,quote_asset").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
-      supabase.from("robot_v1_manual_adjustments").select("id")
+      supabase.from("robot_v1_manual_adjustments").select("id").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
         .eq("environment", "REAL").limit(1),
-      loadLiveProductionSnapshot().catch(() => null),
+      loadLiveProductionSnapshot(legacyRealContexts).catch(() => null),
       loadLiveExecutorStatus(),
     ]);
     if (preparations.error || globalCap.error || nativeAccounts.error || legacyRealCredits.error)
       throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
-    const profiles = (athProfilesResponse.data || []).filter((row) => row.environment === "REAL");
+    const profiles = (athProfilesResponse.data || []).filter((row) => row.environment === "REAL" && legacyEngineIds.includes(row.trading_engine_id));
     const configs = (preparations.data || []).flatMap((row) => {
       const profile = profiles.find((item) => item.asset === row.asset);
       if (!profile) return [];
@@ -244,7 +255,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       error: production ? sizing.length === 2 ? null : "Filtros ou cálculo de um dos pares indisponíveis." : "Consulta Production indisponível; preparação bloqueada." };
     await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
       const current = await supabase.from("robot_v1_live_runs")
-        .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing")
+        .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
         .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"])
         .maybeSingle();
@@ -253,19 +264,19 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       const run = current.data;
       const [slots, orders, accounts, events, alerts] = await Promise.all([
         supabase.from("robot_v1_live_slots")
-          .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at")
+          .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
           .eq("run_id", run.id).eq("tenant_id", tenantId).order("slot_number"),
         supabase.from("robot_v1_live_orders")
-          .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl")
+          .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
           .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
         supabase.from("robot_v1_live_slot_accounts")
-          .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
+          .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
           .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
           .eq("asset", asset).order("slot_number"),
-        supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details")
+        supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
           .eq("run_id", run.id).eq("tenant_id", tenantId)
           .order("observed_at", { ascending: false }).limit(20),
-        supabase.from("robot_v1_live_alerts").select("severity,code,last_seen_at")
+        supabase.from("robot_v1_live_alerts").select("severity,code,last_seen_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
           .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
           .eq("asset", asset).is("resolved_at", null)
           .order("last_seen_at", { ascending: false }).limit(10),
@@ -281,17 +292,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
             lifetime_gain_count: row.lifetime_gain_count })) };
     }));
   }
-  return <PremiumAutomation view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
-    marketTicker={<PremiumReferenceTicker />}
-    initialAdjustments={Boolean(initialManualTarget)}
-    adjustmentsPanel={<ManualAdjustmentsPanel expanded recent={(manualAdjustments || []) as RecentManualAdjustment[]} initial={initialManualTarget} />}
-    strategyPanel={<AthProfilesPanel profiles={(athProfilesResponse.data || []) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
-      realLiveActive={Object.values(liveAssetData).some((entry) => entry.run.status === "ACTIVE")}
-      slots={athSlotRows} marketPrices={{
-        BTC: Number((robotConfigsResponse.data || []).find((item) => item.asset === "BTC")?.last_market_price) || null,
-        SOL: Number((robotConfigsResponse.data || []).find((item) => item.asset === "SOL")?.last_market_price) || null,
-      }} view={view} />}
-    data={{
+  const presentation: Presentation = {
     connectionStatus: connectionResponse.data?.connection_status,
     lastSyncedAt: connectionResponse.data?.last_synced_at || connectionResponse.data?.last_reconciled_at,
     balances: latestRun?.summary?.balances || [],
@@ -321,5 +322,40 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     , liveAssetData
     , athProfiles: (athProfilesResponse.data || []).map(({ environment, asset, regime }) => ({ environment, asset, regime }))
     , deploymentSha: process.env.VERCEL_GIT_COMMIT_SHA
-  }} />;
+
+  };
+  presentation.operator = await buildOperatorPresentation(supabase, presentation, registry, {
+    accountId: searchParams?.account || "ALL", symbol: searchParams?.market || "ALL",
+  });
+  const onboarding = await supabase.from("account_onboarding_checks")
+    .select("exchange_account_id,trading_engine_id,check_key,status,checked_at")
+    .eq("operator_id", registry.operator.id).order("checked_at", { ascending: false }).limit(200);
+  if (onboarding.error) throw new Error("COINOPS_ONBOARDING_CHECKS_UNAVAILABLE");
+  presentation.onboardingChecks = onboarding.data ?? [];
+  const strategyPanels: Record<string, React.ReactNode> = {}, adjustmentPanels: Record<string, React.ReactNode> = {};
+  for (const engine of presentation.operator.engines) {
+    const context = presentation.operator.engineData[engine.engineId].engineContext!;
+    const engineProfile = (athProfilesResponse.data || []).find((row) => row.trading_engine_id === engine.engineId);
+    if (engineProfile) engine.regime = engineProfile.regime;
+    strategyPanels[engine.engineId] = <AthProfilesPanel context={context}
+      profiles={(athProfilesResponse.data || []).filter((row) => row.trading_engine_id === engine.engineId) as Parameters<typeof AthProfilesPanel>[0]["profiles"]}
+      realLiveActive={engine.status === "ACTIVE"} slots={context.legacy_compatible && engine.environment !== "REAL"
+        ? athSlotRows.filter((row) => row.environment === engine.environment && row.asset === engine.asset)
+        : engine.slots.filter((slot) => slot.physicalId && slot.gains !== null && slot.balance !== null).map((slot) => ({
+          environment: engine.environment, asset: engine.asset, physicalSlotNumber: slot.number,
+          physicalSlotId: slot.physicalId!, lifetimeGains: slot.gains!, monthlyGains: slot.monthlyGains,
+          monthlyTarget: slot.goal, balanceUsdc: slot.balance!, eligible: slot.eligible === true,
+          operationalRank: slot.rank, group: slot.group === "PRIMARY" || slot.group === "RESERVE" ? slot.group : null, groupRank: slot.groupRank,
+          status: slot.state, buyPrice: slot.entryPrice ?? 0,
+        }))}
+      marketPrices={{ BTC: engine.asset === "BTC" && context.symbol === context.ath_reference_symbol ? engine.price : null,
+        SOL: engine.asset === "SOL" && context.symbol === context.ath_reference_symbol ? engine.price : null }} view={view} />;
+    adjustmentPanels[engine.engineId] = <ManualAdjustmentsPanel key={engine.engineId} context={context} expanded
+      recent={(manualAdjustments || []).filter((row) => row.trading_engine_id === engine.engineId) as RecentManualAdjustment[]}
+      initial={initialManualTarget && searchParams?.engine === engine.engineId ? initialManualTarget : null} />;
+  }
+  return <PremiumAutomation view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
+    marketTicker={<PremiumReferenceTicker />} data={presentation} strategyPanel={null} adjustmentsPanel={null}
+    strategyPanels={strategyPanels} adjustmentPanels={adjustmentPanels}
+    initialAdjustments={Boolean(initialManualTarget && searchParams?.engine)} />;
 }

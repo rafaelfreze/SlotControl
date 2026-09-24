@@ -68,3 +68,25 @@ test("readiness requires BRL ledger, no legacy Real-USDC credit, caps and read-o
   const owned = sources(716.75); owned.exchange_order_intents = [{ execution_mode: "REAL" }];
   assert.equal(buildLivePreparationAudit(owned, at).gate, "BLOCKED");
 });
+
+test("native preparation shows one active USDT engine without applying the legacy two-BRL gate", () => {
+  const data = sources(716.75);
+  const identity = { operator_id: "op", exchange_account_id: "A", trading_engine_id: "BTC-USDT", quote_asset: "USDT" };
+  data.robot_v1_live_preparations = [{ ...data.robot_v1_live_preparations[0], ...identity, symbol: "BTCUSDT", live_enabled: true }];
+  data.robot_v1_ath_profiles = [{ ...data.robot_v1_ath_profiles[0], ...identity }];
+  data.robot_v1_live_slot_accounts = data.robot_v1_live_slot_accounts.filter((row) => row.asset === "BTC").map((row) => ({ ...row, ...identity }));
+  data.robot_v1_live_runs = [{ ...identity, status: "ACTIVE", last_reconciled_at: observedAt, last_error: null }];
+  data.account_quote_caps = [{ exchange_account_id: "A", quote_asset: "BRL", hard_cap_quote: 725 }, { exchange_account_id: "A", quote_asset: "USDT", hard_cap_quote: 500 }];
+  data.live_market_snapshot = [{ exchange_account_id: "A", quote_asset: "BRL", available_quote: 99 },
+    { exchange_account_id: "A", quote_asset: "USDT", available_quote: 123, observed_at: observedAt, source: "GET", permission: "SPOT_RESTRICTED",
+      markets: [{ trading_engine_id: "BTC-USDT", priceQuote: 437365, rules: { ...rules("BTC"), symbol: "BTCUSDT", quoteAsset: "USDT" } }] }];
+  const audit = buildLivePreparationAudit(data, at);
+  assert.equal(audit.nativeReady, true); assert.equal(audit.rows.length, 1);
+  const nativeRow = audit.rows[0]!;
+  assert.ok("available_quote" in nativeRow && "account_cap_quote" in nativeRow);
+  assert.equal(nativeRow.available_quote, 123); assert.equal(nativeRow.account_cap_quote, 500);
+  assert.equal(audit.rows[0]!.symbol, "BTCUSDT"); assert.equal(audit.rows[0]!.live_enabled, true);
+  assert.equal(audit.gate, "LIVE_EXISTING_LEDGER_SNAPSHOT");
+  assert.equal(audit.rows[0]!.activation_authorized_by_report, false);
+  assert.equal(audit.rows[0]!.dry_run_status, "NO_WRITE");
+});

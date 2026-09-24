@@ -18,13 +18,20 @@ import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey, type MonthlySlotStatus } from "./monthly-slot-policy";
 import type { ExchangeSymbolInfo } from "./types";
 import { renewExecutionLease } from "./execution-lease";
+import { resolveOperatorEngine } from "./operator-context-server";
+import type { EngineContext } from "./operator-context";
 
-type Config = { strategy_version: string | null; strategy_lease_owner: string | null; strategy_lease_until: string | null; id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
+type Config = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "quote_asset"> & { strategy_version: string | null; strategy_lease_owner: string | null; strategy_lease_until: string | null; id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; symbol: string; capital_usdc: number | string; next_capital_usdc: number | string | null; gain_rate: number | string; entry_spacing: number | string; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; kill_switch: boolean; pause_new_entries: boolean; last_candle_open_at: string | null; last_market_price: number | string | null; last_market_observed_at: string | null; last_engine_at: string | null; last_engine_error: string | null; grid_status: string | null; grid_error: string | null };
 type Cycle = { strategy_version: string | null; id: string; status: string; asset: V1Asset; symbol: string; anchor_price: number | string; started_at: string; gain_rate: number | string; entry_spacing: number | string; entry_regime: "NORMAL" | "POST_ATH" | null; ath_transition_key: string | null; ath_period_key: string | null; config_version: number | null; config_snapshot: Record<string, unknown> | null };
 type Slot = { id: string; slot_number: number; logical_level: number; operation_sequence: number; entry_state: "NONE" | "ARMED" | "PLANNED"; armed_at: string | null; missed_at: string | null; allocation_usdc: number | string; buy_price: number | string; requested_quantity: number | string; executed_quantity: number | string; average_fill_price: number | string | null; take_profit_price: number | string | null; realized_quote_pnl: number | string | null; sell_fee: number | string; buy_client_order_id: string; sell_client_order_id: string | null; buy_triggered_at: string | null; tp_triggered_at: string | null; status: "PENDING" | "PARTIALLY_FILLED" | "OPEN" | "TP_ACTIVE" | "CLOSED" | "CANCELLED"; operational_rank: number | null; post_ath_group: "PRIMARY" | "RESERVE" | null; post_ath_group_rank: number | null; entry_origin: "GRID" | "REENTRY"; config_version: number | null; config_snapshot: Record<string, unknown> | null };
 type SlotAccount = { slot_number: number; initial_balance_usdc: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string };
 const SLOT_COLUMNS = "id,slot_number,logical_level,operation_sequence,entry_state,armed_at,missed_at,allocation_usdc,buy_price,requested_quantity,executed_quantity,average_fill_price,take_profit_price,realized_quote_pnl,sell_fee,buy_client_order_id,sell_client_order_id,buy_triggered_at,tp_triggered_at,status,operational_rank,post_ath_group,post_ath_group_rank,entry_origin,config_version,config_snapshot";
 const ACTIVE = ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"];
+
+const configScope = (config: Config) => ({ product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id,
+  operator_id: config.operator_id, exchange_account_id: config.exchange_account_id, trading_engine_id: config.trading_engine_id });
+const profileScope = (config: Config) => ({ productId: config.product_id, tenantId: config.tenant_id, userId: config.user_id,
+  operatorId: config.operator_id, exchangeAccountId: config.exchange_account_id, tradingEngineId: config.trading_engine_id });
 
 function asNumber(value: number | string | null, code: string) { const result = Number(value); if (!Number.isFinite(result) || result < 0) throw new Error(code); return result; }
 function asSignedNumber(value: number | string | null, code: string) { const result = Number(value); if (!Number.isFinite(result)) throw new Error(code); return result; }
@@ -33,9 +40,9 @@ function eventKey(configId: string, type: string, reference: string) { return cr
 async function audit(supabase: ReturnType<typeof createServiceRoleClient>, config: Config, type: string, reference: string, values: { cycleId?: string | null; slotId?: string | null; previous?: Record<string, unknown>; next?: Record<string, unknown>; observedAt?: string }) {
   await renewShadowLease(supabase, config);
   const { error } = await supabase.from("robot_v1_audit_events").upsert({
-    product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id, config_id: config.id, cycle_id: values.cycleId || null, slot_id: values.slotId || null,
+    ...configScope(config), config_id: config.id, cycle_id: values.cycleId || null, slot_id: values.slotId || null,
     event_type: type, previous_state: values.previous || {}, next_state: values.next || {}, observed_at: values.observedAt || new Date().toISOString(), idempotency_key: eventKey(config.id, type, reference)
-  }, { onConflict: "product_id,tenant_id,user_id,idempotency_key", ignoreDuplicates: true });
+  }, { onConflict: "trading_engine_id,idempotency_key", ignoreDuplicates: true });
   if (error) throw error;
 }
 
@@ -92,7 +99,7 @@ async function renewShadowLease(supabase: Service, config: Config) {
 }
 
 function strategyContext(config: Config, cycle: Cycle, observedAt: string) {
-  return { asset: config.asset, cycleId: cycle.id, observedAt };
+  return { asset: config.asset, cycleId: cycle.id, observedAt, quoteAsset: config.quote_asset };
 }
 
 function strategyCandidate(slot: Slot, monthly?: MonthlySlotStatus, regime: "NORMAL" | "POST_ATH" = "NORMAL"): StrategyCandidate {
@@ -215,19 +222,18 @@ async function repairShadowReentryTickDrift(supabase: Service, config: Config, c
 }
 
 async function monthlyStatuses(supabase: Service, config: Config, accounts: SlotAccount[]) {
-  return loadMonthlySlotStatuses(supabase, "SHADOW", { product_id: config.product_id, tenant_id: config.tenant_id,
-    user_id: config.user_id, config_id: config.id, asset: config.asset }, accounts.map((account) => ({
+  return loadMonthlySlotStatuses(supabase, "SHADOW", { ...configScope(config), config_id: config.id, asset: config.asset }, accounts.map((account) => ({
     slot_number: account.slot_number, balance_usdc: account.balance_usdc, gain_count: account.gain_count, entry_state: "PLANNED"
   })));
 }
 
 async function recoverShadowDecisions(supabase: Service, config: Config) {
   const recoveryDeadline = Date.now() + 5_000;
-  const scope = { product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id };
+  const scope = configScope(config);
   const { data, error } = await supabase.from("robot_v1_strategy_decisions")
     .select("decision_id,cycle_id,slot_id,operation_sequence,action_type,target_price")
     .eq("product_id", config.product_id).eq("tenant_id", config.tenant_id).eq("user_id", config.user_id)
-    .eq("environment", "SHADOW").eq("asset", config.asset).in("result", ["PENDING", "DISPATCHED", "FAILED"])
+    .eq("environment", "SHADOW").eq("asset", config.asset).eq("trading_engine_id", config.trading_engine_id).in("result", ["PENDING", "DISPATCHED", "FAILED"])
     .neq("action_type", "WAIT")
     .order("created_at").limit(25);
   if (error) throw error;
@@ -286,7 +292,7 @@ async function recoverShadowDecisions(supabase: Service, config: Config) {
 async function applyDecision(supabase: Service, config: Config, strategyDecision: StrategyDecision, sequence: number | undefined,
   apply: () => Promise<Record<string, unknown>>) {
   await renewShadowLease(supabase, config);
-  const scope = { product_id: config.product_id, tenant_id: config.tenant_id, user_id: config.user_id };
+  const scope = configScope(config);
   const saved = await persistStrategyDecision(supabase, scope, "SHADOW", strategyDecision, sequence);
   await dispatchStrategyDecision(supabase, scope, "SHADOW", saved.decision_id);
   try {
@@ -403,6 +409,7 @@ async function reconcileSingleArmedEntry(supabase: Service, config: Config, cycl
 }
 
 async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdapter, config: Config, cycle: Cycle) {
+  if (!await shadowNewEntriesAllowed(supabase, config)) return;
   const [filters, market] = await Promise.all([adapter.getSymbolInfo(cycle.symbol), adapter.getMarketPrice(cycle.symbol)]);
   let slots = await readSlots(supabase, cycle);
   const parameters = { gainRate: Number(cycle.gain_rate), entrySpacing: Number(cycle.entry_spacing) };
@@ -452,6 +459,7 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
     const { quantity } = quantityForV1SlotBalance(Number(initial.allocation_usdc), market.price, filters);
     await applyDecision(supabase, config, plan, 1, async () => {
       await renewShadowLease(supabase, config);
+      if (!await shadowNewEntriesAllowed(supabase, config)) throw new Error("COINOPS_SHADOW_NEW_ENTRIES_BLOCKED");
       const { error } = await supabase.from("robot_v1_slots").update({
         requested_quantity: quantity, executed_quantity: quantity, average_fill_price: market.price, buy_status: "FILLED",
         buy_trigger_price: Number(initial.buy_price), buy_trigger_observed_price: market.price, buy_triggered_at: market.observedAt,
@@ -473,9 +481,9 @@ async function initializeShadowCycle(supabase: Service, adapter: BinanceSpotAdap
 }
 
 async function startInitialShadowCycle(supabase: Service, adapter: BinanceSpotAdapter, config: Config, now: Date) {
+  if (!await shadowNewEntriesAllowed(supabase, config)) return null;
   const parameters = assertV1ShadowParameters({ gainRate: Number(config.gain_rate), entrySpacing: Number(config.entry_spacing) });
-  const profile = await loadAthProfile(supabase, { productId: config.product_id,
-    tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset);
+  const profile = await loadAthProfile(supabase, profileScope(config), "SHADOW", config.asset);
   const activeSpacing = Number(profile.regime === "POST_ATH" ? profile.post_ath_spacing_rate : profile.normal_spacing_rate);
   if (parameters.gainRate !== Number(profile.gain_rate) || parameters.entrySpacing !== activeSpacing)
     throw new Error("COINOPS_ATH_SHADOW_CONFIG_SNAPSHOT_MISMATCH");
@@ -562,8 +570,7 @@ async function settleClosedSlots(supabase: Service, config: Config, cycle: Cycle
 }
 
 async function applyQueuedShadowProfile(supabase: ReturnType<typeof createServiceRoleClient>, adapter: BinanceSpotAdapter, config: Config) {
-  const profile = await loadAthProfile(supabase, { productId: config.product_id,
-    tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset);
+  const profile = await loadAthProfile(supabase, profileScope(config), "SHADOW", config.asset);
   const targetGain = Number(profile.next_gain_rate ?? config.next_gain_rate ?? profile.gain_rate);
   const targetNormal = Number(profile.next_normal_spacing_rate ??
     (profile.regime === "NORMAL" ? config.next_entry_spacing : null) ?? profile.normal_spacing_rate);
@@ -588,7 +595,7 @@ async function applyQueuedShadowProfile(supabase: ReturnType<typeof createServic
   const delta = (capital - asNumber(config.capital_usdc, "COINOPS_V1_CAPITAL_INVALID")) / 25;
   const balances = accounts.map((account) => asNumber(account.balance_usdc, "COINOPS_V1_SLOT_ACCOUNT_INVALID") + delta);
   if (capital > 2500 || balances.some((balance) => balance <= 0 || balance > 100)) throw new Error("COINOPS_V1_NEXT_PROFILE_INVALID");
-  const [filters, market] = await Promise.all([adapter.getSymbolInfo(V1_RULES[config.asset].symbol), adapter.getMarketPrice(V1_RULES[config.asset].symbol)]);
+  const [filters, market] = await Promise.all([adapter.getSymbolInfo(config.symbol), adapter.getMarketPrice(config.symbol)]);
   buildV1Grid(config.asset, capital, market.price, filters, parameters, balances);
   await renewShadowLease(supabase, config);
   const { data, error } = await supabase.rpc("apply_robot_v1_shadow_next_profile", { p_config_id: config.id });
@@ -617,8 +624,19 @@ async function applyQueuedShadowProfile(supabase: ReturnType<typeof createServic
   return { ...config, capital_usdc: capital, gain_rate: parameters.gainRate, entry_spacing: parameters.entrySpacing, next_capital_usdc: null, next_gain_rate: null, next_entry_spacing: null, last_candle_open_at: null };
 }
 
+async function shadowNewEntriesAllowed(supabase: Service, config: Config) {
+  const engine = await resolveOperatorEngine(supabase, configScope(config), { environment: "SHADOW", asset: config.asset,
+    symbol: config.symbol, exchange_account_id: config.exchange_account_id, trading_engine_id: config.trading_engine_id });
+  if (engine.status !== "ACTIVE" || engine.global_kill_switch || engine.account_kill_switch || engine.engine_kill_switch) return false;
+  const current = await supabase.from("robot_v1_configs").select("kill_switch,pause_new_entries")
+    .eq("id", config.id).eq("trading_engine_id", config.trading_engine_id).maybeSingle();
+  if (current.error || !current.data) throw new Error("COINOPS_SHADOW_CONTROL_UNAVAILABLE");
+  return !current.data.kill_switch && !current.data.pause_new_entries;
+}
+
 async function revalidateShadowEntry(supabase: Service, config: Config, cycle: Cycle, slot: Slot, observedAt: string) {
   await renewShadowLease(supabase, config);
+  if (!await shadowNewEntriesAllowed(supabase, config)) return false;
   const currentMonthly = await monthlyStatuses(supabase, config, await loadSlotAccounts(supabase, config));
   const eligibility = currentMonthly.find((status) => status.physicalSlotNumber === slot.slot_number);
   if (!eligibility) throw new Error("COINOPS_SHADOW_MONTHLY_EVIDENCE_MISSING");
@@ -637,16 +655,25 @@ async function revalidateShadowEntry(supabase: Service, config: Config, cycle: C
 /** One-minute Shadow simulation with durable shared decisions and a config
  * lease. Production transport is GET-only; missed historical levels remain
  * evidence and never become fabricated exchange fills. */
-export async function runConfiguredRobotV1Shadow(now = new Date()) {
+export async function runConfiguredRobotV1Shadow(now = new Date(), selection?: EngineContext) {
   const supabase = createServiceRoleClient();
   const tenantId = getCoinOpsServiceTenantId();
-  const { data, error } = await supabase.from("robot_v1_configs")
-    .select("id,product_id,tenant_id,user_id,asset,symbol,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,kill_switch,pause_new_entries,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,strategy_version,strategy_lease_owner,strategy_lease_until")
-    .eq("tenant_id", tenantId).eq("execution_mode", "SHADOW").order("asset");
+  if (selection && selection.environment !== "SHADOW") throw new Error("COINOPS_SHADOW_ENGINE_SCOPE_DENIED");
+  const operators = await supabase.from("operators").select("id").eq("tenant_id", tenantId).eq("status", "ACTIVE");
+  if (operators.error) throw new Error("COINOPS_SHADOW_OPERATOR_DISCOVERY_FAILED");
+  const engines = await supabase.from("trading_engines").select("id")
+    .in("operator_id", (operators.data || []).map((operator) => operator.id)).eq("environment", "SHADOW").eq("status", "ACTIVE");
+  if (engines.error) throw new Error("COINOPS_SHADOW_ENGINE_DISCOVERY_FAILED");
+  let query = supabase.from("robot_v1_configs")
+    .select("operator_id,exchange_account_id,trading_engine_id,quote_asset,id,product_id,tenant_id,user_id,asset,symbol,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,kill_switch,pause_new_entries,last_candle_open_at,last_market_price,last_market_observed_at,last_engine_at,last_engine_error,grid_status,grid_error,strategy_version,strategy_lease_owner,strategy_lease_until")
+    .eq("tenant_id", tenantId).eq("execution_mode", "SHADOW")
+    .in("trading_engine_id", (engines.data || []).map((engine) => engine.id)).order("trading_engine_id");
+  if (selection) query = query.eq("operator_id", selection.operator_id).eq("exchange_account_id", selection.exchange_account_id).eq("trading_engine_id", selection.trading_engine_id);
+  const { data, error } = await query;
   if (error) throw error;
   const configs = (data || []) as Config[];
   if (!configs.length) return { status: "NOT_CONFIGURED" as const, cyclesStarted: 0, slotsUpdated: 0, candlesProcessed: 0 };
-  const adapter = BinanceSpotAdapter.fromEnvironment();
+  const adapter = new BinanceSpotAdapter(null);
   let cyclesStarted = 0, slotsUpdated = 0, candlesProcessed = 0;
   const errors: Array<{ asset: string; code: string }> = [];
   for (let config of configs) {
@@ -669,8 +696,10 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       config.strategy_lease_owner = leaseOwner;
       config.strategy_lease_until = new Date(started + 90_000).toISOString();
       await recoverShadowDecisions(supabase, config);
-      const rule = V1_RULES[config.asset];
-      if (config.symbol !== rule.symbol) throw new Error("COINOPS_V1_CONFIG_SYMBOL_INVALID");
+      const engine = await resolveOperatorEngine(supabase, configScope(config), { environment: "SHADOW", asset: config.asset,
+        symbol: config.symbol, exchange_account_id: config.exchange_account_id, trading_engine_id: config.trading_engine_id });
+      const rule = { ...V1_RULES[config.asset], symbol: engine.symbol };
+      config.kill_switch ||= engine.global_kill_switch || engine.account_kill_switch || engine.engine_kill_switch || engine.status !== "ACTIVE";
       const { data: cycleData, error: cycleError } = await supabase.from("robot_v1_cycles").select(CYCLE_COLUMNS)
         .eq("config_id", config.id).in("status", ACTIVE).maybeSingle();
       if (cycleError) throw cycleError;
@@ -680,9 +709,8 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
         .eq("id", config.id).eq("strategy_lease_owner", leaseOwner);
       if (versionError) throw versionError;
       if (!cycle && !config.kill_switch && !config.pause_new_entries) {
-        const sourceMarket = await adapter.getMarketPrice(rule.symbol);
-        await refreshAthProfile(supabase, { productId: config.product_id,
-          tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset, sourceMarket);
+        const sourceMarket = await adapter.getMarketPrice(engine.ath_reference_symbol);
+        await refreshAthProfile(supabase, profileScope(config), "SHADOW", config.asset, sourceMarket);
         config = await applyQueuedShadowProfile(supabase, adapter, config);
         cycle = await startInitialShadowCycle(supabase, adapter, config, new Date());
         if (cycle) cyclesStarted += 1;
@@ -701,8 +729,8 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       // Complete a previously persisted BUY before processing later candles.
       for (const slot of healthSlots) await ensureTakeProfit(supabase, config, cycle, slot, filters, new Date().toISOString());
       healthSlots = await readSlots(supabase, cycle);
-      const athProfile = await refreshAthProfile(supabase, { productId: config.product_id,
-        tenantId: config.tenant_id, userId: config.user_id }, "SHADOW", config.asset, market);
+      const athMarket = engine.ath_reference_symbol === rule.symbol ? market : await adapter.getMarketPrice(engine.ath_reference_symbol);
+      const athProfile = await refreshAthProfile(supabase, profileScope(config), "SHADOW", config.asset, athMarket);
       if (await applyShadowAthTransition(supabase, config, cycle, athProfile, filters, market.price)) {
         healthSlots = await readSlots(supabase, cycle);
         cycleParameters = assertV1ShadowParameters({ gainRate: Number(cycle.gain_rate), entrySpacing: Number(cycle.entry_spacing) });
@@ -899,6 +927,8 @@ export async function runConfiguredRobotV1Shadow(now = new Date()) {
       try {
         await recordRuntimeObservation({
           scope: { productId: config.product_id, tenantId: config.tenant_id, userId: config.user_id },
+          operatorId: config.operator_id, exchangeAccountId: config.exchange_account_id,
+          tradingEngineId: config.trading_engine_id, quoteAsset: config.quote_asset,
           source: "SHADOW_ENGINE", environment: "SHADOW", asset: config.asset, symbol: config.symbol,
           reference: `${config.id}:${observationStartedAt}`, startedAt: observationStartedAt, finishedAt: new Date().toISOString(),
           status: observationStatus, error: observationError,

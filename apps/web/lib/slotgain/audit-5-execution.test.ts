@@ -265,10 +265,22 @@ function shadowMonthlyHarness() {
     if (name === "./execution-lease") return { renewExecutionLease };
     if (name === "./monthly-slot-server") return { loadMonthlySlotStatuses: async () => monthly };
     if (name === "./robot-v1") return { V1_SLOT_COUNT: 25 };
+    if (name === "./operator-context-server") return { resolveOperatorEngine: async () => ({ status: "ACTIVE",
+      global_kill_switch: false, account_kill_switch: false, engine_kill_switch: Boolean(config.engine_kill_switch) }) };
     return {};
   }, runtime);
-  return { slot, monthly, audit, validate: () => runtime.revalidateShadowEntry(service, config, { id: "cycle" }, slot, "2026-10-01T00:00:59Z") };
+  return { config, slot, monthly, audit, validate: () => runtime.revalidateShadowEntry(service, config, { id: "cycle" }, slot, "2026-10-01T00:00:59Z") };
 }
+
+test("Shadow hierarchy kill changed during a batch blocks a virtual fill without removing a resident TP", async () => {
+  const h = shadowMonthlyHarness();
+  h.config.engine_kill_switch = true;
+  assert.equal(await h.validate(), false);
+  assert.equal(h.slot.status, "PENDING"); assert.equal(h.audit.length, 0);
+  h.config.engine_kill_switch = false; h.config.pause_new_entries = true;
+  assert.equal(await h.validate(), false);
+  assert.equal(h.slot.status, "PENDING");
+});
 
 test("Shadow ARMED entry rechecks manual monthly gain before materializing a fill", async () => {
   const h = shadowMonthlyHarness();

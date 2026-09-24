@@ -3,6 +3,10 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema, getSupabaseEnv } from "@/lib/supabase/env";
+import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
+import { selectedReportEngines } from "./engine-report-scope";
+import type { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { resolveEngineContext } from "@/lib/execution/operator-context";
 import {
   readScopedPages, ReportSourceError, validateReportScope,
   type RawReportSources, type ReportFilters, type ReportReadClient, type ReportScope, type SourceDefinition, type SourceRow,
@@ -11,6 +15,12 @@ import {
 const MAX_SOURCE_ROWS = 50_000;
 const MAX_AUDIT_CANDLES = 100_000;
 const CANDLE_COLUMNS = "id,config_id,cycle_id,symbol,candle_open_at,candle_close_at,open_price,high_price,low_price,close_price,created_at";
+const ENGINE_TABLES = new Set(["robot_v1_configs", "robot_v1_cycles", "robot_v1_slots", "robot_v1_slot_operations",
+  "robot_v1_slot_accounts", "robot_v1_slot_profit_credits", "robot_v1_audit_events", "robot_v1_market_candles",
+  "robot_v1_testnet_runs", "robot_v1_testnet_slots", "robot_v1_testnet_orders", "robot_v1_testnet_events",
+  "robot_v1_live_preparations", "robot_v1_live_slot_accounts", "robot_v1_live_runs", "robot_v1_live_slots", "robot_v1_live_orders",
+  "robot_v1_live_fills", "robot_v1_live_events", "robot_v1_ath_profiles", "robot_v1_ath_events", "robot_v1_manual_adjustments",
+  "robot_v1_monthly_slot_gains", "robot_v1_strategy_decisions", "robot_v1_live_alerts", "robot_v1_real_prepared_slot_accounts"]);
 
 function assertFilters(filters: ReportFilters) {
   const start = Date.parse(filters.start); const end = Date.parse(filters.end);
@@ -53,8 +63,16 @@ function ids(rows: SourceRow[], key = "id") { return rows.flatMap((row) => typeo
 export async function loadRawReportSources(filters: ReportFilters): Promise<RawReportSources> {
   assertFilters(filters);
   const { client, scope } = await authenticatedContext();
+  const registry = await loadOperatorRegistry(client as unknown as ReturnType<typeof createServiceRoleClient>,
+    { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId });
+  const reportEngines = selectedReportEngines(registry, filters);
+  const engineIds = reportEngines.map((engine) => engine.id);
   const generatedAt = new Date().toISOString();
   const sources: Record<string, SourceRow[]> = {};
+  const caps = await client.from("account_quote_caps").select("operator_id,exchange_account_id,quote_asset,hard_cap_quote")
+    .eq("operator_id", registry.operator.id).in("exchange_account_id", registry.accounts.map((account) => account.id)).range(0, 999);
+  if (caps.error || !Array.isArray(caps.data) || caps.data.length === 1000) throw new Error("COINOPS_REPORT_ACCOUNT_CAP_UNAVAILABLE");
+  sources.account_quote_caps = caps.data as SourceRow[];
   const incompleteSources: string[] = [];
   const warnings: string[] = [];
   const until = new Date(Math.min(Date.parse(filters.end), Date.parse(generatedAt))).toISOString();
@@ -63,6 +81,9 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   const withReal = filters.environments.includes("REAL");
 
   async function load(table: string, definition: SourceDefinition, maximum = MAX_SOURCE_ROWS) {
+    if (ENGINE_TABLES.has(table)) definition = { ...definition, engineIds };
+    if (["robot_v1_live_global_caps", "robot_v1_live_preparation_events", "report_runtime_observations"].includes(table))
+      definition = { ...definition, accountIds: [...new Set(reportEngines.map((engine) => engine.exchange_account_id))] };
     const rows: SourceRow[] = [];
     sources[table] = rows;
     try {
@@ -99,7 +120,7 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   if (withReal) {
     tasks.push(() => load("robot_v1_live_preparations", source("asset,symbol,quote_asset,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,compounding_enabled,single_active_entry,initial_market_enabled,local_reentry_enabled,kill_switch,live_enabled,config_version,updated_at", ["asset"], { assetColumn: "asset" })));
     tasks.push(() => load("robot_v1_live_global_caps", source("max_total_live_exposure_brl,config_version,updated_at", ["updated_at"])));
-    tasks.push(() => load("robot_v1_live_slot_accounts", source("asset,slot_number,quote_asset,balance_brl,market_pnl_brl,manual_gain_brl,contribution_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl,updated_at", ["asset", "slot_number"], { assetColumn: "asset" })));
+    tasks.push(() => load("robot_v1_live_slot_accounts", source("asset,slot_number,quote_asset,balance_brl,market_pnl_brl,manual_gain_brl,contribution_brl,fees_brl,balance_quote,market_pnl_quote,manual_gain_quote,contribution_quote,fees_quote,gain_count,dust_quantity,dust_cost_brl,updated_at", ["asset", "slot_number"], { assetColumn: "asset" })));
     tasks.push(() => load("robot_v1_live_preparation_events", source("id,asset,config_version,event_type,snapshot,observed_at", ["observed_at", "id"], { time: "observed_at", until })));
   }
   tasks.push(() => load("robot_v1_ath_events", source("id,profile_id,environment,asset,event_key,event_type,cycle_id,details,observed_at", ["observed_at", "id"], { environmentColumn: true, assetColumn: "asset", time: "observed_at", until })));
@@ -131,8 +152,8 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
     () => load("robot_v1_testnet_events", source("id,run_id,event_key,event_type,slot_number,details,observed_at", ["observed_at", "id"], { related: relatedRuns, time: "observed_at", until })),
   );
   if (withReal) tasks.push(
-    () => load("robot_v1_live_slots", source("id,run_id,slot_number,entry_state,target_buy_price,entry_reference_price,operation_sequence,entry_origin,operational_rank,post_ath_group,post_ath_group_rank,position_quantity,position_committed_brl,missed_at,last_take_profit_price,last_credited_sell_client_order_id,created_at,updated_at", ["run_id", "slot_number"], { related: relatedLiveRuns })),
-    () => load("robot_v1_live_orders", source("id,run_id,slot_id,slot_number,operation_sequence,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,requested_quote,price,reserved_notional_brl,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,trades_reconciled,submission_guarded_at,strategy_decision_id,config_version,config_snapshot,created_at,updated_at", ["created_at", "id"], { related: relatedLiveRuns, time: "created_at", until })),
+    () => load("robot_v1_live_slots", source("id,run_id,slot_number,entry_state,target_buy_price,entry_reference_price,operation_sequence,entry_origin,operational_rank,post_ath_group,post_ath_group_rank,position_quantity,position_committed_brl,position_committed_quote,missed_at,last_take_profit_price,last_credited_sell_client_order_id,created_at,updated_at", ["run_id", "slot_number"], { related: relatedLiveRuns })),
+    () => load("robot_v1_live_orders", source("id,run_id,slot_id,slot_number,operation_sequence,side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,requested_quote,price,reserved_notional_brl,reserved_notional_quote,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,trades_reconciled,submission_guarded_at,strategy_decision_id,config_version,config_snapshot,created_at,updated_at", ["created_at", "id"], { related: relatedLiveRuns, time: "created_at", until })),
     () => load("robot_v1_live_events", source("id,run_id,event_key,event_type,slot_number,details,observed_at", ["observed_at", "id"], { related: relatedLiveRuns, time: "observed_at", until })),
     () => load("robot_v1_live_alerts", source("id,asset,alert_key,severity,code,details,first_seen_at,last_seen_at,resolved_at", ["last_seen_at", "id"], { time: "last_seen_at", until })),
     () => load("robot_v1_real_prepared_slot_accounts", source("asset,slot_number,balance_usdc,manual_gain_usdc,contribution_usdc,gain_count,created_at,updated_at", ["asset", "slot_number"], { assetColumn: "asset" })),
@@ -151,12 +172,25 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   if (withReal) await load("robot_v1_live_fills", source("id,order_id,symbol,exchange_trade_id,quantity,quote_quantity,commission,commission_asset,commission_brl,fee_fx_source,fee_fx_observed_at,filled_at,collected_at", ["filled_at", "id"],
     { related: { column: "order_id", ids: ids(sources.robot_v1_live_orders || []) }, assetColumn: "symbol", time: "filled_at", until }));
   if (withReal) {
-    const live = await loadLiveProductionSnapshot().catch(() => null);
-    if (live) sources.live_market_snapshot = [{ observed_at: live.observedAt, source: live.source,
-      markets: live.markets, available_brl: live.brlFree, locked_brl: live.brlLocked,
-      balance_observed_at: live.balanceObservedAt, permission: live.permissions }];
-    else { sources.live_market_snapshot = []; incompleteSources.push("live_market_snapshot:unavailable");
-      warnings.push("Consulta GET da Binance Production indisponível no relatório; filtros, preço e saldo BRL não foram inferidos."); }
+    sources.live_market_snapshot = [];
+    const grouped = new Map<string, typeof reportEngines>();
+    for (const engine of reportEngines.filter((engine) => engine.environment === "REAL" && engine.status === "ACTIVE")) {
+      const key = `${engine.exchange_account_id}:${engine.quote_asset}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), engine]);
+    }
+    // One account/quote snapshot, not one polling loop per panel/engine.
+    for (const engines of grouped.values()) {
+      const contexts = engines.map((engine) => resolveEngineContext(registry, { environment: "REAL",
+        exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id }));
+      const live = await loadLiveProductionSnapshot(contexts).catch(() => null);
+      if (live) sources.live_market_snapshot.push({ observed_at: live.observedAt, source: live.source,
+        operator_id: contexts[0]!.operator_id, exchange_account_id: contexts[0]!.exchange_account_id,
+        environment: "REAL", quote_asset: contexts[0]!.quote_asset, markets: live.markets,
+        available_quote: live.quoteFree, locked_quote: live.quoteLocked,
+        available_brl: live.brlFree, locked_brl: live.brlLocked, balance_observed_at: live.balanceObservedAt, permission: live.permissions });
+      else { incompleteSources.push(`live_market_snapshot:${contexts[0]!.exchange_account_id}:unavailable`);
+        warnings.push("Consulta GET da conta Production indisponível; preço e saldo não foram inferidos."); }
+    }
   }
   if (withShadow) {
     const firstEngineObservation = sources.report_runtime_observations.find((row) => row.source === "SHADOW_ENGINE");
@@ -175,15 +209,24 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
     warnings.push("O banco não mantém um log de cada requisição HTTP Production. O relatório distingue a guarda READ-ONLY do código e a ausência de ordens CoinOps do histórico manual observado na exchange.");
     warnings.push("Política de tamanho: reconciliação inclui detalhes de QUANTITY_MISMATCH, PRICE_MISMATCH, STATUS_MISMATCH e UNKNOWN. MATCH, EXPECTED_ONLY e EXCHANGE_ONLY permanecem contados no resumo de cada execução; linhas externas repetidas não são duplicadas no pacote.");
   }
-  return { sources, incompleteSources, warnings, generatedAt, scope };
+  return { sources, incompleteSources, warnings, generatedAt, scope, registry };
 }
 
 /** Separate full 1m download: bounded period, page-sized memory, no row truncation. */
 export async function* iterateReportCandles(filters: ReportFilters): AsyncGenerator<SourceRow[]> {
   assertFilters(filters);
   const { client, scope } = await authenticatedContext();
+  const registry = await loadOperatorRegistry(client as unknown as ReturnType<typeof createServiceRoleClient>,
+    { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId });
+  const engines = selectedReportEngines(registry, { ...filters, environments: ["SHADOW"] });
+  const engineIds = engines.map((engine) => engine.id);
   const until = new Date(Math.min(Date.parse(filters.end), Date.now())).toISOString();
-  yield* readScopedPages(client, scope, "robot_v1_market_candles", source(CANDLE_COLUMNS, ["candle_open_at", "id"], {
-    assetColumn: "symbol", time: "candle_open_at", from: filters.start, until,
-  }), filters);
+  for await (const rows of readScopedPages(client, scope, "robot_v1_market_candles", source(CANDLE_COLUMNS, ["candle_open_at", "id"], {
+    assetColumn: "symbol", time: "candle_open_at", from: filters.start, until, engineIds,
+  }), filters)) yield rows.map((row) => {
+    const engine = engines.find((candidate) => candidate.id === row.trading_engine_id);
+    if (!engine || row.exchange_account_id !== engine.exchange_account_id) throw new Error("COINOPS_REPORT_ENGINE_MISMATCH");
+    return { ...row, environment: "SHADOW", quote_asset: engine.quote_asset,
+      account_display_name: registry.accounts.find((account) => account.id === engine.exchange_account_id)?.display_name ?? null };
+  });
 }

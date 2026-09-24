@@ -8,11 +8,12 @@ import { AppHeader, MobileScreen } from "@/components/app/mobile-ui";
 import { STRATEGY_4_1_EFFECTIVE_AT } from "@/lib/coinops-reports/missed-level-temporal";
 import { REPORT_VERSION } from "@/lib/coinops-reports/filters";
 import { CANDLE_EXPORT_MAX_DAYS, partitionCandleExports } from "@/lib/coinops-reports/candle-export-parts";
+import type { DomainRegistry } from "@/lib/execution/operator-context";
 
 type Environment = "ALL" | "SHADOW" | "TESTNET" | "REAL";
 type Preset = "today" | "7d" | "30d" | "month" | "custom" | "strategy4_1";
 type View = "overview" | "shadow" | "testnet" | "real" | "exports";
-type Filters = { start: string; end: string; preset: Preset; asset: "ALL" | "BTC" | "SOL"; environment: Environment };
+type Filters = { start: string; end: string; preset: Preset; asset: "ALL" | "BTC" | "SOL"; environment: Environment; account: string; engine: string };
 type Check = { code: string; status: "PASS" | "WARNING" | "FAIL"; explanation: string; environment?: string; asset?: string };
 type ReportFile = { name: string; rows?: number; description?: string };
 type Preview = { reportVersion: number; generatedAt: string; summaries: Record<string, unknown>[]; checks: Check[]; warnings: string[]; incompleteSources: string[]; rowCounts: Record<string, number>; files: ReportFile[]; totals?: { errors: number } };
@@ -40,7 +41,7 @@ const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 4 });
 const integer = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 const dateTime = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Campo_Grande", dateStyle: "short", timeStyle: "short" });
 function shiftDate(day: string, offset: number) { const date = new Date(`${day}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + offset); return date.toISOString().slice(0, 10); }
-function initialFilters(today: string): Filters { return { start: shiftDate(today, -29), end: today, preset: "30d", asset: "ALL", environment: "ALL" }; }
+function initialFilters(today: string): Filters { return { start: shiftDate(today, -29), end: today, preset: "30d", asset: "ALL", environment: "ALL", account: "ALL", engine: "ALL" }; }
 function dateLabel(day: string) { return day.split("-").reverse().join("/"); }
 function text(value: unknown, fallback = "Não informado") { return typeof value === "string" && value ? value : fallback; }
 function numeric(value: unknown) { if (value === null || value === undefined || value === "") return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
@@ -50,7 +51,7 @@ function sizeLabel(bytes: number) { return bytes < 1024 ? `${bytes} B` : bytes <
 function environmentLabel(value: string) { return value === "ALL" ? "Todos os ambientes" : value === "TESTNET" ? "Testnet · fictício" : value === "REAL" ? "Real · somente leitura" : "Shadow"; }
 function query(filters: Filters, format: string, file?: string) { const params = new URLSearchParams({ ...filters, format }); if (file) params.set("file", file); return `/api/coinops-reports?${params.toString()}`; }
 
-export function ReportCenter({ today, userLabel }: { today: string; userLabel: string }) {
+export function ReportCenter({ today, userLabel, registry }: { today: string; userLabel: string; registry?: DomainRegistry }) {
   const [filters, setFilters] = useState<Filters>(() => initialFilters(today));
   const [draft, setDraft] = useState<Filters>(() => initialFilters(today));
   const [view, setView] = useState<View>("overview");
@@ -86,7 +87,7 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
   function changeView(next: View) {
     setView(next);
     const environment = views.find((item) => item.key === next)?.environment;
-    if (environment) { setFilters((current) => ({ ...current, environment })); setDraft((current) => ({ ...current, environment })); }
+    if (environment) { setFilters((current) => ({ ...current, environment, engine: "ALL" })); setDraft((current) => ({ ...current, environment, engine: "ALL" })); }
   }
   function changePreset(preset: Preset) {
     setDraft((current) => ({ ...current, preset, ...(preset === "custom" ? {} : { end: today, start: preset === "strategy4_1" ? STRATEGY_4_1_EFFECTIVE_AT.slice(0, 10) : preset === "today" ? today : preset === "month" ? `${today.slice(0, 7)}-01` : shiftDate(today, preset === "7d" ? -6 : -29) }) }));
@@ -134,11 +135,13 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
       <details className="reports-filter-panel" open>
         <summary>Filtros <span>{dateLabel(filters.start)} – {dateLabel(filters.end)} · {filters.asset === "ALL" ? "BTC + SOL" : filters.asset}</span></summary>
         <form className="reports-filters" onSubmit={applyFilters}>
+          {registry ? <><label>Conta<select value={draft.account} onChange={(event) => setDraft({ ...draft, account: event.target.value, engine: "ALL" })}><option value="ALL">Todos</option>{registry.accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}</select></label>
+            <label>Motor<select value={draft.engine} disabled={draft.account === "ALL"} onChange={(event) => { const engine = registry.engines.find((item) => item.id === event.target.value); setDraft({ ...draft, engine: event.target.value, ...(engine ? { environment: engine.environment, asset: engine.base_asset as Filters["asset"] } : {}) }); }}><option value="ALL">Todos os mercados</option>{registry.engines.filter((engine) => engine.exchange_account_id === draft.account && (draft.environment === "ALL" || engine.environment === draft.environment)).map((engine) => <option key={engine.id} value={engine.id}>{engine.symbol} · {engine.environment}</option>)}</select></label></> : null}
           <label>Período<select value={draft.preset} onChange={(event) => changePreset(event.target.value as Preset)}><option value="strategy4_1">Desde Strategy 4.1.0</option><option value="today">Hoje</option><option value="7d">7 dias</option><option value="30d">30 dias</option><option value="month">Mês atual</option><option value="custom">Personalizado</option></select></label>
           <label>De<input type="date" disabled={draft.preset === "strategy4_1"} required value={draft.start} max={draft.end || today} onChange={(event) => setDraft({ ...draft, start: event.target.value, preset: "custom" })} /></label>
           <label>Até<input type="date" disabled={draft.preset === "strategy4_1"} required value={draft.end} min={draft.start} max={today} onChange={(event) => setDraft({ ...draft, end: event.target.value, preset: "custom" })} /></label>
-          <label>Ativo<select value={draft.asset} onChange={(event) => setDraft({ ...draft, asset: event.target.value as Filters["asset"] })}><option value="ALL">BTC + SOL</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
-          <label>Ambiente<select value={draft.environment} onChange={(event) => setDraft({ ...draft, environment: event.target.value as Environment })}><option value="ALL">Todos</option><option value="SHADOW">Shadow</option><option value="TESTNET">Testnet · fictício</option><option value="REAL">Real · leitura</option></select></label>
+          <label>Ativo<select value={draft.asset} onChange={(event) => setDraft({ ...draft, engine: "ALL", asset: event.target.value as Filters["asset"] })}><option value="ALL">BTC + SOL</option><option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
+          <label>Ambiente<select value={draft.environment} onChange={(event) => setDraft({ ...draft, engine: "ALL", environment: event.target.value as Environment })}><option value="ALL">Todos</option><option value="SHADOW">Shadow</option><option value="TESTNET">Testnet · fictício</option><option value="REAL">Real · leitura</option></select></label>
           <button type="submit" className="reports-secondary" disabled={loading}>Aplicar filtros</button>
         </form>{filterError ? <p className="reports-error" role="alert">{filterError}</p> : null}
       </details>
@@ -147,7 +150,7 @@ export function ReportCenter({ today, userLabel }: { today: string; userLabel: s
       {error ? <div className="reports-message" role="alert"><strong>Não foi possível abrir o relatório</strong><p>{error}</p><button type="button" className="reports-secondary" onClick={() => setRefresh((current) => current + 1)}>Tentar novamente</button></div> : null}
       {loading ? <div className="reports-loading" role="status"><span className="reports-loader" />Relacionando ciclos, ordens, regras e eventos…</div> : null}
       {preview ? <>
-        {filters.environment === "TESTNET" ? <p className="reports-environment-note testnet"><strong>BINANCE TESTNET / FUNDOS FICTÍCIOS</strong> Ordens executadas apenas no ambiente de testes.</p> : filters.environment === "REAL" ? <p className="reports-environment-note real"><strong>PRODUCTION READ-ONLY · LIVE BLOQUEADO</strong> Consulta e preparação. Este relatório não executa ordens.</p> : filters.environment === "SHADOW" ? <p className="reports-environment-note shadow"><strong>SHADOW</strong> Simulação com mercado real; compras e TPs virtuais.</p> : null}
+        {filters.environment === "TESTNET" ? <p className="reports-environment-note testnet"><strong>BINANCE TESTNET / FUNDOS FICTÍCIOS</strong> Ordens executadas apenas no ambiente de testes.</p> : filters.environment === "REAL" ? <p className="reports-environment-note real"><strong>RELATÓRIO SOMENTE LEITURA</strong> O estado LIVE de cada motor é informado pelo ledger. Exportar não cria nem cancela ordens.</p> : filters.environment === "SHADOW" ? <p className="reports-environment-note shadow"><strong>SHADOW</strong> Simulação com mercado real; compras e TPs virtuais.</p> : null}
         {warnings.length ? <details className="reports-warnings"><summary>{warnings.length} {warnings.length === 1 ? "limitação de evidência" : "limitações de evidência"} · consulte antes de concluir a auditoria</summary><ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></details> : null}
         <div className="reports-kpis">
           <Kpi label="Checks conformes" value={counts.PASS} helper={`${counts.WARNING} avisos · ${counts.FAIL} divergências`} tone={counts.FAIL ? "negative" : counts.WARNING ? "warning" : "positive"} />

@@ -2,9 +2,11 @@ import { advanceAthState, reconcileHistoricalAth, type AthEnvironment, type AthS
 import { readBinanceHistoricalAth } from "./ath-market-source";
 import type { V1Asset } from "./robot-v1";
 import type { createServiceRoleClient } from "../supabase/service-role";
+import { resolveOperatorEngine } from "./operator-context-server";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
-type Scope = { productId: string; tenantId: string; userId: string };
+type Scope = { productId: string; tenantId: string; userId: string;
+  operatorId?: string; exchangeAccountId?: string; tradingEngineId?: string };
 export type AthProfileRow = {
   id: string; product_id: string; tenant_id: string; user_id: string;
   environment: AthEnvironment; asset: V1Asset; config_version: number;
@@ -17,6 +19,8 @@ export type AthProfileRow = {
   ath_floor_reference: number | string | null; ath_floor_source: string | null;
   ath_floor_defined_at: string | null; transition_key: string | null; updated_at: string;
   transition_events: string[]; transition_observed_at: string | null;
+  operator_id?: string; exchange_account_id?: string; trading_engine_id?: string; quote_asset?: string; symbol?: string;
+  reference_symbol?: string;
 };
 
 const toState = (profile: AthProfileRow): AthState => ({ regime: profile.regime,
@@ -29,11 +33,13 @@ const toState = (profile: AthProfileRow): AthState => ({ regime: profile.regime,
 
 export async function loadAthProfile(service: Service, scope: Scope, environment: AthEnvironment,
   asset: V1Asset): Promise<AthProfileRow> {
+  const engine = await resolveOperatorEngine(service, { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId },
+    { environment, asset, operator_id: scope.operatorId, exchange_account_id: scope.exchangeAccountId, trading_engine_id: scope.tradingEngineId });
   const { data, error } = await service.from("robot_v1_ath_profiles").select("*")
     .eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId)
-    .eq("environment", environment).eq("asset", asset).single();
+    .eq("environment", environment).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id).single();
   if (error || !data) throw new Error("COINOPS_ATH_PROFILE_UNAVAILABLE");
-  return data as AthProfileRow;
+  return { ...data, symbol: engine.symbol, quote_asset: engine.quote_asset, reference_symbol: engine.ath_reference_symbol } as AthProfileRow;
 }
 
 async function ensureTransitionEvents(service: Service, profile: AthProfileRow) {
@@ -42,6 +48,7 @@ async function ensureTransitionEvents(service: Service, profile: AthProfileRow) 
     const { error } = await service.from("robot_v1_ath_events").upsert({
       profile_id: profile.id, product_id: profile.product_id, tenant_id: profile.tenant_id,
       user_id: profile.user_id, environment: profile.environment, asset: profile.asset,
+      operator_id: profile.operator_id, exchange_account_id: profile.exchange_account_id, trading_engine_id: profile.trading_engine_id,
       event_key: `${type}:${profile.transition_key}`, event_type: type,
       observed_at: profile.transition_observed_at, details: { regime: profile.regime,
         ath_price: profile.ath_price, previous_ath: profile.previous_ath,
@@ -60,7 +67,7 @@ export async function refreshAthProfile(service: Service, scope: Scope, environm
   await ensureTransitionEvents(service, profile);
   const now = Date.now();
   if (!profile.ath_verified_at || now - Date.parse(profile.ath_verified_at) >= 23 * 3_600_000) {
-    const historical = await readBinanceHistoricalAth(asset).catch(() => null);
+    const historical = await readBinanceHistoricalAth(asset, fetch, Date.now(), profile.reference_symbol).catch(() => null);
     if (!historical?.fresh) return profile;
     const historyTransition = reconcileHistoricalAth(toState(profile), historical);
     const historicalState = historyTransition.state;
@@ -76,13 +83,13 @@ export async function refreshAthProfile(service: Service, scope: Scope, environm
     }).eq("id", profile.id).eq("updated_at", profile.updated_at).select("*").maybeSingle();
     if (error) throw new Error("COINOPS_ATH_BASELINE_PERSIST_FAILED");
     if (!data) return loadAthProfile(service, scope, environment, asset);
-    profile = data as AthProfileRow;
+    profile = { ...data, symbol: profile.symbol, quote_asset: profile.quote_asset, reference_symbol: profile.reference_symbol } as AthProfileRow;
     await ensureTransitionEvents(service, profile);
   }
   if (!Number.isFinite(Date.parse(market.observedAt)) || Math.abs(now - Date.parse(market.observedAt)) > 90_000)
     return profile;
   const observed = advanceAthState(toState(profile), { price: market.price,
-    observedAt: market.observedAt, source: `BINANCE_SPOT_${asset}USDC_TICKER`, fresh: true });
+    observedAt: market.observedAt, source: `BINANCE_SPOT_${profile.reference_symbol ?? `${asset}USDC`}_TICKER`, fresh: true });
   if (!observed.events.length) return profile;
   const state = observed.state;
   const { data, error } = await service.from("robot_v1_ath_profiles").update({
@@ -93,7 +100,7 @@ export async function refreshAthProfile(service: Service, scope: Scope, environm
   }).eq("id", profile.id).eq("updated_at", profile.updated_at).select("*").maybeSingle();
   if (error) throw new Error("COINOPS_ATH_TRANSITION_PERSIST_FAILED");
   if (!data) return loadAthProfile(service, scope, environment, asset);
-  profile = data as AthProfileRow;
+  profile = { ...data, symbol: profile.symbol, quote_asset: profile.quote_asset, reference_symbol: profile.reference_symbol } as AthProfileRow;
   await ensureTransitionEvents(service, profile);
   return profile;
 }

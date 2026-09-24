@@ -1,6 +1,11 @@
+import { readLiveExecutorHealth, type ExecutorEngineScope } from "./live-executor-transport.ts";
+
 export type LiveExecutorHealth = {
   healthy: boolean;
   version: string;
+  actual_executor_version?: string;
+  legacy_contract_version?: string | null;
+  legacy_compatibility_enabled?: boolean;
   region: string;
   environment: string;
   clock: string;
@@ -26,18 +31,19 @@ export async function loadLiveExecutorStatus(
   expectedIp = process.env.LIVE_EXECUTOR_EGRESS_IP,
   fetcher: typeof fetch = fetch,
   validatedVersion = process.env.LIVE_EXECUTOR_VALIDATED_VERSION,
+  engine?: ExecutorEngineScope,
 ): Promise<LiveExecutorStatus> {
   if (!baseUrl || !expectedIp || baseUrl !== `https://${expectedIp}`
     || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(expectedIp))
     return { gate: "UNCONFIGURED", ip: expectedIp || null, health: null };
   try {
-    const response = await fetcher(`${baseUrl}/health`, {
+    const response = engine ? null : await fetcher(`${baseUrl}/health`, {
       method: "GET", cache: "no-store", signal: AbortSignal.timeout(5_000),
     });
-    const health = await response.json() as LiveExecutorHealth;
-    const verified = response.ok && health.healthy === true
+    const health = engine ? await readLiveExecutorHealth(engine, fetcher) : await response!.json() as LiveExecutorHealth;
+    const verified = (engine || response!.ok) && health.healthy === true
       && Boolean(validatedVersion) && health.version === validatedVersion
-      && health.environment === "BINANCE_PRODUCTION_PREPARED"
+      && health.environment === (engine ? "REAL" : "BINANCE_PRODUCTION_PREPARED")
       && health.binance_connectivity === "OK"
       && health.account_permission === "SPOT_RESTRICTED"
       && health.egress_ipv4 === expectedIp && health.egress_ipv4_verified === true
@@ -51,4 +57,8 @@ export async function loadLiveExecutorStatus(
   } catch {
     return { gate: "ATTENTION", ip: expectedIp, health: null };
   }
+}
+
+export function loadLiveEngineExecutorStatus(engine: ExecutorEngineScope) {
+  return loadLiveExecutorStatus(undefined, undefined, undefined, undefined, engine);
 }

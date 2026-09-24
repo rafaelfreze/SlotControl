@@ -1,5 +1,8 @@
 "use server";
 
+import { actionEngine } from "./engine-action-context";
+import type { EngineContext } from "@/lib/execution/operator-context";
+
 import { createHash } from "node:crypto";
 
 import { revalidatePath } from "next/cache";
@@ -45,23 +48,23 @@ async function addAudit(service: ReturnType<typeof createServiceRoleClient>, sco
   if (error) throw error;
 }
 
-async function configFor(service: ReturnType<typeof createServiceRoleClient>, scope: Scope, asset: V1Asset) {
-  const { data, error } = await service.from("robot_v1_configs").select("id,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,kill_switch,pause_new_entries,shadow_test_started_at,shadow_test_target_end_at").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).maybeSingle();
+async function configFor(service: ReturnType<typeof createServiceRoleClient>, scope: Scope, asset: V1Asset, engine: EngineContext) {
+  const { data, error } = await service.from("robot_v1_configs").select("id,capital_usdc,next_capital_usdc,gain_rate,entry_spacing,next_gain_rate,next_entry_spacing,kill_switch,pause_new_entries,shadow_test_started_at,shadow_test_target_end_at").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id).maybeSingle();
   if (error) throw error;
   return data as Config | null;
 }
 
 export async function saveRobotV1Capital(formData: FormData) {
-  const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const capital = capitalOf(formData); const config = await configFor(service, scope, asset);
+const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const engine = await actionEngine(formData, "SHADOW", asset, { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId }); const capital = capitalOf(formData); const config = await configFor(service, scope, asset, engine);
   if (config?.shadow_test_started_at && capital !== Number(config.capital_usdc)) throw new Error("COINOPS_V1_CAPITAL_CHANGE_UNSUPPORTED");
   if (config?.shadow_test_started_at) return;
-  const filters = await BinanceSpotAdapter.fromEnvironment().getSymbolInfo(V1_RULES[asset].symbol);
+const filters = await BinanceSpotAdapter.fromEnvironment().getSymbolInfo(engine.symbol);
   if (capital / 25 < filters.minNotional) throw new Error("COINOPS_V1_MIN_NOTIONAL");
   const { data: activeCycle, error: activeError } = await service.from("robot_v1_cycles").select("id").eq("config_id", config?.id || "00000000-0000-0000-0000-000000000000").in("status", ["STARTING", "GRID_ACTIVE", "POSITIONS_ACTIVE", "RESETTING"]).maybeSingle();
   if (activeError) throw activeError;
   if (!config) {
     const defaults = V1_RULES[asset];
-    const { data: created, error } = await service.from("robot_v1_configs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, asset, symbol: defaults.symbol, execution_mode: "SHADOW", capital_usdc: capital, gain_rate: defaults.gainRate, entry_spacing: defaults.entrySpacing, kill_switch: true }).select("id").single();
+    const { data: created, error } = await service.from("robot_v1_configs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, operator_id: engine.operator_id, exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id, quote_asset: engine.quote_asset, asset, symbol: engine.symbol, execution_mode: "SHADOW", capital_usdc: capital, gain_rate: defaults.gainRate, entry_spacing: defaults.entrySpacing, kill_switch: true }).select("id").single();
     if (error) throw error;
     await addAudit(service, scope, created.id, "CAPITAL_CHANGED", {}, { capitalUsdc: capital, appliesTo: "CURRENT_CYCLE" });
   } else if (activeCycle?.id) {
@@ -77,13 +80,13 @@ export async function saveRobotV1Capital(formData: FormData) {
 }
 
 export async function saveRobotV1Parameters(formData: FormData) {
-  const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const preset = formData.get("preset") === "quick";
+  const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const engine = await actionEngine(formData, "SHADOW", asset, { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId }); const preset = formData.get("preset") === "quick";
   const capital = preset ? V1_TEST_PROFILE.capitalUsdc : capitalOf(formData);
   const parameters = preset ? { gainRate: V1_TEST_PROFILE.gainRate, entrySpacing: V1_TEST_PROFILE.entrySpacing } : parametersOf(formData);
-  const config = await configFor(service, scope, asset);
+  const config = await configFor(service, scope, asset, engine);
   if (capital > 2500) throw new Error("COINOPS_V1_CAPITAL_INVALID");
   const adapter = BinanceSpotAdapter.fromEnvironment();
-  const [filters, market] = await Promise.all([adapter.getSymbolInfo(V1_RULES[asset].symbol), adapter.getMarketPrice(V1_RULES[asset].symbol)]);
+const [filters, market] = await Promise.all([adapter.getSymbolInfo(engine.symbol), adapter.getMarketPrice(engine.symbol)]);
   if (capital / 25 < filters.minNotional) throw new Error("COINOPS_V1_MIN_NOTIONAL");
   if (!config) throw new Error("COINOPS_V1_CONFIG_REQUIRED");
   if (config.shadow_test_started_at) {
@@ -111,7 +114,7 @@ export async function saveRobotV1Parameters(formData: FormData) {
 }
 
 export async function controlRobotV1Shadow(formData: FormData) {
-  const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const command = String(formData.get("command") || ""); const config = await configFor(service, scope, asset);
+  const scope = await userScope(); const service = createServiceRoleClient(); const asset = assetOf(formData); const engine = await actionEngine(formData, "SHADOW", asset, { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId }); const command = String(formData.get("command") || ""); const config = await configFor(service, scope, asset, engine);
   if (!config) throw new Error("COINOPS_V1_CONFIG_REQUIRED");
   const updateConfig = (values: Record<string, unknown>) => service.from("robot_v1_configs").update(values).eq("id", config.id).eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId);
   if (command === "start") {
@@ -119,7 +122,7 @@ export async function controlRobotV1Shadow(formData: FormData) {
     const { error } = await updateConfig({ kill_switch: false, pause_new_entries: false, shadow_test_started_at: config.shadow_test_started_at || now.toISOString(), shadow_test_target_end_at: config.shadow_test_target_end_at || target.toISOString() });
     if (error) throw error;
     await addAudit(service, scope, config.id, "SHADOW_STARTED", { killSwitch: config.kill_switch, paused: config.pause_new_entries }, { capitalUsdc: config.capital_usdc, durationDays: 30 });
-    await runConfiguredRobotV1Shadow(now);
+await runConfiguredRobotV1Shadow(now, engine);
   } else if (command === "pause") {
     const { error } = await updateConfig({ pause_new_entries: true }); if (error) throw error;
     await addAudit(service, scope, config.id, "PAUSED", { paused: config.pause_new_entries }, { paused: true });
@@ -147,7 +150,7 @@ export async function controlRobotV1Shadow(formData: FormData) {
     const { error } = await updateConfig({ next_capital_usdc: nextCapital, next_gain_rate: nextParameters.gainRate, next_entry_spacing: nextParameters.entrySpacing, last_candle_open_at: null, kill_switch: false, pause_new_entries: false, shadow_test_started_at: config.shadow_test_started_at || new Date().toISOString(), shadow_test_target_end_at: config.shadow_test_target_end_at || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() });
     if (error) throw error;
     await addAudit(service, scope, config.id, "CYCLE_RESTARTED", { cycleId: active?.id || null }, { capitalUsdc: nextCapital, gainRate: nextParameters.gainRate, entrySpacing: nextParameters.entrySpacing, reason: "TEST_RESTARTED" });
-    await runConfiguredRobotV1Shadow();
+await runConfiguredRobotV1Shadow(new Date(), engine);
   } else throw new Error("COINOPS_V1_COMMAND_INVALID");
   revalidatePath("/automacao");
 }

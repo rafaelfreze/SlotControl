@@ -58,11 +58,14 @@ test("Shadow number inputs receive numeric defaults instead of localized decimal
 test("premium navigation is presentation-only and keeps operational actions behind existing panels", () => {
   assert.doesNotMatch(premium, /\b(?:createOrder|cancelOrder|reconcileCoinOpsTestnet|controlRobotV1Shadow|confirmCoinOpsManualAdjustment|reverseCoinOpsManualAdjustment)\s*\(/);
   assert.doesNotMatch(premium, /from ["'][^"']*-(?:actions|server)["']/);
-  assert.match(premium, /<PremiumControls[^>]+data=\{data\} view=\{view\} asset=\{asset\}/);
-  assert.match(premium, /<AutomationDetails[^>]+data=\{data\} section="all" asset=\{asset\}/);
+  assert.match(premium, /<PremiumControls[^>]+data=\{scopedData\} view=\{view\} asset=\{asset\}/);
+  assert.match(premium, /<AutomationDetails[^>]+data=\{scopedData\} section="all" asset=\{asset\}/);
+  assert.match(premium, /engineData\[active\.engineId\]/);
+  assert.match(premium, /allowedControls && active/);
   assert.match(premium, /href="\/automacao\/simulador-ath"/);
   assert.match(premium, /href="\/automacao\/simulador-ajustes"/);
-  assert.match(premium, /href="\/relatorios"/);
+  assert.match(premium, /href=\{reportHref\}/);
+  assert.match(premium, /account=\$\{selection\.accountId\}&engine=\$\{concrete\?\.engineId \?\? "ALL"\}/);
 });
 
 test("premium drawer retains native modal semantics and an accessible close control", () => {

@@ -6,10 +6,10 @@ import { buildLiveSizing, parseLiveRules, type LiveConfig, type RawLiveSymbol } 
 import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
   createLiveExecutorOrder, cancelLiveExecutorOrder, type LiveOrder,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
-import { loadLiveExecutorStatus } from "./live-executor-health";
+import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
-import { liveClientOrderId, liveExposure, liveUncoveredQuantity,
+import { liveClientOrderId, liveEngineOrderPrefix, liveExposure, liveUncoveredQuantity,
   LIVE_ACTIVE_ORDER_STATUSES, LIVE_TERMINAL_ORDER_STATUSES } from "./robot-v1-live-cycle";
 import { STRATEGY_VERSION, planStrategyInitialEntry, planStrategyNextEntry,
   planStrategyPostAthNextEntry, planStrategyTakeProfit, planStrategyClosedSlot,
@@ -20,33 +20,38 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/en
 import { createServiceRoleClient } from "../supabase/service-role";
 import type { V1Asset } from "./robot-v1";
 import type { ExchangeSymbolInfo } from "./types";
+import { resolveOperatorEngine } from "./operator-context-server";
+import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
+import type { ExecutorEngineScope } from "./live-executor-transport";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
-type Symbol = "BTCBRL" | "SOLBRL";
+type Symbol = string;
+type EngineScope = ExecutorEngineScope & { engine?: EngineContext };
+type LedgerScope = Pick<ExecutorEngineScope, "operator_id" | "exchange_account_id" | "trading_engine_id" | "quote_asset">;
 type Scope = { product_id: string; tenant_id: string; user_id: string };
-type Preparation = Scope & { asset: V1Asset; symbol: Symbol; slot_count: number;
+type Preparation = Scope & EngineScope & { asset: V1Asset; symbol: Symbol; slot_count: number;
   configured_live_capital_brl: number | string; max_order_notional_brl: number | string;
   max_total_exposure_brl: number | string; monthly_target: number;
   live_enabled: boolean; kill_switch: boolean; config_version: number };
-type Run = Scope & { id: string; asset: V1Asset; symbol: Symbol; status: string;
+type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; status: string;
   anchor_price: number | string; slot_notional_brl: number | string; gain_rate: number | string;
   entry_spacing: number | string; entry_regime: "NORMAL" | "POST_ATH";
   config_version: number; config_snapshot: Record<string, unknown>; strategy_version: string;
   ath_transition_key: string | null; ath_period_key: string | null;
   last_error: string | null; lease_owner: string | null; lease_until: string | null;
   last_reconciled_at: string | null; previous_run_id: string | null };
-type Slot = Scope & { id: string; run_id: string; slot_number: number; entry_state: string;
+type Slot = Scope & LedgerScope & { id: string; run_id: string; slot_number: number; entry_state: string;
   target_buy_price: number | string; entry_reference_price: number | string;
   operation_sequence: number; entry_origin: "GRID" | "REENTRY";
   operational_rank: number | null; post_ath_group: "PRIMARY" | "RESERVE" | null;
   post_ath_group_rank: number | null; position_quantity: number | string;
   position_committed_brl: number | string; missed_at: string | null;
   last_credited_sell_client_order_id: string | null };
-type Account = Scope & { asset: V1Asset; slot_number: number; balance_brl: number | string;
+type Account = Scope & LedgerScope & { asset: V1Asset; slot_number: number; balance_brl: number | string;
   contribution_brl: number | string; market_pnl_brl: number | string;
   manual_gain_brl: number | string; fees_brl: number | string; gain_count: number;
   dust_quantity: number | string; dust_cost_brl: number | string };
-type Order = Scope & { id: string; run_id: string; slot_id: string; slot_number: number;
+type Order = Scope & LedgerScope & { id: string; run_id: string; slot_id: string; slot_number: number;
   operation_sequence: number; side: "BUY" | "SELL"; purpose: "INITIAL" | "ENTRY" | "TP";
   revision: number; client_order_id: string; exchange_order_id: string | null;
   status: string; requested_quantity: number | string | null;
@@ -62,9 +67,33 @@ type Ledger = Awaited<ReturnType<typeof runRows>>;
 const PUBLIC_SPOT = "https://data-api.binance.vision";
 const amount = (value: number | string | null | undefined) => Number(value ?? 0);
 const floorStep = (value: number, step: number) => Number((Math.floor((value + 1e-10) / step) * step).toFixed(12));
-const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id });
+const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id,
+  operator_id: run.operator_id, exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id,
+  quote_asset: run.quote_asset });
+const athScope = (run: Run | Preparation) => ({ productId: run.product_id, tenantId: run.tenant_id, userId: run.user_id,
+  operatorId: run.operator_id, exchangeAccountId: run.exchange_account_id, tradingEngineId: run.trading_engine_id });
+async function validateRunEngine(service: Service, run: Run) {
+  const engine = await resolveOperatorEngine(service, run, { environment: "REAL",
+    trading_engine_id: run.trading_engine_id, exchange_account_id: run.exchange_account_id, symbol: run.symbol });
+  assertRowEngine(run, engine);
+  if (engine.base_asset !== run.asset) throw new Error("COINOPS_LIVE_ENGINE_ASSET_MISMATCH");
+  run.engine = engine;
+  return engine;
+}
+async function quoteCap(service: Service, run: Run | Preparation) {
+  const result = await service.from("account_quote_caps").select("hard_cap_quote")
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("quote_asset", run.quote_asset).single();
+  if (result.error || !result.data || !(Number(result.data.hard_cap_quote) > 0))
+    throw new Error("COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE");
+  return Number(result.data.hard_cap_quote);
+}
+function entryBlocked(run: Run) {
+  return !run.engine || run.engine.status !== "ACTIVE" || run.engine.global_kill_switch
+    || run.engine.account_kill_switch || run.engine.engine_kill_switch;
+}
 const context = (run: Run, transitionKey?: string) => ({ asset: run.asset, cycleId: run.id,
-  observedAt: new Date().toISOString(), quoteAsset: "BRL" as const, transitionKey });
+  observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey });
 
 function assertScope() {
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId())
@@ -80,23 +109,32 @@ async function publicRules(symbol: Symbol) {
   return parseLiveRules(raw);
 }
 
-async function scopedPreparation(service: Service, userId: string, asset: V1Asset): Promise<Preparation> {
+async function scopedPreparation(service: Service, userId: string, asset: V1Asset, selection?: EngineSelection): Promise<Preparation> {
+  const owner = await service.from("operators").select("product_id,tenant_id,user_id")
+    .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId).eq("status", "ACTIVE").single();
+  if (owner.error || !owner.data) throw new Error("COINOPS_LIVE_OPERATOR_UNAVAILABLE");
+  const engine = await resolveOperatorEngine(service, owner.data, selection ?? { environment: "REAL", asset });
   const result = await service.from("robot_v1_live_preparations").select("*")
-    .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId).eq("asset", asset).single();
-  if (result.error || !result.data || result.data.symbol !== `${asset}BRL`)
-    throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
-  return result.data as Preparation;
+    .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId)
+    .eq("trading_engine_id", engine.trading_engine_id).single();
+  if (result.error || !result.data) throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
+  assertRowEngine(result.data, engine);
+  return { ...result.data, engine } as Preparation;
 }
 
 async function runRows(service: Service, run: Run) {
   const [s, o, a] = await Promise.all([
-    service.from("robot_v1_live_slots").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id).order("slot_number"),
-    service.from("robot_v1_live_orders").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id).order("created_at"),
+    service.from("robot_v1_live_slots").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id)
+      .eq("trading_engine_id", run.trading_engine_id).order("slot_number"),
+    service.from("robot_v1_live_orders").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id)
+      .eq("trading_engine_id", run.trading_engine_id).order("created_at"),
     service.from("robot_v1_live_slot_accounts").select("*").eq("product_id", run.product_id)
-      .eq("tenant_id", run.tenant_id).eq("user_id", run.user_id).eq("asset", run.asset).order("slot_number"),
+      .eq("tenant_id", run.tenant_id).eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).order("slot_number"),
   ]);
   if (s.error || o.error || a.error || s.data?.length !== 25 || a.data?.length !== 25)
     throw new Error("COINOPS_LIVE_LEDGER_INCOMPLETE");
+  if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
+  for (const row of [...s.data, ...(o.data ?? []), ...a.data]) assertRowEngine(row, run.engine);
   return { slots: s.data as Slot[], orders: o.data as Order[], accounts: a.data as Account[] };
 }
 
@@ -156,14 +194,18 @@ async function release(service: Service, run: Run, error: string | null) {
 }
 
 async function preventNewBuys(service: Service, run: Run, code: string) {
+  const gate = await service.from("trading_engines").update({ kill_switch: true })
+    .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
+    .eq("exchange_account_id", run.exchange_account_id);
+  if (gate.error) throw new Error("COINOPS_LIVE_ENGINE_KILL_SWITCH_PERSIST_FAILED");
   const result = await service.from("robot_v1_live_preparations").update({ kill_switch: true })
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-    .eq("user_id", run.user_id).eq("asset", run.asset);
+    .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id);
   if (result.error) throw new Error("COINOPS_LIVE_KILL_SWITCH_PERSIST_FAILED");
   const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
     alert_key: `LIVE_RUN:${run.id}:CRITICAL`, severity: "CRITICAL", code,
     details: { run_id: run.id }, last_seen_at: new Date().toISOString(), resolved_at: null },
-  { onConflict: "product_id,tenant_id,user_id,alert_key" });
+  { onConflict: "trading_engine_id,alert_key" });
   if (alert.error) throw new Error("COINOPS_LIVE_ALERT_PERSIST_FAILED");
 }
 
@@ -182,18 +224,22 @@ async function updateOrder(service: Service, run: Run, order: Order, values: Rec
 }
 
 async function exposure(service: Service, run: Run) {
-  const runs = await service.from("robot_v1_live_runs").select("id,asset")
+  const runs = await service.from("robot_v1_live_runs").select("id,asset,trading_engine_id")
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("exchange_account_id", run.exchange_account_id).eq("quote_asset", run.quote_asset)
     .in("status", ["ACTIVE", "PAUSED"]);
   if (runs.error || !runs.data) throw new Error("COINOPS_LIVE_EXPOSURE_UNAVAILABLE");
   const ids = runs.data.map((item) => item.id);
   if (!ids.length) return { BTC: 0, SOL: 0, global: 0 };
-  const [slots, orders] = await Promise.all([
+  const [slots, orders, engines, accountCap] = await Promise.all([
     service.from("robot_v1_live_slots").select("run_id,position_committed_brl").in("run_id", ids),
     service.from("robot_v1_live_orders").select("run_id,side,status,reserved_notional_brl,cumulative_quote")
       .in("run_id", ids),
+    service.from("trading_engines").select("id,base_asset,hard_cap_quote")
+      .eq("exchange_account_id", run.exchange_account_id).eq("environment", "REAL").eq("quote_asset", run.quote_asset),
+    quoteCap(service, run),
   ]);
-  if (slots.error || orders.error || !slots.data || !orders.data)
+  if (slots.error || orders.error || engines.error || !engines.data || !slots.data || !orders.data)
     throw new Error("COINOPS_LIVE_EXPOSURE_UNAVAILABLE");
   const assetByRun = new Map(runs.data.map((item) => [item.id, item.asset as V1Asset]));
   return liveExposure(slots.data.map((slot) => ({ asset: assetByRun.get(slot.run_id)!,
@@ -201,7 +247,9 @@ async function exposure(service: Service, run: Run) {
   orders.data.map((order) => ({ asset: assetByRun.get(order.run_id)!,
     side: order.side as "BUY" | "SELL", status: order.status,
     executed_quantity: 0, fee_base: 0,
-    reserved_notional_brl: order.reserved_notional_brl, cumulative_quote: order.cumulative_quote })));
+    reserved_notional_brl: order.reserved_notional_brl, cumulative_quote: order.cumulative_quote })),
+  { BTC: Number(engines.data.find((engine) => engine.base_asset === "BTC")?.hard_cap_quote ?? 0),
+    SOL: Number(engines.data.find((engine) => engine.base_asset === "SOL")?.hard_cap_quote ?? 0), global: accountCap });
 }
 
 async function assertExchangeMatchesLedger(run: Run, orders: Order[], state: LiveExecutorState,
@@ -209,7 +257,9 @@ async function assertExchangeMatchesLedger(run: Run, orders: Order[], state: Liv
   if (state.symbol !== run.symbol || Date.now() - Date.parse(state.observed_at) > 30_000
     || !state.price.price || Date.now() - Date.parse(state.price.observedAt) > 30_000)
     throw new Error("COINOPS_LIVE_EXCHANGE_SNAPSHOT_STALE");
-  const own = state.open_orders.filter((item) => item.clientOrderId?.startsWith(`COR1-${run.asset}-`));
+  if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
+  assertRowEngine(state, run.engine);
+  const own = state.open_orders.filter((item) => item.clientOrderId?.startsWith(liveEngineOrderPrefix(run.engine!)));
   const ledger = new Map(orders.filter((item) => LIVE_ACTIVE_ORDER_STATUSES.has(item.status))
     .map((item) => [item.client_order_id, item]));
   for (const observed of own) {
@@ -229,7 +279,8 @@ async function prepareOrder(service: Service, run: Run, slot: Slot, decision: St
   side: "BUY" | "SELL", purpose: Order["purpose"], revision: number,
   quantity: number | null, quote: number | null, price: number | null) {
   await persistStrategyDecision(service, owned(run), "REAL", decision, slot.operation_sequence);
-  const clientId = liveClientOrderId(run.id, run.asset, slot.slot_number, slot.operation_sequence, side, revision);
+  if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
+  const clientId = liveClientOrderId(run.id, run.asset, slot.slot_number, slot.operation_sequence, side, revision, run.engine);
   await renewLease(service, run);
   const result = await service.rpc("prepare_robot_v1_live_order", {
     p_run_id: run.id, p_slot_id: slot.id, p_side: side, p_purpose: purpose,
@@ -247,11 +298,13 @@ async function prepareOrder(service: Service, run: Run, slot: Slot, decision: St
 
 async function reconcileOrder(service: Service, run: Run, order: Order) {
   if (order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)) return order;
-  let observed = (await readLiveExecutorOrder(run.symbol, order.client_order_id, order.exchange_order_id)).order;
+  let observed = (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
   if (!observed) {
     if (order.submission_guarded_at !== null || order.status !== "PREPARED")
       throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
-    const health = await loadLiveExecutorStatus();
+    await validateRunEngine(service, run);
+    if (order.side === "BUY" && entryBlocked(run)) return order;
+    const health = await loadLiveEngineExecutorStatus(run);
     if (order.side === "BUY" && health.gate !== "LIVE_EXECUTOR_ACTIVE") return order;
     if (order.side === "SELL" && !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_TP_EXECUTOR_UNAVAILABLE");
@@ -261,18 +314,16 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
       .is("submission_guarded_at", null).select("submission_guarded_at").maybeSingle();
     if (guard.error || !guard.data) throw new Error("COINOPS_LIVE_SUBMISSION_GUARD_FAILED");
     order.submission_guarded_at = guard.data.submission_guarded_at;
-    const state = await readLiveExecutorState(run.symbol);
+    const state = await readLiveExecutorState(run);
     const rows = await runRows(service, run);
     const expectedOwnedOpenIds = await assertExchangeMatchesLedger(run, rows.orders, state,
       order.client_order_id);
     const caps = await service.from("robot_v1_live_preparations")
       .select("max_total_exposure_brl,kill_switch,live_enabled")
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-      .eq("user_id", run.user_id).eq("asset", run.asset).single();
-    const global = await service.from("robot_v1_live_global_caps")
-      .select("max_total_live_exposure_brl").eq("product_id", run.product_id)
-      .eq("tenant_id", run.tenant_id).eq("user_id", run.user_id).single();
-    if (caps.error || !caps.data || global.error || !global.data
+      .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).single();
+    const globalCap = await quoteCap(service, run);
+    if (caps.error || !caps.data
       || order.side === "BUY" && (!caps.data.live_enabled || caps.data.kill_switch))
       throw new Error("COINOPS_LIVE_WRITE_GATE_BLOCKED");
     const pre = await exposure(service, run);
@@ -287,7 +338,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
       ...(order.purpose === "INITIAL" ? { quoteOrderQty: String(order.requested_quote) }
         : { quantity: String(order.requested_quantity), price: String(order.price) }),
       expectedOwnedOpenIds, assetCapBrl: amount(caps.data.max_total_exposure_brl),
-      globalCapBrl: amount(global.data.max_total_live_exposure_brl),
+      globalCapBrl: globalCap,
       assetExposureBeforeBrl: pre[run.asset] - reserve,
       globalExposureBeforeBrl: pre.global - reserve,
       ...(order.side === "SELL" ? { sourceBuyClientOrderId: buy?.client_order_id,
@@ -295,13 +346,13 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
     if (order.side === "SELL" && !buy) throw new Error("COINOPS_LIVE_TP_BUY_SOURCE_MISSING");
     await renewLease(service, run);
     await dispatchStrategyDecision(service, owned(run), "REAL", order.strategy_decision_id!);
-    observed = (await createLiveExecutorOrder(input)).order;
+    observed = (await createLiveExecutorOrder(input, run, order.strategy_decision_id!)).order;
   }
   if (observed.clientOrderId !== order.client_order_id || observed.symbol !== run.symbol
     || observed.side !== order.side) throw new Error("COINOPS_LIVE_ORDER_OWNERSHIP_MISMATCH");
-  const withTrades = await readLiveExecutorTrades(run.symbol, order.client_order_id, observed.orderId);
+  const withTrades = await readLiveExecutorTrades(run, order.client_order_id, observed.orderId);
   if (!withTrades.order || !withTrades.trades) throw new Error("COINOPS_LIVE_ORDER_TRADES_UNAVAILABLE");
-  const state = await readLiveExecutorState(run.symbol);
+  const state = await readLiveExecutorState(run);
   await renewLease(service, run);
   const synced = await service.rpc("sync_robot_v1_live_order", {
     p_order_id: order.id, p_exchange_order_id: observed.orderId,
@@ -322,7 +373,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
 }
 
 function symbolFilters(state: LiveExecutorState): ExchangeSymbolInfo {
-  return { symbol: state.symbol, baseAsset: state.symbol.slice(0, -3), quoteAsset: "BRL",
+  return { symbol: state.symbol, baseAsset: state.filters.baseAsset, quoteAsset: state.filters.quoteAsset,
     minQuantity: state.filters.minQuantity, maxQuantity: state.filters.maxQuantity,
     quantityStep: state.filters.quantityStep, minNotional: state.filters.minNotional,
     priceTick: state.filters.priceTick };
@@ -339,7 +390,7 @@ async function cancelOwnedEntry(service: Service, run: Run, order: Order) {
     throw new Error("COINOPS_LIVE_BUY_NOT_CANCELABLE");
   await renewLease(service, run);
   const result = await cancelLiveExecutorOrder({ symbol: run.symbol,
-    clientOrderId: order.client_order_id, orderId: order.exchange_order_id });
+    clientOrderId: order.client_order_id, orderId: order.exchange_order_id }, run);
   if (result.order.status !== "CANCELED") throw new Error("COINOPS_LIVE_BUY_CANCEL_UNCERTAIN");
   await reconcileOrder(service, run, order);
   if (order.status !== "CANCELED") throw new Error("COINOPS_LIVE_BUY_CANCEL_UNRECONCILED");
@@ -441,14 +492,16 @@ async function recycleClosedSlots(service: Service, run: Run, ledger: Ledger) {
 }
 
 async function refreshRealAthProfile(service: Service, run: Run) {
-  const response = await fetch(`${PUBLIC_SPOT}/api/v3/ticker/price?symbol=${run.asset}USDC`,
+  // The legacy Rafael ATH baseline is explicitly USDC even for BRL execution.
+  // Switching its unit during scope migration would manufacture a new ATH.
+  if (!run.engine?.ath_reference_symbol) throw new Error("COINOPS_LIVE_ATH_REFERENCE_MISSING");
+  const response = await fetch(`${PUBLIC_SPOT}/api/v3/ticker/price?symbol=${run.engine.ath_reference_symbol}`,
     { cache: "no-store", signal: AbortSignal.timeout(8000) });
   if (!response.ok) throw new Error("COINOPS_LIVE_ATH_PRICE_UNAVAILABLE");
   const quote = await response.json() as { price?: string };
   const price = Number(quote.price);
   if (!Number.isFinite(price) || price <= 0) throw new Error("COINOPS_LIVE_ATH_PRICE_INVALID");
-  return refreshAthProfile(service, { productId: run.product_id, tenantId: run.tenant_id,
-    userId: run.user_id }, "REAL", run.asset, { price, observedAt: new Date().toISOString() });
+  return refreshAthProfile(service, athScope(run), "REAL", run.asset, { price, observedAt: new Date().toISOString() });
 }
 
 async function activateQueuedRealProfile(service: Service, run: Run, profile: AthProfileRow) {
@@ -468,14 +521,13 @@ async function activateQueuedRealProfile(service: Service, run: Run, profile: At
     next_normal_spacing_rate: null, next_post_ath_spacing_rate: null,
     updated_at: new Date().toISOString() })
     .eq("id", profile.id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
-    .eq("environment", "REAL").eq("asset", run.asset)
+    .eq("environment", "REAL").eq("trading_engine_id", run.trading_engine_id)
     .eq("config_version", profile.config_version).eq("updated_at", profile.updated_at)
     .select("*").maybeSingle();
   if (result.error || !result.data) throw new Error("COINOPS_LIVE_PROFILE_ACTIVATION_FAILED");
   const activated = result.data as AthProfileRow;
   const audit = await service.from("robot_v1_ath_events").upsert({
-    profile_id: activated.id, product_id: run.product_id, tenant_id: run.tenant_id,
-    user_id: run.user_id, environment: "REAL", asset: run.asset,
+    profile_id: activated.id, ...owned(run), environment: "REAL", asset: run.asset,
     event_key: `STRATEGY_CONFIG_ACTIVATED:${version}`,
     event_type: "STRATEGY_CONFIG_ACTIVATED",
     details: { config_version: version, gain_rate: gain,
@@ -514,7 +566,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
         buyPrice: amount(slot.target_buy_price), entryOrigin: slot.entry_origin,
         operationSequence: slot.operation_sequence };
     }));
-  const prep = await scopedPreparation(service, run.user_id, run.asset);
+  const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   for (const item of decisions) {
     const slot = ledger.slots.find((row) => row.slot_number === item.physicalSlotNumber)!;
     if (!item.frozenReason && slot.entry_state === "PLANNED") {
@@ -588,7 +640,7 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
         entryOrigin: "GRID" as const, operationSequence: 1 };
     }));
   const accounts = new Map(latest.accounts.map((item) => [item.slot_number, item]));
-  const prep = await scopedPreparation(service, run.user_id, run.asset);
+  const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   for (const item of planned.filter((item) => item.operationalRank !== null)) {
     const balance = amount(accounts.get(item.physicalSlotNumber)?.balance_brl);
     const quantity = floorStep(Math.min(balance, amount(prep.max_order_notional_brl))
@@ -644,18 +696,16 @@ async function assertAllPositionsProtected(run: Run, ledger: Ledger,
 
 async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState) {
-  const prep = await scopedPreparation(service, run.user_id, run.asset);
-  if (!prep.live_enabled || prep.kill_switch) return "KILL_SWITCH";
-  if ((await loadLiveExecutorStatus()).gate !== "LIVE_EXECUTOR_ACTIVE")
+  await validateRunEngine(service, run);
+  const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
+  if (!prep.live_enabled || prep.kill_switch || entryBlocked(run)) return "KILL_SWITCH";
+  if ((await loadLiveEngineExecutorStatus(run)).gate !== "LIVE_EXECUTOR_ACTIVE")
     return "EXECUTOR_NOT_ACTIVE";
-  const global = await service.from("robot_v1_live_global_caps")
-    .select("max_total_live_exposure_brl").eq("product_id", run.product_id)
-    .eq("tenant_id", run.tenant_id).eq("user_id", run.user_id).single();
-  if (global.error || !global.data) throw new Error("COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE");
+  const globalCap = await quoteCap(service, run);
   const deployed = await exposure(service, run);
   const spendable = (balance: number, reclaimed = 0) => Math.max(0, Math.min(balance,
     amount(prep.max_order_notional_brl), amount(prep.max_total_exposure_brl) - deployed[run.asset] + reclaimed,
-    amount(global.data.max_total_live_exposure_brl) - deployed.global + reclaimed));
+    globalCap - deployed.global + reclaimed));
   const status = await monthly(service, run, ledger.slots, ledger.accounts);
   const ranks = new Map(status.map((item) => [item.physicalSlotNumber, item]));
   const activeBuys = ledger.orders.filter((item) => item.side === "BUY"
@@ -740,25 +790,26 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
   let errorCode: string | null = null;
   let stage = "LOAD_LEDGER";
   try {
-    if (run.symbol !== `${run.asset}BRL` || run.strategy_version !== STRATEGY_VERSION)
+    await validateRunEngine(service, run);
+    if (run.symbol !== `${run.asset}${run.quote_asset}` || run.strategy_version !== STRATEGY_VERSION)
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
     let ledger = await runRows(service, run);
     stage = "RECONCILE_ORDERS";
     for (const order of ledger.orders) await reconcileOrder(service, run, order);
     ledger = await runRows(service, run);
     stage = "READ_STATE";
-    let state = await readLiveExecutorState(run.symbol);
+    let state = await readLiveExecutorState(run);
     stage = "PROTECT_TP";
     await ensureTakeProfits(service, run, ledger, state);
     stage = "CREDIT_SLOTS";
-    state = await readLiveExecutorState(run.symbol);
+    state = await readLiveExecutorState(run);
     await creditClosedSlots(service, run, ledger, state);
     const refreshed = await runRows(service, run);
     stage = "RECYCLE_SLOTS";
     await recycleClosedSlots(service, run, refreshed);
     const current = await runRows(service, run);
     stage = "ASSERT_PROTECTION";
-    state = await readLiveExecutorState(run.symbol);
+    state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, current, state);
     stage = "RESTART_CYCLE";
     const successor = await restartClosedCycle(service, run, current, state);
@@ -767,15 +818,15 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
     await applyAthTransition(service, run, current, state);
     const entered = await runRows(service, run);
     stage = "ARM_ENTRY";
-    state = await readLiveExecutorState(run.symbol);
+    state = await readLiveExecutorState(run);
     const next = await armNextEntry(service, run, entered, state);
     // A MARKET can fill in the same invocation. Protect it before returning.
     if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED") {
       stage = "ASSERT_NEW_POSITION";
       const after = await runRows(service, run);
-      state = await readLiveExecutorState(run.symbol);
+      state = await readLiveExecutorState(run);
       await ensureTakeProfits(service, run, after, state);
-      state = await readLiveExecutorState(run.symbol);
+      state = await readLiveExecutorState(run);
       await assertAllPositionsProtected(run, after, state);
     }
     stage = "AUDIT_EVENT";
@@ -804,11 +855,12 @@ export async function auditLiveRun(runId: string) {
   if (run.status !== "ACTIVE" && run.status !== "PAUSED") return { status: "INACTIVE" };
   if (run.lease_until && Date.parse(run.lease_until) > Date.now()) return { status: "LEASE_BUSY" };
   try {
-    const health = await loadLiveExecutorStatus();
+    await validateRunEngine(service, run);
+    const health = await loadLiveEngineExecutorStatus(run);
     if (!health.health?.healthy || !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY");
     const ledger = await runRows(service, run);
-    const state = await readLiveExecutorState(run.symbol);
+    const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
     if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
       && !order.trades_reconciled))
@@ -827,12 +879,12 @@ export async function auditLiveRun(runId: string) {
     if (run.last_error || !run.last_reconciled_at
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
       throw new Error("COINOPS_LIVE_MONITOR_RECONCILIATION_STALE");
-    const prep = await scopedPreparation(service, run.user_id, run.asset);
-    if (prep.live_enabled && !prep.kill_switch && health.gate !== "LIVE_EXECUTOR_ACTIVE")
+    const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
+    if (prep.live_enabled && !prep.kill_switch && !entryBlocked(run) && health.gate !== "LIVE_EXECUTOR_ACTIVE")
       throw new Error("COINOPS_LIVE_MONITOR_FLAGS_DIVERGED");
     await event(service, run, `MONITOR:${new Date().toISOString().slice(0, 13)}`,
       "LIVE_MONITOR_PASS", null, { own_open_orders: state.open_orders.filter((item) =>
-        item.clientOrderId?.startsWith(`COR1-${run.asset}-`)).length,
+        item.clientOrderId?.startsWith(liveEngineOrderPrefix(run.engine!))).length,
         open_positions: ledger.slots.filter((item) => item.entry_state === "OPEN").length,
         active_buy_count: ownBuys.length, slot_count: ledger.slots.length });
     return { status: "PASS", asset: run.asset, openPositions: ledger.slots.filter((item) =>
@@ -855,19 +907,20 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
   let unlocked = false;
   let errorCode: string | null = null;
   try {
+    await validateRunEngine(service, run);
     if (run.user_id !== userId || run.asset !== asset || run.status !== "ACTIVE"
-      || run.symbol !== `${asset}BRL` || run.strategy_version !== STRATEGY_VERSION
+      || run.symbol !== `${asset}${run.quote_asset}` || run.strategy_version !== STRATEGY_VERSION
       || run.last_error || !run.last_reconciled_at
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
       throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
-    const health = await loadLiveExecutorStatus();
+    const health = await loadLiveEngineExecutorStatus(run);
     if (health.gate !== "LIVE_EXECUTOR_ACTIVE")
       throw new Error("COINOPS_LIVE_RESUME_EXECUTOR_NOT_ACTIVE");
-    const prep = await scopedPreparation(service, userId, asset);
+    const prep = await scopedPreparation(service, userId, asset, { environment: "REAL", ...run });
     if (!prep.live_enabled || !prep.kill_switch)
       throw new Error("COINOPS_LIVE_RESUME_FLAGS_INVALID");
     const ledger = await runRows(service, run);
-    const state = await readLiveExecutorState(run.symbol);
+    const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
     if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
       && !order.trades_reconciled)
@@ -875,25 +928,27 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
         && LIVE_ACTIVE_ORDER_STATUSES.has(order.status)).length > 1)
       throw new Error("COINOPS_LIVE_RESUME_LEDGER_UNRECONCILED");
     await monthly(service, run, ledger.slots, ledger.accounts);
-    const global = await service.from("robot_v1_live_global_caps")
-      .select("max_total_live_exposure_brl")
-      .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-      .eq("user_id", run.user_id).single();
-    if (global.error || !global.data) throw new Error("COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE");
+    const globalCap = await quoteCap(service, run);
     const deployed = await exposure(service, run);
     if (deployed[asset] > amount(prep.max_total_exposure_brl) + 1e-8
-      || deployed.global > amount(global.data.max_total_live_exposure_brl) + 1e-8)
+      || deployed.global > globalCap + 1e-8)
       throw new Error("COINOPS_LIVE_RESUME_HARD_CAP_EXCEEDED");
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
       .update({ kill_switch: false })
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-      .eq("user_id", run.user_id).eq("asset", asset)
+      .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id)
       .eq("live_enabled", true).eq("kill_switch", true)
       .select("id,kill_switch").maybeSingle();
     if (updated.error || !updated.data || updated.data.kill_switch)
       throw new Error("COINOPS_LIVE_RESUME_GATE_UPDATE_FAILED");
     unlocked = true;
+    if (run.engine!.global_kill_switch || run.engine!.account_kill_switch || run.engine!.status !== "ACTIVE")
+      throw new Error("COINOPS_LIVE_PARENT_KILL_SWITCH");
+    const engineGate = await service.from("trading_engines").update({ kill_switch: false })
+      .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
+      .eq("exchange_account_id", run.exchange_account_id).select("id").single();
+    if (engineGate.error || !engineGate.data) throw new Error("COINOPS_LIVE_RESUME_ENGINE_GATE_FAILED");
     await event(service, run, `RESUMED:${new Date().toISOString()}`, "LIVE_RESUMED",
       null, { executor_version: health.health?.version, source: "OPERATOR_CONTROL" });
     const alert = await service.from("robot_v1_live_alerts")
@@ -914,34 +969,31 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
 }
 
 /** Stages the 25-slot BRL cycle while both kill switches remain ON. */
-export async function prepareLiveCycle(userId: string, asset: V1Asset) {
+export async function prepareLiveCycle(userId: string, asset: V1Asset, selection?: EngineSelection) {
   assertScope();
   const service = createServiceRoleClient();
-  const prep = await scopedPreparation(service, userId, asset);
+  const prep = await scopedPreparation(service, userId, asset, selection);
   if (prep.live_enabled || !prep.kill_switch) throw new Error("COINOPS_LIVE_PREPARATION_FLAGS_INVALID");
   const existing = await service.from("robot_v1_live_runs").select("*")
     .eq("product_id", prep.product_id).eq("tenant_id", prep.tenant_id).eq("user_id", prep.user_id)
-    .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle();
+    .eq("trading_engine_id", prep.trading_engine_id).in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle();
   if (existing.error) throw new Error("COINOPS_LIVE_RUN_LOOKUP_FAILED");
   if (existing.data && existing.data.status !== "PREPARING") return existing.data.id as string;
-  const profile = await loadAthProfile(service, { productId: prep.product_id,
-    tenantId: prep.tenant_id, userId }, "REAL", asset);
-  const state = await readLiveExecutorState(prep.symbol);
+  const profile = await loadAthProfile(service, athScope(prep), "REAL", asset);
+  const state = await readLiveExecutorState(prep);
   const rules = await publicRules(prep.symbol);
-  const global = await service.from("robot_v1_live_global_caps").select("max_total_live_exposure_brl")
-    .eq("product_id", prep.product_id).eq("tenant_id", prep.tenant_id)
-    .eq("user_id", prep.user_id).single();
-  if (global.error || !global.data) throw new Error("COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE");
+  const globalCap = await quoteCap(service, prep);
   const config: LiveConfig = { ...prep, gain_rate: profile.gain_rate,
     normal_spacing_rate: profile.normal_spacing_rate, post_ath_spacing_rate: profile.post_ath_spacing_rate,
     regime: profile.regime, updated_at: profile.updated_at };
   const anchor = existing.data ? amount(existing.data.anchor_price) : state.price.price;
   const sizing = buildLiveSizing(rules, anchor, config,
-    amount(global.data.max_total_live_exposure_brl), state.price.observedAt);
-  const brlFree = state.balances.find((row) => row.asset === "BRL")?.free;
+    globalCap, state.price.observedAt, Date.now(), { engineCap: Number(prep.engine!.hard_cap_quote),
+      orderCap: Number(prep.max_order_notional_brl), accountCap: globalCap, quoteAsset: prep.quote_asset });
+  const brlFree = state.balances.find((row) => row.asset === prep.quote_asset)?.free;
   if (sizing.validSlots !== 25 || sizing.dryRun.strategyVersion !== STRATEGY_VERSION
     || brlFree === undefined || brlFree < sizing.configuredCapitalBrl
-    || state.open_orders.some((order) => order.clientOrderId?.startsWith(`COR1-${asset}-`)))
+    || state.open_orders.some((order) => order.clientOrderId?.startsWith(liveEngineOrderPrefix(prep.engine!))))
     throw new Error("COINOPS_LIVE_PREPARATION_GATE_FAILED");
   const snapshot = { gain_rate: Number(profile.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
     post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
@@ -949,6 +1001,7 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset) {
   const inserted = existing.data ? { data: existing.data, error: null }
     : await service.from("robot_v1_live_runs").insert({
     product_id: prep.product_id, tenant_id: prep.tenant_id, user_id: prep.user_id,
+    operator_id: prep.operator_id, exchange_account_id: prep.exchange_account_id, trading_engine_id: prep.trading_engine_id, quote_asset: prep.quote_asset,
     asset, symbol: prep.symbol, status: "PREPARING", anchor_price: anchor,
     slot_notional_brl: sizing.configuredCapitalBrl / 25,
     gain_rate: profile.gain_rate, entry_spacing: profile.regime === "POST_ATH"
@@ -959,6 +1012,7 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset) {
     .select("*").single();
   if (inserted.error || !inserted.data) throw new Error("COINOPS_LIVE_RUN_CREATE_FAILED");
   const run = inserted.data as Run;
+  await validateRunEngine(service, run);
   if (run.asset !== asset || run.symbol !== prep.symbol || run.status !== "PREPARING"
     || amount(run.slot_notional_brl) !== sizing.configuredCapitalBrl / 25
     || run.config_version !== profile.config_version || run.strategy_version !== STRATEGY_VERSION)
@@ -983,13 +1037,13 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset) {
       contribution_brl: sizing.configuredCapitalBrl / 25,
       balance_brl: sizing.configuredCapitalBrl / 25,
     }).eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-      .eq("user_id", run.user_id).eq("asset", asset).eq("slot_number", number)
+      .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).eq("slot_number", number)
       .eq("balance_brl", 0).eq("contribution_brl", 0).select("slot_number").maybeSingle();
     if (account.error) throw new Error("COINOPS_LIVE_ACCOUNT_SEED_FAILED");
     if (!account.data) {
       const prior = await service.from("robot_v1_live_slot_accounts").select("balance_brl,contribution_brl")
         .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-        .eq("user_id", run.user_id).eq("asset", asset).eq("slot_number", number).single();
+        .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).eq("slot_number", number).single();
       if (prior.error || amount(prior.data?.balance_brl) !== sizing.configuredCapitalBrl / 25
         || amount(prior.data?.contribution_brl) !== sizing.configuredCapitalBrl / 25)
         throw new Error("COINOPS_LIVE_ACCOUNT_RECOVERY_MISMATCH");

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
+import { loadLiveEngineExecutorStatus } from "@/lib/execution/live-executor-health";
+import { resolveOperatorEngine } from "@/lib/execution/operator-context-server";
+import type { EngineSelection } from "@/lib/execution/operator-context";
 import { prepareLiveCycle } from "@/lib/execution/robot-v1-live-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
@@ -23,7 +25,8 @@ export async function POST(request: NextRequest) {
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId())
     return NextResponse.json({ error: "LIVE_ACTIVATION_SCOPE_DENIED" },
       { status: 503, headers: responseHeaders });
-  const payload = await request.json().catch(() => null) as { asset?: unknown; action?: unknown } | null;
+  const payload = await request.json().catch(() => null) as { asset?: unknown; action?: unknown;
+    exchange_account_id?: string; trading_engine_id?: string } | null;
   if (!payload || !["BTC", "SOL"].includes(String(payload.asset))
     || !["PREPARE", "ACTIVATE"].includes(String(payload.action)))
     return NextResponse.json({ error: "LIVE_ACTIVATION_REQUEST_INVALID" },
@@ -36,24 +39,28 @@ export async function POST(request: NextRequest) {
     .eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
   if (scope.error || !scope.data)
     return NextResponse.json({ error: "PRODUCT_SCOPE_REQUIRED" }, { status: 403, headers: responseHeaders });
-  const health = await loadLiveExecutorStatus();
-  if (payload.action === "PREPARE" && health.gate !== "LIVE_EXECUTOR_READY"
-    || payload.action === "ACTIVATE" && health.gate !== "LIVE_EXECUTOR_ACTIVE")
-    return NextResponse.json({ error: "LIVE_EXECUTOR_GATE_NOT_READY", gate: health.gate },
-      { status: 503, headers: responseHeaders });
   if (payload.action === "ACTIVATE" && process.env.COINOPS_LIVE_CRON_ENABLED !== "true")
     return NextResponse.json({ error: "LIVE_CRON_GATE_NOT_READY" },
       { status: 503, headers: responseHeaders });
   try {
     const asset = payload.asset as "BTC" | "SOL";
+    const selection: EngineSelection = { environment: "REAL", asset,
+      exchange_account_id: payload.exchange_account_id, trading_engine_id: payload.trading_engine_id };
+    const engine = await resolveOperatorEngine(db, { product_id: scope.data.product_id,
+      tenant_id: tenantId, user_id: user.id }, selection);
+    const health = await loadLiveEngineExecutorStatus(engine);
+    if (payload.action === "PREPARE" && health.gate !== "LIVE_EXECUTOR_READY"
+      || payload.action === "ACTIVATE" && health.gate !== "LIVE_EXECUTOR_ACTIVE")
+      return NextResponse.json({ error: "LIVE_EXECUTOR_GATE_NOT_READY", gate: health.gate },
+        { status: 503, headers: responseHeaders });
     if (payload.action === "PREPARE") {
-      const cycleId = await prepareLiveCycle(user.id, asset);
+      const cycleId = await prepareLiveCycle(user.id, asset, selection);
       return NextResponse.json({ status: "PREPARED", asset, cycle_id: cycleId },
         { headers: responseHeaders });
     }
     const service = createServiceRoleClient();
     const run = await service.from("robot_v1_live_runs").select("id,status,product_id")
-      .eq("tenant_id", tenantId).eq("user_id", user.id).eq("asset", asset)
+      .eq("tenant_id", tenantId).eq("user_id", user.id).eq("trading_engine_id", engine.trading_engine_id)
       .in("status", ["PREPARING", "ACTIVE"]).maybeSingle();
     if (run.error || !run.data || run.data.product_id !== scope.data.product_id)
       throw new Error("COINOPS_LIVE_ACTIVATION_RUN_UNAVAILABLE");

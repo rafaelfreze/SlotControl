@@ -23,7 +23,7 @@ export type PremiumSlot = {
   orders: PremiumOrder[]; events: PremiumEvent[]; historicalCount: number; raw: unknown;
 };
 export type PremiumAsset = {
-  asset: "BTC" | "SOL"; symbol: string; currency: "BRL" | "USDC"; environment: PremiumEnvironment;
+  asset: "BTC" | "SOL"; symbol: string; currency: string; environment: PremiumEnvironment;
   price: number | null; capital: number | null; committed: number | null; reserved: number | null;
   exposure: number | null; freeCapital: number | null; realizedPnl: number | null; openPnl: number | null;
   fees: number | null; gains: number | null; monthlyGains: number | null; goal: number; regime: string | null;

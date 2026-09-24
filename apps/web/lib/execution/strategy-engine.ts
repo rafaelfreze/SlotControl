@@ -9,7 +9,7 @@ export const STRATEGY_VERSION = "4.3.1" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
-export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: "USDC" | "BRL" };
+export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: string };
 export type StrategyCandidate = {
   id: string;
   slotNumber: number;
@@ -43,7 +43,8 @@ export type StrategyDecision = {
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 function assertContext(context: StrategyContext) {
-  if (!["BTC", "SOL"].includes(context.asset) || !context.cycleId || !Number.isFinite(Date.parse(context.observedAt))) {
+  if (!["BTC", "SOL"].includes(context.asset) || !context.cycleId || !Number.isFinite(Date.parse(context.observedAt))
+    || context.quoteAsset !== undefined && !/^[A-Z0-9]{2,20}$/.test(context.quoteAsset)) {
     throw new Error("COINOPS_STRATEGY_CONTEXT_INVALID");
   }
 }

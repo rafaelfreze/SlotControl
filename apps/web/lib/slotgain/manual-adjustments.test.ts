@@ -57,3 +57,16 @@ test("manual lifetime gain changes future rank, but does not touch physical slot
   assert.equal(rankMonthlySlots("SOL", at, after)[0]?.operationalRank, 1);
   assert.equal(after[0]?.physicalSlotId, before[0]?.physicalSlotId);
 });
+
+test("USDT contribution requires its own fresh FX and never borrows USDC conversion", () => {
+  const now = Date.parse("2026-09-24T12:00:00Z");
+  const state = slot({ quoteAsset: "USDT", entryState: "OPEN", committedNotionalUsdc: 100 });
+  const request = { kind: "MANUAL_CONTRIBUTION" as const, currency: "BRL" as const, amount: 50 };
+  const fx = { quoteAsset: "USDT" as const, rateBrlPerUsdc: 5, rateBrlPerQuote: 5,
+    source: "BINANCE_SPOT_USDTBRL_ASK" as const, observedAt: "2026-09-24T11:59:30Z" };
+  const result = previewManualAdjustment(state, request, fx, now);
+  assert.equal(result.quoteAsset, "USDT"); assert.equal(result.balanceAfterUsdc, 110);
+  assert.equal(result.committedNotionalUsdc, 100); assert.equal(result.monthlyAfter, 1);
+  assert.throws(() => previewManualAdjustment(state, request, { ...fx, source: FX_SOURCE }, now), /FX/);
+  assert.throws(() => previewManualAdjustment(state, request, { ...fx, quoteAsset: "USDC" }, now), /FX/);
+});

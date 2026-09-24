@@ -4,6 +4,7 @@ import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/executio
 import { ExecutorRejection } from "./security.mjs";
 import { EXECUTOR_CAPS } from "./preparation.mjs";
 import { getProductionRestrictedSpotStatus } from "./binance-readonly.mjs";
+import { assertEngineOrder, engineOrderPrefix } from "./account-registry.mjs";
 
 const BASE = "https://api.binance.com";
 const OWNED_ID = /^COR1-(BTC|SOL)-([1-9]|1[0-9]|2[0-5])-([1-9][0-9]*)-(BUY|SELL)-[a-f0-9]{14}$/;
@@ -18,11 +19,12 @@ function ownedId(symbol, clientOrderId, side) {
     throw new ExecutorRejection("EXECUTOR_ORDER_NOT_OWNED", 403);
   return match;
 }
-function normalizeOrder(payload, clientOrderId) {
+function normalizeOrder(payload, clientOrderId, engine = null) {
   if (!payload || payload.clientOrderId !== clientOrderId || !/^\d+$/.test(String(payload.orderId))
-    || !["BTCBRL", "SOLBRL"].includes(payload.symbol) || !["BUY", "SELL"].includes(payload.side)
+    || !(engine ? payload.symbol === engine.symbol : ["BTCBRL", "SOLBRL"].includes(payload.symbol)) || !["BUY", "SELL"].includes(payload.side)
     || typeof payload.status !== "string") throw new ExecutorRejection("EXECUTOR_ORDER_RESPONSE_INVALID", 503);
-  ownedId(payload.symbol, clientOrderId, payload.side);
+  if (engine) assertEngineOrder(engine, payload.symbol, clientOrderId, payload.side);
+  else ownedId(payload.symbol, clientOrderId, payload.side);
   const executedQuantity = Number(payload.executedQty ?? 0);
   const cumulativeQuoteQuantity = Number(payload.cummulativeQuoteQty ?? 0);
   const price = Number(payload.price ?? 0);
@@ -35,7 +37,7 @@ function normalizeOrder(payload, clientOrderId) {
 /** Production transport exists only on the fixed-IP VPS. It never accepts an
  * exchange host, asset, or client order namespace from arbitrary callers. */
 export class BinanceLiveTransport {
-  constructor({ apiKey, apiSecret, fetcher = fetch, now = Date.now }) {
+  constructor({ apiKey, apiSecret, fetcher = fetch, now = Date.now, engine = null }) {
     if (!apiKey || !apiSecret) throw new ExecutorRejection("EXECUTOR_BINANCE_CREDENTIALS_MISSING", 503);
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
@@ -43,6 +45,15 @@ export class BinanceLiveTransport {
     this.now = now;
     this.reads = new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, now, maxReadRetries: 0 });
     this.offset = null;
+    this.engine = engine;
+  }
+
+  ownership(symbol, id, side) {
+    if (this.engine) {
+      const owned = assertEngineOrder(this.engine, symbol, id, side);
+      return [id, this.engine.base_asset, owned.slot, null, owned.side];
+    }
+    return ownedId(symbol, id, side);
   }
 
   async signed(method, path, fields = {}) {
@@ -63,7 +74,8 @@ export class BinanceLiveTransport {
   }
 
   async safetySnapshot(symbol) {
-    if (symbol !== "BTCBRL" && symbol !== "SOLBRL") throw new ExecutorRejection("EXECUTOR_SYMBOL_DENIED", 403);
+    if (this.engine ? symbol !== this.engine.symbol : symbol !== "BTCBRL" && symbol !== "SOLBRL")
+      throw new ExecutorRejection("EXECUTOR_SYMBOL_DENIED", 403);
     // Retry only a complete GET snapshot after a transient read failure. A
     // partially observed snapshot is never reused for an order decision.
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -72,11 +84,13 @@ export class BinanceLiveTransport {
           getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret, fetcher: this.fetcher }),
           this.reads.getAccount(), this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
           this.reads.getOpenOrders(symbol),
-          this.reads.getMarketPrice("BNBBRL").catch(() => null),
+          this.reads.getMarketPrice(`BNB${this.engine?.quote_asset ?? "BRL"}`).catch(() => null),
         ]);
         if (permission === "UNVERIFIED" && attempt === 0) continue;
         if (permission !== "SPOT_RESTRICTED" || !account.canTrade)
           throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
+        if (this.engine && (filters.baseAsset !== this.engine.base_asset || filters.quoteAsset !== this.engine.quote_asset))
+          throw new ExecutorRejection("EXECUTOR_MARKET_IDENTITY_MISMATCH", 503);
         return { account, filters, price, openOrders, bnbBrlPrice };
       } catch (error) {
         if (attempt === 0 && error instanceof BinanceReadOnlyError && error.retryable) continue;
@@ -107,7 +121,7 @@ export class BinanceLiveTransport {
   }
 
   async queryOrder(symbol, clientOrderId, expectedOrderId = null) {
-    ownedId(symbol, clientOrderId);
+    this.ownership(symbol, clientOrderId);
     const params = expectedOrderId
       ? { symbol, orderId: String(expectedOrderId) }
       : { symbol, origClientOrderId: clientOrderId };
@@ -117,10 +131,12 @@ export class BinanceLiveTransport {
     if (response.code === -2013) return null;
     if (!response.ok) throw new ExecutorRejection("EXECUTOR_ORDER_QUERY_FAILED", 503);
     const body = response.body;
+    if (body.symbol !== symbol || !expectedOrderId && body.clientOrderId !== clientOrderId)
+      throw new ExecutorRejection("EXECUTOR_ORDER_IDENTITY_MISMATCH", 503);
     if (expectedOrderId && (String(body.orderId) !== String(expectedOrderId)
       || body.clientOrderId !== clientOrderId && body.status !== "CANCELED"))
       throw new ExecutorRejection("EXECUTOR_ORDER_IDENTITY_MISMATCH", 503);
-    return normalizeOrder({ ...body, clientOrderId }, clientOrderId);
+    return normalizeOrder({ ...body, clientOrderId }, clientOrderId, this.engine);
   }
 
   async ownedTrades(symbol, clientOrderId, orderId) {
@@ -163,7 +179,7 @@ export class BinanceLiveTransport {
    * exact client ID is observed; callers must never submit a second ID. */
   async createOwnedOrder(input, { allowCreate, tradingEnabled, killSwitch }) {
     const { symbol, clientOrderId, side, purpose } = input;
-    const match = ownedId(symbol, clientOrderId, side);
+    const match = this.ownership(symbol, clientOrderId, side);
     if (purpose !== (side === "SELL" ? "TP" : input.type === "MARKET" ? "INITIAL" : "ENTRY"))
       throw new ExecutorRejection("EXECUTOR_PURPOSE_INVALID", 403);
     const existing = await this.queryOrder(symbol, clientOrderId);
@@ -175,17 +191,17 @@ export class BinanceLiveTransport {
     if (side === "BUY" && (!snapshot.bnbBrlPrice
       || !snapshot.account.balances.some((balance) => balance.asset === "BNB" && balance.free > 0.00001)))
       throw new ExecutorRejection("EXECUTOR_BNB_FEE_RESERVE_MISSING", 503);
-    const observedOwn = snapshot.openOrders.filter((order) => order.clientOrderId?.startsWith(`COR1-${match[1]}-`))
+    const observedOwn = snapshot.openOrders.filter((order) => order.clientOrderId?.startsWith(this.engine ? engineOrderPrefix(this.engine) : `COR1-${match[1]}-`))
       .map((order) => order.clientOrderId).sort();
     const expectedOwn = Array.isArray(input.expectedOwnedOpenIds)
       ? [...input.expectedOwnedOpenIds].sort() : null;
     if (!expectedOwn || new Set(expectedOwn).size !== expectedOwn.length
       || JSON.stringify(observedOwn) !== JSON.stringify(expectedOwn))
       throw new ExecutorRejection("EXECUTOR_UNRECONCILED_OWNED_ORDER", 503);
-    const hard = EXECUTOR_CAPS[match[1]];
+    const hard = this.engine ? { exposureBrl: this.engine.hard_cap_quote, orderBrl: this.engine.max_order_quote } : EXECUTOR_CAPS[match[1]];
     const maxAsset = Number(input.assetCapBrl), maxGlobal = Number(input.globalCapBrl);
     const beforeAsset = Number(input.assetExposureBeforeBrl), beforeGlobal = Number(input.globalExposureBeforeBrl);
-    if (!positive(maxAsset) || maxAsset > hard.exposureBrl || !positive(maxGlobal) || maxGlobal > EXECUTOR_CAPS.globalBrl
+    if (!positive(maxAsset) || maxAsset > hard.exposureBrl || !positive(maxGlobal) || maxGlobal > (this.engine?.account_cap_quote ?? EXECUTOR_CAPS.globalBrl)
       || !Number.isFinite(beforeAsset) || beforeAsset < 0 || !Number.isFinite(beforeGlobal) || beforeGlobal < 0
       || beforeAsset > maxAsset || beforeGlobal > maxGlobal)
       throw new ExecutorRejection("EXECUTOR_HARD_CAP_DENIED", 403);
@@ -193,7 +209,7 @@ export class BinanceLiveTransport {
     if (input.type === "MARKET" && side === "BUY") {
       const quote = String(input.quoteOrderQty ?? "");
       notional = Number(quote);
-      if (!DECIMAL.test(quote) || !positive(notional) || !snapshot.account.balances.some((b) => b.asset === "BRL" && b.free + 1e-8 >= notional))
+      if (!DECIMAL.test(quote) || !positive(notional) || !snapshot.account.balances.some((b) => b.asset === (this.engine?.quote_asset ?? "BRL") && b.free + 1e-8 >= notional))
         throw new ExecutorRejection("EXECUTOR_MARKET_BUY_INVALID", 403);
       fields = { symbol, side, type: "MARKET", quoteOrderQty: quote };
     } else if (input.type === "LIMIT" && (side === "BUY" || side === "SELL")) {
@@ -205,10 +221,10 @@ export class BinanceLiveTransport {
         || !exactStep(q, snapshot.filters.quantityStep) || !exactStep(p, snapshot.filters.priceTick)
         || notional + 1e-8 < snapshot.filters.minNotional)
         throw new ExecutorRejection("EXECUTOR_LIMIT_FILTER_INVALID", 403);
-      if (side === "BUY" && !snapshot.account.balances.some((b) => b.asset === "BRL" && b.free + 1e-8 >= notional))
-        throw new ExecutorRejection("EXECUTOR_BRL_BALANCE_INSUFFICIENT", 403);
+      if (side === "BUY" && !snapshot.account.balances.some((b) => b.asset === (this.engine?.quote_asset ?? "BRL") && b.free + 1e-8 >= notional))
+        throw new ExecutorRejection("EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", 403);
       if (side === "SELL") {
-        const source = ownedId(symbol, input.sourceBuyClientOrderId, "BUY");
+        const source = this.ownership(symbol, input.sourceBuyClientOrderId, "BUY");
         if (source[2] !== match[2] || !/^\d+$/.test(String(input.sourceBuyOrderId ?? "")))
           throw new ExecutorRejection("EXECUTOR_TP_SOURCE_UNVERIFIED", 403);
         const ownBuy = await this.queryOrder(symbol, input.sourceBuyClientOrderId, input.sourceBuyOrderId);
@@ -227,14 +243,14 @@ export class BinanceLiveTransport {
       throw new ExecutorRejection("EXECUTOR_PROTECTION_UNVERIFIED", 403);
     const response = await this.signed("POST", "/api/v3/order", { ...fields,
       newClientOrderId: clientOrderId, newOrderRespType: "FULL" });
-    if (response.ok) return normalizeOrder(response.body, clientOrderId);
+    if (response.ok) return normalizeOrder(response.body, clientOrderId, this.engine);
     const recovered = await this.queryOrder(symbol, clientOrderId);
     if (recovered) return recovered;
     throw new ExecutorRejection("EXECUTOR_ORDER_POST_UNKNOWN", 503);
   }
 
   async cancelOwnedBuy({ symbol, clientOrderId, orderId }, { tradingEnabled, killSwitch }) {
-    ownedId(symbol, clientOrderId, "BUY");
+    this.ownership(symbol, clientOrderId, "BUY");
     if (!tradingEnabled) throw new ExecutorRejection("EXECUTOR_TRADING_DISABLED", 403);
     const current = await this.queryOrder(symbol, clientOrderId, orderId);
     if (!current) throw new ExecutorRejection("EXECUTOR_ORDER_NOT_FOUND", 503);
@@ -245,7 +261,7 @@ export class BinanceLiveTransport {
       ...(current.status === "NEW" ? { cancelRestrictions: "ONLY_NEW" } : {}) });
     if (response.ok && response.body.origClientOrderId === clientOrderId
       && String(response.body.orderId) === String(orderId) && response.body.status === "CANCELED")
-      return normalizeOrder({ ...response.body, clientOrderId }, clientOrderId);
+      return normalizeOrder({ ...response.body, clientOrderId }, clientOrderId, this.engine);
     const recovered = await this.queryOrder(symbol, clientOrderId, orderId);
     if (recovered?.status === "CANCELED") return recovered;
     throw new ExecutorRejection("EXECUTOR_CANCEL_OUTCOME_UNKNOWN", 503);

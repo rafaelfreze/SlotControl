@@ -7,7 +7,8 @@ export const FX_MAX_AGE_MS = 120_000;
 
 export type AdjustmentEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type AdjustmentKind = "MANUAL_TARGET_GAIN" | "MANUAL_CONTRIBUTION";
-export type FxQuote = { rateBrlPerUsdc: number; source: typeof FX_SOURCE; observedAt: string };
+export type FxQuote = { rateBrlPerUsdc: number; rateBrlPerQuote?: number; quoteAsset?: "USDC" | "USDT";
+  source: typeof FX_SOURCE | "BINANCE_SPOT_USDTBRL_ASK"; observedAt: string };
 export type AdjustmentSnapshot = {
   environment: AdjustmentEnvironment;
   asset: V1Asset;
@@ -18,6 +19,7 @@ export type AdjustmentSnapshot = {
   monthlyGainCount: number;
   lifetimeGainCount: number;
   gainRate: number;
+  quoteAsset?: "USDC" | "USDT";
 };
 export type AdjustmentRequest = {
   kind: AdjustmentKind;
@@ -43,6 +45,7 @@ export type AdjustmentPreview = {
   lifetimeAfter: number;
   targetReachedAfter: boolean;
   appliesTo: "NEXT_OPERATION";
+  quoteAsset: "USDC" | "USDT";
 };
 
 export function roundAdjustment(value: number): number {
@@ -70,9 +73,11 @@ export function adjustmentCommittedNotional(orders: readonly {
   return roundAdjustment(committed);
 }
 
-export function validateFxQuote(quote: FxQuote, now = Date.now()): FxQuote {
+export function validateFxQuote(quote: FxQuote, now = Date.now(), quoteAsset: "USDC" | "USDT" = "USDC"): FxQuote {
   const observed = Date.parse(quote.observedAt);
-  if (quote.source !== FX_SOURCE || !Number.isFinite(quote.rateBrlPerUsdc) || quote.rateBrlPerUsdc <= 0
+  if (quote.source !== `BINANCE_SPOT_${quoteAsset}BRL_ASK` || (quote.quoteAsset ?? "USDC") !== quoteAsset
+    || !Number.isFinite(quote.rateBrlPerUsdc) || quote.rateBrlPerUsdc <= 0
+    || quote.rateBrlPerQuote !== undefined && quote.rateBrlPerQuote !== quote.rateBrlPerUsdc
     || !Number.isFinite(observed) || observed > now + 10_000 || now - observed > FX_MAX_AGE_MS) {
     throw new Error("COINOPS_ADJUSTMENT_FX_STALE_OR_INVALID");
   }
@@ -81,8 +86,9 @@ export function validateFxQuote(quote: FxQuote, now = Date.now()): FxQuote {
 
 export function previewManualAdjustment(snapshot: AdjustmentSnapshot, request: AdjustmentRequest,
   fx: FxQuote | null = null, now = Date.now()): AdjustmentPreview {
+  const quoteAsset = snapshot.quoteAsset ?? "USDC";
   if (!["SHADOW", "TESTNET", "REAL"].includes(snapshot.environment)
-    || !["BTC", "SOL"].includes(snapshot.asset)
+    || !["BTC", "SOL"].includes(snapshot.asset) || !["USDC", "USDT"].includes(quoteAsset)
     || !Number.isInteger(snapshot.physicalSlotNumber) || snapshot.physicalSlotNumber < 1 || snapshot.physicalSlotNumber > 25
     || !Number.isFinite(snapshot.balanceUsdc) || snapshot.balanceUsdc < 0
     || snapshot.environment !== "REAL" && snapshot.balanceUsdc <= 0
@@ -110,7 +116,7 @@ export function previewManualAdjustment(snapshot: AdjustmentSnapshot, request: A
     originalAmount = roundAdjustment(originalAmount);
     if (currency === "BRL") {
       if (!fx) throw new Error("COINOPS_ADJUSTMENT_FX_REQUIRED");
-      verifiedFx = validateFxQuote(fx, now);
+      verifiedFx = validateFxQuote(fx, now, quoteAsset);
       converted = roundAdjustment(originalAmount / verifiedFx.rateBrlPerUsdc);
     } else converted = originalAmount;
   } else throw new Error("COINOPS_ADJUSTMENT_KIND_INVALID");
@@ -123,7 +129,7 @@ export function previewManualAdjustment(snapshot: AdjustmentSnapshot, request: A
     committedNotionalUsdc: snapshot.committedNotionalUsdc,
     monthlyBefore: snapshot.monthlyGainCount, monthlyAfter, monthlyTarget: MONTHLY_SLOT_TARGET[snapshot.asset],
     lifetimeBefore: snapshot.lifetimeGainCount, lifetimeAfter,
-    targetReachedAfter: monthlyAfter >= MONTHLY_SLOT_TARGET[snapshot.asset], appliesTo: "NEXT_OPERATION"
+    targetReachedAfter: monthlyAfter >= MONTHLY_SLOT_TARGET[snapshot.asset], appliesTo: "NEXT_OPERATION", quoteAsset
   };
 }
 

@@ -11,6 +11,7 @@ import { buildExecutorDryRun, validateDryRunIntent } from "../src/preparation.mj
 import { getProductionRestrictedSpotStatus, getPublicMarket } from "../src/binance-readonly.mjs";
 import { createExecutorHandler, startExecutor } from "../src/server.mjs";
 import { requestSignature, sha256, verifySignedRequest, withDryRunIdempotency, withWriteIdempotency } from "../src/security.mjs";
+import { registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
 
 const SECRET = "test-only-long-hmac-secret-with-entropy-placeholder";
 const FIXED_NOW = Date.parse("2026-09-24T01:00:00.000Z");
@@ -159,6 +160,8 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
   const stateDirectory = await mkdtemp(join(tmpdir(), "coinops-exec-http-"));
   const events = [];
   const observedUrls = [];
+  const registry = registryFixture();
+  const scopedIntent = () => ({ ...intent("BTC"), ...intentContext(registry.engines[0], "COINOPS:REAL:BTC:preview:v2") });
   const fetcher = async (url, init) => {
     observedUrls.push({ url, method: init?.method });
     if (url.includes("exchangeInfo")) return Response.json({ symbols: [raw("BTC"), raw("SOL")] });
@@ -168,7 +171,7 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
     if (url.includes("ipify")) return Response.json({ ip: "203.0.113.10" });
     throw new Error("Unexpected URL");
   };
-  const server = createServer(createExecutorHandler({ secret: SECRET, stateDirectory,
+  const server = createServer(createExecutorHandler({ secret: SECRET, stateDirectory, registry, credentialEnvironment,
     expectedEgressIp: "203.0.113.10", fetcher, now: () => FIXED_NOW, region: "FRA1",
     logger: (event) => events.push(event) }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -180,7 +183,7 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
       assert.equal((await response.json()).error, "EXECUTOR_TRADING_DISABLED");
     }
     assert.equal(observedUrls.length, 0);
-    const body = JSON.stringify(intent("BTC"));
+    const body = JSON.stringify(scopedIntent());
     const headers = signedHeaders(body);
     const response = await fetch(`${url}/v1/dry-run`, { method: "POST", headers, body });
     assert.equal(response.status, 200);
@@ -200,19 +203,19 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
     assert.equal(health.healthy, false); // Signed GET must also be validated on the VPS.
   } finally { await new Promise((resolve) => server.close(resolve)); }
   const callsBeforeRestart = observedUrls.length;
-  const restarted = createServer(createExecutorHandler({ secret: SECRET, stateDirectory,
+  const restarted = createServer(createExecutorHandler({ secret: SECRET, stateDirectory, registry, credentialEnvironment,
     expectedEgressIp: "203.0.113.10", fetcher, now: () => FIXED_NOW, region: "FRA1",
     logger: (event) => events.push(event) }));
   await new Promise((resolve) => restarted.listen(0, "127.0.0.1", resolve));
   try {
-    const body = JSON.stringify(intent("BTC"));
+    const body = JSON.stringify(scopedIntent());
     const response = await fetch(`http://127.0.0.1:${restarted.address().port}/v1/dry-run`,
       { method: "POST", headers: signedHeaders(body), body });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).replayed, true);
     assert.equal(observedUrls.length, callsBeforeRestart);
   } finally { await new Promise((resolve) => restarted.close(resolve)); }
-  const nonceFiles = await readFile(join(stateDirectory, "dry-run", sha256("COINOPS:REAL:BTC:preview:v2") + ".json"), "utf8");
+  const nonceFiles = await readFile(join(stateDirectory, "dry-run", sha256(`ENGINE:${sha256(`${registry.engines[0].trading_engine_id}|COINOPS:REAL:BTC:preview:v2`)}`) + ".json"), "utf8");
   assert.match(nonceFiles, /NO_WRITE/);
 });
 

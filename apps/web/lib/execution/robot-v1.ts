@@ -91,10 +91,9 @@ export function quantityForV1SlotBalance(balanceUsdc: number, buyPrice: number, 
 }
 
 export function buildV1Grid(asset: V1Asset, capitalUsdc: number, anchorPrice: number, filters: ExchangeSymbolInfo, parameters: V1ShadowParameters = V1_RULES[asset], slotBalances?: readonly number[]): V1GridSlot[] {
-  const assetRule = V1_RULES[asset];
   const rule = assertV1ShadowParameters(parameters);
-  assertV1Symbol(filters.symbol);
-  if (filters.symbol !== assetRule.symbol || !Number.isFinite(anchorPrice) || anchorPrice <= 0) throw new Error("COINOPS_V1_GRID_INPUT_INVALID");
+  if (!new RegExp(`^${asset}[A-Z0-9]{2,20}$`).test(filters.symbol)
+    || !Number.isFinite(anchorPrice) || anchorPrice <= 0) throw new Error("COINOPS_V1_GRID_INPUT_INVALID");
   const slotNotional = calculateV1SlotNotional(capitalUsdc);
   if (slotNotional < filters.minNotional) throw new Error("COINOPS_V1_MIN_NOTIONAL");
   if (slotBalances && (slotBalances.length !== V1_SLOT_COUNT || slotBalances.some((balance) => !Number.isFinite(balance) || balance <= 0))) throw new Error("COINOPS_V1_SLOT_BALANCE_INVALID");

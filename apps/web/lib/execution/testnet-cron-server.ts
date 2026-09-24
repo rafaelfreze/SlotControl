@@ -6,7 +6,7 @@ import { runTestnetCronBatch, type TestnetCronMode, type TestnetCronRun } from "
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 
-const columns = "id,asset,product_id,tenant_id,user_id,status,last_reconciled_at,lease_until,last_error";
+const columns = "id,asset,product_id,tenant_id,user_id,status,last_reconciled_at,lease_until,last_error,operator_id,exchange_account_id,trading_engine_id,symbol,quote_asset";
 const headers = { "cache-control": "no-store" };
 
 /** Authenticated serverless polling; no permanent connection or Production exchange client. */
@@ -21,9 +21,17 @@ export async function handleTestnetCron(request: NextRequest, mode: TestnetCronM
   try {
     const service = createServiceRoleClient();
     const tenantId = getCoinOpsServiceTenantId();
+    const operators = await service.from("operators").select("id").eq("tenant_id", tenantId).eq("status", "ACTIVE");
+    if (operators.error) throw new Error("COINOPS_TESTNET_OPERATOR_DISCOVERY_FAILED");
+    const engines = await service.from("trading_engines").select("id")
+      .in("operator_id", (operators.data || []).map((operator) => operator.id)).eq("environment", "TESTNET").eq("status", "ACTIVE");
+    if (engines.error) throw new Error("COINOPS_TESTNET_ENGINE_DISCOVERY_FAILED");
     const { data, error } = await service.from("robot_v1_testnet_runs").select(columns)
-      .eq("tenant_id", tenantId).eq("status", "ACTIVE").in("asset", ["BTC", "SOL"]).order("asset");
+      .eq("tenant_id", tenantId).eq("status", "ACTIVE")
+      .in("trading_engine_id", (engines.data || []).map((engine) => engine.id)).order("trading_engine_id");
     if (error) throw new Error("COINOPS_TESTNET_RUN_DISCOVERY_FAILED");
+    if (new Set((data || []).map((run) => run.trading_engine_id)).size !== (data || []).length)
+      throw new Error("COINOPS_TESTNET_DUPLICATE_ENGINE_RUN");
     const invocationId = randomUUID();
     const results = await runTestnetCronBatch((data || []) as TestnetCronRun[], mode, {
       now: Date.now,
@@ -36,6 +44,7 @@ export async function handleTestnetCron(request: NextRequest, mode: TestnetCronM
       record: async (run, evidence) => {
         const result = await service.from("robot_v1_testnet_events").insert({
           run_id: run.id, product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id,
+          operator_id: run.operator_id, exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id,
           event_key: `${evidence.type}:${invocationId}:${run.id}`, event_type: evidence.type,
           observed_at: evidence.observedAt, details: { ...evidence.details, app_commit_sha: process.env.VERCEL_GIT_COMMIT_SHA || null },
         });

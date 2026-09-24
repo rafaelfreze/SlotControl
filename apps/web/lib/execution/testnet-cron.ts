@@ -5,6 +5,7 @@ export type TestnetCronMode = "REACTOR" | "WATCHDOG";
 export type TestnetCronRun = {
   id: string; asset: "BTC" | "SOL"; product_id: string; tenant_id: string; user_id: string;
   status: string; last_reconciled_at: string | null; lease_until: string | null; last_error: string | null;
+  operator_id?: string; exchange_account_id?: string; trading_engine_id?: string; symbol?: string; quote_asset?: string;
 };
 export type TestnetCronResult = {
   runId: string; asset: "BTC" | "SOL"; status: string; ageBeforeMs: number | null;
@@ -35,7 +36,9 @@ function safeError(error: unknown) {
 export async function reconcileTestnetCronRun(run: TestnetCronRun, mode: TestnetCronMode, deps: Dependencies): Promise<TestnetCronResult> {
   const started = deps.now();
   const ageBeforeMs = reconciliationAge(run, started);
-  const base = { runId: run.id, asset: run.asset, ageBeforeMs };
+  const base = { runId: run.id, asset: run.asset, ageBeforeMs, operator_id: run.operator_id,
+    exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id,
+    symbol: run.symbol, environment: "TESTNET", quote_asset: run.quote_asset };
   if (mode === "WATCHDOG" && !run.last_error && ageBeforeMs !== null && ageBeforeMs < TESTNET_STALE_AFTER_MS) {
     return { ...base, status: "WATCHDOG_HEALTHY", durationMs: 0, lastReconciledAt: run.last_reconciled_at };
   }

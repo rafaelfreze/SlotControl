@@ -2,7 +2,7 @@ import type { V1Asset } from "./robot-v1.ts";
 
 export type HistoricalAth = {
   asset: V1Asset;
-  symbol: "BTCUSDC" | "SOLUSDC";
+  symbol: string;
   price: number;
   observedAt: string;
   source: string;
@@ -18,10 +18,11 @@ const MAX_PAGES = 10;
 /** Reads the complete confirmed Binance Spot USDC-pair daily history, not a
  * rolling 24h ticker. The current (unclosed) daily candle is excluded. */
 export async function readBinanceHistoricalAth(asset: V1Asset, fetcher: Fetcher = fetch,
-  now = Date.now()): Promise<HistoricalAth> {
+  now = Date.now(), marketSymbol = `${asset}USDC`): Promise<HistoricalAth> {
   if (asset !== "BTC" && asset !== "SOL" || !Number.isFinite(now) || now <= 0)
     throw new Error("COINOPS_ATH_MARKET_INPUT_INVALID");
-  const symbol = `${asset}USDC` as HistoricalAth["symbol"];
+  if (!new RegExp(`^${asset}[A-Z0-9]{2,20}$`).test(marketSymbol)) throw new Error("COINOPS_ATH_MARKET_INPUT_INVALID");
+  const symbol = marketSymbol;
   let cursor = 0, lastOpen = -1, lastClose = -1, high = -Infinity, highAt = "", count = 0;
   let completed = false;
   for (let page = 0; page < MAX_PAGES; page++) {

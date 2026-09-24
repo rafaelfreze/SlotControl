@@ -16,19 +16,34 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
     return NextResponse.json({ error: "COINOPS_LIVE_SCHEMA_SCOPE_INVALID" }, { status: 503, headers });
   try {
     const service = createServiceRoleClient();
-    const result = await service.from("robot_v1_live_runs").select("id,asset,status")
+    const operators = await service.from("operators").select("id")
+      .eq("tenant_id", getCoinOpsServiceTenantId()).eq("status", "ACTIVE");
+    if (operators.error || !operators.data) throw new Error("COINOPS_LIVE_OPERATOR_DISCOVERY_FAILED");
+    if (!operators.data.length) return NextResponse.json({ status: "NO_ACTIVE_OPERATORS", mode }, { headers });
+    const engines = await service.from("trading_engines").select("id")
+      .in("operator_id", operators.data.map((operator) => operator.id))
+      .eq("environment", "REAL").eq("status", "ACTIVE");
+    if (engines.error || !engines.data) throw new Error("COINOPS_LIVE_ENGINE_DISCOVERY_FAILED");
+    if (!engines.data.length) return NextResponse.json({ status: "NO_ACTIVE_ENGINES", mode }, { headers });
+    const result = await service.from("robot_v1_live_runs")
+      .select("id,asset,status,operator_id,exchange_account_id,trading_engine_id,symbol,quote_asset")
       .eq("tenant_id", getCoinOpsServiceTenantId()).in("status", ["ACTIVE", "PAUSED"])
-      .in("asset", ["BTC", "SOL"]).order("asset");
-    if (result.error || !result.data || result.data.length > 2)
+      .in("trading_engine_id", engines.data.map((engine) => engine.id))
+      .order("trading_engine_id");
+    if (result.error || !result.data)
       throw new Error("COINOPS_LIVE_RUN_DISCOVERY_FAILED");
+    // Run leases and all decisions remain engine-scoped. A broken account is
+    // returned as one failure, never promoted to another account's credential.
+    if (new Set(result.data.map((run) => run.trading_engine_id)).size !== result.data.length)
+      throw new Error("COINOPS_LIVE_DUPLICATE_ENGINE_RUN");
     const reports = await Promise.all(result.data.map(async (run) => {
       try {
-        return { asset: run.asset, run_id: run.id, ...(mode === "EXECUTION"
+        return { ...run, run_id: run.id, ...(mode === "EXECUTION"
           ? await advanceLiveRun(run.id) : await auditLiveRun(run.id)) };
       } catch (error) {
         const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
           ? error.message : "COINOPS_LIVE_CRON_FAILED";
-        return { asset: run.asset, run_id: run.id, status: "FAILED", code };
+        return { ...run, run_id: run.id, status: "FAILED", code };
       }
     }));
     const failed = reports.some((item) => item.status === "FAILED" || item.status === "CRITICAL");

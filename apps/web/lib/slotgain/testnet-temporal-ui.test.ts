@@ -5,12 +5,16 @@ import test from "node:test";
 const page = readFileSync(new URL("../../app/automacao/page.tsx", import.meta.url), "utf8");
 const strip = readFileSync(new URL("../../app/automacao/automation-cockpit.tsx", import.meta.url), "utf8");
 const results = readFileSync(new URL("../../app/automacao/automation-results.tsx", import.meta.url), "utf8");
+const model = readFileSync(new URL("../../app/automacao/premium-model.ts", import.meta.url), "utf8");
+const premium = readFileSync(new URL("../../app/automacao/premium-automation.tsx", import.meta.url), "utf8");
 
 test("temporal UI carries original event IDs and uses classified health in the shared top strip", () => {
   assert.match(page, /robot_v1_testnet_events"\)\.select\("id,run_id,event_type,slot_number,observed_at,details"\)/);
-  assert.match(page, /testnetOperating: testnetHealth\.some\(\(health\) => health\.healthy\)/);
-  assert.match(page, /testnetError: testnetHealth\.some\(\(health\) => health\.tone === "error"\)/);
-  assert.match(page, /testnetAttention: testnetHealth\.some\(\(health\) => health\.tone === "attention"\)/);
+  assert.match(model, /testnetPresentationHealth\(result, run, now, testnetDiagnosticIssue\(data\.testnet, data\.testnetActionError\)\)/);
+  assert.match(model, /health: health\.healthy \? \{ \.\.\.health/);
+  assert.match(premium, /assets\.every\(\(item\) => item\.health\.healthy\)/);
+  assert.match(premium, /item\.symbol\} · \{item\.health\.label/);
+  assert.match(premium, /model\.health\.tone === "error"/);
   assert.match(strip, /status\.testnetError \? "DIVERGÊNCIA ATIVA" : status\.testnetAttention \? "ATENÇÃO"/);
   assert.match(strip, /LIVE BLOQUEADO/);
 });

@@ -9,6 +9,7 @@ const record = (value: unknown): Row => value && typeof value === "object" && !A
 /** Current read-only preparation snapshot; never confuses a preview with an order/fill. */
 export function buildLivePreparationAudit(sources: Sources, generatedAt: string) {
   const configurations = sources.robot_v1_live_preparations ?? [];
+  if (configurations.some((row) => row.trading_engine_id)) return buildEnginePreparationAudit(sources, generatedAt);
   const global = sources.robot_v1_live_global_caps?.[0];
   const market = sources.live_market_snapshot?.[0];
   const accounts = sources.robot_v1_live_slot_accounts ?? [];
@@ -76,4 +77,48 @@ export function buildLivePreparationAudit(sources: Sources, generatedAt: string)
   const totalCapital = rows.reduce((sum, row) => sum + number(row.configured_capital_brl), 0);
   const totalShortage = market?.available_brl == null ? null : Math.max(0, totalCapital - number(market.available_brl));
   return { rows: rows.map((row) => ({ ...row, shortage_brl: totalShortage, gate })), gate, nativeReady };
+}
+
+/** Native engine reports cannot reuse the historical two-BRL-assets readiness
+ * gate. Active LIVE state is a ledger snapshot, never a new activation permit. */
+function buildEnginePreparationAudit(sources: Sources, generatedAt: string) {
+  const rows: Row[] = (sources.robot_v1_live_preparations ?? []).map((raw) => {
+    const same = (row: Row) => row.trading_engine_id === raw.trading_engine_id && row.exchange_account_id === raw.exchange_account_id;
+    const quoteAsset = String(raw.quote_asset), symbol = String(raw.symbol);
+    const cap = (sources.account_quote_caps ?? []).find((row) => row.exchange_account_id === raw.exchange_account_id && row.quote_asset === quoteAsset);
+    const market = (sources.live_market_snapshot ?? []).find((row) => row.exchange_account_id === raw.exchange_account_id && row.quote_asset === quoteAsset);
+    const profile = (sources.robot_v1_ath_profiles ?? []).find(same);
+    const marketRows = Array.isArray(market?.markets) ? market.markets as Array<{ rules: LiveRules; priceQuote: number; priceBrl: number; trading_engine_id: string }> : [];
+    const quote = marketRows.find((row) => row.trading_engine_id === raw.trading_engine_id && row.rules.symbol === symbol && row.rules.quoteAsset === quoteAsset);
+    const accountRows = (sources.robot_v1_live_slot_accounts ?? []).filter(same);
+    const nativeReady = accountRows.length === 25 && accountRows.every((row) => row.quote_asset === quoteAsset);
+    const run = (sources.robot_v1_live_runs ?? []).find((row) => same(row) && ["ACTIVE", "PAUSED"].includes(String(row.status)));
+    let sizing: ReturnType<typeof buildLiveSizing> | null = null;
+    if (quote && profile && cap && market?.observed_at) try {
+      const config = { ...raw, quote_asset: quoteAsset, gain_rate: profile.next_gain_rate ?? profile.gain_rate,
+        normal_spacing_rate: profile.next_normal_spacing_rate ?? profile.normal_spacing_rate,
+        post_ath_spacing_rate: profile.next_post_ath_spacing_rate ?? profile.post_ath_spacing_rate,
+        regime: profile.regime } as LiveConfig;
+      sizing = buildLiveSizing(quote.rules, Number(quote.priceQuote ?? quote.priceBrl), config, Number(cap.hard_cap_quote),
+        String(market.observed_at), Date.parse(generatedAt), { engineCap: Number(raw.max_total_exposure_brl),
+          orderCap: Number(raw.max_order_notional_brl), accountCap: Number(cap.hard_cap_quote), quoteAsset });
+    } catch { /* Missing native filters/limits are explicitly unavailable. */ }
+    const available = market?.available_quote == null ? null : Number(market.available_quote);
+    const gate = run ? "LIVE_EXISTING_LEDGER_SNAPSHOT" : "PREPARATION_NOT_ACTIVATED";
+    return { operator_id: raw.operator_id, exchange_account_id: raw.exchange_account_id, trading_engine_id: raw.trading_engine_id,
+      environment: "REAL", asset: raw.asset, symbol, quote_asset: quoteAsset, status: quote?.rules.status ?? null,
+      filters: quote?.rules ?? null, current_price: quote?.priceQuote ?? quote?.priceBrl ?? null,
+      observed_at: market?.observed_at ?? null, source: market?.source ?? null,
+      current_min_slot_quote: sizing?.currentMinimumBrl ?? null, minimum_valid_slot_quote: sizing?.ladderMinimumBrl ?? null,
+      recommended_slot_quote: sizing?.recommendedSlotBrl ?? null, required_capital_quote: sizing?.recommendedCapitalBrl ?? null,
+      configured_capital_quote: raw.configured_live_capital_brl, max_order_notional_quote: raw.max_order_notional_brl,
+      max_total_exposure_quote: raw.max_total_exposure_brl, account_cap_quote: cap?.hard_cap_quote ?? null,
+      available_quote: available, shortage_quote: run || available === null ? null : Math.max(0, Number(raw.configured_live_capital_brl) - available),
+      config_version: raw.config_version, strategy_version: STRATEGY_VERSION, dry_run_status: sizing?.dryRun.status ?? "UNAVAILABLE",
+      valid_slots: sizing?.validSlots ?? 0, slots: raw.slot_count, native_ledger: nativeReady, live_enabled: raw.live_enabled === true,
+      run_status: run?.status ?? null, last_reconciliation: run?.last_reconciled_at ?? null, last_error: run?.last_error ?? null,
+      gate, activation_authorized_by_report: false, evidence_basis: "CURRENT_ENGINE_NATIVE_CONFIG_LEDGER_AND_BINANCE_GET; NOT_AN_ACTIVATION_OR_HEALTH_CERTIFICATE" };
+  });
+  return { rows, gate: rows.some((row) => row.run_status) ? "LIVE_EXISTING_LEDGER_SNAPSHOT" : "PREPARATION_NOT_ACTIVATED",
+    nativeReady: rows.length > 0 && rows.every((row) => row.native_ledger === true) };
 }

@@ -16,14 +16,18 @@ export type RuntimeObservation = {
   error?: unknown;
   metrics: JsonRow;
   appCommitSha?: string;
+  operatorId?: string;
+  exchangeAccountId?: string;
+  tradingEngineId?: string;
+  quoteAsset?: string;
 };
 const object = (value: unknown): JsonRow => value && typeof value === "object" && !Array.isArray(value) ? value as JsonRow : {};
 const finite = (value: unknown) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
 const bool = (value: unknown) => typeof value === "boolean" ? value : null;
 const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value) ? value : null;
 const iso = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
-const assets = new Set(["BTC", "SOL", "USDT", "USDC"]);
-const symbols = new Set(["BTCUSDC", "SOLUSDC", "BTCUSDT", "SOLUSDT"]);
+const assets = new Set(["BTC", "SOL", "USDT", "USDC", "BRL"]);
+const symbols = new Set(["BTCUSDC", "SOLUSDC", "BTCUSDT", "SOLUSDT", "BTCBRL", "SOLBRL"]);
 
 export function safeObservationError(error: unknown): string | null {
   if (!error) return null;
@@ -70,9 +74,13 @@ export function buildRuntimeObservation(input: RuntimeObservation) {
   if (!startedAt || !finishedAt || finishedAt < startedAt) throw new Error("COINOPS_OBSERVATION_TIME_INVALID");
   if ((input.source === "SHADOW_ENGINE" && (input.environment !== "SHADOW" || !input.asset))
     || (input.source === "TESTNET_DIAGNOSTIC" && input.environment !== "TESTNET")) throw new Error("COINOPS_OBSERVATION_ENVIRONMENT_INVALID");
-  const eventKey = createHash("sha256").update(JSON.stringify([input.source, scope.productId, scope.tenantId, scope.userId, input.reference])).digest("hex");
+  const eventKey = createHash("sha256").update(JSON.stringify([input.source, scope.productId, scope.tenantId, scope.userId, ...(input.exchangeAccountId ? [input.exchangeAccountId, input.tradingEngineId ?? null] : []), input.reference])).digest("hex");
   return {
     product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId,
+    ...(input.operatorId ? { operator_id: input.operatorId } : {}),
+    ...(input.exchangeAccountId ? { exchange_account_id: input.exchangeAccountId } : {}),
+    ...(input.tradingEngineId ? { trading_engine_id: input.tradingEngineId } : {}),
+    ...(input.quoteAsset ? { quote_asset: input.quoteAsset } : {}),
     observation_version: 1, event_key: eventKey, environment: input.environment, asset: input.asset ?? null,
     symbol: input.symbol && symbols.has(input.symbol) ? input.symbol : null, source: input.source,
     observed_at: finishedAt, started_at: startedAt, finished_at: finishedAt, status: input.status,

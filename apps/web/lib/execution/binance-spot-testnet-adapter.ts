@@ -1,14 +1,17 @@
 import { createHmac } from "node:crypto";
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter.ts";
+import type { EngineContext } from "./operator-context.ts";
+import { resolveTestnetCredentials } from "./testnet-account-credentials.ts";
+import { testnetClientOrderId } from "./robot-v1-testnet-cycle.ts";
 
 export const BINANCE_SPOT_TESTNET_BASE_URL = "https://testnet.binance.vision";
-const TESTNET_SYMBOLS = new Set(["BTCUSDC", "SOLUSDC"]);
+const TESTNET_SYMBOLS = new Set(["BTCUSDC", "SOLUSDC", "BTCUSDT", "SOLUSDT"]);
 const OWNED_CLIENT_ID = /^COV1-(BTC|SOL)-\d+(?:-\d+)?-(BUY|SELL)-[a-f0-9]{18}$/;
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type Credentials = { apiKey: string; apiSecret: string };
-type LimitOrder = { type: "LIMIT"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY" | "SELL"; quantity: string; price: string; clientOrderId: string; maxNotional: number };
-type MarketBuy = { type: "MARKET"; symbol: "BTCUSDC" | "SOLUSDC"; side: "BUY"; quoteOrderQty: string; clientOrderId: string; maxNotional: number };
+type LimitOrder = { type: "LIMIT"; symbol: string; side: "BUY" | "SELL"; quantity: string; price: string; clientOrderId: string; maxNotional: number };
+type MarketBuy = { type: "MARKET"; symbol: string; side: "BUY"; quoteOrderQty: string; clientOrderId: string; maxNotional: number };
 export type TestnetOrderRequest = LimitOrder | MarketBuy;
 export type TestnetOrder = { orderId: string; clientOrderId: string; symbol: string; side: "BUY" | "SELL"; status: string; executedQuantity: number; cumulativeQuoteQuantity: number; price: number };
 type OrderPayload = { orderId?: number | string; clientOrderId?: string; origClientOrderId?: string; symbol?: string; side?: string; status?: string; executedQty?: string; cummulativeQuoteQty?: string; price?: string; code?: number };
@@ -21,13 +24,13 @@ function verifyOwned(symbol: string, clientOrderId: string) {
   const asset = symbol.slice(0, -4);
   if (!clientOrderId.startsWith(`COV1-${asset}-`)) throw new Error("COINOPS_TESTNET_SYMBOL_MISMATCH");
 }
-function normalizeOrder(payload: OrderPayload, requestedClientId: string): TestnetOrder {
+function normalizeOrder(payload: OrderPayload, requestedClientId: string, expectedSymbol: string): TestnetOrder {
   if (!payload.orderId || payload.clientOrderId !== requestedClientId || !payload.symbol || !payload.status || (payload.side !== "BUY" && payload.side !== "SELL")) throw new Error("COINOPS_TESTNET_ORDER_RESPONSE_INVALID");
   const executedQuantity = Number(payload.executedQty || 0), cumulativeQuoteQuantity = Number(payload.cummulativeQuoteQty || 0), price = Number(payload.price || 0);
   if (![executedQuantity, cumulativeQuoteQuantity, price].every((value) => Number.isFinite(value) && value >= 0)
     || (payload.side === "BUY") !== requestedClientId.includes("-BUY-")
     || !requestedClientId.startsWith(`COV1-${payload.symbol.slice(0, -4)}-`)
-    || !TESTNET_SYMBOLS.has(payload.symbol)) throw new Error("COINOPS_TESTNET_ORDER_RESPONSE_INVALID");
+    || payload.symbol !== expectedSymbol || !TESTNET_SYMBOLS.has(payload.symbol)) throw new Error("COINOPS_TESTNET_ORDER_RESPONSE_INVALID");
   return { orderId: String(payload.orderId), clientOrderId: payload.clientOrderId, symbol: payload.symbol, side: payload.side, status: payload.status, executedQuantity, cumulativeQuoteQuantity, price };
 }
 function cancelClientId(originalClientId: string) { return `COV1-C-${createHmac("sha256", "coinops-testnet-cancel-id").update(originalClientId).digest("hex").slice(0, 18)}`; }
@@ -42,6 +45,7 @@ export class BinanceSpotTestnetAdapter {
   private serverTimeOffsetMs = 0;
   private hasServerTime = false;
   private readonly beforeWrite: (() => Promise<void>) | undefined;
+  private routing: { engine: EngineContext; runId: string; persistedIds: ReadonlySet<string> } | null = null;
 
   constructor(credentials: Credentials, options: { fetcher?: FetchLike; now?: () => number; beforeWrite?: () => Promise<void> } = {}) {
     if (!credentials.apiKey || !credentials.apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
@@ -50,6 +54,30 @@ export class BinanceSpotTestnetAdapter {
     this.now = options.now || Date.now;
     this.beforeWrite = options.beforeWrite;
     this.reads = new BinanceSpotAdapter(credentials, { fetcher: this.fetcher, now: this.now, baseUrl: BINANCE_SPOT_TESTNET_BASE_URL, marketDataBaseUrl: BINANCE_SPOT_TESTNET_BASE_URL });
+  }
+
+  static fromAccount(engine: EngineContext, runId: string, persistedIds: readonly string[], options: { beforeWrite?: () => Promise<void>; fetcher?: FetchLike; now?: () => number } = {}) {
+    if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
+    const adapter = new BinanceSpotTestnetAdapter(resolveTestnetCredentials(engine, process.env), options);
+    if (!runId || !TESTNET_SYMBOLS.has(engine.symbol)) throw new Error("COINOPS_TESTNET_ACCOUNT_MARKET_DENIED");
+    adapter.routing = { engine, runId, persistedIds: new Set(persistedIds) };
+    return adapter;
+  }
+
+  private verifyRouting(symbol: string, clientOrderId: string) {
+    verifyOwned(symbol, clientOrderId);
+    if (!this.routing) {
+      // Legacy diagnostics cannot widen the old market allowlist implicitly.
+      if (!["BTCUSDC", "SOLUSDC"].includes(symbol)) throw new Error("COINOPS_TESTNET_ORDER_NOT_OWNED");
+      return;
+    }
+    const { engine, runId, persistedIds } = this.routing;
+    if (engine.symbol !== symbol) throw new Error("COINOPS_TESTNET_ACCOUNT_MARKET_DENIED");
+    if (persistedIds.has(clientOrderId)) return;
+    const match = /^COV1-(BTC|SOL)-(\d+)-(\d+)-(BUY|SELL)-[a-f0-9]{18}$/.exec(clientOrderId);
+    if (!match || match[1] !== engine.base_asset || testnetClientOrderId(runId, match[1] as "BTC" | "SOL",
+      Number(match[2]), match[4] as "BUY" | "SELL", Number(match[3])) !== clientOrderId)
+      throw new Error("COINOPS_TESTNET_ACCOUNT_ORDER_DENIED");
   }
 
   static fromEnvironment(options: { beforeWrite?: () => Promise<void> } = {}) {
@@ -75,7 +103,7 @@ export class BinanceSpotTestnetAdapter {
   }
 
   /** Binance validates TRADE permission and filters without entering an order. */
-  async checkTradePermission(symbol: "BTCUSDC" | "SOLUSDC" = "SOLUSDC") {
+  async checkTradePermission(symbol: string = "SOLUSDC") {
     const response = await this.signedRequest("POST", "/api/v3/order/test", { symbol, side: "BUY", type: "MARKET", quoteOrderQty: "10" });
     return { ok: response.ok, error: response.ok ? null : `BINANCE_TEST_ORDER_HTTP_${response.status}_${response.code ?? "UNKNOWN"}` };
   }
@@ -110,23 +138,23 @@ export class BinanceSpotTestnetAdapter {
   }
 
   async getOwnedOrder(symbol: string, clientOrderId: string): Promise<TestnetOrder | null> {
-    verifyOwned(symbol, clientOrderId);
+    this.verifyRouting(symbol, clientOrderId);
     const response = await this.signedRequest("GET", "/api/v3/order", { symbol, origClientOrderId: clientOrderId });
     if (response.code === -2013) return null;
     if (!response.ok) throw new Error(`COINOPS_TESTNET_ORDER_QUERY_HTTP_${response.status}`);
-    return normalizeOrder(response.payload as OrderPayload, clientOrderId);
+    return normalizeOrder(response.payload as OrderPayload, clientOrderId, symbol);
   }
 
   /** Recover a previously persisted owned exchange ID after Binance changes its client ID on cancel. */
   async getKnownOrderById(symbol: string, clientOrderId: string, expectedOrderId: string): Promise<TestnetOrder | null> {
-    verifyOwned(symbol, clientOrderId);
+    this.verifyRouting(symbol, clientOrderId);
     if (!/^\d+$/.test(expectedOrderId)) throw new Error("COINOPS_TESTNET_ORDER_ID_INVALID");
     const response = await this.signedRequest("GET", "/api/v3/order", { symbol, orderId: expectedOrderId });
     if (response.code === -2013) return null;
     if (!response.ok) throw new Error(`COINOPS_TESTNET_ORDER_QUERY_HTTP_${response.status}`);
     const payload = response.payload as OrderPayload;
     if (String(payload.orderId) !== expectedOrderId || payload.symbol !== symbol || (payload.clientOrderId !== clientOrderId && payload.status !== "CANCELED")) throw new Error("COINOPS_TESTNET_KNOWN_ORDER_MISMATCH");
-    return normalizeOrder({ ...payload, clientOrderId }, clientOrderId);
+    return normalizeOrder({ ...payload, clientOrderId }, clientOrderId, symbol);
   }
 
   async getOwnedTrades(symbol: string, clientOrderId: string, orderId: string): Promise<TestnetTrade[]> {
@@ -161,7 +189,7 @@ export class BinanceSpotTestnetAdapter {
   }
 
   async ensureOwnedOrder(input: TestnetOrderRequest, submission: { allowCreate?: boolean; beforeCreate?: () => Promise<void> } = {}): Promise<TestnetOrder> {
-    verifyOwned(input.symbol, input.clientOrderId);
+    this.verifyRouting(input.symbol, input.clientOrderId);
     if ((input.side === "BUY") !== input.clientOrderId.includes("-BUY-")) throw new Error("COINOPS_TESTNET_SIDE_MISMATCH");
     if (input.type === "LIMIT" && (!decimal(input.quantity) || !decimal(input.price))) throw new Error("COINOPS_TESTNET_ORDER_INVALID");
     const amount = input.type === "MARKET" ? Number(input.quoteOrderQty) : Number(input.quantity) * Number(input.price);
@@ -176,7 +204,7 @@ export class BinanceSpotTestnetAdapter {
       await submission.beforeCreate?.();
       await this.beforeWrite?.();
       const response = await this.signedRequest("POST", "/api/v3/order", params);
-      if (response.ok) return normalizeOrder(response.payload as OrderPayload, input.clientOrderId);
+      if (response.ok) return normalizeOrder(response.payload as OrderPayload, input.clientOrderId, input.symbol);
       // A timeout or duplicate-client-id response is not permission to send a
       // second order. Read the matching engine state before deciding.
       const recovered = await this.getOwnedOrder(input.symbol, input.clientOrderId);
@@ -202,7 +230,7 @@ export class BinanceSpotTestnetAdapter {
       const response = await this.signedRequest("DELETE", "/api/v3/order", { symbol, orderId: expectedOrderId, origClientOrderId: clientOrderId, newClientOrderId: cancelClientId(clientOrderId), cancelRestrictions: "ONLY_NEW" });
       if (response.ok) {
         const payload = response.payload as OrderPayload;
-        if (payload.origClientOrderId === clientOrderId && payload.clientOrderId === cancelClientId(clientOrderId) && String(payload.orderId) === expectedOrderId && payload.status === "CANCELED") return normalizeOrder({ ...payload, clientOrderId }, clientOrderId);
+        if (payload.origClientOrderId === clientOrderId && payload.clientOrderId === cancelClientId(clientOrderId) && String(payload.orderId) === expectedOrderId && payload.status === "CANCELED") return normalizeOrder({ ...payload, clientOrderId }, clientOrderId, symbol);
       }
       const recovered = await this.getKnownOrderById(symbol, clientOrderId, expectedOrderId);
       if (recovered && recovered.status !== "NEW") return recovered;

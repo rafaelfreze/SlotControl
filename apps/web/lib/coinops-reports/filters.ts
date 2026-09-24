@@ -1,8 +1,9 @@
 import type { ReportFilters } from "./source-contract.ts";
 import { STRATEGY_4_1_EFFECTIVE_AT } from "./missed-level-temporal.ts";
+import { isIdentity } from "../execution/operator-context.ts";
 
 export const REPORT_TIMEZONE = "America/Campo_Grande";
-export const REPORT_VERSION = 9;
+export const REPORT_VERSION = 10;
 const DAY = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -33,9 +34,19 @@ export function parseReportFilters(params: URLSearchParams, now = new Date()): R
   const asset = params.get("asset") || "ALL", environment = params.get("environment") || "ALL";
   if (!["ALL", "BTC", "SOL"].includes(asset)) throw new Error("REPORT_ASSET_INVALID");
   if (!["ALL", "SHADOW", "TESTNET", "REAL"].includes(environment)) throw new Error("REPORT_ENVIRONMENT_INVALID");
+  const exchangeAccountId = params.get("account") || undefined;
+  const tradingEngineId = params.get("engine") || undefined;
+  const symbol = params.get("symbol") || undefined;
+  if (exchangeAccountId && exchangeAccountId !== "ALL" && !isIdentity(exchangeAccountId)
+    || tradingEngineId && tradingEngineId !== "ALL" && !isIdentity(tradingEngineId)
+    || tradingEngineId && tradingEngineId !== "ALL" && (!exchangeAccountId || exchangeAccountId === "ALL")
+    || symbol && symbol !== "ALL" && !/^[A-Z0-9]{5,40}$/.test(symbol)) throw new Error("REPORT_ENGINE_FILTER_INVALID");
+  const routing = { ...(exchangeAccountId && exchangeAccountId !== "ALL" ? { exchangeAccountId } : {}),
+    ...(tradingEngineId && tradingEngineId !== "ALL" ? { tradingEngineId } : {}),
+    ...(symbol && symbol !== "ALL" ? { symbol } : {}) };
   if (preset === "strategy4_1" && now.getTime() <= Date.parse(STRATEGY_4_1_EFFECTIVE_AT)) throw new Error("REPORT_STRATEGY_WINDOW_UNAVAILABLE");
   // Campo Grande has UTC-04 throughout the supported reporting period (2020+).
-  return { start: preset === "strategy4_1" ? STRATEGY_4_1_EFFECTIVE_AT : new Date(`${start}T00:00:00-04:00`).toISOString(), end: new Date(`${shift(end, 1)}T00:00:00-04:00`).toISOString(), assets: asset === "ALL" ? ["BTC", "SOL"] : [asset as "BTC" | "SOL"], environments: environment === "ALL" ? ["SHADOW", "TESTNET", "REAL"] : [environment as "SHADOW" | "TESTNET" | "REAL"], ...(preset === "strategy4_1" ? { temporalWindow: "SINCE_STRATEGY_4_1" as const } : {}) };
+  return { ...routing, start: preset === "strategy4_1" ? STRATEGY_4_1_EFFECTIVE_AT : new Date(`${start}T00:00:00-04:00`).toISOString(), end: new Date(`${shift(end, 1)}T00:00:00-04:00`).toISOString(), assets: asset === "ALL" ? ["BTC", "SOL"] : [asset as "BTC" | "SOL"], environments: environment === "ALL" ? ["SHADOW", "TESTNET", "REAL"] : [environment as "SHADOW" | "TESTNET" | "REAL"], ...(preset === "strategy4_1" ? { temporalWindow: "SINCE_STRATEGY_4_1" as const } : {}) };
 }
 
 export function reportDates(filters: ReportFilters) { return { start: localDay(new Date(filters.start)), end: localDay(new Date(Date.parse(filters.end) - 1)) }; }

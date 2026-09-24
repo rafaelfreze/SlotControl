@@ -6,6 +6,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 
 import { readLegacyProductionReconciliation } from "./live-executor-transport";
 import { reconcileShadowWithExchange, type ReconciliationIntent } from "./reconciliation";
+import { resolveOperatorEngine } from "./operator-context-server";
 
 type ConnectionRow = { id: string; product_id: string; tenant_id: string; user_id: string; exchange: "BINANCE_SPOT"; connection_status: string };
 type IntentRow = { id: string; idempotency_key: string; symbol: string; side: "BUY" | "SELL"; quantity: number | string; observed_market_price: number | string; status: string };
@@ -65,8 +66,9 @@ export async function runConfiguredBinanceReadOnlyReconciliation(now = new Date(
   if (!run?.id) return { status: "ALREADY_RUNNING_OR_COMPLETED" as const, processed: 0 };
 
   try {
+    const engine = await resolveOperatorEngine(supabase, scopedConnection, { environment: "REAL", asset: "BTC", symbol: "BTCBRL" });
     const [snapshot, intentResponse] = await Promise.all([
-      readLegacyProductionReconciliation(),
+      readLegacyProductionReconciliation(engine),
       supabase.from("exchange_order_intents")
         .select("id,idempotency_key,symbol,side,quantity,observed_market_price,status")
         .eq("product_id", scopedConnection.product_id)

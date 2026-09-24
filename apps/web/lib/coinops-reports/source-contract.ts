@@ -1,8 +1,10 @@
+import type { DomainRegistry } from "../execution/operator-context.ts";
 /** Persisted evidence only. These types never carry exchange credentials. */
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type SourceRow = Record<string, unknown>;
-export type ReportFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
+export type ReportFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1";
+  exchangeAccountId?: string; tradingEngineId?: string; symbol?: string };
 export type ReportScope = { tenantId: string; userId: string; productId: string };
 export type RawReportSources = {
   sources: Record<string, SourceRow[]>;
@@ -10,6 +12,7 @@ export type RawReportSources = {
   warnings: string[];
   generatedAt: string;
   scope: ReportScope;
+  registry?: DomainRegistry;
 };
 
 export class ReportSourceError extends Error {
@@ -37,6 +40,8 @@ export type SourceDefinition = {
   environmentColumn?: boolean;
   reconciliationDivergencesOnly?: boolean;
   related?: { column: string; ids: string[] };
+  engineIds?: string[];
+  accountIds?: string[];
 };
 
 export const REPORT_PAGE_SIZE = 1000;
@@ -71,24 +76,35 @@ export async function* readScopedPages(
 ): AsyncGenerator<SourceRow[]> {
   const scope = validateReportScope(scopeInput);
   if (definition.related && definition.related.ids.length === 0) return;
+  if (definition.engineIds && definition.engineIds.length === 0) return;
+  if (definition.accountIds && definition.accountIds.length === 0) return;
   const groups = definition.related
     ? Array.from({ length: Math.ceil(definition.related.ids.length / 100) }, (_, index) => definition.related!.ids.slice(index * 100, index * 100 + 100))
     : [null];
   for (const ids of groups) {
     for (let offset = 0; ; offset += REPORT_PAGE_SIZE) {
-      let query = client.from(table).select(`product_id,tenant_id,user_id,${definition.columns}`)
+      const engineColumns = definition.engineIds || definition.accountIds ? "operator_id,exchange_account_id,trading_engine_id,quote_asset," : "";
+      let query = client.from(table).select(`product_id,tenant_id,user_id,${engineColumns}${definition.columns}`)
         .eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId);
       if (definition.time && definition.from) query = query.gte(definition.time, definition.from);
       if (definition.time && definition.until) query = query.lt(definition.time, definition.until);
-      if (definition.assetColumn) query = query.in(definition.assetColumn, definition.assetColumn === "asset"
+      if (definition.assetColumn && !(definition.engineIds && definition.assetColumn === "symbol")) query = query.in(definition.assetColumn, definition.assetColumn === "asset"
         ? filters.assets : filters.assets.flatMap((asset) => [`${asset}USDC`, `${asset}USDT`, `${asset}BRL`]));
       if (definition.environmentColumn) query = query.in("environment", filters.environments);
       if (definition.reconciliationDivergencesOnly) query = query.in("classification", ["QUANTITY_MISMATCH", "PRICE_MISMATCH", "STATUS_MISMATCH", "UNKNOWN"]);
       if (ids && definition.related) query = query.in(definition.related.column, ids);
+      if (definition.engineIds) query = query.in("trading_engine_id", definition.engineIds);
+      if (definition.accountIds) query = query.in("exchange_account_id", definition.accountIds);
       for (const column of definition.order) query = query.order(column, { ascending: true });
+      if ((definition.engineIds || definition.accountIds) && !definition.order.includes("trading_engine_id"))
+        query = query.order("trading_engine_id", { ascending: true });
       const { data, error } = await query.range(offset, offset + REPORT_PAGE_SIZE - 1);
       if (error) throw new ReportSourceError(`COINOPS_REPORT_SOURCE_UNAVAILABLE:${table}`);
       const rows = assertOwnedRows(data ?? [], scope);
+      if (definition.engineIds && rows.some((row) => typeof row.trading_engine_id !== "string" || !definition.engineIds!.includes(row.trading_engine_id)))
+        throw new ReportSourceError("COINOPS_REPORT_ENGINE_MISMATCH", 403);
+      if (definition.accountIds && rows.some((row) => typeof row.exchange_account_id !== "string" || !definition.accountIds!.includes(row.exchange_account_id)))
+        throw new ReportSourceError("COINOPS_REPORT_ACCOUNT_MISMATCH", 403);
       if (rows.length) yield rows;
       if (rows.length < REPORT_PAGE_SIZE) break;
     }

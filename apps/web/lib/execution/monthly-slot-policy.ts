@@ -86,10 +86,13 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
 
 export function physicalSlotIdentity(environment: "SHADOW" | "TESTNET" | "REAL", scope: {
   productId: string; tenantId: string; userId: string; asset: V1Asset; configId?: string;
+  tradingEngineId?: string; legacyCompatible?: boolean;
 }, physicalSlotNumber: number): string {
   if (!Number.isInteger(physicalSlotNumber) || physicalSlotNumber < 1 || physicalSlotNumber > 25) {
     throw new Error("COINOPS_MONTHLY_PHYSICAL_SLOT_INVALID");
   }
+  if (scope.tradingEngineId && scope.legacyCompatible === false)
+    return `${environment}:${scope.tradingEngineId}:${physicalSlotNumber}`;
   if (environment === "SHADOW") {
     if (!scope.configId) throw new Error("COINOPS_MONTHLY_PHYSICAL_SLOT_INVALID");
     return `SHADOW:${scope.configId}:${physicalSlotNumber}`;

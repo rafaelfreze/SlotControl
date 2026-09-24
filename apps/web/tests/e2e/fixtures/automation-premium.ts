@@ -22,7 +22,7 @@ function liveConfig(asset: Asset): LiveConfig {
 }
 
 function liveRules(asset: Asset): LiveRules {
-  return { symbol: `${asset}BRL`, asset, status: "TRADING", basePrecision: 8, quotePrecision: 8,
+  return { symbol: `${asset}BRL`, asset, quoteAsset: "BRL", status: "TRADING", basePrecision: 8, quotePrecision: 8,
     quoteOrderQtyMarketAllowed: true, orderTypes: ["MARKET", "LIMIT"],
     priceTick: asset === "BTC" ? 1 : 0.1, minPrice: 0.1, maxPrice: 1_000_000,
     quantityStep: asset === "BTC" ? 0.000001 : 0.001,

@@ -15,13 +15,13 @@ type RawFilter = { filterType?: string; minPrice?: string; maxPrice?: string; ti
 export type RawLiveSymbol = { symbol?: string; status?: string; baseAsset?: string; quoteAsset?: string;
   baseAssetPrecision?: number; quoteAssetPrecision?: number; quoteOrderQtyMarketAllowed?: boolean;
   orderTypes?: string[]; filters?: RawFilter[] };
-export type LiveRules = { symbol: "BTCBRL" | "SOLBRL"; asset: V1Asset; status: string;
+export type LiveRules = { symbol: string; asset: V1Asset; quoteAsset: string; status: string;
   basePrecision: number; quotePrecision: number; quoteOrderQtyMarketAllowed: boolean;
   orderTypes: string[]; priceTick: number; minPrice: number; maxPrice: number;
   quantityStep: number; minQuantity: number; maxQuantity: number;
   marketQuantityStep: number; marketMinQuantity: number; marketMaxQuantity: number;
   minNotional: number; maxNotional: number | null; marketMinNotional: boolean; avgPriceMins: number };
-export type LiveConfig = { asset: V1Asset; symbol: "BTCBRL" | "SOLBRL"; slot_count: number;
+export type LiveConfig = { asset: V1Asset; symbol: string; quote_asset?: string; slot_count: number;
   gain_rate: number | string; normal_spacing_rate: number | string; post_ath_spacing_rate: number | string;
   regime: "NORMAL" | "POST_ATH"; monthly_target: number; configured_live_capital_brl: number | string;
   max_order_notional_brl: number | string; max_total_exposure_brl: number | string;
@@ -42,14 +42,15 @@ function roundDownStep(value: number, step: number) { return Number((Math.floor(
 function centsUp(value: number) { return Math.ceil(value * 100 - 1e-8) / 100; }
 
 export function parseLiveRules(raw: RawLiveSymbol): LiveRules {
-  if (raw.symbol !== "BTCBRL" && raw.symbol !== "SOLBRL") throw new Error("COINOPS_LIVE_SYMBOL_UNSUPPORTED");
-  if (raw.baseAsset !== raw.symbol.slice(0, -3) || raw.quoteAsset !== "BRL") throw new Error("COINOPS_LIVE_QUOTE_INVALID");
+  if (!raw.baseAsset || !["BTC", "SOL"].includes(raw.baseAsset) || !raw.quoteAsset
+    || !["BRL", "USDT", "USDC"].includes(raw.quoteAsset) || raw.symbol !== `${raw.baseAsset}${raw.quoteAsset}`)
+    throw new Error("COINOPS_LIVE_SYMBOL_UNSUPPORTED");
   const price = filter(raw, "PRICE_FILTER"), lot = filter(raw, "LOT_SIZE");
   const market = filter(raw, "MARKET_LOT_SIZE");
   const notional = filter(raw, "NOTIONAL") ?? filter(raw, "MIN_NOTIONAL");
   const minNotional = positive(notional?.minNotional, "COINOPS_LIVE_NOTIONAL_FILTER_INVALID");
   const maxNotional = Number(notional?.maxNotional ?? 0);
-  const rules: LiveRules = { symbol: raw.symbol, asset: raw.baseAsset as V1Asset,
+  const rules: LiveRules = { symbol: raw.symbol, asset: raw.baseAsset as V1Asset, quoteAsset: raw.quoteAsset,
     status: raw.status ?? "UNKNOWN", basePrecision: Number(raw.baseAssetPrecision),
     quotePrecision: Number(raw.quoteAssetPrecision), quoteOrderQtyMarketAllowed: raw.quoteOrderQtyMarketAllowed === true,
     orderTypes: raw.orderTypes ?? [], priceTick: positive(price?.tickSize, "COINOPS_LIVE_PRICE_FILTER_INVALID"),
@@ -73,18 +74,21 @@ export function parseLiveRules(raw: RawLiveSymbol): LiveRules {
   return rules;
 }
 
-export function validateLiveConfig(config: LiveConfig, globalCapBrl: number) {
+export type LiveNativeLimits = { engineCap: number; orderCap: number; accountCap: number; quoteAsset: string };
+export function validateLiveConfig(config: LiveConfig, globalCapBrl: number, limits?: LiveNativeLimits) {
   const capital = positive(config.configured_live_capital_brl, "COINOPS_LIVE_CAP_INVALID");
   const orderCap = positive(config.max_order_notional_brl, "COINOPS_LIVE_CAP_INVALID");
   const exposure = positive(config.max_total_exposure_brl, "COINOPS_LIVE_CAP_INVALID");
-  const assetHardCap = config.asset === "BTC" ? 450 : 275;
-  const orderHardCap = config.asset === "BTC" ? 18 : 11;
-  if (config.symbol !== `${config.asset}BRL` || config.slot_count !== LIVE_SLOT_COUNT
+  const assetHardCap = limits?.engineCap ?? (config.asset === "BTC" ? 450 : 275);
+  const orderHardCap = limits?.orderCap ?? (config.asset === "BTC" ? 18 : 11);
+  const quote = limits?.quoteAsset ?? "BRL";
+  if (config.symbol !== `${config.asset}${quote}` || config.slot_count !== LIVE_SLOT_COUNT
     || config.monthly_target !== (config.asset === "BTC" ? 7 : 2)
     || ![config.gain_rate, config.normal_spacing_rate, config.post_ath_spacing_rate].every((v) => Number(v) > 0 && Number(v) < 1)
     || orderCap > exposure || orderCap > orderHardCap || exposure > capital
     || capital > assetHardCap || exposure > assetHardCap
-    || !Number.isFinite(globalCapBrl) || globalCapBrl <= 0 || globalCapBrl > 725)
+    || !Number.isFinite(globalCapBrl) || globalCapBrl <= 0 || globalCapBrl > (limits?.accountCap ?? 725)
+    || ![assetHardCap, orderHardCap].every((v) => Number.isFinite(v) && v > 0))
     throw new Error("COINOPS_LIVE_CAP_INVALID");
   return { capital, orderCap, exposure };
 }
@@ -108,8 +112,8 @@ function minimumQuantity(rules: LiveRules, entry: number, tp: number, market: bo
 }
 
 export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, config: LiveConfig, globalCapBrl: number,
-  observedAt: string, now = Date.now()) {
-  const caps = validateLiveConfig(config, globalCapBrl);
+  observedAt: string, now = Date.now(), limits?: LiveNativeLimits) {
+  const caps = validateLiveConfig(config, globalCapBrl, limits);
   const price = positive(observedPriceBrl, "COINOPS_LIVE_PRICE_INVALID");
   const age = now - Date.parse(observedAt);
   if (!Number.isFinite(age) || age < -10_000 || age > LIVE_MARKET_MAX_AGE_MS) throw new Error("COINOPS_LIVE_MARKET_STALE");
@@ -148,11 +152,11 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
     slotNumber: slot.physicalSlotNumber, operationSequence: 1, buyPrice: slot.entryPriceBrl,
     balanceQuote: slot.capitalBrl, operationalRank: slot.operationalRank,
     monthlyTargetReached: false, postAthGroup: slot.postAthGroup, entryOrigin: "GRID", state: "PLANNED" }));
-  const context = { asset: config.asset, cycleId: `LIVE_PREVIEW:${config.asset}`, observedAt, quoteAsset: "BRL" as const };
+  const context = { asset: config.asset, cycleId: `LIVE_PREVIEW:${config.asset}`, observedAt, quoteAsset: rules.quoteAsset };
   const first = candidates.find((item) => item.operationalRank === 1)!;
   const initialDecision = planStrategyInitialEntry(context, first);
   const tpDecision = planStrategyTakeProfit(context, { ...first, state: "OPEN" }, first.buyPrice,
-    { symbol: rules.symbol, baseAsset: rules.asset, quoteAsset: "BRL", minQuantity: rules.minQuantity,
+    { symbol: rules.symbol, baseAsset: rules.asset, quoteAsset: rules.quoteAsset, minQuantity: rules.minQuantity,
       maxQuantity: rules.maxQuantity, minNotional: rules.minNotional,
       quantityStep: rules.quantityStep, priceTick: rules.priceTick },
     { gainRate, entrySpacing: spacing });

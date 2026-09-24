@@ -19,7 +19,7 @@ type Runtime = {
   prepareOrder: (service: unknown, run: Row, slot: Row, side: string, purpose: string, revision: number, quantity: number | null, quote: number | null, price: number | null, decisionId?: string) => Promise<Row>;
 };
 
-const run = { id: "fixture-cycle", asset: "SOL", symbol: "SOLUSDC", product_id: "11111111-1111-1111-1111-111111111111", tenant_id: "22222222-2222-2222-2222-222222222222", user_id: "33333333-3333-3333-3333-333333333333", gain_rate: 0.005, entry_spacing: 0.01, previous_run_id: null, status: "ACTIVE", lease_owner: "fixture-lease", lease_until: new Date(Date.now() + 90_000).toISOString() };
+const run = { operator_id: "operator-fixture", exchange_account_id: "account-fixture", trading_engine_id: "engine-fixture", quote_asset: "USDC", id: "fixture-cycle", asset: "SOL", symbol: "SOLUSDC", product_id: "11111111-1111-1111-1111-111111111111", tenant_id: "22222222-2222-2222-2222-222222222222", user_id: "33333333-3333-3333-3333-333333333333", gain_rate: 0.005, entry_spacing: 0.01, previous_run_id: null, status: "ACTIVE", lease_owner: "fixture-lease", lease_until: new Date(Date.now() + 90_000).toISOString() };
 const slot = { id: "physical-slot-5", run_id: run.id, tenant_id: run.tenant_id, slot_number: 5, operation_sequence: 2, entry_state: "OPEN", target_buy_price: 114.28, balance_usdc: 10.05046, missed_at: null };
 const filters = { symbol: "SOLUSDC", baseAsset: "SOL", quoteAsset: "USDC", quantityStep: 0.001, priceTick: 0.01, minQuantity: 0.001, maxQuantity: 10000, minNotional: 5 };
 function order(values: Row): Row {
@@ -106,6 +106,10 @@ function harness(seedOrders: Row[], status = "NEW") {
     + "\nexport { ensureTakeProfits, prepareOrder, syncOrder };";
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const dependencies: Record<string, unknown> = {
+    "./operator-context-server": { resolveOperatorEngine: async () => ({ operator_id: "operator-fixture",
+      exchange_account_id: "account-fixture", trading_engine_id: "engine-fixture", environment: "TESTNET",
+      symbol: "SOLUSDC", quote_asset: "USDC", status: "ACTIVE", global_kill_switch: false,
+      account_kill_switch: false, engine_kill_switch: false }) },
     "./robot-v1-testnet-cycle": cycle, "./robot-v1": robot, "./strategy-engine": strategy,
     "./binance-spot-adapter": {}, "./ath-ladder": {}, "./ath-profile-server": {},
     "./strategy-testnet-recovery": recovery, "../coinops-reports/testnet-fill-evidence": fillEvidence,

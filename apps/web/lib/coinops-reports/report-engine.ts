@@ -11,11 +11,14 @@ import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
 import { hasMonthlyTargetPolicy } from "./monthly-entry-evidence.ts";
 import { buildPreLiveAuditGate } from "./pre-live-audit.ts";
 import { buildLivePreparationAudit } from "./live-preparation-audit.ts";
+import type { DomainRegistry } from "../execution/operator-context.ts";
+import { buildScopedEngineReports } from "./engine-report-scope.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
-export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1" };
-export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string } };
+export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1";
+  exchangeAccountId?: string; tradingEngineId?: string; symbol?: string };
+export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string }; registry?: DomainRegistry };
 export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
@@ -77,6 +80,7 @@ function selected(row: AuditRow, filters: AuditFilters) {
 }
 
 export function buildAuditReport(input: AuditInput, filters: AuditFilters, extensions: readonly ReportRuleDefinition[] = []): AuditReport {
+  if (input.registry) return buildScopedEngineReports(input, filters, extensions, buildAuditReport);
   if (!Number.isFinite(timestamp(filters.start)) || !Number.isFinite(timestamp(filters.end)) || timestamp(filters.start) >= timestamp(filters.end)) throw new Error("COINOPS_REPORT_PERIOD_INVALID");
   const warnings = [...input.warnings], incompleteSources = [...input.incompleteSources];
   // Defense in depth: the authenticated loader already scopes every query. Never
@@ -755,9 +759,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   }
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
   if (preparation) {
-    datasets.checks.push({ code: "LIVE_PREPARATION_BRL_GATE",
+    datasets.checks.push({ code: "LIVE_PREPARATION_NATIVE_GATE",
       status: preparation.gate === "LIVE_PREPARATION_READY" ? "PASS" : "WARNING",
-      explanation: `Preparação BRL: ${preparation.gate}. PASS não habilita LIVE nem autoriza ordens reais.`,
+      explanation: `Preparação por moeda/motor: ${preparation.gate}. Snapshot de LIVE existente não é autorização de ativação nem certificado de saúde. PASS não habilita LIVE nem autoriza ordens reais.`,
       environment: "REAL", asset: null, evidence: "CURRENT_DB_CONFIG+BINANCE_GET; no Production write" });
   }
   datasets.checks.push(...buildStrategyAuditChecks(datasets, { incompleteSources, generatedAt: input.generatedAt, filters, contextOrders: normalizedOrders, contextEvents: allEvents }));

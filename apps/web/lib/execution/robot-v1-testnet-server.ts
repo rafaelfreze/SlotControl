@@ -8,7 +8,7 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/en
 import { createServiceRoleClient } from "../supabase/service-role";
 import { testnetFillEvents } from "../coinops-reports/testnet-fill-evidence";
 import { planTerminalTestnetRestart, TESTNET_ACTIVE_ORDER_STATUSES, testnetClientOrderId, testnetOpenPositionQuantity, testnetResetIdempotencyKey } from "./robot-v1-testnet-cycle";
-import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset, type V1Symbol } from "./robot-v1";
+import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset } from "./robot-v1";
 import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
 import { projectTestnetEntryState, recoverTestnetStrategyDecisions, type RecoverableTestnetDecision } from "./strategy-testnet-recovery";
@@ -18,10 +18,12 @@ import { monthlyPeriodKey } from "./monthly-slot-policy";
 import type { ExchangeSymbolInfo } from "./types";
 import { needsTestnetInitialEntry, needsTestnetOrderSync, planTestnetClosedAccounting, planTestnetUncoveredProtection, TESTNET_TERMINAL_ORDER_STATUSES, testnetBoughtQuantity, testnetSoldOrCoveredQuantity } from "./testnet-fill-accounting";
 import { renewExecutionLease } from "./execution-lease";
+import { resolveOperatorEngine } from "./operator-context-server";
+import type { EngineContext } from "./operator-context";
 
-type Scope = { productId: string; tenantId: string; userId: string };
+type Scope = { productId: string; tenantId: string; userId: string; operatorId?: string; exchangeAccountId?: string; tradingEngineId?: string };
 type Service = ReturnType<typeof createServiceRoleClient>;
-type Run = { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; status: string; symbol: V1Symbol; anchor_price: number | string; slot_notional_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; next_capital_usdc: number | string | null; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; lease_owner: string | null; lease_until: string | null; previous_run_id: string | null; reset_started_at: string | null; reset_completed_at: string | null; recovery_source: string | null; entry_regime: "NORMAL" | "POST_ATH" | null; ath_transition_key: string | null; ath_period_key: string | null; config_version: number | null; config_snapshot: Record<string, unknown> | null };
+type Run = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "quote_asset"> & { id: string; product_id: string; tenant_id: string; user_id: string; asset: V1Asset; status: string; symbol: string; anchor_price: number | string; slot_notional_usdc: number | string; gain_rate: number | string; entry_spacing: number | string; next_capital_usdc: number | string | null; next_gain_rate: number | string | null; next_entry_spacing: number | string | null; lease_owner: string | null; lease_until: string | null; previous_run_id: string | null; reset_started_at: string | null; reset_completed_at: string | null; recovery_source: string | null; entry_regime: "NORMAL" | "POST_ATH" | null; ath_transition_key: string | null; ath_period_key: string | null; config_version: number | null; config_snapshot: Record<string, unknown> | null };
 type Slot = { id: string; run_id: string; slot_number: number; entry_state: string; target_buy_price: number | string; balance_usdc: number | string; gain_count: number; net_profit_usdc: number | string; missed_at: string | null; operation_sequence: number; entry_origin: "GRID" | "REENTRY"; entry_reference_price: number | string; last_take_profit_price: number | string | null; last_credited_sell_client_order_id: string | null; operational_rank: number | null; post_ath_group: "PRIMARY" | "RESERVE" | null; post_ath_group_rank: number | null };
 type Order = ReturnType<typeof owned> & { id: string; run_id: string; slot_id: string; slot_number: number; side: "BUY" | "SELL"; purpose: "INITIAL" | "ENTRY" | "TP"; revision: number; operation_sequence: number; client_order_id: string; exchange_order_id: string | null; status: string; requested_quantity: number | string | null; requested_quote: number | string | null; price: number | string | null; executed_quantity: number | string; cumulative_quote: number | string; fee_base: number | string; fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>; trades_reconciled: boolean; submission_guarded_at: string | null };
 type SymbolFilters = ExchangeSymbolInfo;
@@ -31,8 +33,21 @@ const terminal = TESTNET_TERMINAL_ORDER_STATUSES;
 const amount = (value: number | string | null) => Number(value || 0);
 const rounded = (value: number) => Number(value.toFixed(8));
 const floorStep = (value: number, step: number) => rounded(Math.floor((value + 1e-10) / step) * step);
-const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id });
-const context = (run: Run) => ({ asset: run.asset, cycleId: run.id, observedAt: new Date().toISOString() });
+const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id,
+  operator_id: run.operator_id, exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id });
+const profileScope = (run: Run) => ({ productId: run.product_id, tenantId: run.tenant_id, userId: run.user_id,
+  operatorId: run.operator_id, exchangeAccountId: run.exchange_account_id, tradingEngineId: run.trading_engine_id });
+async function resolveRunEngine(service: Service, run: Run) {
+  return resolveOperatorEngine(service, owned(run), { environment: "TESTNET", asset: run.asset, symbol: run.symbol,
+    exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id });
+}
+async function scopedAdapter(service: Service, run: Run) {
+  const engine = await resolveRunEngine(service, run);
+  const ledger = await rows(service, run);
+  return BinanceSpotTestnetAdapter.fromAccount(engine, run.id, ledger.orders.map((order) => order.client_order_id),
+    { beforeWrite: async () => { await resolveRunEngine(service, run); await renewTestnetLease(service, run); } });
+}
+const context = (run: Run) => ({ asset: run.asset, cycleId: run.id, observedAt: new Date().toISOString(), quoteAsset: run.quote_asset });
 function candidate(slot: Slot, monthly?: MonthlySlotStatus, regime: "NORMAL" | "POST_ATH" = "NORMAL"): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: amount(slot.target_buy_price), balanceUsdc: amount(slot.balance_usdc),
@@ -61,7 +76,7 @@ async function queryRun(service: Service, runId: string): Promise<Run> {
   const tenantId = getCoinOpsServiceTenantId();
   const { data, error } = await service.from("robot_v1_testnet_runs").select("*").eq("id", runId).eq("tenant_id", tenantId).single();
   if (error || !data) throw new Error("COINOPS_TESTNET_RUN_UNAVAILABLE");
-  if (V1_RULES[data.asset as V1Asset]?.symbol !== data.symbol) throw new Error("COINOPS_TESTNET_RUN_SYMBOL_INVALID");
+  await resolveRunEngine(service, data as Run);
   return data as Run;
 }
 
@@ -154,44 +169,50 @@ async function ensurePlan(service: Service, run: Run, filters: SymbolFilters) {
 }
 
 /** Starts a separate fictitious-money cycle. Shadow configuration is read, never changed. */
-export async function startTestnetRun(userId: string, asset: V1Asset) {
+export async function startTestnetRun(userId: string, asset: V1Asset,
+  selection?: { exchange_account_id: string; trading_engine_id: string }) {
   assertTestnetEnvironment();
   if (asset !== "BTC" && asset !== "SOL") throw new Error("COINOPS_TESTNET_ASSET_INVALID");
-  const symbol = V1_RULES[asset].symbol;
+
   const service = createServiceRoleClient();
   const tenantId = getCoinOpsServiceTenantId();
   const { data: strategy, error: scopeError } = await service.from("strategies").select("product_id,tenant_id,user_id").eq("tenant_id", tenantId).eq("user_id", userId).limit(1).maybeSingle();
   if (scopeError || !strategy) throw new Error("COINOPS_TESTNET_SCOPE_UNAVAILABLE");
-  const scope: Scope = { productId: strategy.product_id, tenantId: strategy.tenant_id, userId: strategy.user_id };
-  const { data: active, error: activeError } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).in("status", ["ACTIVE", "PAUSED"]).maybeSingle();
+  const engine = await resolveOperatorEngine(service, strategy, { environment: "TESTNET", asset, ...selection });
+  if (engine.status !== "ACTIVE" || engine.global_kill_switch || engine.account_kill_switch || engine.engine_kill_switch)
+    throw new Error("COINOPS_TESTNET_ENGINE_DISABLED");
+  const symbol = engine.symbol;
+  const scope: Scope = { productId: strategy.product_id, tenantId: strategy.tenant_id, userId: strategy.user_id,
+    operatorId: engine.operator_id, exchangeAccountId: engine.exchange_account_id, tradingEngineId: engine.trading_engine_id };
+  const { data: active, error: activeError } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id).in("status", ["ACTIVE", "PAUSED"]).maybeSingle();
   if (activeError) throw new Error("COINOPS_TESTNET_RUN_LOOKUP_FAILED");
   if (active) {
     const run = await queryRun(service, active.id);
-    const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+    const adapter = await scopedAdapter(service, run);
     await ensurePlan(service, run, await adapter.reads.getSymbolInfo(run.symbol));
     await advanceTestnetRun(active.id, "MANUAL_START_RECOVERY");
     return active.id as string;
   }
-  const { data: config, error: configError } = await service.from("robot_v1_configs").select("slot_count,execution_mode").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).single();
-  if (configError || !config || config.execution_mode !== "SHADOW" || config.slot_count !== 25) throw new Error("COINOPS_TESTNET_SHADOW_CONFIG_REQUIRED");
+  // Each registered TESTNET engine owns its own profile and 25-slot ledger.
   const athProfile = await loadAthProfile(service, scope, "TESTNET", asset);
   const initialGain = Number(athProfile.next_gain_rate ?? athProfile.gain_rate);
   const initialSpacing = Number(athProfile.regime === "POST_ATH"
     ? athProfile.next_post_ath_spacing_rate ?? athProfile.post_ath_spacing_rate
     : athProfile.next_normal_spacing_rate ?? athProfile.normal_spacing_rate);
-  const adapter = BinanceSpotTestnetAdapter.fromEnvironment();
+  const adapter = BinanceSpotTestnetAdapter.fromAccount(engine, randomUUID(), []);
   const [account, filters, market, openOrders] = await Promise.all([adapter.reads.getAccount(), adapter.reads.getSymbolInfo(symbol), adapter.reads.getMarketPrice(symbol), adapter.reads.getOpenOrders(symbol)]);
   const notional = V1_TEST_PROFILE.capitalUsdc / V1_TEST_PROFILE.slotCount;
   buildV1Grid(asset, V1_TEST_PROFILE.capitalUsdc, market.price, filters,
     { gainRate: initialGain, entrySpacing: initialSpacing });
   const tradePermission = await adapter.checkTradePermission(symbol);
   if (!tradePermission.ok) throw new Error("COINOPS_TESTNET_TRADE_PERMISSION_INVALID");
-  const freeUsdc = account.balances.find((balance) => balance.asset === "USDC")?.free ?? 0;
+  const freeUsdc = account.balances.find((balance) => balance.asset === engine.quote_asset)?.free ?? 0;
   if (!account.canTrade || !Number.isFinite(notional) || notional < filters.minNotional || freeUsdc < V1_TEST_PROFILE.capitalUsdc) throw new Error("COINOPS_TESTNET_FUNDS_OR_FILTERS_INVALID");
   if (openOrders.some((order) => order.clientOrderId?.startsWith(`COV1-${asset}-`))) throw new Error("COINOPS_TESTNET_UNRECONCILED_OWNED_ORDER");
-  const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, asset, symbol, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: initialGain, entry_spacing: initialSpacing }).select("*").single();
+  const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, operator_id: engine.operator_id, exchange_account_id: engine.exchange_account_id,
+    trading_engine_id: engine.trading_engine_id, quote_asset: engine.quote_asset, asset, symbol, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: initialGain, entry_spacing: initialSpacing }).select("*").single();
   if (insertError?.code === "23505") {
-    const { data: concurrent } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).eq("status", "ACTIVE").maybeSingle();
+    const { data: concurrent } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id).eq("status", "ACTIVE").maybeSingle();
     if (concurrent) { await advanceTestnetRun(concurrent.id, "CONCURRENT_START_RECOVERY"); return concurrent.id as string; }
   }
   if (insertError || !created) throw new Error("COINOPS_TESTNET_RUN_CREATE_FAILED");
@@ -207,12 +228,12 @@ function orderRequest(run: Run, order: Order, slot: Slot) {
   return { type: "LIMIT" as const, symbol: run.symbol, side: order.side, quantity: String(order.requested_quantity), price: String(order.price), clientOrderId: order.client_order_id, maxNotional: amount(order.requested_quantity) * amount(order.price) + 0.00000001 };
 }
 
-function feeTotals(trades: TestnetTrade[], asset: V1Asset) {
+function feeTotals(trades: TestnetTrade[], asset: V1Asset, quoteAsset: string) {
   return {
     quantity: trades.reduce((sum, trade) => sum + trade.quantity, 0),
     base: trades.filter((trade) => trade.commissionAsset === asset).reduce((sum, trade) => sum + trade.commission, 0),
-    quote: trades.filter((trade) => trade.commissionAsset === "USDC").reduce((sum, trade) => sum + trade.commission, 0),
-    other: trades.filter((trade) => ![asset, "USDC"].includes(trade.commissionAsset) && trade.commission > 0).map((trade) => ({ asset: trade.commissionAsset, amount: trade.commission }))
+    quote: trades.filter((trade) => trade.commissionAsset === quoteAsset).reduce((sum, trade) => sum + trade.commission, 0),
+    other: trades.filter((trade) => ![asset, quoteAsset].includes(trade.commissionAsset) && trade.commission > 0).map((trade) => ({ asset: trade.commissionAsset, amount: trade.commission }))
   };
 }
 
@@ -227,6 +248,9 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
       beforeCreate: async () => {
         await renewTestnetLease(service, run);
         if (order.side === "BUY") {
+          const currentEngine = await resolveRunEngine(service, run);
+          if (currentEngine.status !== "ACTIVE" || currentEngine.global_kill_switch || currentEngine.account_kill_switch || currentEngine.engine_kill_switch)
+            throw new Error("COINOPS_TESTNET_NEW_ENTRIES_BLOCKED");
           const monthly = await monthlyStatuses(service, run, [slot]);
           const current = monthly.find((status) => status.physicalSlotNumber === slot.slot_number);
           if (!current) throw new Error("COINOPS_TESTNET_MONTHLY_EVIDENCE_MISSING");
@@ -264,7 +288,7 @@ async function syncOrder(service: Service, run: Run, slot: Slot, order: Order, a
   let fees = { base: amount(order.fee_base), quote: amount(order.fee_quote), quantity: 0, other: order.fee_other || [] };
   if (actual.executedQuantity > 0) {
     const trades = await adapter.getOwnedTrades(run.symbol, order.client_order_id, actual.orderId);
-    fees = feeTotals(trades, run.asset);
+    fees = feeTotals(trades, run.asset, run.quote_asset);
     if (Math.abs(fees.quantity - actual.executedQuantity) > 1e-9) throw new Error("COINOPS_TESTNET_TRADES_PENDING");
     // Preserve the fills already returned by this read. No additional exchange
     // request, order, or execution decision is introduced by reporting.
@@ -487,7 +511,7 @@ async function activateTestnetAthProfile(service: Service, run: Run, profile: At
 async function recoverDecisionAudit(service: Service, run: Run, successorId?: string) {
   const { data, error } = await service.from("robot_v1_strategy_decisions").select("decision_id,cycle_id,slot_id,operation_sequence,action_type,target_price,target_notional,result")
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
-    .eq("environment", "TESTNET").eq("cycle_id", run.id).neq("result", "COMPLETED");
+    .eq("environment", "TESTNET").eq("trading_engine_id", run.trading_engine_id).eq("cycle_id", run.id).neq("result", "COMPLETED");
   if (error) throw new Error("COINOPS_STRATEGY_RECOVERY_READ_FAILED");
   if (!data?.length) return;
   const ledger = await rows(service, run);
@@ -763,7 +787,7 @@ async function restartTerminalCycle(service: Service, run: Run, slots: Slot[], o
   // account locks as capital available to this cycle.
   const refundable = reset.activeNextBuy && reset.activeNextBuy.status === "NEW"
     ? amount((reset.activeNextBuy as Order).requested_quantity) * amount((reset.activeNextBuy as Order).price) : 0;
-  if ((account.balances.find((balance) => balance.asset === "USDC")?.free ?? 0) + refundable + 1e-8 < nextBalances.reduce((sum, balance) => sum + balance, 0)) throw new Error("COINOPS_TESTNET_NEXT_FUNDS_INVALID");
+  if ((account.balances.find((balance) => balance.asset === run.quote_asset)?.free ?? 0) + refundable + 1e-8 < nextBalances.reduce((sum, balance) => sum + balance, 0)) throw new Error("COINOPS_TESTNET_NEXT_FUNDS_INVALID");
   const resetStartedAt = new Date().toISOString();
   const resetKey = testnetResetIdempotencyKey(run.id, reset.terminalFill.client_order_id);
   for (const decision of strategyReset.decisions) {
@@ -849,15 +873,15 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
   let nextRunId: string | null = null;
   let result: { status: string; nextRunId?: string } = { status: "OK" };
   try {
-    if (V1_RULES[run.asset]?.symbol !== run.symbol) throw new Error("COINOPS_TESTNET_RUN_SYMBOL_INVALID");
-    const adapter = BinanceSpotTestnetAdapter.fromEnvironment({ beforeWrite: () => renewTestnetLease(service, run) });
+    const engine = await resolveRunEngine(service, run);
+    const adapter = await scopedAdapter(service, run);
     const publicMarket = new BinanceSpotAdapter(null);
     const filters = await adapter.reads.getSymbolInfo(run.symbol);
     let athProfile: AthProfileRow | null = null;
     await recoverDecisionAudit(service, run);
     if (run.previous_run_id) {
       const previous = await queryRun(service, run.previous_run_id);
-      if (previous.status !== "COMPLETED" || previous.product_id !== run.product_id || previous.user_id !== run.user_id || previous.asset !== run.asset)
+      if (previous.status !== "COMPLETED" || previous.product_id !== run.product_id || previous.user_id !== run.user_id || previous.asset !== run.asset || previous.trading_engine_id !== run.trading_engine_id)
         throw new Error("COINOPS_STRATEGY_RECOVERY_SCOPE_INVALID");
       await recoverDecisionAudit(service, previous, run.id);
     }
@@ -874,12 +898,14 @@ export async function advanceTestnetRun(runId: string, recoverySource = "RECONCI
       await creditClosedSlots(service, run, slots, orders, filters);
       await recycleClosedSlotsLocally(service, run, slots, orders);
       if (!athProfile) {
-        const productionPrice = await publicMarket.getMarketPrice(run.symbol);
-        athProfile = await refreshAthProfile(service, { productId: run.product_id,
-          tenantId: run.tenant_id, userId: run.user_id }, "TESTNET", run.asset, productionPrice);
+        const productionPrice = await publicMarket.getMarketPrice(engine.ath_reference_symbol);
+        athProfile = await refreshAthProfile(service, profileScope(run), "TESTNET", run.asset, productionPrice);
       }
       athProfile = await activateTestnetAthProfile(service, run, athProfile, orders);
       await queueTestnetAthNextProfile(service, run, athProfile);
+      if (engine.status !== "ACTIVE" || engine.global_kill_switch || engine.account_kill_switch || engine.engine_kill_switch) {
+        result = { status: "NEW_ENTRIES_BLOCKED" }; break;
+      }
       nextRunId = await restartTerminalCycle(service, run, slots, orders, filters, adapter, recoverySource);
       if (nextRunId) { result = { status: "RESTARTED", nextRunId }; break; }
       await applyTestnetAthTransition(service, run, slots, orders, athProfile, filters, adapter);

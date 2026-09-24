@@ -1,3 +1,6 @@
+import type { EngineContext } from "@/lib/execution/operator-context";
+import { EngineScopeFields } from "./engine-scope-fields";
+
 import { MONTHLY_SLOT_TARGET } from "@/lib/execution/monthly-slot-policy";
 
 import { saveAthNextProfile } from "./ath-config-actions";
@@ -12,7 +15,7 @@ type Profile = {
   ath_observed_at: string | null; ath_source: string | null; ath_verified_at: string | null;
   ath_floor_reference: number | string | null; ath_floor_source: string | null;
 };
-type SlotRow = { environment: "SHADOW" | "TESTNET"; asset: "BTC" | "SOL";
+type SlotRow = { environment: "SHADOW" | "TESTNET" | "REAL"; asset: "BTC" | "SOL";
   physicalSlotNumber: number; physicalSlotId: string; lifetimeGains: number;
   monthlyGains: number | null; monthlyTarget: number; balanceUsdc: number;
   eligible: boolean; operationalRank: number | null; group: "PRIMARY" | "RESERVE" | null;
@@ -20,13 +23,13 @@ type SlotRow = { environment: "SHADOW" | "TESTNET"; asset: "BTC" | "SOL";
 const pct = (rate: number | string | null) => rate === null ? "—" : `${(Number(rate) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 4 })}%`;
 const inputPct = (rate: number | string | null) => rate === null ? "" : (Number(rate) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 4 });
 
-export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLiveActive = false }: { profiles: Profile[];
+export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLiveActive = false, context }: { profiles: Profile[];
   slots: SlotRow[]; marketPrices: Record<"BTC" | "SOL", number | null>;
-  view: "overview" | "shadow" | "testnet" | "live"; realLiveActive?: boolean }) {
+  view: "overview" | "shadow" | "testnet" | "live"; realLiveActive?: boolean; context?: EngineContext }) {
   if (view === "overview") return null;
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
   return <section className="ath-profiles"><header><div><span>ESTRATÉGIA 4.3</span><h2>Regime ATH e percentuais · {environment}</h2></div><a href="/automacao/simulador-ath">Simular cenário ATH →</a></header>
-    <div className="ath-profiles-grid">{(["BTC", "SOL"] as const).map((asset) => {
+    <div className="ath-profiles-grid">{(["BTC", "SOL"] as const).filter((asset) => !context || context.base_asset === asset).map((asset) => {
       const profile = profiles.find((item) => item.environment === environment && item.asset === asset);
       if (!profile) return <p key={asset} className="ath-profile-missing">{asset}: perfil ATH ainda não disponível.</p>;
       const post = profile.regime === "POST_ATH";
@@ -37,9 +40,10 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLive
         && ["PLANNED", "PENDING", "NONE"].includes(slot.status)).length;
       const floorDistance = profile.ath_floor_reference && marketPrices[asset]
         ? (marketPrices[asset]! / Number(profile.ath_floor_reference) - 1) * 100 : null;
-      return <details key={profile.id} className="ath-profile-card"><summary><strong>{asset} · {post ? "REGIME PÓS-ATH" : "NORMAL"}</strong><span>{pct(profile.gain_rate)} gain · {pct(post ? profile.post_ath_spacing_rate : profile.normal_spacing_rate)} queda ativa · v{profile.config_version}</span></summary>
+      return <details key={profile.id} className="ath-profile-card"><summary><strong>{context ? `${context.account_display_name} · ${context.symbol}` : asset} · {post ? "REGIME PÓS-ATH" : "NORMAL"}</strong><span>{pct(profile.gain_rate)} gain · {pct(post ? profile.post_ath_spacing_rate : profile.normal_spacing_rate)} queda ativa · v{profile.config_version}</span></summary>
         <div className="ath-profile-body"><p>ATH confirmado: {profile.ath_price ?? "Ainda sem baseline histórico"} · {profile.ath_observed_at ?? "—"}</p>
           <p>Fonte: {profile.ath_source ?? "Ainda não confirmada"} · verificação {profile.ath_verified_at ?? "pendente"}</p>
+          {context ? <p>Referência ATH: {context.ath_reference_symbol}. Ordens e ledger: {context.symbol} ({context.quote_asset}). São mercados distintos quando as moedas diferem; não há conversão implícita.</p> : null}
           <p>Floor: {profile.ath_floor_reference ?? "Referência de retorno ainda não definida"}{profile.ath_floor_source ? ` · ${profile.ath_floor_source}` : ""}</p>
           {floorDistance !== null ? <p>Distância ao floor pelo último preço Production consultado: {floorDistance.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%.</p> : null}
           <p>Atual: gain {pct(profile.gain_rate)} · queda normal {pct(profile.normal_spacing_rate)} · queda pós-ATH {pct(profile.post_ath_spacing_rate)} · meta {MONTHLY_SLOT_TARGET[asset]}/slot/mês · 25 slots.</p>
@@ -48,7 +52,7 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLive
           {environment === "REAL" ? <p className="ath-profile-live-blocked">{realLiveActive
             ? "LIVE em operação: as alterações valem somente no próximo ciclo; posições e TPs atuais preservam o snapshot."
             : "Configuração preparada; ainda sem ciclo LIVE ativo."}</p> : null}
-          <form action={saveAthNextProfile}><input type="hidden" name="environment" value={environment} /><input type="hidden" name="asset" value={asset} />
+          <form action={saveAthNextProfile}><EngineScopeFields context={context} /><input type="hidden" name="environment" value={environment} /><input type="hidden" name="asset" value={asset} />
             <label>Gain %<input name="gain_percent" type="text" inputMode="decimal" defaultValue={inputPct(profile.next_gain_rate ?? profile.gain_rate)} required /></label>
             <label>Queda normal %<input name="normal_spacing_percent" type="text" inputMode="decimal" defaultValue={inputPct(profile.next_normal_spacing_rate ?? profile.normal_spacing_rate)} required /></label>
             <label>Queda pós-ATH %<input name="post_ath_spacing_percent" type="text" inputMode="decimal" defaultValue={inputPct(profile.next_post_ath_spacing_rate ?? profile.post_ath_spacing_rate)} required /></label>
@@ -61,7 +65,7 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLive
               <td title={slot.physicalSlotId}>#{slot.physicalSlotNumber}</td><td>{slot.operationalRank ?? "—"}</td>
               <td>{slot.lifetimeGains} total · {slot.monthlyGains ?? "?"}/{slot.monthlyTarget} mês</td>
               <td>{slot.group ? `${slot.group} #${slot.groupRank}` : "—"}</td><td>{slot.status}</td>
-              <td>{slot.balanceUsdc.toLocaleString("pt-BR", { maximumFractionDigits: 4 })} USDC</td>
+              <td>{slot.balanceUsdc.toLocaleString("pt-BR", { maximumFractionDigits: 4 })} {context?.quote_asset ?? "USDC"}</td>
               <td>{slot.monthlyGains !== null && slot.monthlyGains >= slot.monthlyTarget ? "META BATIDA — aguardar mês"
                 : ["OPEN", "TP_ACTIVE"].includes(slot.status) ? "Aguardar TP"
                   : slot.status === "ARMED" ? `Próxima BUY ${slot.buyPrice || "—"}`

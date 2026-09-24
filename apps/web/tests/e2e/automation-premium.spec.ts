@@ -4,6 +4,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
 
 import { AUTOMATION_FIXTURE_NOW, automationPremiumFixture } from "./fixtures/automation-premium";
+import { ACCOUNT_A, ACCOUNT_B, automationOperatorFixture } from "./fixtures/automation-operator";
+import type { Presentation } from "../../app/automacao/premium-automation";
 
 type View = "overview" | "live" | "shadow" | "testnet";
 const views: View[] = ["overview", "live", "shadow", "testnet"];
@@ -51,7 +53,7 @@ function clientModules() {
   return { entryId, code: [...modules].map(([id, code]) => `${JSON.stringify(id)}:function(require,module,exports){\n${code}\n}`).join(",\n") };
 }
 
-async function mount(page: Page, view: View, width: number, height = 960, data = automationPremiumFixture()) {
+async function mount(page: Page, view: View, width: number, height = 960, data: Presentation = automationPremiumFixture()) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
@@ -206,7 +208,7 @@ test("toolbar e detalhes preservam navegação sem submeter ações", async ({ p
   await page.getByRole("button", { name: "Ver todos os 25 slots", exact: true }).click();
   await expect(page.getByTestId("premium-slot-row")).toHaveCount(25);
   await page.getByRole("button", { name: "Detalhes do slot 1", exact: true }).click();
-  await expect(page.getByRole("dialog")).toContainText("BTC · Slot físico #1");
+  await expect(page.getByRole("dialog")).toContainText("Rafael · BTCBRL · Slot #1");
   await expect(page.getByRole("dialog")).toContainText("synthetic-live-tp-BTC-1");
   await assertDrawerFrame();
   expect((await geometry(page)).overflow).toBe(0);
@@ -286,4 +288,72 @@ test("ciclo ACTIVE não apresenta LIVE verde quando o executor está sem saúde"
     await expect(page.locator(".px-alert-banner")).toBeVisible();
     await noSideEffects(page, audit);
   }
+});
+
+for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${width}px`, async ({ page }, testInfo) => {
+  const audit = await mount(page, "live", width, 900, automationOperatorFixture());
+  await expect(page.locator("[data-engine-id]")).toHaveCount(8);
+  await expect(page.locator(".px-kpis")).toContainText("USDT");
+  await expect(page.locator(".px-kpis")).toContainText("R$");
+  for (const viewport of [360, 390, 430, 1024, 1440]) {
+    await page.setViewportSize({ width: viewport, height: 900 });
+    expect((await geometry(page)).overflow).toBe(0);
+  }
+  await page.setViewportSize({ width, height: 900 });
+  await screenshot(page, testInfo, `operator-all-${width}`);
+  await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_A);
+  await expect(page.locator("[data-engine-id]")).toHaveCount(4);
+  await page.getByLabel("Mercado", { exact: true }).selectOption("BTCUSDT");
+  await expect(page.locator("[data-engine-id]")).toHaveCount(1);
+  await expect(page.locator(".px-engine-owner")).toHaveText("Rafael Demo · BTCUSDT");
+  await expect(page.locator(".px-kpis")).not.toContainText("R$");
+  await page.getByRole("button", { name: "Ver BTC", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("BTC/USDT");
+  await expect(page.getByTestId("premium-slot-row")).toHaveCount(6);
+  await page.getByRole("button", { name: "Análise completa, histórico e detalhes técnicos →" }).click();
+  await expect(page.getByLabel("Auditoria do motor nativo")).toContainText("Rafael Demo · REAL · BTCUSDT");
+  await expect(page.getByLabel("Auditoria do motor nativo")).toContainText("USDT");
+  await expect(page.getByLabel("Auditoria do motor nativo")).not.toContainText("R$");
+  await page.getByRole("button", { name: /fechar/i }).click();
+  await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_B);
+  await page.getByLabel("Mercado", { exact: true }).selectOption("BTCBRL");
+  await expect(page.locator("[data-engine-id]")).toHaveCount(1);
+  await expect(page.locator(".px-engine-owner")).toHaveText("Conta B Demo · BTCBRL");
+  await expect(page.locator(".px-engine-owner")).not.toContainText("Rafael");
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await screenshot(page, testInfo, `operator-b-btcbrl-${width}`);
+  await noSideEffects(page, audit);
+});
+
+test("multi-account: Todos nunca seleciona mutação e troca de conta descarta preview/rascunho", async ({ page }) => {
+  const audit = await mount(page, "live", 390, 844, automationOperatorFixture());
+  await page.getByRole("button", { name: "Estratégia", exact: true }).first().click();
+  await expect(page.getByRole("dialog")).toContainText("Selecione uma conta e um mercado específicos");
+  await expect(page.getByRole("dialog").getByLabel("Valor de demonstração")).toHaveCount(0);
+  await page.getByRole("button", { name: /fechar/i }).click();
+  await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_A);
+  await page.getByLabel("Mercado", { exact: true }).selectOption("BTCBRL");
+  await page.getByRole("button", { name: "Estratégia", exact: true }).first().click();
+  await page.getByRole("dialog").getByLabel("Estratégia e parâmetros", { exact: true }).getByLabel("Valor de demonstração").fill("77");
+  await page.getByRole("button", { name: /fechar/i }).click();
+  await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_B);
+  await page.getByLabel("Mercado", { exact: true }).selectOption("BTCBRL");
+  await page.getByRole("button", { name: "Estratégia", exact: true }).first().click();
+  await expect(page.getByRole("dialog").getByLabel("Estratégia e parâmetros", { exact: true }).getByLabel("Valor de demonstração")).toHaveValue("1");
+  await noSideEffects(page, audit);
+});
+
+test("onboarding é explícito, sem secrets nem PASS inventado e não executa no render", async ({ page }) => {
+  const audit = await mount(page, "live", 390, 844, automationOperatorFixture());
+  await page.getByRole("button", { name: "Abrir menu", exact: true }).last().click();
+  await page.getByRole("button", { name: "Contas e onboarding", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("46.101.104.48");
+  await expect(dialog).toContainText("PENDING");
+  await expect(dialog.locator('input[type="password"],input[type="checkbox"]')).toHaveCount(0);
+  await dialog.locator("summary").filter({ hasText: "Preparar nova conta/motor inativo" }).click();
+  await expect(dialog.getByRole("button", { name: "Salvar rascunho inativo" })).toBeVisible();
+  await expect(dialog).toContainText("kill switch ON");
+  expect((await geometry(page)).overflow).toBe(0);
+  await noSideEffects(page, audit);
 });

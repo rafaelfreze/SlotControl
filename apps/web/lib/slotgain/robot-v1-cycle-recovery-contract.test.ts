@@ -49,7 +49,7 @@ test("Phase 4 Testnet isolates BTC and SOL and freezes the active cycle profile"
   assert.match(phaseFourMigration, /restart_robot_v1_testnet_cycle_v2/);
   assert.match(phaseFourMigration, /grant execute on function coinops\.restart_robot_v1_testnet_cycle_v2[^;]+to service_role/);
   assert.match(server, /getSymbolInfo\(run\.symbol\)/);
-  assert.match(server, /feeTotals\(trades, run\.asset\)/);
+  assert.match(server, /feeTotals\(trades, run\.asset, run\.quote_asset\)/);
   assert.doesNotMatch(server, /cancelAllOrders/);
 });
 

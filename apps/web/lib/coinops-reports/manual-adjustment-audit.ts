@@ -60,12 +60,12 @@ export function buildManualAdjustmentChecks(data: AuditDatasets, sources: Record
   "Rank futuro usa lifetime total; decisão posterior ao ajuste é necessária para prova operacional.");
   const brl = rows.filter((row) => row.currency === "BRL");
   add("FX_SOURCE_VALID", !has || !brl.length ? "WARNING"
-    : brl.every((row) => row.fx_source === "BINANCE_SPOT_USDCBRL_ASK" && Number.isFinite(n(row.fx_rate)) && n(row.fx_rate) > 0
+    : brl.every((row) => row.fx_source === `BINANCE_SPOT_${row.quote_asset ?? "USDC"}BRL_ASK` && Number.isFinite(n(row.fx_rate)) && n(row.fx_rate) > 0
       && Number.isFinite(Date.parse(s(row.fx_observed_at)))
       && Date.parse(s(row.kind === "REVERSAL" ? originals.get(s(row.reversal_of))?.created_at : row.created_at)) - Date.parse(s(row.fx_observed_at)) >= -10_000
       && Date.parse(s(row.kind === "REVERSAL" ? originals.get(s(row.reversal_of))?.created_at : row.created_at)) - Date.parse(s(row.fx_observed_at)) <= 120_000
       && close(row.converted_amount_usdc, Math.round(n(row.original_amount) / n(row.fx_rate) * 1e8) / 1e8)) ? "PASS" : "FAIL",
-  "BRL usa ask USDC/BRL público fresco no ajuste original; reversal preserva a cotação e o valor originais, sem nova conversão.");
+  "BRL usa ask público fresco da moeda do motor no ajuste original; reversal preserva a cotação e o valor originais, sem nova conversão.");
   const keys = rows.map((row) => `${row.product_id}:${row.tenant_id}:${row.user_id}:${row.idempotency_key}`);
   add("ADJUSTMENT_IDEMPOTENT", !has ? "WARNING" : new Set(keys).size === keys.length ? "PASS" : "FAIL",
   "Chaves de idempotência distintas no escopo; retries não criam segunda linha.");
