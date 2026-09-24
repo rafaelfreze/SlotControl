@@ -51,6 +51,7 @@ test("invitation and reset land directly on the browser password form", () => {
   assert.match(route, /const redirectTo = viewerPasswordRedirect\(request\.nextUrl\.origin\)/);
   assert.match(route, /resetPasswordForEmail[\s\S]*viewerPasswordRedirect\(request\.nextUrl\.origin\)/);
   assert.match(form, /auth\.onAuthStateChange\(/);
-  assert.match(form, /auth\.getSession\(\)/);
+  assert.match(form, /auth\.setSession\(/);
+  assert.match(form, /window\.history\.replaceState/);
   assert.match(form, /!sessionReady/);
 });

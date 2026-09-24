@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
+import { parsePasswordLink } from "@/lib/auth/password-link";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
 
 export function PasswordResetForm() {
@@ -16,17 +17,34 @@ export function PasswordResetForm() {
   useEffect(() => {
     if (!configured) return;
     let active = true;
+    const link = parsePasswordLink(window.location.hash);
+    if (link.kind === "invalid") {
+      setError("Link inválido ou expirado. Solicite um novo convite ou redefinição.");
+      return () => { active = false; };
+    }
+    if (link.kind === "session") {
+      // Remove the fragment before the PKCE-only SSR client initializes. Tokens
+      // stay browser-side and are never sent in an app request or server log.
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+    }
     const client = createClient();
     const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
       if (!active || !session) return;
       setSessionReady(true);
       setError(null);
     });
-    // The browser client consumes the invite/recovery fragment on this page.
-    void client.auth.getSession().then(({ data, error: sessionError }) => {
+    const session = link.kind === "session"
+      ? client.auth.setSession({ access_token: link.accessToken, refresh_token: link.refreshToken })
+      : client.auth.getSession();
+    void session.then(({ data, error: sessionError }) => {
       if (!active) return;
-      setSessionReady(Boolean(data.session));
-      if (sessionError || !data.session) setError("Link inválido ou expirado. Solicite um novo convite ou redefinição.");
+      if (sessionError || !data.session) {
+        setSessionReady(false);
+        setError("Link inválido ou expirado. Solicite um novo convite ou redefinição.");
+      } else {
+        setSessionReady(true);
+        setError(null);
+      }
     });
     return () => { active = false; subscription.unsubscribe(); };
   }, [configured]);
