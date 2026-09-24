@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { validateExecutorRegistry, resolveExecutorContext, assertEngineOrder, engineOrderPrefix,
-  durableIntent } from "../src/account-registry.mjs";
+  durableIntent, saveInactiveRegistryAccount, promotePreparedRegistryAccount,
+  loadCombinedRegistry } from "../src/account-registry.mjs";
 import { sha256, requestSignature, withWriteIdempotency } from "../src/security.mjs";
 import { createExecutorHandler } from "../src/server.mjs";
 import { liveClientOrderId } from "../../web/lib/execution/robot-v1-live-cycle.ts";
@@ -40,6 +41,51 @@ test("A/B and four native markets resolve exact credentials, never fallback", ()
   const unsafe = structuredClone(registry);
   unsafe.engines[4].credential_ref = "legacy-binance-production";
   assert.throws(() => validateExecutorRegistry(unsafe), /CREDENTIAL_ACCOUNT_MISMATCH/);
+});
+
+test("inactive killed account permits only preparation reads", () => {
+  const inactive = structuredClone(registry);
+  const row = inactive.engines[4];
+  Object.assign(row, { status: "INACTIVE", execution_allowed: false,
+    kill_switch: true, account_kill_switch: true, global_kill_switch: true });
+  for (const path of ["/v1/health", "/v1/state", "/v1/dry-run"])
+    assert.equal(resolveExecutorContext(inactive, intentContext(row), "fixture-read-key-1",
+      credentialEnvironment, { path }).engine.trading_engine_id, row.trading_engine_id);
+  for (const path of ["/v1/create-order", "/v1/cancel-order", "/v1/query-order", "/v1/trades"])
+    assert.throws(() => resolveExecutorContext(inactive, intentContext(row), "fixture-read-key-1",
+      credentialEnvironment, { path }), /ENGINE_INACTIVE/);
+  row.kill_switch = false;
+  assert.throws(() => resolveExecutorContext(inactive, intentContext(row), "fixture-read-key-1",
+    credentialEnvironment, { path: "/v1/state" }), /ENGINE_INACTIVE/);
+});
+
+test("root promotion releases only the exact staged Thyely pair and is idempotent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-thyely-promotion-"));
+  const staticRegistry = validateExecutorRegistry(registryFixture([engines[0]]));
+  const accountId = ACCOUNT_B, scope = { operator_id: engines[4].operator_id,
+    exchange_account_id: accountId, credential_ref: `account_${accountId.replaceAll("-", "")}` };
+  const staged = ["BTCUSDT", "SOLUSDT"].map((symbol, index) => ({
+    ...engineFixture(symbol, accountId, 20 + index, false),
+    credential_ref: scope.credential_ref, status: "INACTIVE", execution_allowed: false,
+    kill_switch: true, account_kill_switch: true, global_kill_switch: true,
+    hard_cap_quote: 419, account_cap_quote: 838, max_order_quote: 419,
+  }));
+  const expected = staged.map((row) => ({ trading_engine_id: row.trading_engine_id,
+    symbol: row.symbol, hard_cap_quote: 419, max_order_quote: 419 }));
+  try {
+    await saveInactiveRegistryAccount(staticRegistry, directory, scope, staged);
+    await assert.rejects(promotePreparedRegistryAccount(staticRegistry, directory, scope,
+      [{ ...expected[0], hard_cap_quote: 420 }, expected[1]]), /PROMOTION_DENIED/);
+    const promoted = await promotePreparedRegistryAccount(staticRegistry, directory, scope, expected);
+    assert.deepEqual(promoted, { status: "ACTIVE", promoted_engines: 2, replayed: false });
+    assert.deepEqual(await promotePreparedRegistryAccount(staticRegistry, directory, scope, expected),
+      { status: "ACTIVE", promoted_engines: 2, replayed: true });
+    const combined = await loadCombinedRegistry(staticRegistry, directory);
+    assert.equal(combined.engines.find((row) => row.symbol === "BTCBRL").status, "ACTIVE");
+    assert.equal(combined.engines.filter((row) => row.exchange_account_id === accountId
+      && row.status === "ACTIVE" && row.execution_allowed && !row.kill_switch).length, 2);
+    await assert.rejects(saveInactiveRegistryAccount(staticRegistry, directory, scope, staged), /SYNC_DENIED/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("rolling upgrade bridge is explicit, Rafael-pinned and never repairs a partial/tampered context", () => {

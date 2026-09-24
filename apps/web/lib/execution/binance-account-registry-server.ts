@@ -28,13 +28,15 @@ export async function syncInactiveBinanceAccount(service: Service, operatorId: s
       .eq("quote_asset", engine.quote_asset).single();
     const engineCap = Number(engine.hard_cap_quote), accountCap = Number(cap.data?.hard_cap_quote);
     const slotCount = Number(engine.config?.slot_count);
+    const maxOrder = Number(engine.config?.max_order_quote);
     if (cap.error || !Number.isFinite(engineCap) || engineCap <= 0 || !Number.isFinite(accountCap)
-      || accountCap < engineCap || slotCount !== 25) throw new Error("COINOPS_ADMIN_REGISTRY_CAP_INVALID");
+      || accountCap < engineCap || slotCount !== 25 || !Number.isFinite(maxOrder)
+      || maxOrder <= 0 || maxOrder > engineCap) throw new Error("COINOPS_ADMIN_REGISTRY_CAP_INVALID");
     rows.push({ operator_id: operatorId, exchange_account_id: accountId, trading_engine_id: engine.id,
       environment: "REAL", symbol: engine.symbol, base_asset: engine.base_asset, quote_asset: engine.quote_asset,
       status: "INACTIVE", kill_switch: true, account_kill_switch: true, global_kill_switch: true,
       execution_allowed: false, is_legacy_default: false, legacy_ownership: false,
-      hard_cap_quote: engineCap, account_cap_quote: accountCap, max_order_quote: engineCap / 25,
+      hard_cap_quote: engineCap, account_cap_quote: accountCap, max_order_quote: maxOrder,
       credential_ref: credentialRef, executor_profile: "coinops-fixed-ip" });
   }
   const ip = process.env.LIVE_EXECUTOR_EGRESS_IP, base = process.env.LIVE_EXECUTOR_BASE_URL;

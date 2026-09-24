@@ -87,7 +87,13 @@ export function resolveExecutorContext(registry, input, key, env = process.env,
     .some((field) => row[field] !== input[field])) deny();
   if ("credential_ref" in input || "apiKey" in input || "apiSecret" in input)
     deny("EXECUTOR_CREDENTIAL_INPUT_DENIED");
-  if (row.status !== "ACTIVE") deny("EXECUTOR_ENGINE_INACTIVE");
+  // An inactive, killed engine may be inspected while its 25-slot cycle is
+  // prepared. Exchange writes remain inaccessible until explicit promotion.
+  const preparationRead = row.status === "INACTIVE"
+    && ["/v1/health", "/v1/state", "/v1/dry-run"].includes(path)
+    && !row.execution_allowed && row.kill_switch && row.account_kill_switch
+    && row.global_kill_switch;
+  if (row.status !== "ACTIVE" && !preparationRead) deny("EXECUTOR_ENGINE_INACTIVE");
   const reference = registry.credentials[row.credential_ref];
   const apiKey = reference.vault ? null : env[reference.api_key_env];
   const apiSecret = reference.vault ? null : env[reference.api_secret_env];
@@ -157,6 +163,53 @@ export async function saveInactiveRegistryAccount(staticRegistry, directory, sco
     try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
     return { registered_engines: rows.length, status: "INACTIVE", trading_enabled: false };
   } finally { await lock.close(); await unlink(join(directory, "dynamic-registry.lock")).catch(() => {}); }
+}
+
+/** Root-only release step after the account's exchange snapshot, ledger and
+ * database gates have been checked. Never called from the HTTP handler. */
+export async function promotePreparedRegistryAccount(staticRegistry, directory, scope, expected) {
+  if (![scope.operator_id, scope.exchange_account_id].every((id) => UUID.test(id ?? ""))
+    || scope.credential_ref !== `account_${scope.exchange_account_id.replaceAll("-", "")}`
+    || !Array.isArray(expected) || expected.length !== 2
+    || expected.some((item) => !UUID.test(item.trading_engine_id ?? "")
+      || !["BTCUSDT", "SOLUSDT"].includes(item.symbol)
+      || item.hard_cap_quote !== 419 || item.max_order_quote !== 419)
+    || new Set(expected.map((item) => item.symbol)).size !== 2
+    || staticRegistry.engines.some((row) => row.exchange_account_id === scope.exchange_account_id))
+    deny("EXECUTOR_REGISTRY_PROMOTION_DENIED");
+  const lockPath = join(directory, "dynamic-registry.lock");
+  const lock = await open(lockPath, "wx", 0o600).catch((error) => {
+    if (error?.code === "EEXIST") deny("EXECUTOR_REGISTRY_SYNC_IN_PROGRESS");
+    throw error;
+  });
+  try {
+    const dynamic = await readDynamic(directory);
+    const rows = dynamic.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id);
+    if (rows.length !== 2 || rows.some((row) => row.operator_id !== scope.operator_id
+      || row.credential_ref !== scope.credential_ref || row.quote_asset !== "USDT"
+      || row.environment !== "REAL" || row.is_legacy_default || row.legacy_ownership
+      || row.account_cap_quote !== 838 || row.hard_cap_quote !== 419
+      || row.max_order_quote !== 419 || !expected.some((item) => item.trading_engine_id === row.trading_engine_id
+        && item.symbol === row.symbol))) deny("EXECUTOR_REGISTRY_PROMOTION_DENIED");
+    if (rows.every((row) => row.status === "ACTIVE" && row.execution_allowed
+      && !row.kill_switch && !row.account_kill_switch && !row.global_kill_switch))
+      return { status: "ACTIVE", promoted_engines: 2, replayed: true };
+    if (rows.some((row) => row.status !== "INACTIVE" || row.execution_allowed
+      || !row.kill_switch || !row.account_kill_switch || !row.global_kill_switch))
+      deny("EXECUTOR_REGISTRY_PROMOTION_DENIED");
+    const next = { ...dynamic, engines: dynamic.engines.map((row) =>
+      row.exchange_account_id !== scope.exchange_account_id ? row : {
+        ...row, status: "ACTIVE", kill_switch: false, account_kill_switch: false,
+        global_kill_switch: false, execution_allowed: true }) };
+    validateExecutorRegistry({ ...staticRegistry,
+      engines: [...staticRegistry.engines, ...next.engines],
+      credentials: { ...staticRegistry.credentials, ...next.credentials } });
+    const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
+    try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+    return { status: "ACTIVE", promoted_engines: 2, replayed: false };
+  } finally { await lock.close(); await unlink(lockPath).catch(() => {}); }
 }
 
 export function responseContext(engine) {
