@@ -135,6 +135,20 @@ test("one engine kill switch never makes the other engine unhealthy or falsely a
   assert.equal(result.engines.find((engine) => engine.symbol === "SOLBRL")?.health.healthy, false);
 });
 
+test("a database kill switch cannot be presented as healthy when executor health is green", () => {
+  const input = data();
+  input.livePreparation!.executor.gate = "LIVE_EXECUTOR_ACTIVE";
+  const btc = resolveEngineContext(registry, { environment: "REAL", exchange_account_id: id(5), trading_engine_id: id(6) });
+  assert.equal(buildPremiumEngine(input, btc).health.healthy, true);
+  const protectedEngine = buildPremiumEngine(input, { ...btc, engine_kill_switch: true });
+  assert.equal(protectedEngine.killSwitch, true);
+  assert.equal(protectedEngine.health.healthy, false);
+  assert.equal(protectedEngine.health.label, "PROTEGIDO");
+  assert.equal(buildPremiumEngine(input, resolveEngineContext(registry, {
+    environment: "REAL", exchange_account_id: id(5), trading_engine_id: id(7)
+  })).health.healthy, true, "SOL remains independent");
+});
+
 test("wrong version or cross-account health stays ATTENTION, not softened for the UI", async () => {
   for (const patch of [{ version: "unvalidated" }, { exchange_account_id: id(90) }]) {
     const { result } = await run((engine) => engine.symbol === "BTCBRL" ? patch : {});

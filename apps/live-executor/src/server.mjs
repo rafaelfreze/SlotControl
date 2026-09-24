@@ -8,6 +8,9 @@ import { getProductionRestrictedSpotStatus, getPublicMarket, observeEgressIp } f
 import { buildExecutorDryRun, EXECUTOR_CAPS } from "./preparation.mjs";
 import { BinanceLiveTransport } from "./binance-live.mjs";
 import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableIntent } from "./account-registry.mjs";
+import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCredential, loadCredential, refreshCredential,
+  removeCredential, saveCredential } from "./credential-vault.mjs";
+import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -71,6 +74,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
     const requestId = randomUUID();
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
     const action = path === "/health" ? "HEALTH" : path === "/v1/dry-run" ? "DRY_RUN"
+      : path === "/v1/admin/credentials" ? "CREDENTIAL_ADMIN"
+      : path === "/v1/admin/registry" ? "REGISTRY_ADMIN"
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
       : path === "/v1/trades" ? "READ_TRADES"
@@ -89,7 +94,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         return;
       }
       if (request.method !== "POST" || !["/v1/health", "/v1/dry-run", "/v1/state", "/v1/query-order",
-        "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order"].includes(path))
+        "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
+        "/v1/admin/credentials", "/v1/admin/registry"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
       if (!request.headers["content-type"]?.startsWith("application/json"))
         throw new ExecutorRejection("EXECUTOR_CONTENT_TYPE_INVALID", 415);
@@ -104,8 +110,67 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       symbol = typeof input.symbol === "string" && /^[A-Z0-9]{4,40}$/.test(input.symbol) ? input.symbol : null;
       const key = request.headers["x-coinops-idempotency-key"];
       keyHash = typeof key === "string" ? sha256(key).slice(0, 12) : null;
-      const resolved = resolveExecutorContext(registry, input, key, credentialEnvironment,
+      if (path === "/v1/admin/registry") {
+        assertCredentialScope(input);
+        if (key !== `REGISTRY:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? ""))
+          throw new ExecutorRejection("EXECUTOR_REGISTRY_SYNC_DENIED", 403);
+        await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        const result = await saveInactiveRegistryAccount(registry, stateDirectory, input, input.engines);
+        status = 200; outcome = "INACTIVE_SYNC";
+        scope = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+          environment: input.environment };
+        writeJson(response, 200, { ...result, ...scope });
+        return;
+      }
+      if (path === "/v1/admin/credentials") {
+        assertCredentialScope(input);
+        if (key !== `CREDENTIAL:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || !["CONNECT", "REVALIDATE", "REPLACE", "REMOVE"].includes(input.operation))
+          throw new ExecutorRejection("EXECUTOR_CREDENTIAL_INTENT_INVALID", 400);
+        const directory = join(stateDirectory, "credentials");
+        const safeInput = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+          credential_ref: input.credential_ref, environment: input.environment };
+        if (["CONNECT", "REPLACE"].includes(input.operation) && Object.values(registry?.credentials ?? {})
+          .some((reference) => credentialEnvironment[reference.api_key_env] === input.apiKey))
+          throw new ExecutorRejection("EXECUTOR_CREDENTIAL_ALREADY_BOUND", 409);
+        scope = { operator_id: safeInput.operator_id, exchange_account_id: safeInput.exchange_account_id,
+          environment: safeInput.environment };
+        const { result, replayed } = await withDryRunIdempotency({
+          directory: join(stateDirectory, "credential-intents"), key, bodyHash: verified.bodyHash,
+          execute: async () => {
+            if (input.operation === "REVALIDATE") return refreshCredential({ directory, masterSecret: secret,
+              scope: safeInput, expectedEgressIp, fetcher, now });
+            if (input.operation === "REMOVE") {
+              await assertNoExchangeOpenOrders({ directory, masterSecret: secret, scope: safeInput, fetcher, now });
+              return removeCredential(directory, safeInput);
+            }
+            if (typeof input.apiKey !== "string" || typeof input.apiSecret !== "string")
+              throw new ExecutorRejection("EXECUTOR_CREDENTIAL_FORMAT_INVALID", 422);
+            const observation = await inspectBinanceCredential({ apiKey: input.apiKey, apiSecret: input.apiSecret,
+              environment: input.environment, expectedEgressIp, fetcher, now });
+            if (input.operation === "REPLACE") await assertNoExchangeOpenOrders({ directory,
+              masterSecret: secret, scope: safeInput, fetcher, now });
+            const saved = await saveCredential({ directory, masterSecret: secret, scope: safeInput,
+              apiKey: input.apiKey, apiSecret: input.apiSecret, observation,
+              replace: input.operation === "REPLACE" });
+            return { ...observation, ...saved };
+          },
+        });
+        outcome = replayed ? "REPLAYED" : result.status ?? (result.removed ? "REMOVED" : "NO_CHANGE");
+        status = 200;
+        writeJson(response, 200, { ...result, ...scope, replayed });
+        return;
+      }
+      const activeRegistry = await loadCombinedRegistry(registry, stateDirectory,
+        (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code }));
+      const resolved = resolveExecutorContext(activeRegistry, input, key, credentialEnvironment,
         { allowLegacy: allowLegacyClients, path });
+      if (resolved.vault) {
+        const stored = await loadCredential(join(stateDirectory, "credentials"), secret, {
+          operator_id: resolved.engine.operator_id, exchange_account_id: resolved.engine.exchange_account_id,
+          credential_ref: resolved.engine.credential_ref, environment: resolved.engine.environment });
+        resolved.apiKey = stored.apiKey; resolved.apiSecret = stored.apiSecret;
+      }
       input = resolved.input;
       legacyClient = resolved.legacyClient;
       const engine = resolved.engine;

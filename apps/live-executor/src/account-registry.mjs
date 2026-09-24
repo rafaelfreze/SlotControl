@@ -1,5 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { ExecutorRejection, sha256 } from "./security.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -40,7 +41,8 @@ export function validateExecutorRegistry(registry) {
       || row.hard_cap_quote > (row.base_asset === "BTC" ? 450 : 275) || row.account_cap_quote > 725
       || row.max_order_quote > (row.base_asset === "BTC" ? 18 : 11))) deny("EXECUTOR_HARD_CAP_DENIED");
     const reference = registry.credentials[row.credential_ref];
-    if (![reference.api_key_env, reference.api_secret_env].every((v) => /^[A-Z][A-Z0-9_]{2,100}$/.test(v ?? "")))
+    if (reference.vault === true ? row.credential_ref !== `account_${row.exchange_account_id.replaceAll("-", "")}`
+      : ![reference.api_key_env, reference.api_secret_env].every((v) => /^[A-Z][A-Z0-9_]{2,100}$/.test(v ?? "")))
       deny("EXECUTOR_CREDENTIAL_REFERENCE_INVALID");
     const accountIdentity = `${row.operator_id}|${row.credential_ref}|${row.is_legacy_default}`;
     if (accounts.has(row.exchange_account_id) && accounts.get(row.exchange_account_id) !== accountIdentity
@@ -87,9 +89,74 @@ export function resolveExecutorContext(registry, input, key, env = process.env,
     deny("EXECUTOR_CREDENTIAL_INPUT_DENIED");
   if (row.status !== "ACTIVE") deny("EXECUTOR_ENGINE_INACTIVE");
   const reference = registry.credentials[row.credential_ref];
-  const apiKey = env[reference.api_key_env], apiSecret = env[reference.api_secret_env];
-  if (!apiKey || !apiSecret) deny("EXECUTOR_BINANCE_CREDENTIALS_MISSING");
-  return { engine: row, apiKey, apiSecret, input, legacyClient };
+  const apiKey = reference.vault ? null : env[reference.api_key_env];
+  const apiSecret = reference.vault ? null : env[reference.api_secret_env];
+  if (!reference.vault && (!apiKey || !apiSecret)) deny("EXECUTOR_BINANCE_CREDENTIALS_MISSING");
+  return { engine: row, apiKey, apiSecret, vault: reference.vault === true, input, legacyClient };
+}
+
+async function readDynamic(directory) {
+  const path = join(directory, "dynamic-registry.json");
+  const content = await readFile(path, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!content) return { version: 1, engines: [], credentials: {} };
+  const metadata = await stat(path);
+  if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)
+    deny("EXECUTOR_REGISTRY_NOT_PRIVATE");
+  const dynamic = JSON.parse(content);
+  if (dynamic.version !== 1 || !Array.isArray(dynamic.engines) || !dynamic.credentials)
+    deny("EXECUTOR_REGISTRY_INVALID");
+  return dynamic;
+}
+
+export async function loadCombinedRegistry(staticRegistry, directory, onFailure = () => {}) {
+  if (!staticRegistry) deny("EXECUTOR_REGISTRY_REQUIRED");
+  try {
+    const dynamic = await readDynamic(directory);
+    return validateExecutorRegistry({ ...staticRegistry,
+      engines: [...staticRegistry.engines, ...dynamic.engines],
+      credentials: { ...staticRegistry.credentials, ...dynamic.credentials } });
+  } catch (error) {
+    // A damaged dynamic registry must fail closed for new accounts, never stop
+    // Rafael's separately owned/static LIVE engines.
+    onFailure(error instanceof ExecutorRejection ? error.code : "EXECUTOR_DYNAMIC_REGISTRY_UNAVAILABLE");
+    return staticRegistry;
+  }
+}
+
+/** Admin sync is preparation-only. It can never activate trading or mutate a legacy row. */
+export async function saveInactiveRegistryAccount(staticRegistry, directory, scope, rows) {
+  if (![scope.operator_id, scope.exchange_account_id].every((id) => UUID.test(id ?? ""))
+    || scope.credential_ref !== `account_${scope.exchange_account_id.replaceAll("-", "")}`
+    || !Array.isArray(rows) || rows.length > 8
+    || rows.some((row) => row.operator_id !== scope.operator_id
+      || row.exchange_account_id !== scope.exchange_account_id || row.credential_ref !== scope.credential_ref
+      || row.status !== "INACTIVE" || row.execution_allowed !== false || row.kill_switch !== true
+      || row.account_kill_switch !== true || row.global_kill_switch !== true
+      || row.is_legacy_default !== false || row.legacy_ownership !== false))
+    deny("EXECUTOR_REGISTRY_SYNC_DENIED");
+  const lock = await open(join(directory, "dynamic-registry.lock"), "wx", 0o600).catch((error) => {
+    if (error?.code === "EEXIST") deny("EXECUTOR_REGISTRY_SYNC_IN_PROGRESS");
+    throw error;
+  });
+  try {
+    const dynamic = await readDynamic(directory);
+    const existing = dynamic.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id);
+    if (existing.some((row) => row.operator_id !== scope.operator_id || row.status !== "INACTIVE"
+      || row.execution_allowed || !row.kill_switch)) deny("EXECUTOR_REGISTRY_SYNC_DENIED");
+    const next = { version: 1,
+      engines: [...dynamic.engines.filter((row) => row.exchange_account_id !== scope.exchange_account_id), ...rows],
+      credentials: { ...dynamic.credentials, [scope.credential_ref]: { vault: true } } };
+    validateExecutorRegistry({ ...staticRegistry, engines: [...staticRegistry.engines, ...next.engines],
+      credentials: { ...staticRegistry.credentials, ...next.credentials } });
+    const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
+    try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+    return { registered_engines: rows.length, status: "INACTIVE", trading_enabled: false };
+  } finally { await lock.close(); await unlink(join(directory, "dynamic-registry.lock")).catch(() => {}); }
 }
 
 export function responseContext(engine) {

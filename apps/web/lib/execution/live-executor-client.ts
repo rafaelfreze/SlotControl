@@ -8,7 +8,7 @@ export function signedExecutorHeaders(secret: string, path: string, body: string
   timestamp = Date.now(), nonce = randomBytes(18).toString("base64url")): Headers {
   if (Buffer.byteLength(secret) < 32) throw new Error("EXECUTOR_AUTH_NOT_CONFIGURED");
   if (!["/v1/health", "/v1/dry-run", "/v1/state", "/v1/query-order", "/v1/trades", "/v1/reconciliation",
-    "/v1/create-order", "/v1/cancel-order"].includes(path)) throw new Error("EXECUTOR_ROUTE_DENIED");
+    "/v1/create-order", "/v1/cancel-order", "/v1/admin/credentials", "/v1/admin/registry"].includes(path)) throw new Error("EXECUTOR_ROUTE_DENIED");
   const hash = createHash("sha256").update(body).digest("hex");
   const canonical = ["POST", path, String(timestamp), nonce, hash].join("\n");
   const signature = createHmac("sha256", secret).update(canonical).digest("hex");

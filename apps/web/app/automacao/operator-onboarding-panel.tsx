@@ -15,7 +15,7 @@ export function OperatorOnboardingPanel({ operator, checks }: { operator: Premiu
   const code = (error: unknown) => error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
     ? error.message : "Não foi possível concluir a preparação. Nenhuma ativação foi feita.";
   return <section className="px-onboarding" aria-label="Contas e onboarding">
-    <p>Administração privada do operador. Preparar uma conta não ativa trading nem envia ordens. Não informe API key ou secret neste painel.</p>
+    <p>Administração privada do operador. Preparar uma conta não ativa trading nem envia ordens. Cadastre API Key e Secret somente em Configurações → Contas Binance.</p>
     <label>Motor para consultar checklist<select aria-label="Motor do onboarding" value={selected} onChange={(event) => setSelected(event.target.value)}>{operator.engines.map((engine) => <option key={engine.engineId} value={engine.engineId}>{engine.accountDisplayName} · {engine.environment} · {engine.symbol}</option>)}</select></label>
     <p className="px-caption">IPv4 do executor: <strong>46.101.104.48</strong>. Whitelist e permissões exigem evidência técnica; um checkbox não aprova gates.</p>
     <ol className="px-onboarding-checks">{steps.map((step) => <li key={step.key}><span>{step.label}</span><strong>{step.evidence?.status ?? "PENDING"}</strong><small>{step.evidence?.checked_at ?? "Sem evidência de onboarding registrada; não indica falha do LIVE existente."}</small></li>)}</ol>
@@ -24,7 +24,7 @@ export function OperatorOnboardingPanel({ operator, checks }: { operator: Premiu
         setMessage(`${result.status}: ${result.code}`); } catch (error) { setMessage(code(error)); } finally { setBusy(false); }
     }}>Verificar GET READ-ONLY · sem ordens</button> : null}
     <details><summary>Preparar nova conta/motor inativo</summary>
-      <p>Cria somente rascunho administrativo com kill switch ON. Credenciais são instaladas pelo fluxo seguro do executor, fora do browser. A ativação é uma etapa futura, separada e bloqueada aqui.</p>
+      <p>Cria somente rascunho administrativo com kill switch ON. A credencial é cadastrada no formulário protegido de Configurações → Contas Binance. A ativação permanece separada e bloqueada aqui.</p>
       <form className="px-onboarding-form" onSubmit={async (event) => {
         event.preventDefault(); const form = new FormData(event.currentTarget);
         const target = ids ?? { accountId: crypto.randomUUID(), engineId: crypto.randomUUID() }; setIds(target); setBusy(true); setMessage("");

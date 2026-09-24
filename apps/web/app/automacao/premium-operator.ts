@@ -65,9 +65,16 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
     throw new Error("COINOPS_PRESENTATION_BASE_UNSUPPORTED");
   const model = buildPremiumAssets({ ...data, engineContext: context }, context.environment, now)
     .find((item) => item.asset === context.base_asset)!;
+  const preparation = data.livePreparation?.configs.find((config) => config.asset === context.base_asset);
+  const killSwitch = context.global_kill_switch || context.account_kill_switch || context.engine_kill_switch
+    || (context.environment === "REAL" && ((preparation && "kill_switch" in preparation && preparation.kill_switch === true)
+      || preparation?.live_enabled === false));
+  const blocked = context.environment === "REAL" && (killSwitch || context.status !== "ACTIVE");
   return { ...model, symbol: context.symbol, currency: context.quote_asset,
     engineId: context.trading_engine_id, accountId: context.exchange_account_id,
     accountDisplayName: context.account_display_name, engineStatus: context.status,
     cap: context.environment === "REAL" ? Number(context.hard_cap_quote) : model.cap,
-    killSwitch: context.global_kill_switch || context.account_kill_switch || context.engine_kill_switch };
+    health: blocked && model.health.healthy ? { healthy: false, tone: "attention", label: "PROTEGIDO",
+      reason: "Novas entradas bloqueadas por controle da conta, motor ou preparação LIVE." } : model.health,
+    killSwitch };
 }

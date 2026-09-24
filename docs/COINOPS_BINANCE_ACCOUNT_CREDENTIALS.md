@@ -1,0 +1,11 @@
+# Contas Binance — cadastro administrativo
+
+O operador autenticado abre Automação → Configurações → Contas Binance. A API Key e o API Secret são enviados uma única vez por HTTPS ao endpoint administrativo do CoinOps. O servidor confirma a sessão e o operador no schema `coinops`, exige origem igual, cabeçalho de intenção e JSON, e assina a chamada privada ao executor. O navegador não recebe o Secret de volta nem o armazena em estado persistente.
+
+O executor de IP fixo valida exclusivamente por GET: horário, conta Spot, permissões da chave e IP de saída. Ele grava os valores cifrados em `COINOPS_EXECUTOR_STATE_DIR/credentials` (arquivo privado, AES-256-GCM). O HMAC da comunicação deriva a chave do cofre com HKDF e domínio separado; sua rotação exige reencapsular as credenciais antes de substituir o segredo. O arquivo de registro dinâmico guarda apenas referências, motores inativos e caps. O registro estático do Rafael não é alterado.
+
+O cadastro cria a conta como `INACTIVE` com kill switch ligado. A sincronização de motores registra somente linhas `INACTIVE`, `execution_allowed=false` e todos os kill switches ligados. O cadastro, a revalidação, a substituição e a remoção não chamam rotas de criar/cancelar ordens nem alteram ledger. A remoção é recusada se houver motor ou ciclo LIVE ativo. Resultados sanitizados são anexados a `coinops.account_onboarding_checks`; não há tabela de secrets no Supabase.
+
+`PASS` depende de leitura e Spot Trading habilitados, whitelist confirmada pelo IPv4 esperado e todas as permissões de saque, transferência, margem, Futures, opções, FIX trade e portfolio margin explicitamente `false`. Campo ausente ou permissão excedente produz `WARNING`, nunca ativa motor. A API Spot documentada não garante UID no retorno de `/api/v3/account`; quando não disponível, o painel mostra a identidade autenticada e o fingerprint da chave, mas **não** afirma ter comprovado identidade civil/UID. Substituir por chave de outra conta é recusado quando há UID comparável; sem UID, permanece fail-closed e exige solução de identificação antes de trocar uma conta em operação.
+
+Para Thyely, usar uma nova chave que nunca tenha sido enviada por chat. Após salvar no painel, confirmar GET direto do executor, saldo e isolamento em relação a Rafael antes de preparar qualquer ativação. O cadastro por si só não entrega `THYELY_LIVE_READY`.

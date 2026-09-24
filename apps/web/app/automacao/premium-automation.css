@@ -97,3 +97,6 @@
 @keyframes px-loading-pulse{to{background-position-x:-200%}}
 @media(max-width:760px){.px-loading .px-topbar{min-height:76px}.px-loading-grid{grid-template-columns:1fr 1fr}.px-loading-grid>.px-panel{height:105px}.px-loading-grid>.px-panel:last-child{display:none}.px-loading-hero{height:115px;padding:20px}}
 @media(prefers-reduced-motion:reduce){.px-loading-grid>.px-panel{animation:none}}
+.px-account-permissions,.px-account-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.px-account-permissions span{padding:6px 10px;border:1px solid var(--px-border,#314455);border-radius:8px;font-size:.82rem}
+.px-account-actions .px-button{min-height:40px}

@@ -7,6 +7,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { resolveOperatorEngine } from "@/lib/execution/operator-context-server";
 import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-server";
+import { syncInactiveBinanceAccount } from "@/lib/execution/binance-account-registry-server";
 import { validateAccountDraft, type AccountDraft } from "./operator-onboarding";
 
 async function operatorScope() {
@@ -63,6 +64,15 @@ export async function saveAccountOnboardingDraft(input: AccountDraft) {
     created_by: operator.user_id, idempotency_key: `draft:${draft.engineId}` },
   { onConflict: "exchange_account_id,idempotency_key", ignoreDuplicates: true });
   if (check.error) throw new Error("COINOPS_ONBOARDING_CHECK_SAVE_FAILED");
+  if (draft.environment === "REAL") {
+    const credential = await service.from("account_onboarding_checks").select("evidence")
+      .eq("operator_id", operator.id).eq("exchange_account_id", draft.accountId)
+      .eq("check_key", "BINANCE_CREDENTIAL").order("checked_at", { ascending: false }).limit(1);
+    if (credential.error) throw new Error("COINOPS_ONBOARDING_CREDENTIAL_READ_FAILED");
+    if (credential.data?.[0] && credential.data[0].evidence?.status !== "REMOVED")
+      await syncInactiveBinanceAccount(service, operator.id, draft.accountId,
+        `account_${draft.accountId.replaceAll("-", "")}`, "REAL");
+  }
   revalidatePath("/automacao");
   return { accountId: draft.accountId, engineId: draft.engineId, status: "INACTIVE" as const };
 }
