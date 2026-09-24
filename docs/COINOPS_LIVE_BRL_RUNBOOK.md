@@ -11,9 +11,9 @@ transferência, margem ou Futures.
   fonte transacional de ciclos, 25 slots físicos, intenções, ordens, fills,
   saldos, eventos e alertas. A Binance é consultada por ID próprio antes de
   qualquer POST; o ledger nunca deduz fill de uma resposta sem trades.
-- Hard caps: R$ 450 BTC, R$ 275 SOL e R$ 725 global. A configuração inicial
-  preparada usa R$ 447 BTC e R$ 269,75 SOL, total R$ 716,75. O saldo restante
-  da conta Binance não aumenta automaticamente esses limites.
+- Hard caps: R$ 450 BTC, R$ 275 SOL e R$ 725 global. A configuração LIVE
+  atualmente preparada usa R$ 450 BTC e R$ 275 SOL, distribuídos em 25 slots
+  por ativo. O saldo restante da conta Binance não aumenta esses limites.
 - Uma BUY ativa por ativo; posição OPEN precisa de TP residente. Apenas a
   próxima BUY é ordem residente; os demais níveis ficam PLANNED. A Strategy
   Engine compartilhada determina prioridade, regime ATH, rank e metas.
@@ -63,6 +63,13 @@ Binance; as ordens seguem exclusivamente pelo cron normal.
   e a Binance antes de qualquer nova intenção. Nunca repetir com outro ID,
   cancelar ordens não próprias ou creditar lucro sem fill provado. Resultado
   ainda ambíguo permanece fail-closed.
+- Uma leitura `/v1/state` com resposta transitória inválida é repetida no
+  máximo uma vez; nenhuma ordem é repetida por esse mecanismo. Falha
+  persistente ou em outra etapa mantém o bloqueio BTC/SOL correspondente e
+  registra a etapa da reconciliação no código do alerta. Uma BUY que já era
+  residente pode preencher enquanto o kill switch SQL está ligado: reconciliar
+  esse fill, preservar/criar seu TP e verificar o estado real antes de retomar
+  a única próxima BUY.
 - Em incidente, `KILL_SWITCH=ON` no executor e no preparo SQL bloqueia novas
   BUYs. Não apagar o ledger. Ordens de proteção SELL podem continuar sob
   `TRADING_ENABLED=true`; cancelamento protetivo só admite BUY própria com ID

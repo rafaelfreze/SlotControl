@@ -738,41 +738,53 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
   const run = await claim(service, runId);
   if (!run) return { status: "BUSY_OR_INACTIVE" };
   let errorCode: string | null = null;
+  let stage = "LOAD_LEDGER";
   try {
     if (run.symbol !== `${run.asset}BRL` || run.strategy_version !== STRATEGY_VERSION)
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
     let ledger = await runRows(service, run);
+    stage = "RECONCILE_ORDERS";
     for (const order of ledger.orders) await reconcileOrder(service, run, order);
     ledger = await runRows(service, run);
+    stage = "READ_STATE";
     let state = await readLiveExecutorState(run.symbol);
+    stage = "PROTECT_TP";
     await ensureTakeProfits(service, run, ledger, state);
+    stage = "CREDIT_SLOTS";
     state = await readLiveExecutorState(run.symbol);
     await creditClosedSlots(service, run, ledger, state);
     const refreshed = await runRows(service, run);
+    stage = "RECYCLE_SLOTS";
     await recycleClosedSlots(service, run, refreshed);
     const current = await runRows(service, run);
+    stage = "ASSERT_PROTECTION";
     state = await readLiveExecutorState(run.symbol);
     await assertAllPositionsProtected(run, current, state);
+    stage = "RESTART_CYCLE";
     const successor = await restartClosedCycle(service, run, current, state);
     if (successor) return { status: "RESTARTED", nextRunId: successor };
+    stage = "ATH_TRANSITION";
     await applyAthTransition(service, run, current, state);
     const entered = await runRows(service, run);
+    stage = "ARM_ENTRY";
     state = await readLiveExecutorState(run.symbol);
     const next = await armNextEntry(service, run, entered, state);
     // A MARKET can fill in the same invocation. Protect it before returning.
     if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED") {
+      stage = "ASSERT_NEW_POSITION";
       const after = await runRows(service, run);
       state = await readLiveExecutorState(run.symbol);
       await ensureTakeProfits(service, run, after, state);
       state = await readLiveExecutorState(run.symbol);
       await assertAllPositionsProtected(run, after, state);
     }
+    stage = "AUDIT_EVENT";
     await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
       "RECONCILED", null, { source, next, strategy_version: STRATEGY_VERSION });
     return { status: "OK", next };
   } catch (error) {
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
-      ? error.message : "COINOPS_LIVE_RECONCILIATION_FAILED";
+      ? error.message : `COINOPS_LIVE_${stage}_FAILED`;
     await preventNewBuys(service, run, errorCode);
     throw new Error(errorCode);
   } finally {

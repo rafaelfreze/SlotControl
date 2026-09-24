@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { signedExecutorHeaders } from "./live-executor-client";
+import { signedExecutorHeaders } from "./live-executor-client.ts";
 
 export type LiveOrder = { orderId: string; clientOrderId: string; symbol: "BTCBRL" | "SOLBRL";
   side: "BUY" | "SELL"; status: string; executedQuantity: number;
@@ -16,6 +16,18 @@ export type LiveExecutorState = { symbol: "BTCBRL" | "SOLBRL";
   open_orders: Array<{ id: string; symbol: string; side: string; status: string;
     executedQuantity: number; price: number | null; clientOrderId: string | null }>;
   observed_at: string };
+
+function validState(value: LiveExecutorState, symbol: "BTCBRL" | "SOLBRL") {
+  return value?.symbol === symbol && Array.isArray(value.balances)
+    && value.filters?.symbol === symbol
+    && Number.isFinite(value.filters.quantityStep) && value.filters.quantityStep > 0
+    && Number.isFinite(value.filters.minNotional) && value.filters.minNotional > 0
+    && Number.isFinite(value.filters.priceTick) && value.filters.priceTick > 0
+    && value.price?.symbol === symbol && Number.isFinite(value.price.price)
+    && value.price.price > 0 && Number.isFinite(Date.parse(value.price.observedAt))
+    && Array.isArray(value.open_orders)
+    && Number.isFinite(Date.parse(value.observed_at));
+}
 
 async function request<T>(path: string, input: Record<string, unknown>, key: string,
   fetcher: typeof fetch = fetch): Promise<T> {
@@ -37,8 +49,24 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
 }
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
-export function readLiveExecutorState(symbol: "BTCBRL" | "SOLBRL", fetcher?: typeof fetch) {
-  return request<LiveExecutorState>("/v1/state", { symbol }, readKey(), fetcher);
+export async function readLiveExecutorState(symbol: "BTCBRL" | "SOLBRL", fetcher?: typeof fetch) {
+  // Retry only an observation. Never retry create/cancel after an uncertain result.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const state = await request<LiveExecutorState>("/v1/state", { symbol }, readKey(), fetcher);
+      if (!validState(state, symbol)) throw new Error("EXECUTOR_STATE_INVALID");
+      return state;
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      const transient = code === "EXECUTOR_STATE_INVALID"
+        || code === "EXECUTOR_HTTP_502" || code === "EXECUTOR_HTTP_503"
+        || code === "EXECUTOR_HTTP_504" || error instanceof TypeError
+        || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
+      if (attempt === 0 && transient) continue;
+      throw error;
+    }
+  }
+  throw new Error("EXECUTOR_STATE_INVALID");
 }
 export function readLegacyProductionReconciliation(fetcher?: typeof fetch) {
   return request<{
