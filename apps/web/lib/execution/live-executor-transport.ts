@@ -64,6 +64,27 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
 }
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
+function transientReadError(error: unknown) {
+  const code = error instanceof Error ? error.message : "";
+  return ["EXECUTOR_HTTP_502", "EXECUTOR_HTTP_503", "EXECUTOR_HTTP_504"].includes(code)
+    || error instanceof TypeError
+    || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
+}
+async function readWithRetry<T>(path: "/v1/state" | "/v1/query-order" | "/v1/trades",
+  input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch): Promise<T> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const key = readKey();
+      return await request<T>(path, input(key), key, fetcher);
+    } catch (error) {
+      if (attempt === 3 || !transientReadError(error)) throw error;
+      // Rolling executor restarts may interrupt a GET. Retry observations only;
+      // create/cancel requests must still resolve through persisted ownership.
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+  throw new Error("EXECUTOR_READ_UNAVAILABLE");
+}
 export async function readLiveExecutorHealth(engine: ExecutorEngineScope, fetcher?: typeof fetch) {
   const key = readKey();
   return request<import("./live-executor-health").LiveExecutorHealth>("/v1/health", executorContext(engine, key, key), key, fetcher);
@@ -72,17 +93,12 @@ export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher
   // Retry only an observation. Never retry create/cancel after an uncertain result.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const key = readKey();
-      const state = await request<LiveExecutorState>("/v1/state", executorContext(engine, key, key), key, fetcher);
+      const state = await readWithRetry<LiveExecutorState>("/v1/state",
+        (key) => executorContext(engine, key, key), fetcher);
       if (!validState(state, engine)) throw new Error("EXECUTOR_STATE_INVALID");
       return state;
     } catch (error) {
-      const code = error instanceof Error ? error.message : "";
-      const transient = code === "EXECUTOR_STATE_INVALID"
-        || code === "EXECUTOR_HTTP_502" || code === "EXECUTOR_HTTP_503"
-        || code === "EXECUTOR_HTTP_504" || error instanceof TypeError
-        || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
-      if (attempt === 0 && transient) continue;
+      if (attempt === 0 && error instanceof Error && error.message === "EXECUTOR_STATE_INVALID") continue;
       throw error;
     }
   }
@@ -102,15 +118,13 @@ export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, 
 }
 export async function readLiveExecutorOrder(engine: ExecutorEngineScope, clientOrderId: string,
   orderId?: string | null, fetcher?: typeof fetch) {
-  const key = readKey();
-  return request<{ order: LiveOrder | null }>("/v1/query-order",
-    { ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }, key, fetcher);
+  return readWithRetry<{ order: LiveOrder | null }>("/v1/query-order",
+    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher);
 }
 export async function readLiveExecutorTrades(engine: ExecutorEngineScope, clientOrderId: string,
   orderId: string, fetcher?: typeof fetch) {
-  const key = readKey();
-  return request<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/trades",
-    { ...executorContext(engine, key, key), clientOrderId, orderId }, key, fetcher);
+  return readWithRetry<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/trades",
+    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), fetcher);
 }
 export async function createLiveExecutorOrder(input: Record<string, unknown> & { clientOrderId: string }, engine: ExecutorEngineScope,
   decisionId: string,

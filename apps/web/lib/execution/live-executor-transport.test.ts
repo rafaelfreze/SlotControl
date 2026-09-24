@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readLiveExecutorState } from "./live-executor-transport.ts";
+import { readLiveExecutorOrder, readLiveExecutorState, readLiveExecutorTrades } from "./live-executor-transport.ts";
 
 const engine = { operator_id: "00000000-0000-4000-8000-000000000001",
   exchange_account_id: "00000000-0000-4000-8000-000000000002",
@@ -42,6 +42,38 @@ test("LIVE state retries an invalid successful GET once, without any exchange wr
       return Response.json({ ...state, exchange_account_id: "00000000-0000-4000-8000-000000000004" });
     }) as typeof fetch), /EXECUTOR_RESPONSE_SCOPE_MISMATCH/);
     assert.equal(crossAccount, 1);
+  } finally {
+    if (previous.ip === undefined) delete process.env.LIVE_EXECUTOR_EGRESS_IP;
+    else process.env.LIVE_EXECUTOR_EGRESS_IP = previous.ip;
+    if (previous.base === undefined) delete process.env.LIVE_EXECUTOR_BASE_URL;
+    else process.env.LIVE_EXECUTOR_BASE_URL = previous.base;
+    if (previous.secret === undefined) delete process.env.COINOPS_EXECUTOR_HMAC_SECRET;
+    else process.env.COINOPS_EXECUTOR_HMAC_SECRET = previous.secret;
+  }
+});
+
+test("LIVE read-only transport survives a brief executor restart without retrying writes", async () => {
+  const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,
+    base: process.env.LIVE_EXECUTOR_BASE_URL, secret: process.env.COINOPS_EXECUTOR_HMAC_SECRET };
+  process.env.LIVE_EXECUTOR_EGRESS_IP = "46.101.104.48";
+  process.env.LIVE_EXECUTOR_BASE_URL = "https://46.101.104.48";
+  process.env.COINOPS_EXECUTOR_HMAC_SECRET = "x".repeat(32);
+  try {
+    const paths: string[] = [];
+    const fetcher = (async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (paths.length < 3) return Response.json({}, { status: 503 });
+      return Response.json(path === "/v1/state" ? state : { ...engine,
+        environment: "REAL", order: null, trades: [] });
+    }) as typeof fetch;
+    assert.deepEqual(await readLiveExecutorState(engine, fetcher), state);
+    assert.deepEqual(paths, ["/v1/state", "/v1/state", "/v1/state"]);
+    assert.deepEqual(await readLiveExecutorOrder(engine, "COR1-BTC-1-1-SELL-0000000000000000", null, fetcher), { ...engine,
+      environment: "REAL", order: null, trades: [] });
+    assert.deepEqual(await readLiveExecutorTrades(engine, "COR1-BTC-1-1-SELL-0000000000000000", "1", fetcher), { ...engine,
+      environment: "REAL", order: null, trades: [] });
+    assert.ok(paths.every((path) => ["/v1/state", "/v1/query-order", "/v1/trades"].includes(path)));
   } finally {
     if (previous.ip === undefined) delete process.env.LIVE_EXECUTOR_EGRESS_IP;
     else process.env.LIVE_EXECUTOR_EGRESS_IP = previous.ip;

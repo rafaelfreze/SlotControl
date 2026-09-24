@@ -70,6 +70,10 @@ Binance; as ordens seguem exclusivamente pelo cron normal.
   residente pode preencher enquanto o kill switch SQL está ligado: reconciliar
   esse fill, preservar/criar seu TP e verificar o estado real antes de retomar
   a única próxima BUY.
+- Reinício breve do executor pode interromper uma leitura em andamento. As
+  consultas de estado, ordem e trades repetem somente erros transitórios de
+  rede/502/503/504, com espera limitada; POST de create/cancel não é repetido.
+  Falha persistente continua fail-closed e requer prova Binance + ledger.
 - Em incidente, `KILL_SWITCH=ON` no executor e no preparo SQL bloqueia novas
   BUYs. Não apagar o ledger. Ordens de proteção SELL podem continuar sob
   `TRADING_ENABLED=true`; cancelamento protetivo só admite BUY própria com ID
