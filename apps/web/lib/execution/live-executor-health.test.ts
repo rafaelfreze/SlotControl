@@ -3,7 +3,7 @@ import test from "node:test";
 import { loadLiveExecutorStatus } from "./live-executor-health.ts";
 
 const ip = "46.101.104.48";
-const healthy = { healthy: true, version: "test", environment: "BINANCE_PRODUCTION_READ_ONLY",
+const healthy = { healthy: true, version: "test", region: "FRA1", environment: "BINANCE_PRODUCTION_READ_ONLY",
   clock: "2026-09-24T00:00:00Z", clock_drift_ms: 100, binance_connectivity: "OK",
   account_permission: "READ_ONLY", egress_ipv4: ip, egress_ipv4_verified: true,
   trading_enabled: false, kill_switch: true, latency_ms: 10 };

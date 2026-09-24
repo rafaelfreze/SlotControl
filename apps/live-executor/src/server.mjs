@@ -33,7 +33,7 @@ function safeLog(event) {
 
 export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp,
   apiKey = null, apiSecret = null, fetcher = fetch, now = Date.now,
-  version = "unversioned", logger = safeLog }) {
+  version = "unversioned", region = "UNSPECIFIED", logger = safeLog }) {
   let cachedHealth = null;
   async function health() {
     if (cachedHealth && now() - cachedHealth.at < healthCacheMs) return cachedHealth.value;
@@ -48,7 +48,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
     const observedIp = egress.status === "fulfilled" ? egress.value : null;
     const egressVerified = Boolean(expectedEgressIp && observedIp && expectedEgressIp === observedIp);
     const value = { healthy: connected && permissionStatus === "READ_ONLY" && egressVerified,
-      version, environment: "BINANCE_PRODUCTION_READ_ONLY", clock: new Date(now()).toISOString(),
+      version, region, environment: "BINANCE_PRODUCTION_READ_ONLY", clock: new Date(now()).toISOString(),
       clock_drift_ms: connected ? market.value.driftMs : null,
       binance_connectivity: connected ? "OK" : "UNAVAILABLE",
       symbols: connected ? market.value.markets.map((item) => item.raw.symbol) : [],
@@ -128,7 +128,8 @@ export async function startExecutor(env = process.env) {
   const server = createServer(createExecutorHandler({ secret: env.COINOPS_EXECUTOR_HMAC_SECRET,
     stateDirectory, expectedEgressIp: env.LIVE_EXECUTOR_EGRESS_IP || null,
     apiKey: env.BINANCE_API_KEY || null, apiSecret: env.BINANCE_API_SECRET || null,
-    version: env.COINOPS_EXECUTOR_VERSION || "unversioned" }));
+    version: env.COINOPS_EXECUTOR_VERSION || "unversioned",
+    region: env.COINOPS_EXECUTOR_REGION || "UNSPECIFIED" }));
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
   server.listen(port, "127.0.0.1");

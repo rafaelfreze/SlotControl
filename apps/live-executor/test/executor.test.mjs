@@ -128,7 +128,7 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
     throw new Error("Unexpected URL");
   };
   const server = createServer(createExecutorHandler({ secret: SECRET, stateDirectory,
-    expectedEgressIp: "203.0.113.10", fetcher, now: () => FIXED_NOW,
+    expectedEgressIp: "203.0.113.10", fetcher, now: () => FIXED_NOW, region: "FRA1",
     logger: (event) => events.push(event) }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -154,9 +154,23 @@ test("server blocks create/cancel before Binance and accepts only signed no-writ
     assert.equal(health.trading_enabled, false);
     assert.equal(health.kill_switch, true);
     assert.equal(health.egress_ipv4_verified, true);
+    assert.equal(health.region, "FRA1");
     assert.equal(health.account_permission, "UNVERIFIED");
     assert.equal(health.healthy, false); // Signed GET must also be validated on the VPS.
   } finally { await new Promise((resolve) => server.close(resolve)); }
+  const callsBeforeRestart = observedUrls.length;
+  const restarted = createServer(createExecutorHandler({ secret: SECRET, stateDirectory,
+    expectedEgressIp: "203.0.113.10", fetcher, now: () => FIXED_NOW, region: "FRA1",
+    logger: (event) => events.push(event) }));
+  await new Promise((resolve) => restarted.listen(0, "127.0.0.1", resolve));
+  try {
+    const body = JSON.stringify(intent("BTC"));
+    const response = await fetch(`http://127.0.0.1:${restarted.address().port}/v1/dry-run`,
+      { method: "POST", headers: signedHeaders(body), body });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).replayed, true);
+    assert.equal(observedUrls.length, callsBeforeRestart);
+  } finally { await new Promise((resolve) => restarted.close(resolve)); }
   const nonceFiles = await readFile(join(stateDirectory, "dry-run", sha256("COINOPS:REAL:BTC:preview:v2") + ".json"), "utf8");
   assert.match(nonceFiles, /NO_WRITE/);
 });

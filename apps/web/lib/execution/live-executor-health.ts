@@ -1,6 +1,7 @@
 export type LiveExecutorHealth = {
   healthy: boolean;
   version: string;
+  region: string;
   environment: string;
   clock: string;
   clock_drift_ms: number | null;

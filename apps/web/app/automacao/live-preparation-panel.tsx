@@ -56,6 +56,7 @@ export function LivePreparationPanel({ data, asset }: {
       <div className="lp-metrics">
         <span>IP para whitelist Binance <strong>{data.executor.ip ?? "não configurado"}</strong></span>
         <span>Versão <strong>{data.executor.health?.version ?? "indisponível"}</strong></span>
+        <span>Região <strong>{data.executor.health?.region ?? "indisponível"}</strong></span>
         <span>Binance Production <strong>{data.executor.health?.binance_connectivity ?? "indisponível"}</strong></span>
         <span>API Spot <strong>{data.executor.health?.account_permission ?? "não verificada"}</strong></span>
         <span>Latência health <strong>{data.executor.health ? `${num(data.executor.health.latency_ms, 0)} ms` : "—"}</strong></span>
