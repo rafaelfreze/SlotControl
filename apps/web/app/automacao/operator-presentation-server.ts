@@ -5,9 +5,13 @@ import type { createServiceRoleClient } from "@/lib/supabase/service-role";
 import type { Props } from "./automation-mobile";
 import { buildPremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { monthlyPeriodKey, rankMonthlySlots } from "@/lib/execution/monthly-slot-policy";
-import { loadLiveEngineExecutorStatus } from "@/lib/execution/live-executor-health";
+import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
+
+/** UI observations must not borrow the longer financial dispatch timeout. */
+const fetchUiHealth: typeof fetch = (url, init) => fetch(url, { ...init,
+  signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : [])]) });
 
 function emptyScoped(data: Props, context: EngineContext): Props {
   return { ...data, engineContext: context, balances: [], configs: [], cycles: [], slots: [],
@@ -121,22 +125,30 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
   const caps = await client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
     .eq("operator_id", registry.operator.id);
   if (caps.error) throw new Error("COINOPS_ACCOUNT_CAPS_UNAVAILABLE");
-  const engines = [];
+  const loaded: Array<{ context: EngineContext; scoped: Props }> = [];
   for (const row of registry.engines) {
     const context = resolveEngineContext(registry, { environment: row.environment,
       exchange_account_id: row.exchange_account_id, trading_engine_id: row.id });
     const scoped = context.legacy_compatible ? legacyEnginePresentation(data, context)
       : await nativeEnginePresentation(client, data, context);
-    if (context.environment === "REAL" && scoped.livePreparation) {
+    loaded.push({ context, scoped });
+  }
+  const live = loaded.filter(({ context, scoped }) => context.environment === "REAL" && scoped.livePreparation);
+  // Two concurrent read-only health checks keep BTC/SOL within one UI budget,
+  // while bounding fan-out if additional legitimate engines are introduced.
+  for (let offset = 0; offset < live.length; offset += 2) {
+    await Promise.all(live.slice(offset, offset + 2).map(async ({ context, scoped }) => {
       // Public /health can intentionally advertise the old compatibility
       // contract during rollout. Only the authenticated, identity-validated
       // engine observation can attest this market's LIVE state and kill switch.
-      scoped.livePreparation = { ...scoped.livePreparation,
-        executor: await loadLiveEngineExecutorStatus(context) };
-    }
-    engineData[row.id] = scoped;
-    engines.push(buildPremiumEngine(scoped, context));
+      scoped.livePreparation = { ...scoped.livePreparation!,
+        executor: await loadLiveExecutorStatus(undefined, undefined, fetchUiHealth, undefined, context) };
+    }));
   }
+  const engines = loaded.map(({ context, scoped }) => {
+    engineData[context.trading_engine_id] = scoped;
+    return buildPremiumEngine(scoped, context);
+  });
   return { accounts: registry.accounts.map((account) => ({ id: account.id, displayName: account.display_name,
     status: account.status, killSwitch: registry.operator.kill_switch || account.kill_switch })),
     engines, engineData, selection, accountCaps: (caps.data ?? []).map((row) => ({

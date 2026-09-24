@@ -44,37 +44,61 @@ function data(): Props {
     }])) } as unknown as Props;
 }
 
-async function run(patch: (engine: EngineContext) => Record<string, unknown> = () => ({})) {
-  const names = ["LIVE_EXECUTOR_BASE_URL", "LIVE_EXECUTOR_EGRESS_IP", "COINOPS_EXECUTOR_HMAC_SECRET"] as const;
+async function run(patch: (engine: EngineContext) => Record<string, unknown> = () => ({}),
+  options: { timeout?: boolean; requireParallel?: boolean } = {}) {
+  const names = ["LIVE_EXECUTOR_BASE_URL", "LIVE_EXECUTOR_EGRESS_IP", "COINOPS_EXECUTOR_HMAC_SECRET", "LIVE_EXECUTOR_VALIDATED_VERSION"] as const;
   const previous = names.map((name) => process.env[name]);
   process.env.LIVE_EXECUTOR_BASE_URL = `https://${ip}`;
   process.env.LIVE_EXECUTOR_EGRESS_IP = ip;
   process.env.COINOPS_EXECUTOR_HMAC_SECRET = "fixture-only-secret".repeat(3);
+  process.env.LIVE_EXECUTOR_VALIDATED_VERSION = "new-scoped-version";
   const requests: EngineContext[] = [];
+  const deadlines: number[] = [], controllers: AbortController[] = [];
+  const pending: Array<() => void> = [];
+  let inflight = 0, maximumInflight = 0;
   try {
     const dependencies: Record<string, unknown> = {
       "server-only": {}, "@/lib/execution/operator-context": { resolveEngineContext },
       "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
       "./premium-operator": { buildPremiumEngine },
-      "@/lib/execution/live-executor-health": { loadLiveEngineExecutorStatus: async (engine: EngineContext) => {
-        requests.push(engine);
-        return loadLiveExecutorStatus(`https://${ip}`, ip, (async (url, init) => {
-          assert.equal(String(url), `https://${ip}/v1/health`);
-          assert.equal(init?.method, "POST");
-          const payload = JSON.parse(String(init?.body));
-          for (const field of ["operator_id", "exchange_account_id", "trading_engine_id", "symbol", "quote_asset"] as const)
-            assert.equal(payload[field], engine[field]);
-          return Response.json({ ...payload, ...health, ...patch(engine) });
-        }) as typeof fetch, "new-scoped-version", engine);
-      } }
+      "@/lib/execution/live-executor-health": { loadLiveExecutorStatus }
     };
+    const fetcher = (async (url, init) => {
+        assert.equal(String(url), `https://${ip}/v1/health`);
+        assert.equal(init?.method, "POST");
+        const payload = JSON.parse(String(init?.body));
+        const engine = resolveEngineContext(registry, { environment: "REAL",
+          exchange_account_id: payload.exchange_account_id, trading_engine_id: payload.trading_engine_id });
+        requests.push(engine);
+        for (const field of ["operator_id", "exchange_account_id", "trading_engine_id", "symbol", "quote_asset"] as const)
+          assert.equal(payload[field], engine[field]);
+        inflight++; maximumInflight = Math.max(maximumInflight, inflight);
+        try {
+          if (options.timeout) {
+            const controller = controllers.at(-1)!;
+            await new Promise<void>((_resolve, reject) => {
+              init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+              queueMicrotask(() => controller.abort(new DOMException("UI observation timed out", "TimeoutError")));
+            });
+          }
+          if (options.requireParallel) await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("UI health must run concurrently")), 500);
+            pending.push(() => { clearTimeout(timer); resolve(); });
+            if (pending.length === 2) pending.splice(0).forEach((release) => release());
+          });
+          return Response.json({ ...payload, ...health, ...patch(engine) });
+        } finally { inflight--; }
+      }) as typeof fetch;
+    const uiAbortSignal = { any: AbortSignal.any.bind(AbortSignal), timeout: (ms: number) => {
+      deadlines.push(ms); const controller = new AbortController(); controllers.push(controller); return controller.signal;
+    } };
     const source = readFileSync(new URL("./operator-presentation-server.ts", import.meta.url), "utf8");
     const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
     const evaluated: Record<string, unknown> = {};
-    new Function("require", "exports", compiled)((name: string) => {
+    new Function("require", "exports", "fetch", "AbortSignal", compiled)((name: string) => {
       assert.ok(name in dependencies, `Unexpected UI dependency: ${name}`);
       return dependencies[name];
-    }, evaluated);
+    }, evaluated, fetcher, uiAbortSignal);
     const build = evaluated.buildOperatorPresentation as typeof BuildPresentation;
     const client = { from(table: string) {
       assert.equal(table, "account_quote_caps");
@@ -82,7 +106,8 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
     } } as unknown as Parameters<typeof BuildPresentation>[0];
     const input = data();
     const result = await build(client, input, registry, { accountId: "ALL", symbol: "ALL" });
-    return { input, result, requests };
+    assert.ok(deadlines.every((ms) => ms === 5_000), "UI budget is exactly 5s, not the 35s transport budget");
+    return { input, result, requests, deadlines, maximumInflight };
   } finally {
     names.forEach((name, index) => {
       if (previous[index] === undefined) delete process.env[name];
@@ -116,5 +141,25 @@ test("wrong version or cross-account health stays ATTENTION, not softened for th
     assert.equal(result.engineData[id(6)].livePreparation?.executor.gate, "ATTENTION");
     assert.equal(result.engines.find((engine) => engine.symbol === "BTCBRL")?.health.healthy, false);
     assert.equal(result.engines.find((engine) => engine.symbol === "SOLBRL")?.health.healthy, true);
+  }
+});
+
+test("BTC/SOL UI health runs concurrently with two bounded five-second observations", async () => {
+  const { result, requests, deadlines, maximumInflight } = await run(undefined, { requireParallel: true });
+  assert.equal(requests.length, 2, "no duplicate or extra health observations");
+  assert.deepEqual(deadlines, [5_000, 5_000]);
+  assert.equal(maximumInflight, 2);
+  assert.ok(result.engines.every((engine) => engine.health.healthy));
+});
+
+test("UI timeout is fail-closed for both engines and never inherits public healthy evidence", async () => {
+  const { result, requests, deadlines } = await run(undefined, { timeout: true });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(deadlines, [5_000, 5_000]);
+  for (const engine of result.engines) {
+    assert.equal(engine.health.healthy, false);
+    const executor = result.engineData[engine.engineId].livePreparation!.executor;
+    assert.equal(executor.gate, "ATTENTION");
+    assert.equal(executor.health, null);
   }
 });
