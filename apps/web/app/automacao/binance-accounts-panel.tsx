@@ -9,11 +9,14 @@ type Validation = { status: string; evidence: { environment?: string; status?: s
   validated_at?: string | null } };
 type Account = { id: string; name: string; status: string; killSwitch: boolean; legacy: boolean;
   credentialRef: string | null; validation: Validation | null };
+type StagedEngine = { id: string; accountId: string; environment: string; symbol: string; quoteAsset: string;
+  status: string; hardCap: number; slotCount: number | null; initialSlotQuote: number | null };
 
 const endpoint = "/api/coinops-binance-accounts";
 
 export function BinanceAccountsPanel() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [engines, setEngines] = useState<StagedEngine[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [accountId, setAccountId] = useState(() => crypto.randomUUID());
@@ -24,6 +27,7 @@ export function BinanceAccountsPanel() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? "Consulta indisponível");
     setAccounts(payload.accounts ?? []);
+    setEngines(payload.engines ?? []);
   }
   useEffect(() => { void refresh().catch(() => setMessage("Contas Binance indisponíveis no momento.")); }, []);
   async function perform(operation: string, extra: Record<string, string>, id = selected || accountId) {
@@ -57,6 +61,22 @@ export function BinanceAccountsPanel() {
     form.reset(); // Never keep a secret in React state after submission.
     await perform(operation, extra);
   }
+  async function prepare(engine: StagedEngine) {
+    if (engine.status !== "INACTIVE" || engine.environment !== "REAL"
+      || !["BTCUSDT", "SOLUSDT"].includes(engine.symbol) || !active || active.id !== engine.accountId) return;
+    setBusy(true); setMessage("");
+    try {
+      const response = await fetch("/api/coinops-live-activation", { method: "POST", cache: "no-store",
+        credentials: "same-origin", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "PREPARE", asset: engine.symbol.startsWith("BTC") ? "BTC" : "SOL",
+          exchange_account_id: engine.accountId, trading_engine_id: engine.id }) });
+      const result = await response.json();
+      if (!response.ok || result.status !== "PREPARED") throw new Error(result.error ?? result.gate ?? "PREPARATION_FAILED");
+      setMessage(`${engine.symbol}: 25 slots preparados no ledger; nenhuma ordem enviada. Ciclo ${result.cycle_id}.`);
+      await refresh();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Preparação indisponível."); }
+    finally { setBusy(false); }
+  }
   const active = accounts.find((item) => item.id === selected);
   return <section className="px-onboarding" aria-label="Contas Binance">
     <h2>Contas Binance</h2>
@@ -84,6 +104,16 @@ export function BinanceAccountsPanel() {
       <button type="button" className="px-button" disabled={busy} onClick={() => void perform("REVALIDATE", active.validation ? {} : { environment: recoverEnvironment })}>Validar novamente</button>
       <button type="button" className="px-button" disabled={busy || active.status !== "INACTIVE"} onClick={() => void perform("DEACTIVATE", {})}>Desativar conta</button>
       <button type="button" className="px-button" disabled={busy || active.status !== "INACTIVE"} onClick={() => void perform("REMOVE", {})}>Remover credencial</button>
+    </div>}
+    {active && engines.filter((engine) => engine.accountId === active.id).length > 0 && <div className="px-onboarding-checks" aria-label="Motores da conta">
+      <h3>Motores da conta</h3>
+      {engines.filter((engine) => engine.accountId === active.id).map((engine) => <p key={engine.id}>
+        {engine.symbol} · {engine.status} · {engine.hardCap} {engine.quoteAsset} · {engine.slotCount ?? "—"} slots ·
+        {" "}{engine.initialSlotQuote ?? "—"} {engine.quoteAsset}/slot
+        {active.status === "INACTIVE" && engine.status === "INACTIVE" && <button type="button"
+          className="px-button" disabled={busy || active.validation?.evidence.status !== "PASS"}
+          onClick={() => void prepare(engine)}>Preparar 25 slots · sem ordens</button>}
+      </p>)}
     </div>}
     {message && <p role="status">{message}</p>}
   </section>;

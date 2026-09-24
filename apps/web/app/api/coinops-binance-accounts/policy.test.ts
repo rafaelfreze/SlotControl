@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { assertOwnedAccount, assertSameOrigin, validateCredentialIntent } from "./policy.ts";
 
 const origin = "https://cripto-flax.vercel.app";
@@ -26,4 +27,17 @@ test("invalid secrets, replay intent shape and manipulated account identifiers a
   assert.throws(() => assertOwnedAccount({ operator_id: randomUUID(), is_legacy_default: false }, valid.accountId), /ACCOUNT_DENIED/);
   assert.throws(() => assertOwnedAccount({ operator_id: valid.accountId, is_legacy_default: true }, valid.accountId), /ACCOUNT_DENIED/);
   assert.doesNotThrow(() => assertOwnedAccount({ operator_id: valid.accountId, is_legacy_default: false }, valid.accountId));
+});
+
+test("engine preparation is operator-scoped and never dispatches an exchange order", () => {
+  const route = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+  const panel = readFileSync(new URL("../../automacao/binance-accounts-panel.tsx", import.meta.url), "utf8");
+  const activation = readFileSync(new URL("../coinops-live-activation/route.ts", import.meta.url), "utf8");
+  assert.match(route, /from\("trading_engines"\)[\s\S]*?\.eq\("operator_id", operator\.id\)/);
+  assert.match(route, /quoteAsset: engine\.quote_asset/);
+  assert.match(panel, /action: "PREPARE"/);
+  assert.match(panel, /exchange_account_id: engine\.accountId, trading_engine_id: engine\.id/);
+  assert.match(activation, /loadLiveEngineExecutorStatus\(engine\)/);
+  assert.match(activation, /prepareLiveCycle\(user\.id, asset, selection\)/);
+  assert.doesNotMatch(panel, /(?:createOrder|cancelOrder|dispatchOrder)\s*\(/);
 });
