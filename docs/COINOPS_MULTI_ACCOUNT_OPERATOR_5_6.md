@@ -151,10 +151,15 @@ Não clicar em salvar nova conta/amigo nem cadastrar novo par real durante o smo
 
 ## Migrations e rollout sem troca de ordens
 
-Migrations locais preparadas, aplicação remota **PENDING**:
+Histórico remoto confirmado no schema `coinops`, projeto `otdfpmsegjxpqrzisfmi`:
 
-1. `20260924131727_add_multi_account_operator_engine_isolation.sql`: expand/backfill do domínio, identidades, RLS/FKs, aliases, RPCs escopadas, auditoria e onboarding. Mantém compatibilidade dos IDs e contratos financeiros existentes.
-2. `20260924135005_finalize_multi_account_engine_idempotency.sql`: contract pós-publicação; remove chaves globais antigas substituídas por índices por motor. Não executar junto por conveniência antes dos writers novos.
+1. `20260924141913_add_multi_account_operator_engine_isolation.sql`: expand/backfill aplicado em 24/09/2026, 14:19 UTC; domínio, identidades, RLS/FKs, aliases, RPCs escopadas, auditoria e onboarding. Mantém compatibilidade dos IDs e contratos financeiros existentes.
+2. `20260924142810_optimize_operator_rls_allowed_set.sql`: hotfix RLS aplicado em 24/09/2026, 14:28 UTC. As 34 novas policies consultam uma vez o conjunto autorizado pela RLS de `operators`; as policies anteriores e os dados financeiros não são alterados.
+3. `20260924150000_finalize_multi_account_engine_idempotency.sql`: versão local provisória, aplicação remota **PENDING**. Contract pós-publicação que remove chaves globais antigas substituídas por índices por motor. Não executar antes dos writers novos; alinhar a versão ao registro remoto após aplicação.
+
+### Incidente de leitura durante o rollout
+
+Após o expand, `/automacao` apresentou erros SQL `57014`/statement timeout, digest `1774318519`. A restrição adicional chamava `coinops_operator_owned(operator_id)` por linha, repetindo a checagem de usuário/vínculo já existente. O hotfix substituiu essa avaliação pelo conjunto de operadores autorizado pela RLS, sem ampliar acesso. Benchmark local com 9.000 eventos: 88,169 ms → 9,097 ms, com uma leitura do conjunto de operadores; testes de usuário, outro operador, DISABLED, master, anon e service_role aprovados. O benchmark não é uma medição produtiva. O Google Chrome autenticado confirmou a recuperação após uma recarga, com cards completos e visual premium preservado no deployment `b18ff25`, às 14:28 UTC. O cron LIVE recuperou o checkpoint transitório de lease durante o DDL; BTC/SOL estavam ACTIVE e sem erro às 14:31 UTC.
 
 Procedimento obrigatório:
 
@@ -186,9 +191,12 @@ Checkpoints executados localmente nesta implementação, sem rede financeira:
 
 - Executor: **23/23 testes PASS**. Fixtures A/B, quatro mercados, seleção de credencial, mismatch de conta/engine/símbolo, ownership, caps nativos, replay/restart, health isolado e bridge temporária.
 - Decisões persistidas: **7/7 testes PASS** em `strategy-decision-server.test.ts`. Harness transpila os dois módulos server reais, usa resolver de domínio real e somente o banco é fictício; inclui mesmo decisionId em A/B, rejeição de contexto ausente/incompleto/divergente e continuidade do legado explícito.
-- Lint direcionado de `strategy-decision-server.ts` e seu teste: **PASS**.
+- Suíte final de aplicação (incluindo Auth, estratégia, relatórios, execução e modelos da UI): **558/558 PASS**, sem skips.
+- SQL/RLS em PostgreSQL efêmero: **20/20 PASS**, incluindo o hotfix de desempenho.
+- Lint global e build Next.js com validação TypeScript: **PASS**.
+- UI offline: **17/17 E2E PASS**, mais cinco verificações afetadas pela revisão final. Fixtures, não operações financeiras.
 
-Os números são checkpoints, não resultado final da suíte inteira nem prova de comportamento remoto. Completar no fechamento: suíte SQL efêmera/RLS, testes de relatórios/UI, lint global, typecheck, build, smoke publicado e comparação Binance/ledger. Testes SQL usam banco efêmero, nunca a base Production vinculada.
+Testes SQL usam banco efêmero, nunca a base Production vinculada. Ainda resta concluir o smoke da versão web 5.6 publicada, encerrar a bridge e aplicar o contract. O executor `2205f0b` já respondeu health/GET autenticado BTCBRL/SOLBRL pelo IPv4 esperado e rejeitou um contexto BTC/SOL cruzado antes de acessar a exchange.
 
 | Gate final da fase | Estado neste documento | Evidência necessária para fechamento |
 | --- | --- | --- |

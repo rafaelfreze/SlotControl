@@ -23,7 +23,7 @@ const sql=(s:string)=>invoke(["-c",s]);
 const tx=(s:string)=>sql(`begin;set local request.jwt.claim.role='service_role';${s};rollback;`);
 const product="11111111-1111-4111-8111-111111111111",tenant="22222222-2222-4222-8222-222222222222",user="33333333-3333-4333-8333-333333333333";
 const scope=`'${product}','${tenant}','${user}'`;
-const migration="20260924131727_add_multi_account_operator_engine_isolation.sql";
+const migration="20260924141913_add_multi_account_operator_engine_isolation.sql";
 let operator="",account="",engine="",testEngine="";
 const scaffold=`create role anon;create role authenticated;create role service_role bypassrls;
  create schema coinops;create schema private;create schema auth;
@@ -31,7 +31,7 @@ const scaffold=`create role anon;create role authenticated;create role service_r
  create function auth.jwt() returns jsonb language sql as $$select '{}'::jsonb$$;
  create function private.coinops_touch_updated_at() returns trigger language plpgsql as $$begin new.updated_at=now();return new;end$$;
  create function private.coinops_can_access_row(p uuid,t uuid,u uuid) returns boolean language sql as $$
- select p::text=current_setting('audit.product',true) and t::text=current_setting('audit.tenant',true) and u::text=current_setting('audit.user_id',true)$$;
+ select coalesce(current_setting('audit.master',true),'false')='true' or (p::text=current_setting('audit.product',true) and t::text=current_setting('audit.tenant',true) and u::text=current_setting('audit.user_id',true))$$;
  create table public.product_tenants(product_id uuid,tenant_id uuid,primary key(product_id,tenant_id));
  insert into public.product_tenants values('${product}','${tenant}');`;
 before(async()=>{
@@ -69,7 +69,8 @@ before(async()=>{
   union all select 'TESTNET_SLOTS',to_jsonb(s) from coinops.robot_v1_testnet_slots s
   union all select 'TESTNET_ORDERS',to_jsonb(o) from coinops.robot_v1_testnet_orders o;`);
  invoke(["-f",join(path,migration)]);
- invoke(["-f",join(path,"20260924135005_finalize_multi_account_engine_idempotency.sql")]);
+ invoke(["-f",join(path,"20260924142810_optimize_operator_rls_allowed_set.sql")]);
+ invoke(["-f",join(path,"20260924150000_finalize_multi_account_engine_idempotency.sql")]);
  operator=sql("select id from coinops.operators");account=sql("select id from coinops.exchange_accounts where is_legacy_default");
  engine=sql("select id from coinops.trading_engines where environment='REAL' and symbol='BTCBRL'");
  testEngine=sql("select id from coinops.trading_engines where environment='TESTNET' and symbol='SOLUSDC'");
@@ -117,6 +118,35 @@ check("5.6 SQL: RLS denies another operator, client writes and credential metada
  assert.throws(()=>tx(`${owned}update coinops.exchange_accounts set kill_switch=false`),/permission denied/);
  assert.ok(tx(`update coinops.operators set status='DISABLED' where id='${operator}';${owned}select count(*)=0 from coinops.trading_engines`).split("\n").includes("t"));
  assert.ok(tx(`update coinops.operators set status='DISABLED' where id='${operator}';${owned}select count(*)=0 from coinops.robot_v1_live_slot_accounts`).split("\n").includes("t"));
+});
+check("5.6 SQL: RLS allowed set preserves master, disabled, anonymous and service access",()=>{
+ const other="88888888-8888-4888-8888-888888888888";
+ const setup=`insert into coinops.operators(id,product_id,tenant_id,user_id,status)values('${other}','${product}','${tenant}','${other}','ACTIVE');
+ insert into coinops.exchange_accounts(operator_id,display_name)values('${other}','Other operator');`;
+ assert.ok(tx(`${setup}set local audit.master='true';set local role authenticated;select count(*)=2 from coinops.exchange_accounts`).split("\n").includes("t"));
+ assert.ok(tx(`${setup}update coinops.operators set status='DISABLED' where id='${operator}';set local audit.master='true';set local role authenticated;select count(*)=1 from coinops.exchange_accounts`).split("\n").includes("t"));
+ assert.ok(tx(`${setup}update coinops.operators set status='DISABLED' where id='${operator}';set local role service_role;select count(*)=2 from coinops.exchange_accounts`).split("\n").includes("t"));
+ assert.throws(()=>tx("set local role anon;select id from coinops.exchange_accounts"),/permission denied/);
+ assert.equal(sql(`select count(*)=34 from pg_policies where schemaname='coinops' and policyname in ('operator_owned','operator_context_visible') and tablename<>'operators' and qual like '%SELECT operators.id%'`),"t");
+});
+check("5.6 SQL: RLS 9000-event plan computes authorized operators only once",()=>{
+ const seed=`insert into coinops.robot_v1_testnet_events(run_id,product_id,tenant_id,user_id,event_key,event_type)
+ select r.id,${scope},'RLS_BENCH:'||n,'RLS_BENCH' from coinops.robot_v1_testnet_runs r cross join generate_series(1,9000)n where r.asset='BTC';
+ analyze coinops.robot_v1_testnet_events;
+ set local audit.product='${product}';set local audit.tenant='${tenant}';set local audit.user_id='${user}';`;
+ const explain=(legacy:boolean)=>{
+  const output=tx(`${seed}${legacy?"alter policy operator_context_visible on coinops.robot_v1_testnet_events using(private.coinops_operator_owned(operator_id));":""}
+   set local role authenticated;explain(analyze,buffers,format json)select count(*) from coinops.robot_v1_testnet_events`);
+  return JSON.parse(output.slice(output.indexOf("[\n"),output.lastIndexOf("\n]")+2))[0] as {Plan:Record<string,unknown>;"Execution Time":number};
+ };
+ const before=explain(true),after=explain(false);
+ const nodes:Record<string,unknown>[]=[];
+ const visit=(node:Record<string,unknown>)=>{nodes.push(node);for(const child of (node.Plans??[]) as Record<string,unknown>[])visit(child);};visit(after.Plan);
+ assert.equal(nodes.find(node=>node["Relation Name"]==="operators")?.["Actual Loops"],1);
+ assert.ok(JSON.stringify(before.Plan).includes("coinops_operator_owned"));
+ assert.ok(!JSON.stringify(after.Plan).includes("coinops_operator_owned"));
+ assert.equal(after.Plan["Actual Rows"],1);
+ console.info(`RLS local 9000 rows: per-row=${before["Execution Time"]}ms; allowed-set=${after["Execution Time"]}ms; operator scan loops=1`);
 });
 const accountB="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",engineB="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",runB="cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const fixtureB=()=>`insert into coinops.exchange_accounts(id,operator_id,display_name)values('${accountB}','${operator}','Fixture B');

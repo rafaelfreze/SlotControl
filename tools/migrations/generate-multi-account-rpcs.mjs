@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 const root=resolve(import.meta.dirname,'../..');
 const dir=resolve(root,'supabase/migrations');
-const target=resolve(dir,'20260924131727_add_multi_account_operator_engine_isolation.sql');
+const target=resolve(dir,'20260924141913_add_multi_account_operator_engine_isolation.sql');
 const read=n=>readFileSync(resolve(dir,n),'utf8').replace(/\r/g,'');
 function fn(file,name){ const source=read(file),match=new RegExp(`create (?:or replace )?function (?:coinops|private)\\.${name}\\(`).exec(source);
  if(!match)throw Error(name); const end=source.indexOf('end $$;',match.index);
