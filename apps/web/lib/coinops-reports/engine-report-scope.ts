@@ -80,7 +80,10 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     summary.free_capital = current && balance !== null && summary.committed_capital !== null ? Number((balance - Number(summary.committed_capital)).toFixed(8)) : null;
     summary.capital_basis = "NATIVE_ENGINE_LEDGER_CURRENT_SNAPSHOT; HISTORICAL_CAPITAL_WITHOUT_SNAPSHOT_UNAVAILABLE";
     summary.capital_snapshot_at = input.generatedAt;
-    summary.realized_pnl = null; // Detailed fills/events retain evidence; lifetime is not period performance.
+    // Period performance is derived from immutable credits + identified TP fills,
+    // never the current lifetime account snapshot. Incomplete evidence stays null.
+    if (report.incompleteSources.some((source) => /^(live_performance:|robot_v1_live_(events|orders|fills)(:|$))/.test(source))) summary.realized_pnl = null;
+    summary.realized_pnl_basis = "IMMUTABLE_LIVE_PROFIT_CREDIT_AT_EXCHANGE_TP_FILL; MARKET_ONLY";
     summary.lifetime_market_pnl_quote = ledgerComplete ? total(accounts, "market_pnl_quote") : null;
     summary.lifetime_fees_quote = ledgerComplete ? total(accounts, "fees_quote") : null;
     summary.total_result = null;
@@ -88,7 +91,7 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     summary.operational_open = summary.open_operations;
     summary.operational_next_buy = current ? ownSlots.filter((slot) => slot.entry_state === "ARMED").length : null;
     summary.operational_planned = current ? ownSlots.filter((slot) => slot.entry_state === "PLANNED").length : null;
-    summary.last_reconciliation = activeRuns[0]?.last_reconciled_at ?? null;
+    summary.last_reconciliation = summary.last_execution;
   }
 }
 

@@ -155,11 +155,17 @@ Histórico remoto confirmado no schema `coinops`, projeto `otdfpmsegjxpqrzisfmi`
 
 1. `20260924141913_add_multi_account_operator_engine_isolation.sql`: expand/backfill aplicado em 24/09/2026, 14:19 UTC; domínio, identidades, RLS/FKs, aliases, RPCs escopadas, auditoria e onboarding. Mantém compatibilidade dos IDs e contratos financeiros existentes.
 2. `20260924142810_optimize_operator_rls_allowed_set.sql`: hotfix RLS aplicado em 24/09/2026, 14:28 UTC. As 34 novas policies consultam uma vez o conjunto autorizado pela RLS de `operators`; as policies anteriores e os dados financeiros não são alterados.
-3. `20260924150000_finalize_multi_account_engine_idempotency.sql`: versão local provisória, aplicação remota **PENDING**. Contract pós-publicação que remove chaves globais antigas substituídas por índices por motor. Não executar antes dos writers novos; alinhar a versão ao registro remoto após aplicação.
+3. `20260924144559_finalize_multi_account_engine_idempotency.sql`: contract aplicado em 24/09/2026, 14:45 UTC, após publicação dos writers novos e encerramento da bridge. Remove chaves globais antigas substituídas por índices por motor; preserva a deduplicação de alertas sem engine com índice parcial por conta. Limites: lock timeout de 3s e statement timeout de 30s, sem alteração de linhas financeiras.
 
 ### Incidente de leitura durante o rollout
 
 Após o expand, `/automacao` apresentou erros SQL `57014`/statement timeout, digest `1774318519`. A restrição adicional chamava `coinops_operator_owned(operator_id)` por linha, repetindo a checagem de usuário/vínculo já existente. O hotfix substituiu essa avaliação pelo conjunto de operadores autorizado pela RLS, sem ampliar acesso. Benchmark local com 9.000 eventos: 88,169 ms → 9,097 ms, com uma leitura do conjunto de operadores; testes de usuário, outro operador, DISABLED, master, anon e service_role aprovados. O benchmark não é uma medição produtiva. O Google Chrome autenticado confirmou a recuperação após uma recarga, com cards completos e visual premium preservado no deployment `b18ff25`, às 14:28 UTC. O cron LIVE recuperou o checkpoint transitório de lease durante o DDL; BTC/SOL estavam ACTIVE e sem erro às 14:31 UTC.
+
+### Incidente no restart para encerramento da bridge
+
+O restart das 14:44 UTC, necessário para desabilitar a bridge, interrompeu duas leituras em curso. A proteção `preventNewBuys` registrou `COINOPS_LIVE_READ_STATE_FAILED` no BTC e `COINOPS_LIVE_RECONCILE_ORDERS_FAILED` na SOL, ativando `kill_switch=true` tanto em `trading_engines` quanto nas preparações LIVE dos dois ativos.
+
+Após a recuperação, os runs permaneceram `ACTIVE`, com `last_error=null`, e o cron retomou reconciliações a partir de 14:46 UTC. TPs e próximas BUYs já residentes foram preservados. Isso **não** prova liberação para novas entradas: as flags de proteção continuam ativas e impedem criação/despacho de novas BUYs. Uma BUY já residente continua podendo preencher; não foi cancelada pelo rollout. Nenhuma flag foi reativada para encerrar a fase. `RAFAEL_MIGRATION_PASS` e `MULTI_ACCOUNT_OPERATOR_READY` permanecem pendentes enquanto esse bloqueio operacional persistir, mesmo com health, ledger e ordens residentes íntegros.
 
 Procedimento obrigatório:
 
@@ -192,20 +198,39 @@ Checkpoints executados localmente nesta implementação, sem rede financeira:
 - Executor: **23/23 testes PASS**. Fixtures A/B, quatro mercados, seleção de credencial, mismatch de conta/engine/símbolo, ownership, caps nativos, replay/restart, health isolado e bridge temporária.
 - Decisões persistidas: **7/7 testes PASS** em `strategy-decision-server.test.ts`. Harness transpila os dois módulos server reais, usa resolver de domínio real e somente o banco é fictício; inclui mesmo decisionId em A/B, rejeição de contexto ausente/incompleto/divergente e continuidade do legado explícito.
 - Suíte final de aplicação (incluindo Auth, estratégia, relatórios, execução e modelos da UI): **558/558 PASS**, sem skips.
-- SQL/RLS em PostgreSQL efêmero: **20/20 PASS**, incluindo o hotfix de desempenho.
+- SQL/RLS em PostgreSQL efêmero: **21/21 PASS**, incluindo hotfix de desempenho, cobertura dos seis índices substitutos e teste adversarial de alertas sem engine (dedupe/replay por conta).
 - Lint global e build Next.js com validação TypeScript: **PASS**.
 - UI offline: **17/17 E2E PASS**, mais cinco verificações afetadas pela revisão final. Fixtures, não operações financeiras.
 
-Testes SQL usam banco efêmero, nunca a base Production vinculada. Ainda resta concluir o smoke da versão web 5.6 publicada, encerrar a bridge e aplicar o contract. O executor `2205f0b` já respondeu health/GET autenticado BTCBRL/SOLBRL pelo IPv4 esperado e rejeitou um contexto BTC/SOL cruzado antes de acessar a exchange.
+Testes SQL usam banco efêmero, nunca a base Production vinculada. O web `84140f7` foi confirmado READY no domínio canônico. A bridge foi desabilitada às 14:44 UTC; às 14:45 UTC, o executor confirmou health saudável na versão `2205f0b`, sem bridge, e o acesso autenticado legado sem contexto recebeu HTTP 403 `EXECUTOR_CONTEXT_REQUIRED`. GETs escopados de Binance confirmaram as ordens residentes abaixo preservadas. O contract foi então aplicado. Health e GETs confirmam disponibilidade técnica, não o desbloqueio das novas BUYs descrito no incidente acima. Ainda resta concluir o smoke final desktop/mobile da versão publicada e dos relatórios; esses resultados não são inferidos do build ou dos GETs.
+
+| Evidência Binance às 14:45 UTC | TPs residentes preservados | Próxima BUY preservada |
+| --- | --- | --- |
+| BTCBRL | `2334535032` | `2334960687` |
+| SOLBRL | `427993953`, `428035361` | `428035463` |
+
+O monitor server-side de seis horas permanece configurado em `/api/cron/live-monitor`, expressão `0 */6 * * *`. A tentativa manual de GET ao monitor retornou HTTP 401 porque a credencial exigida pela Vercel não estava disponível para exportação. Essa tentativa não foi repetida e **não executou nem validou uma auditoria Production**. A configuração agendada preservada não equivale a evidência de uma execução posterior bem-sucedida.
+
+### Correção do read-model de relatórios LIVE
+
+O smoke do relatório BTC/BRL identificou que os registros brutos LIVE apareciam em `LIVE_EXECUTION.csv`, mas não alimentavam operações/gains, alertas e última execução do resumo; a camada de moedas nativas ainda forçava lucro realizado para indisponível. A correção é exclusivamente de leitura: `SLOT_PROFIT_CREDITED` vincula o TP pelo ciclo, slot e `clientOrderId`, preserva `operation_sequence` e usa o último fill Binance desse TP como instante da realização. A observação/crédito mantém timestamp separado. Gains são apenas operações encerradas com lucro líquido positivo; aportes, ajustes manuais e saldos lifetime não se tornam performance de mercado. Replay de evento não duplica operação, e crédito/TP/fill incompletos produzem ressalva e lucro desconhecido, nunca lucro inventado.
+
+`net_pnl_brl` e demais campos legados do evento representam a moeda nativa definida no motor, sem conversão implícita. Dust retido mantém base de custo separada do delta de caixa. O capital inicial de período continua desconhecido quando não há snapshot histórico; o capital atual permanece o snapshot contábil. Alertas `CRITICAL` entram como erros, com severidade original preservada; checkpoints futuros não são usados em relatório histórico. Nenhuma escrita no ledger, configuração do robô, executor ou exchange faz parte desta correção. A validação publicada do relatório permanece pendente até o novo deploy/smoke.
+
+O link da Automação preserva conta, motor, ambiente e ativo desde a primeira consulta. Seletores desconhecidos ou incompatíveis são bloqueados, sem ampliar silenciosamente para Todos. Exportações incompatíveis com o motor selecionado ficam indisponíveis com explicação. A observação de saúde da UI usa identidade autenticada, no máximo duas consultas concorrentes e orçamento individual de cinco segundos; timeout mantém ATENÇÃO e não altera o timeout financeiro do executor.
+
+Validação adicional local: 63 testes do read-model de relatórios, 15 de seleção/exportação/isolamento e 17 de apresentação/saúde PASS. O complemento visual full-width/home/menu está em commit separado, com 24 E2E cobrindo 360/390/430/1024/1280/1440/1920 e testes Auth direcionados aprovados. Nenhum desses testes opera na exchange.
+
+Snapshot GET Binance pós-contract, às 15:02 UTC: executor `2205f0b` saudável, bridge desligada, os mesmos dois IDs BTC e três IDs SOL da tabela acima continuam NEW. O bloqueio de novas entradas SQL não foi desfeito; health técnico não significa retomada financeira. A publicação final deve conservar essa distinção.
 
 | Gate final da fase | Estado neste documento | Evidência necessária para fechamento |
 | --- | --- | --- |
-| `MULTI_ACCOUNT_SCHEMA_READY` | PENDING | Migrations aplicadas no alvo correto; schema/RLS/FKs/índices conferidos. |
-| `ACCOUNT_ISOLATION_PASS` | PENDING | Adversariais completos, credenciais/ownership/RLS/ajustes/relatórios sem cruzamento. |
-| `MULTI_MARKET_MODEL_PASS` | PENDING | Fixtures de quatro mercados com ledger, caps, gains/rank/ATH e quotes independentes. |
-| `RAFAEL_MIGRATION_PASS` | PENDING | Evidência Binance + ledger antes/depois, IDs/caps/perfis/histórico preservados. |
-| `EXECUTOR_MULTI_ACCOUNT_READY` | PENDING | Executor publicado, registry correto, versão efetiva, GETs e recovery; bridge encerrada. |
+| `MULTI_ACCOUNT_SCHEMA_READY` | PASS | Três migrations aplicadas no alvo correto; schema/RLS/FKs/índices validados no harness SQL, versões locais alinhadas ao histórico remoto. |
+| `ACCOUNT_ISOLATION_PASS` | PASS (local) | Adversariais SQL/RLS 21/21, executor 23/23 e aplicação 558/558; isolamento de conta/engine, credenciais, ownership, ajustes e contratos de relatórios cobertos por fixtures, sem criar segunda conta Production. |
+| `MULTI_MARKET_MODEL_PASS` | PASS (local) | Fixtures dos quatro mercados, quotes/caps/ledger/gains/rank/ATH independentes; não representa ativação de novo mercado real. |
+| `RAFAEL_MIGRATION_PASS` | PENDING | IDs, TPs e BUYs residentes preservados, mas `kill_switch=true` em engines e preparações BTC/SOL após falhas de leitura no restart; novas BUYs continuam bloqueadas. |
+| `EXECUTOR_MULTI_ACCOUNT_READY` | PASS (técnico) | Executor `2205f0b`, health/GETs escopados, bridge encerrada às 14:44 UTC, contexto legado negado; replay/recovery cobertos pelos testes. Não certifica novas entradas liberadas. |
 | `MULTI_ACCOUNT_UI_READY` | PENDING | Smoke desktop/mobile publicado de Todos/Rafael, mercados, detalhes/config/relatórios. |
-| `MULTI_ACCOUNT_OPERATOR_READY` | PENDING | Todos os gates anteriores e validação final sem segunda conta/novo par Production. |
+| `MULTI_ACCOUNT_OPERATOR_READY` | PENDING | Bloqueio de novas BUYs BTC/SOL ainda ativo; smoke UI/relatórios e fechamento operacional pendentes. Nenhuma segunda conta ou novo par Production ativado. |
 
 PASS nesses gates não autoriza por si só outra conta, outro par, aumento de cap ou operação financeira. Acrescentar ao fechamento SHA final, deployment READY, SHA servido, migrations efetivas, estado LIVE e evidência de zero ordem/cancelamento provocado pela migration; até então esses fatos permanecem não certificados aqui.

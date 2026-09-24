@@ -13,6 +13,7 @@ import { buildPreLiveAuditGate } from "./pre-live-audit.ts";
 import { buildLivePreparationAudit } from "./live-preparation-audit.ts";
 import type { DomainRegistry } from "../execution/operator-context.ts";
 import { buildScopedEngineReports } from "./engine-report-scope.ts";
+import { buildLivePerformanceEvidence } from "./live-performance-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
@@ -145,6 +146,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       latency_ms: details.latency_ms ?? details.reconciliation_gap_ms ?? null, resolved_by_version: details.resolved_by_version ?? null,
       idempotency_key: row.event_key, source: "robot_v1_testnet_events", severity: /ERROR|FAILED/.test(str(row.event_type)) ? "ERROR" : /MISSED|DISCONNECTED/.test(str(row.event_type)) ? "WARNING" : "INFO" });
   }
+  const livePerformance = buildLivePerformanceEvidence(input.sources);
+  allEvents.push(...livePerformance.events);
+  incompleteSources.push(...livePerformance.incomplete);
   allEvents.sort(byTime);
   for (const event of allEvents.filter((row) => row.environment === "TESTNET" && /MISSED_LEVEL/.test(str(row.event_type)))) {
     const candidates = temporalOccurrences.filter((occurrence) => occurrence.cycle_id === event.cycle_id && occurrence.slot === event.slot);
@@ -224,6 +228,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       context_ended_at: iso(cycle.completed_at), context_end_reason: cycle.completion_reason ?? null,
       trigger_source: "PERSISTED_SHADOW_CANDLE", buy_client_order_id: slot.buy_client_order_id, sell_client_order_id: slot.sell_client_order_id, source: "robot_v1_slots", snapshot_at: input.generatedAt });
   }
+  allOperations.push(...livePerformance.operations);
   const observationEnd = new Date(Math.min(timestamp(filters.end), timestamp(input.generatedAt))).toISOString();
   // Keep a proven historical price violation intact. Recovery is separate
   // evidence: the exact repair and the same operation's restored price.
@@ -266,6 +271,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       balance_before: after === null || profit === null ? null : Number((after - profit).toFixed(12)), realized_profit: profit, gross_profit: operation?.gross_profit ?? null, fees: operation?.fees ?? null, net_profit: profit,
       contribution: 0, withdrawal: 0, balance_after: after, next_allocation: after, source_operation: event.operation_id, reason: "Crédito em fundos fictícios no slot Testnet.", source: "robot_v1_testnet_events" });
   }
+  allCapital.push(...livePerformance.capital);
   const manualById = new Map(manualAdjustments.map((row) => [str(row.id), row]));
   for (const row of manualAdjustments) {
     const originalKind = row.kind === "REVERSAL" ? manualById.get(str(row.reversal_of))?.kind : row.kind;
@@ -286,7 +292,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const credit = allCapital.find((row) => row.source_operation === operation.operation_id);
     allGains.push({ environment: operation.environment, asset: operation.asset, symbol: operation.symbol, cycle_id: operation.cycle_id, operation_id: operation.operation_id, physical_slot: operation.physical_slot_number,
       operation_sequence: operation.operation_sequence, entry_price: operation.entry_price, tp_price: operation.take_profit_price, target_percent: operation.gain_target_percent, gross_gain: operation.gross_profit, fees: operation.fees, net_gain: operation.net_profit,
-      balance_before: credit?.balance_before ?? null, balance_after: credit?.balance_after ?? null, opened_at: operation.opened_at, gain_at: operation.closed_at, exchange_gain_at: operation.exchange_closed_at ?? null, gain_time_basis: operation.environment === "TESTNET" ? "SLOT_CLOSED_LEDGER_OBSERVATION; exchange_gain_at is separate" : "SHADOW_OPERATION_CLOSED_AT", duration_ms: duration(operation.opened_at, operation.closed_at),
+      balance_before: credit?.balance_before ?? null, balance_after: credit?.balance_after ?? null, opened_at: operation.opened_at, gain_at: operation.closed_at, exchange_gain_at: operation.exchange_closed_at ?? null, gain_time_basis: operation.environment === "REAL" ? "EXCHANGE_TP_FILL; immutable credit required" : operation.environment === "TESTNET" ? "SLOT_CLOSED_LEDGER_OBSERVATION; exchange_gain_at is separate" : "SHADOW_OPERATION_CLOSED_AT", duration_ms: duration(operation.opened_at, operation.closed_at),
       cumulative_slot_gains: cumulativeSlot.get(slotKey), cumulative_asset_gains: cumulativeAsset.get(assetKey),
       gain_source: "MARKET", gain_units: 1, source: operation.source });
   }
@@ -466,6 +472,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     temporal_classification: event.temporal_classification ?? null, is_active_issue: event.is_active_issue ?? null,
     root_cause: event.root_cause ?? null, evidence_source: event.evidence_source ?? null, resolved_by_version: event.resolved_by_version ?? null,
     resolved: event.is_active_issue === false && event.resolved_by_version ? true : null, resolved_at: event.resolved_at ?? null, resolution: null, related_event: event.event_id, related_order: object(event.details).clientOrderId ?? null, related_operation: event.operation_id, source: event.source }));
+  alerts.push(...livePerformance.alerts);
   for (const cycle of cycles.filter((row) => row.status === "FAILED")) alerts.push({ timestamp: iso(cycle.completed_at ?? cycle.started_at), environment: "SHADOW", asset: cycle.asset, symbol: cycle.symbol, cycle_id: cycle.id, severity: "ERROR", code: cycle.completion_reason || "CYCLE_INITIALIZATION_FAILED", message: cycle.completion_reason || "Ciclo histórico falhou; motivo não persistido.", expected_behavior: "Inicializar a grade e preservar o motivo de qualquer falha.", observed_behavior: "FAILED", resolved: null, source: "robot_v1_cycles" });
   for (const row of triggerResults.filter((result) => ["MISSING_ACTION", "AMBIGUOUS"].includes(str(result.result)))) alerts.push({
     timestamp: row.first_cross_at, environment: row.environment, asset: row.asset, symbol: row.symbol, cycle_id: row.cycle_id, slot: row.slot,
@@ -638,6 +645,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       ownLiveRuns.some((run) => run.id === row.run_id)) : [];
     const ownLiveFills = environment === "REAL" ? source("robot_v1_live_fills").filter((row) =>
       ownLiveOrders.some((order) => order.id === row.order_id)) : [];
+    const filledLiveOrdersInPeriod = ownLiveOrders.filter((order) => order.status === "FILLED"
+      && inPeriod(ownLiveFills.filter((fill) => fill.order_id === order.id).map((fill) => iso(fill.filled_at)).filter(Boolean).sort().at(-1), filters));
     const hasLiveLedger = ownLiveRuns.length > 0;
     const gains = periodGains.filter((row) => row.environment === environment && row.asset === asset);
     const completed = allOperations.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.closed_at, filters));
@@ -677,21 +686,23 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     const ownRecon = reconciliation.filter((row) => row.environment === environment && (!row.asset || row.asset === asset) && timestamp(row.timestamp) < timestamp(observationEnd)).sort(byTime);
     const persistedEngineExecution = observations.filter((row) => row.source === "SHADOW_ENGINE" && row.asset === asset && timestamp(row.observed_at) < timestamp(observationEnd)).sort((a, b) => timestamp(a.observed_at) - timestamp(b.observed_at)).at(-1)?.observed_at;
     const persistedTestnetExecution = allEvents.filter((row) => row.environment === "TESTNET" && row.asset === asset && row.event_type === "RECONCILED" && timestamp(row.timestamp) < timestamp(observationEnd)).at(-1)?.timestamp;
-    const checkpoint = environment === "SHADOW" ? config?.last_engine_at : environment === "TESTNET" ? run?.last_reconciled_at : latestRealRun?.completed_at;
-    const lastExecution = environment === "SHADOW" ? persistedEngineExecution ?? (timestamp(checkpoint) <= timestamp(observationEnd) ? checkpoint : null) : environment === "TESTNET" ? persistedTestnetExecution ?? (timestamp(checkpoint) <= timestamp(observationEnd) ? checkpoint : null) : checkpoint;
+    const persistedLiveExecution = allEvents.filter((row) => row.environment === "REAL" && row.asset === asset && row.event_type === "RECONCILED" && timestamp(row.timestamp) < timestamp(observationEnd)).at(-1)?.timestamp;
+    const liveCheckpoint = ownLiveRuns.map((row) => row.last_reconciled_at).filter((at) => timestamp(at) <= timestamp(observationEnd)).sort((a, b) => timestamp(a) - timestamp(b)).at(-1);
+    const checkpoint = environment === "SHADOW" ? config?.last_engine_at : environment === "TESTNET" ? run?.last_reconciled_at : hasLiveLedger ? liveCheckpoint : latestRealRun?.completed_at;
+    const lastExecution = environment === "SHADOW" ? persistedEngineExecution ?? (timestamp(checkpoint) <= timestamp(observationEnd) ? checkpoint : null) : environment === "TESTNET" ? persistedTestnetExecution ?? (timestamp(checkpoint) <= timestamp(observationEnd) ? checkpoint : null) : [persistedLiveExecution, checkpoint].filter((at) => timestamp(at) <= timestamp(observationEnd)).sort((a, b) => timestamp(a) - timestamp(b)).at(-1);
     const errors = ownAlerts.filter((row) => row.severity === "ERROR").length;
     const hasEvidence = environment === "REAL" ? Boolean(latestRealRun || realRows.length) : environment === "TESTNET" ? Boolean(run) : Boolean(config);
     const missedInWindow = ownMissed.filter((row) => filters.temporalWindow === "SINCE_STRATEGY_4_1" ? row.temporal_classification !== "HISTORICAL_PRE_4_1"
       : inPeriod(row.occurred_at ?? row.occurred_by_at ?? row.detected_at, filters));
     const currentTestnetSlots = normalizedSlots.filter((row) => row.environment === "TESTNET" && row.asset === asset && ownCycles.some((cycle) => cycle.cycle_id === row.cycle_id && cycle.status === "ACTIVE"));
-    const activeErrors = temporal.activeIssueCount + (environment === "TESTNET" && run?.last_error ? 1 : 0);
+    const activeErrors = temporal.activeIssueCount + (environment === "TESTNET" && run?.last_error ? 1 : 0) + (environment === "REAL" ? activeAlerts.filter((row) => row.severity === "ERROR").length : 0);
     const engineStale = environment === "TESTNET" && run?.status === "ACTIVE" && (!lastExecution || timestamp(observationEnd) - timestamp(lastExecution) > 120_000);
     const currentHealth = !hasEvidence ? "SEM_EVIDENCIA" : temporal.regressionCount || environment === "TESTNET" && run?.last_error ? "DIVERGÊNCIA ATIVA"
       : temporal.unresolvedCount || temporal.externalCount || engineStale || activeAlerts.length || !currentEnough || missing("robot_v1_testnet_events") || missing("robot_v1_testnet_slots") || missing("robot_v1_testnet_orders") ? "ATENÇÃO"
       : temporal.historicalCount ? "Motor OK — ocorrências históricas preservadas" : "Motor OK";
     summary.push({ period_start: filters.start, period_end: filters.end, observed_until: observationEnd, environment, asset, symbol: environment === "REAL" ? `${asset}BRL` : `${asset}USDC`, quote_asset: environment === "REAL" ? "BRL" : "USDC", mode: environment === "REAL" ? hasLiveLedger ? "LIVE SPOT RESTRITO" : "READ_ONLY / LIVE BLOCKED" : environment,
       capital_start: capitalStart, capital_end: capitalEnd, free_capital: capitalEnd === null || committed === null ? null : capitalEnd - committed, committed_capital: committed,
-      capital_basis: environment === "REAL" ? hasLiveLedger ? "LIVE_BRL_LEDGER; valores detalhados em LIVE_EXECUTION.csv" : "PREPARED_LEDGER_ONLY; LIVE_BLOCKED" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_MARKET_PNL_PLUS_MANUAL_GAINS_PLUS_CONTRIBUTIONS; committed=executed position cost + reserved NEXT BUY", realized_pnl: sum(completed, "net_profit"), open_pnl: openPnl,
+      capital_basis: environment === "REAL" ? hasLiveLedger ? "LIVE_BRL_LEDGER; valores detalhados em LIVE_EXECUTION.csv" : "PREPARED_LEDGER_ONLY; LIVE_BLOCKED" : "INITIAL_PHYSICAL_SLOT_CAPITAL_PLUS_MARKET_PNL_PLUS_MANUAL_GAINS_PLUS_CONTRIBUTIONS; committed=executed position cost + reserved NEXT BUY", realized_pnl: environment === "REAL" && hasLiveLedger && incompleteSources.some((source) => /^(live_performance:|robot_v1_live_(events|orders|fills)(:|$))/.test(source)) ? null : sum(completed, "net_profit"), open_pnl: openPnl,
       total_result: openPnl === null ? null : sum(completed, "net_profit") + openPnl,
       gains: gains.filter((row) => number(row.net_gain) > 0).length,
       manual_gains: manualAdjustments.filter((row) => row.environment === environment && row.asset === asset && inPeriod(row.created_at, filters)).reduce((total, row) => total + number(row.gain_units), 0),
@@ -701,8 +712,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       contributions_usdc: history.reduce((total, row) => total + number(row.contribution), 0),
       operations: completed.length, open_operations: openAtEnd.length,
       cycles: hasLiveLedger ? ownLiveRuns.length : ownCycles.length, completed_cycles: hasLiveLedger ? ownLiveRuns.filter((row) => inPeriod(row.completed_at, filters)).length : ownCycles.filter((row) => inPeriod(row.completed_at, filters)).length, slots: hasLiveLedger ? 25 : ownCycles.length ? Math.max(...ownCycles.map((row) => number(row.slot_count))) : 0,
-      buys: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "BUY" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => ["BUY_TRIGGERED", "INITIAL_POSITION_OPENED"].includes(str(row.event_type))).length,
-      take_profits: environment === "TESTNET" ? ownOrders.filter((row) => row.side === "SELL" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => row.event_type === "TP_TRIGGERED").length,
+      buys: hasLiveLedger ? filledLiveOrdersInPeriod.filter((row) => row.side === "BUY").length : environment === "TESTNET" ? ownOrders.filter((row) => row.side === "BUY" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => ["BUY_TRIGGERED", "INITIAL_POSITION_OPENED"].includes(str(row.event_type))).length,
+      take_profits: hasLiveLedger ? filledLiveOrdersInPeriod.filter((row) => row.side === "SELL" && row.purpose === "TP").length : environment === "TESTNET" ? ownOrders.filter((row) => row.side === "SELL" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => row.event_type === "TP_TRIGGERED").length,
       orders_open: hasLiveLedger ? ownLiveOrders.filter((row) => activeOrder(row.status)).length : ownOrders.filter((row) => activeOrder(row.status_at_period_end)).length, orders_filled: hasLiveLedger ? ownLiveOrders.filter((row) => row.status === "FILLED").length : ownOrders.filter((row) => row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length, orders_cancelled: hasLiveLedger ? ownLiveOrders.filter((row) => row.status === "CANCELED").length : ownOrders.filter((row) => ["CANCELED", "CANCELLED"].includes(str(row.status_at_period_end)) && inPeriod(row.canceled_at, filters)).length,
       fills: hasLiveLedger ? ownLiveFills.filter((row) => inPeriod(row.filled_at, filters)).length : filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? exchangeFills.length ? fillsInWindow.length : null : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? ownEvents.filter((row) => row.event_type === "TESTNET_FILL_OBSERVED").length : ownEvents.filter((row) => /_(PARTIALLY_FILLED|FILLED)$/.test(str(row.event_type))).length,
       fill_count_basis: hasLiveLedger ? "PERSISTED_BINANCE_SPOT_TRADE_IDS" : filters.temporalWindow === "SINCE_STRATEGY_4_1" && environment === "TESTNET" ? "EXCHANGE_FILLED_AT; collection timestamp remains separate; missing exact evidence is null" : ownEvents.some((row) => row.event_type === "TESTNET_FILL_OBSERVED") ? "PERSISTED_EXCHANGE_TRADE_OBSERVATIONS" : "OBSERVED_ORDER_STATUS_TRANSITIONS; exact legacy fills unavailable",

@@ -8,7 +8,9 @@ import { AppHeader, MobileScreen } from "@/components/app/mobile-ui";
 import { STRATEGY_4_1_EFFECTIVE_AT } from "@/lib/coinops-reports/missed-level-temporal";
 import { REPORT_VERSION } from "@/lib/coinops-reports/filters";
 import { CANDLE_EXPORT_MAX_DAYS, partitionCandleExports } from "@/lib/coinops-reports/candle-export-parts";
+import { reportExportSelectionReason } from "@/lib/coinops-reports/export-selection";
 import type { DomainRegistry } from "@/lib/execution/operator-context";
+import type { ReportInitialSelection } from "@/lib/coinops-reports/initial-selection";
 
 type Environment = "ALL" | "SHADOW" | "TESTNET" | "REAL";
 type Preset = "today" | "7d" | "30d" | "month" | "custom" | "strategy4_1";
@@ -41,7 +43,7 @@ const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 4 });
 const integer = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 const dateTime = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Campo_Grande", dateStyle: "short", timeStyle: "short" });
 function shiftDate(day: string, offset: number) { const date = new Date(`${day}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + offset); return date.toISOString().slice(0, 10); }
-function initialFilters(today: string): Filters { return { start: shiftDate(today, -29), end: today, preset: "30d", asset: "ALL", environment: "ALL", account: "ALL", engine: "ALL" }; }
+function initialFilters(today: string, selection?: ReportInitialSelection): Filters { return { start: shiftDate(today, -29), end: today, preset: "30d", asset: "ALL", environment: "ALL", account: "ALL", engine: "ALL", ...selection }; }
 function dateLabel(day: string) { return day.split("-").reverse().join("/"); }
 function text(value: unknown, fallback = "Não informado") { return typeof value === "string" && value ? value : fallback; }
 function numeric(value: unknown) { if (value === null || value === undefined || value === "") return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
@@ -51,10 +53,10 @@ function sizeLabel(bytes: number) { return bytes < 1024 ? `${bytes} B` : bytes <
 function environmentLabel(value: string) { return value === "ALL" ? "Todos os ambientes" : value === "TESTNET" ? "Testnet · fictício" : value === "REAL" ? "Real · somente leitura" : "Shadow"; }
 function query(filters: Filters, format: string, file?: string) { const params = new URLSearchParams({ ...filters, format }); if (file) params.set("file", file); return `/api/coinops-reports?${params.toString()}`; }
 
-export function ReportCenter({ today, userLabel, registry }: { today: string; userLabel: string; registry?: DomainRegistry }) {
-  const [filters, setFilters] = useState<Filters>(() => initialFilters(today));
-  const [draft, setDraft] = useState<Filters>(() => initialFilters(today));
-  const [view, setView] = useState<View>("overview");
+export function ReportCenter({ today, userLabel, registry, initialSelection }: { today: string; userLabel: string; registry?: DomainRegistry; initialSelection?: ReportInitialSelection }) {
+  const [filters, setFilters] = useState<Filters>(() => initialFilters(today, initialSelection));
+  const [draft, setDraft] = useState<Filters>(() => initialFilters(today, initialSelection));
+  const [view, setView] = useState<View>(() => !initialSelection || initialSelection.environment === "ALL" ? "overview" : initialSelection.environment.toLowerCase() as View);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -99,6 +101,8 @@ export function ReportCenter({ today, userLabel, registry }: { today: string; us
     if (view !== "exports") setView(draft.environment === "ALL" ? "overview" : draft.environment.toLowerCase() as View);
   }
   async function download(format: DownloadFormat, file?: string, environment?: Environment, range?: { start: string; end: string }) {
+    const scopeError = reportExportSelectionReason(filters, format === "candles" ? "SHADOW" : environment ?? filters.environment);
+    if (scopeError) { setDownloadError(scopeError); return; }
     const selected: Filters = { ...filters, ...(environment ? { environment } : {}), ...(range ? { start: range.start, end: range.end, preset: "custom" as const } : {}), ...(format === "candles" ? { environment: "SHADOW" as const } : {}) };
     setDownloading(file || `${format}-${selected.environment}${range ? `:${range.start}_${range.end}` : ""}`); setDownloadError("");
     try {
@@ -125,6 +129,7 @@ export function ReportCenter({ today, userLabel, registry }: { today: string; us
   const totalRows = Object.values(preview?.rowCounts || {}).reduce((sum, count) => sum + count, 0);
   const warnings = [...new Set([...(preview?.warnings || []), ...(preview?.incompleteSources || []).map((source) => `Fonte incompleta: ${source}`)])];
   const candleParts = partitionCandleExports(filters.start, filters.end);
+  const candleScopeError = reportExportSelectionReason(filters, "SHADOW");
   const totals = (key: string) => summaries.reduce((sum, row) => sum + (numeric(row[key]) || 0), 0);
   const totalErrors = preview?.totals?.errors ?? totals("errors");
   const downloadButton = <button type="button" className="reports-primary" disabled={busy || loading || !preview} onClick={() => void download("zip")}><span aria-hidden="true">⇩</span>{downloading?.startsWith("zip-") ? "Preparando pacote…" : "Exportar relatório completo"}</button>;
@@ -179,10 +184,16 @@ export function ReportCenter({ today, userLabel, registry }: { today: string; us
           <div className="reports-panel-heading"><div><span className="reports-eyebrow">PACOTE PARA VOCÊ E PARA IA</span><h2>{view === "exports" ? "Arquivos e exportações" : "Exportação auditável"}</h2></div>{view !== "exports" ? <button className="reports-text-button" type="button" onClick={() => setView("exports")}>Ver arquivos individuais →</button> : null}</div>
           <div className="reports-export-options"><p><strong>ZIP completo</strong> · CSVs, resumo em português, JSON relacionado e manifesto. O pacote padrão inclui evidências de mercado ao redor dos gatilhos.</p><div className="reports-export-buttons">{downloadButton}<button type="button" className="reports-secondary" disabled={busy} onClick={() => void download("markdown", "RESUMO.md")}>Resumo legível</button><button type="button" className="reports-secondary" disabled={busy} onClick={() => void download("json", "AUDITORIA_COMPLETA.json")}>JSON para IA</button></div></div>
           {view === "exports" ? <>
-            <div className="reports-environment-downloads"><span>Pacote separado:</span>{(["SHADOW", "TESTNET", "REAL"] as Environment[]).map((environment) => <button key={environment} type="button" className="reports-secondary" disabled={busy} onClick={() => void download("zip", undefined, environment)}>{environmentLabel(environment)} ⇩</button>)}</div>
+            <div className="reports-environment-downloads"><span>Pacote separado:</span>{(["SHADOW", "TESTNET", "REAL"] as Environment[]).map((environment) => {
+              const scopeError = reportExportSelectionReason(filters, environment);
+              return <button key={environment} type="button" className="reports-secondary" disabled={busy || Boolean(scopeError)}
+                title={scopeError ?? undefined}
+                onClick={() => void download("zip", undefined, environment)}>{environmentLabel(environment)} ⇩</button>;
+            })}</div>
+            {filters.engine !== "ALL" ? <p className="reports-format-note">Motor específico selecionado: exportações de outros ambientes ficam indisponíveis. Para trocar, escolha explicitamente Ambiente e Motor nos filtros e clique em Aplicar filtros. Candles completos exigem um motor Shadow. Nenhuma conta ou motor é trocado automaticamente.</p> : null}
             <div className="reports-file-grid">{files.map((file) => <article key={file.name}><div><strong>{file.name}</strong><p>{file.description || descriptions[file.name] || "Evidência do relatório"}</p><small>{file.rows !== undefined ? `${integer.format(file.rows)} linhas` : preview.rowCounts[file.name] !== undefined ? `${integer.format(preview.rowCounts[file.name])} linhas` : "Metadados e documentação"}</small></div><button type="button" aria-label={`Baixar ${file.name}`} title={`Baixar ${file.name}`} className="reports-file-download" disabled={busy} onClick={() => void download(file.name.endsWith(".csv") ? "csv" : file.name.endsWith(".md") ? "markdown" : "json", file.name)}>⇩</button></article>)}</div>
-            <div className="reports-candles"><div><strong>Candles 1m completos</strong><p>Mercado Production usado pelo Shadow; estes candles não comprovam preços ou fills do Testnet. {candleParts.length > 1 ? `Todo o período está dividido em ${candleParts.length} partes de até ${CANDLE_EXPORT_MAX_DAYS} dias. Baixe cada parte desejada; nenhuma data foi removida.` : "Download separado de todos os candles persistidos no período selecionado."} Lacunas de coleta continuam explícitas.</p></div>{candleParts.length === 1 ? <button type="button" className="reports-secondary" disabled={busy} onClick={() => void download("candles")}>{downloading?.startsWith("candles-") ? "Preparando candles…" : "Exportar candles completos ⇩"}</button> : null}</div>
-            {candleParts.length > 1 ? <><div className="reports-file-grid" aria-label="Partes do download de candles">{candleParts.slice(candlePage * 6, candlePage * 6 + 6).map((part) => <article key={part.start}><div><strong>Parte {part.number} de {candleParts.length}</strong><p>{dateLabel(part.start)} a {dateLabel(part.end)}</p><small>{part.days} {part.days === 1 ? "dia completo" : "dias completos"} · {filters.asset === "ALL" ? "BTC + SOL" : filters.asset} · CSV 1m</small></div><button type="button" className="reports-file-download" aria-label={`Baixar candles: parte ${part.number}, ${dateLabel(part.start)} a ${dateLabel(part.end)}`} title={`Baixar parte ${part.number}`} disabled={busy} onClick={() => void download("candles", undefined, undefined, part)}>{downloading === `candles-SHADOW:${part.start}_${part.end}` ? "…" : "⇩"}</button></article>)}</div><Pager page={candlePage} total={candleParts.length} size={6} onChange={setCandlePage} label="partes de candles" /></> : null}
+            <div className="reports-candles"><div><strong>Candles 1m completos</strong><p>Mercado Production usado pelo Shadow; estes candles não comprovam preços ou fills do Testnet. {candleParts.length > 1 ? `Todo o período está dividido em ${candleParts.length} partes de até ${CANDLE_EXPORT_MAX_DAYS} dias. Baixe cada parte desejada; nenhuma data foi removida.` : "Download separado de todos os candles persistidos no período selecionado."} Lacunas de coleta continuam explícitas.</p></div>{candleParts.length === 1 ? <button type="button" className="reports-secondary" disabled={busy || Boolean(candleScopeError)} title={candleScopeError ?? undefined} onClick={() => void download("candles")}>{downloading?.startsWith("candles-") ? "Preparando candles…" : "Exportar candles completos ⇩"}</button> : null}</div>
+            {candleParts.length > 1 ? <><div className="reports-file-grid" aria-label="Partes do download de candles">{candleParts.slice(candlePage * 6, candlePage * 6 + 6).map((part) => <article key={part.start}><div><strong>Parte {part.number} de {candleParts.length}</strong><p>{dateLabel(part.start)} a {dateLabel(part.end)}</p><small>{part.days} {part.days === 1 ? "dia completo" : "dias completos"} · {filters.asset === "ALL" ? "BTC + SOL" : filters.asset} · CSV 1m</small></div><button type="button" className="reports-file-download" aria-label={`Baixar candles: parte ${part.number}, ${dateLabel(part.start)} a ${dateLabel(part.end)}`} title={candleScopeError ?? `Baixar parte ${part.number}`} disabled={busy || Boolean(candleScopeError)} onClick={() => void download("candles", undefined, undefined, part)}>{downloading === `candles-SHADOW:${part.start}_${part.end}` ? "…" : "⇩"}</button></article>)}</div><Pager page={candlePage} total={candleParts.length} size={6} onChange={setCandlePage} label="partes de candles" /></> : null}
           </> : null}
           <p className="reports-format-note">CSV para Excel brasileiro: UTF-8 com BOM e separador ponto e vírgula. Datas ISO; horário local America/Campo_Grande e UTC quando relevante. Secrets nunca integram os arquivos.</p>
         </section>
