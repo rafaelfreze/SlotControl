@@ -16,7 +16,9 @@ function configuredWebPush() {
   const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   if (!publicKey || !privateKey) throw new Error("COINOPS_PUSH_VAPID_UNCONFIGURED");
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:onplaymkt@gmail.com", publicKey, privateKey);
+  try {
+    webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:onplaymkt@gmail.com", publicKey, privateKey);
+  } catch { throw new Error("COINOPS_PUSH_VAPID_INVALID"); }
   return { publicKey, webpush };
 }
 
@@ -114,7 +116,12 @@ export async function dispatchOperationalPush() {
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_PUSH_SCHEMA_INVALID");
   configuredWebPush();
   const service = createServiceRoleClient();
-  const stale = await discoverHeartbeatAlerts(service);
+  let stale: number;
+  try { stale = await discoverHeartbeatAlerts(service); }
+  catch (error) {
+    if (error instanceof Error && /^COINOPS_PUSH_[A-Z0-9_]+$/.test(error.message)) throw error;
+    throw new Error("COINOPS_PUSH_HEARTBEAT_UNEXPECTED");
+  }
   const alertsResult = await service.from("robot_v1_live_alerts")
     .select("id,operator_id,exchange_account_id,trading_engine_id,severity,code,first_seen_at,resolved_at")
     .eq("tenant_id", getCoinOpsServiceTenantId()).is("resolved_at", null)
