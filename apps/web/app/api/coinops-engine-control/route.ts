@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { syncInactiveBinanceAccount } from "@/lib/execution/binance-account-registry-server";
+import { BinanceSpotTestnetAdapter } from "@/lib/execution/binance-spot-testnet-adapter";
 import { loadLiveEngineExecutorStatus } from "@/lib/execution/live-executor-health";
 import { buildLiveSizing, parseLiveRules } from "@/lib/execution/live-preparation";
 import { operatorAccountSnapshot, operatorExecutorAdmin } from "@/lib/execution/operator-executor-admin";
@@ -224,7 +225,7 @@ export async function POST(request: NextRequest) {
     const raw = await request.text();
     if (Buffer.byteLength(raw) > 4096) throw new Error("COINOPS_ENGINE_BODY_TOO_LARGE");
     const input = JSON.parse(raw) as Intent;
-    if (!input || !["PREVIEW", "PROVISION", "SYNC", "PREPARE", "ACTIVATE", "PAUSE", "RESUME"].includes(input.action ?? ""))
+    if (!input || !["PREVIEW", "PROVISION", "SYNC", "PREPARE", "ACTIVATE", "RECOVER", "PAUSE", "RESUME"].includes(input.action ?? ""))
       throw new Error("COINOPS_ENGINE_ACTION_INVALID");
     const scope = await adminScope();
     if (input.action === "PREVIEW" || input.action === "PROVISION") {
@@ -274,6 +275,50 @@ export async function POST(request: NextRequest) {
     if (environment === "TESTNET") {
       if (account.data.is_legacy_default || !["USDC", "USDT"].includes(engine.quote_asset))
         throw new Error("COINOPS_ENGINE_TESTNET_SCOPE_DENIED");
+      if (input.action === "RECOVER") {
+        // A failed activation can leave the gate closed before a cycle exists.
+        // No order can be dispatched by startTestnetRun before its run is
+        // persisted. Still require a fresh exchange snapshot and zero owned
+        // resident orders; uncertain state remains blocked for investigation.
+        if (engine.status !== "ACTIVE" || !engine.engine_kill_switch
+          || account.data.status !== "ACTIVE" || account.data.kill_switch)
+          throw new Error("COINOPS_ENGINE_RECOVERY_DENIED");
+        const runs = await scope.service.from("robot_v1_testnet_runs").select("id")
+          .eq("operator_id", scope.operator.id).eq("exchange_account_id", engine.exchange_account_id)
+          .eq("trading_engine_id", engine.trading_engine_id).limit(1);
+        const orders = await scope.service.from("robot_v1_testnet_orders").select("id")
+          .eq("operator_id", scope.operator.id).eq("exchange_account_id", engine.exchange_account_id)
+          .eq("trading_engine_id", engine.trading_engine_id).limit(1);
+        if (runs.error || orders.error || runs.data?.length || orders.data?.length)
+          throw new Error("COINOPS_ENGINE_RECOVERY_LEDGER_UNSAFE");
+        const ready = await scope.service.from("account_onboarding_checks").select("status,evidence")
+          .eq("operator_id", scope.operator.id).eq("exchange_account_id", engine.exchange_account_id)
+          .eq("trading_engine_id", engine.trading_engine_id).eq("check_key", "TESTNET_READY")
+          .order("checked_at", { ascending: false }).limit(1).maybeSingle();
+        if (ready.error || ready.data?.status !== "PASS" || ready.data.evidence?.symbol !== engine.symbol)
+          throw new Error("COINOPS_ENGINE_RECOVERY_READY_UNPROVEN");
+        const snapshot = await operatorAccountSnapshot(scope.operator.id, engine.exchange_account_id,
+          engine.quote_asset, [engine.symbol], account.data.credential_ref!, "TESTNET");
+        if (!snapshot.markets[0] || snapshot.markets[0].open_orders.length)
+          throw new Error("COINOPS_ENGINE_RECOVERY_EXCHANGE_UNSAFE");
+        const free = snapshot.balances.find((balance) => balance.asset === engine.quote_asset)?.free ?? 0;
+        const slotNotional = Math.floor(Number(engine.hard_cap_quote) * 100 / 25) / 100;
+        if (!Number.isFinite(slotNotional) || free + 1e-8 < Number(engine.hard_cap_quote)
+          || slotNotional < parseLiveRules(snapshot.markets[0].rules).minNotional)
+          throw new Error("COINOPS_ENGINE_RECOVERY_CAP_UNSAFE");
+        // Binance /order/test checks trading permission without placing an
+        // order. Keep the gate closed if the credential cannot trade now.
+        const probe = await BinanceSpotTestnetAdapter.fromAccount(engine, randomUUID(), [])
+          .checkTradePermission(engine.symbol, slotNotional);
+        if (!probe.ok) throw new Error("COINOPS_ENGINE_TESTNET_TRADE_PERMISSION_INVALID");
+        const restored = await scope.service.from("trading_engines")
+          .update({ status: "INACTIVE", kill_switch: true })
+          .eq("operator_id", scope.operator.id).eq("exchange_account_id", engine.exchange_account_id)
+          .eq("id", engine.trading_engine_id).eq("environment", "TESTNET")
+          .eq("status", "ACTIVE").eq("kill_switch", true).select("id").maybeSingle();
+        if (restored.error || !restored.data) throw new Error("COINOPS_ENGINE_RECOVERY_RACE");
+        return json({ status: "READY", engineId: engine.trading_engine_id });
+      }
       if (input.action === "PREPARE") {
         if (engine.status !== "INACTIVE" || !engine.engine_kill_switch
           || !["INACTIVE", "ACTIVE"].includes(account.data.status)

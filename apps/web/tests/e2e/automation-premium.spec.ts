@@ -158,6 +158,11 @@ test("mobile fixa apenas logo e LIVE; filtros, abas e saúde rolam sem barra inf
   const audit = await mount(page, "live", 390, 844);
   const topbar = page.locator(".px-topbar");
   await expect(topbar).toBeVisible();
+  const safeAreaCover = await topbar.evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    return { content: style.content, position: style.position, background: style.backgroundColor };
+  });
+  expect(safeAreaCover).toEqual({ content: '""', position: "fixed", background: "rgb(3, 11, 19)" });
   await expect(page.locator(".px-bottom-nav")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("mobile-logo-fixa-topo.png") });
   const before = await topbar.boundingBox();

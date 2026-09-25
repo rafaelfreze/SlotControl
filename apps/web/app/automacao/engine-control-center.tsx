@@ -119,7 +119,7 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
       setPreview(null); await refresh(); router.refresh();
     });
   }
-  async function control(engine: Engine, operation: "PREPARE" | "ACTIVATE" | "PAUSE" | "RESUME") {
+  async function control(engine: Engine, operation: "PREPARE" | "ACTIVATE" | "RECOVER" | "PAUSE" | "RESUME") {
     const accountName = account?.display_name ?? "Conta";
     if (operation === "ACTIVATE" && !window.confirm(
       `Iniciar operações ${engine.environment === "TESTNET" ? "FICTÍCIAS Testnet" : "REAIS"} em ${accountName} / ${engine.symbol} com limite máximo de ${money(engine.hard_cap_quote, engine.quote_asset)}?\n\nA primeira MARKET, TP e próxima BUY serão executadas somente após os gates de Binance e ledger.`)) return;
@@ -154,9 +154,11 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
           {engine.run ? <small>Slots {engine.evidence.physicalSlots}/25 · OPEN {engine.evidence.open} ·
             TP {engine.evidence.residentTp} · próxima BUY {engine.evidence.nextBuy}</small> : null}
           {engine.run?.last_error ? <small className="px-warning">Erro: {engine.run.last_error}</small> : null}</div>
-        <span className={`px-badge ${engine.run?.status === "ACTIVE" && !engine.operational ? "px-badge--warning" : ""}`}>
+        <span className={`px-badge ${engine.status === "ACTIVE" && (!engine.operational || !engine.run) ? "px-badge--warning" : ""}`}>
           {engine.run?.status === "PAUSED" ? "PAUSADO" : engine.run?.status === "ACTIVE"
             ? engine.operational ? "OPERANDO" : "ATIVO · VERIFICAR"
+            : engine.environment === "TESTNET" && engine.status === "ACTIVE" && engine.kill_switch && !engine.run
+              ? "BLOQUEADO · SEM CICLO"
             : engine.ready ? "READY" : engine.run?.status === "PREPARING" ? "PREPARANDO · VERIFICAR" : "INACTIVE"}</span>
         <div className="px-engine-actions">
           <button type="button" className="px-button" onClick={() => onEditEngine(accountId, engine.symbol)}>Editar regras</button>
@@ -164,6 +166,9 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
             disabled={busy || !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>{engine.environment === "TESTNET" ? "Validar para READY" : "Preparar 25 slots"}</button> : null}
           {engine.ready ? <button type="button" className="px-button px-button-primary"
             disabled={busy || !engine.ready} onClick={() => void control(engine, "ACTIVATE")}>Ativar {engine.symbol}</button> : null}
+          {engine.environment === "TESTNET" && engine.status === "ACTIVE" && engine.kill_switch && !engine.run
+            ? <button type="button" className="px-button" disabled={busy}
+              onClick={() => void control(engine, "RECOVER")}>Recuperar READY</button> : null}
           {engine.run?.status === "ACTIVE" ? <button type="button" className="px-button"
             disabled={busy} onClick={() => void control(engine, "PAUSE")}>Pausar</button> : null}
           {engine.run?.status === "PAUSED" || engine.environment === "REAL" && engine.run?.status === "ACTIVE" && engine.kill_switch ? <button type="button" className="px-button px-button-primary"

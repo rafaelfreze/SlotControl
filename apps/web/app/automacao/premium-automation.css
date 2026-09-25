@@ -19,6 +19,7 @@
   .px-app{padding-bottom:calc(22px + env(safe-area-inset-bottom))}
   .px-global-navigation{padding-top:76px}
   .px-global-navigation .px-topbar{position:fixed;top:env(safe-area-inset-top);left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));height:76px;min-height:76px;z-index:35;background:#030b13;box-shadow:0 8px 18px #0008}
+  .px-global-navigation .px-topbar::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:#030b13;pointer-events:none}
   .px-global-links:not([hidden]){position:fixed;top:calc(76px + env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));z-index:36;max-height:40dvh;overflow-y:auto;background:#061623;border:1px solid #24465f;border-radius:0 0 10px 10px;padding:10px}
   .px-mobile-sticky-header .px-toolbar{margin-bottom:0}
   .px-mobile-sticky-header+.px-dashboard{padding-top:18px}
