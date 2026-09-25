@@ -13,11 +13,13 @@ type Alert = { id: string; operator_id: string; exchange_account_id: string;
   first_seen_at: string; resolved_at: string | null };
 
 function configuredWebPush() {
-  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim();
+  const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
   if (!publicKey || !privateKey) throw new Error("COINOPS_PUSH_VAPID_UNCONFIGURED");
+  if (!/^[A-Za-z0-9_-]{87}$/.test(publicKey)) throw new Error("COINOPS_PUSH_VAPID_PUBLIC_FORMAT_INVALID");
+  if (!/^[A-Za-z0-9_-]{43}$/.test(privateKey)) throw new Error("COINOPS_PUSH_VAPID_PRIVATE_FORMAT_INVALID");
   try {
-    webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:onplaymkt@gmail.com", publicKey, privateKey);
+    webpush.setVapidDetails(process.env.VAPID_SUBJECT?.trim() || "mailto:onplaymkt@gmail.com", publicKey, privateKey);
   } catch { throw new Error("COINOPS_PUSH_VAPID_INVALID"); }
   return { publicKey, webpush };
 }
