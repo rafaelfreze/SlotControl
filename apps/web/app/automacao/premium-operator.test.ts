@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { concretePremiumEngine, premiumNativeGroups, premiumNativeTotal, selectPremiumEngines, selectedLiveExecutorStatus, withLiveUsdtPrice, type PremiumEngine } from "./premium-operator.ts";
+import { concretePremiumEngine, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveUsdtPrice, type PremiumEngine } from "./premium-operator.ts";
 import type { Props } from "./automation-mobile";
 
 const make = (account: string, symbol: string, quote: string, amount: number): PremiumEngine => ({
@@ -20,6 +20,18 @@ test("native presentation groups account/environment/quote and never sums BRL+US
   assert.equal(premiumNativeTotal(groups[1].engines, "capital"), 150);
   assert.equal(premiumNativeTotal(groups[2].engines, "capital"), 500);
   assert.equal(premiumNativeTotal([], "capital"), null);
+});
+test("Binance free balances stay separated by account and quote, including USDT", () => {
+  const rows = premiumQuoteBalanceRows(premiumNativeGroups(engines), [
+    { accountId: "A", currency: "BRL", free: 10, locked: 1, observedAt: "2026-09-25T00:00:00Z" },
+    { accountId: "A", currency: "USDT", free: 772.10, locked: 33, observedAt: "2026-09-25T00:00:00Z" },
+    { accountId: "B", currency: "BRL", free: 20, locked: 2, observedAt: "2026-09-25T00:00:00Z" },
+  ]);
+  assert.deepEqual(rows.map((row) => [row.accountId, row.currency, row.free]),
+    [["A", "BRL", 10], ["A", "USDT", 772.10], ["B", "BRL", 20]]);
+  assert.equal(premiumQuoteBalanceRows(premiumNativeGroups(engines), [
+    { accountId: "B", currency: "USDT", free: 999, locked: 0, observedAt: "2026-09-25T00:00:00Z" },
+  ])[1].free, null);
 });
 test("A/B same symbol and physical asset resolve only the selected engine", () => {
   const a = selectPremiumEngines(engines, "REAL", { accountId: "A", symbol: "BTCBRL" });

@@ -1,11 +1,11 @@
 "use client";
 
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useLivePrices } from "@/lib/slotgain/live-prices";
 import { AutomationDetails, type AutomationView } from "./automation-center";
 import type { Candle, Props } from "./automation-mobile";
 import { type PremiumAsset, type PremiumSlot } from "./premium-model";
-import { concretePremiumEngine, legacyPremiumEngines, premiumNativeGroups, premiumNativeTotal, selectPremiumEngines, selectedLiveExecutorStatus, withLiveUsdtPrice, type PremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
+import { concretePremiumEngine, legacyPremiumEngines, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveUsdtPrice, type LiveQuoteBalance, type PremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { PremiumReferenceTicker } from "./premium-reference-ticker";
 import { PremiumControls } from "./premium-controls";
 import { PremiumGlobalNavigation } from "./premium-global-navigation";
@@ -71,6 +71,16 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const [selectedSlot, setSelectedSlot] = useState<PremiumSlot | null>(null);
   const [operationTab, setOperationTab] = useState("positions");
   const [historyLimit, setHistoryLimit] = useState(8);
+  const [quoteBalances, setQuoteBalances] = useState<LiveQuoteBalance[] | null>(null);
+  useEffect(() => {
+    if (view !== "live" && view !== "overview") return;
+    const abort = new AbortController();
+    fetch("/api/coinops-live-balances", { cache: "no-store", signal: abort.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((result) => { if (!abort.signal.aborted) setQuoteBalances(Array.isArray(result?.balances) ? result.balances : []); })
+      .catch(() => { if (!abort.signal.aborted) setQuoteBalances([]); });
+    return () => abort.abort();
+  }, [view]);
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
   const market = useLivePrices();
   const engines = useMemo(() => data.operator?.engines ?? legacyPremiumEngines(data), [data]);
@@ -82,6 +92,12 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const asset = active?.asset ?? "BTC";
   const currency = active?.currency ?? (environment === "REAL" ? "BRL" : "USDC");
   const groups = premiumNativeGroups(assets);
+  const freeQuoteRows = premiumQuoteBalanceRows(groups, quoteBalances ?? []);
+  const freeQuoteValue = quoteBalances === null ? "Consultando contas…" : groups.length === 1
+    ? money(freeQuoteRows[0]?.free, groups[0].currency)
+    : <span className="px-native-values">{freeQuoteRows.map((row) =>
+      <span key={`${row.accountId}:${row.currency}`}><small>{row.accountDisplayName} · {row.currency}</small>
+        <b>{money(row.free, row.currency)}</b></span>)}</span>;
   const groupAmount = (group: (typeof groups)[number], key: Parameters<typeof premiumNativeTotal>[1]) => key === "cap" && environment === "REAL" && selection.symbol === "ALL" && data.operator
     ? data.operator.accountCaps?.find((cap) => cap.accountId === group.accountId && cap.currency === group.currency)?.cap ?? null
     : premiumNativeTotal(group.engines, key);
@@ -145,7 +161,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       })}</section> : null}
       {view === "overview" ? <section className="px-overview-grid" aria-label="Resumo dos três ambientes">{overview.map(({ env, assets: group }) => { const groupPaused = env !== "REAL" && group.length > 0 && group.every((item) => item.engineStatus === "PAUSED"); return <a className={`px-panel px-overview-card px-env-${env.toLowerCase()}`} key={env} href={viewHref(env === "REAL" ? "live" : env === "SHADOW" ? "shadow" : "testnet")}><header><h2>{env === "REAL" ? "Real · LIVE" : env === "SHADOW" ? "Shadow" : "Testnet"}</h2><span className={`px-badge ${!groupPaused && group.some((item) => !item.health.healthy) ? "px-badge--warning" : ""}`}>{groupPaused ? "PAUSADO" : group.every((item) => item.health.healthy) ? "OPERACIONAL" : "ACOMPANHAR"}</span></header><strong>{premiumNativeGroups(group).map((native) => `${native.accountDisplayName} · ${money(premiumNativeTotal(native.engines, "capital"), native.currency)}`).join(" · ") || "Sem motores neste filtro"}</strong><small>{env === "REAL" ? "Capital lógico autorizado" : "Capital lógico · sem dinheiro real"}</small><div>{group.map((item) => <span key={item.engineId}><AssetIcon asset={item.asset} /><b>{item.asset}</b>{item.openCount} OPEN · {item.gains ?? "—"} gains<PremiumIcon name="arrow" /></span>)}</div><p className="px-caption">{groupPaused ? "Execução pausada · histórico preservado" : env === "REAL" ? premiumNativeGroups(group).map((native) => `${native.accountDisplayName} · Exposição ${money(premiumNativeTotal(native.engines, "exposure"), native.currency)} · P&L ${money(premiumNativeTotal(native.engines, "realizedPnl"), native.currency)}`).join(" · ") : env === "TESTNET" ? `${group.reduce((sum, item) => sum + item.orders.filter((order) => order.resident).length, 0)} ordens residentes · fundos fictícios` : "Execução virtual · sem ordens na Binance"}</p></a>; })}</section> : null}
       {view !== "overview" ? <section className="px-kpis" aria-label={`Indicadores ${labels[view]}`}>
-        <Metric label={environment === "REAL" ? "Saldo livre · Binance" : "Capital lógico livre"} value={environment === "REAL" ? groups.length === 1 && groups[0].currency === "BRL" && (groups[0].accountId === "legacy" || data.operator?.engineData[groups[0].engines[0].engineId]?.livePreparation) ? money(scopedData.livePreparation?.brlFree, "BRL") : "Por conta / moeda" : nativeMoney("freeCapital")} note={environment === "REAL" ? "Saldo da conta ≠ limite CoinOps" : "Virtual · sem saldo real"} icon="wallet" />
+        <Metric label={environment === "REAL" ? "Saldo livre · Binance" : "Capital lógico livre"} value={environment === "REAL" ? freeQuoteValue : nativeMoney("freeCapital")} note={environment === "REAL" ? "Saldo da conta ≠ limite CoinOps" : "Virtual · sem saldo real"} icon="wallet" />
         <Metric label="Capital em posições" value={nativeValues("committed")} note={`${positions.length} posições próprias`} icon="orders" />
         <Metric label="P&L realizado · acumulado" value={nativeValues("realizedPnl")} note={groups.length > 1 ? "Valores nativos · sem conversão" : `Aberto ${nativeMoney("openPnl")}`} icon="chart" tone={tones(nativeTotal("realizedPnl"))} />
         <Metric label="Exposição total" value={nativeValues("exposure")} note="Posições + reservas de BUY" icon="shield" />

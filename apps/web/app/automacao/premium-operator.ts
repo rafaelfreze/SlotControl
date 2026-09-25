@@ -10,6 +10,8 @@ export type PremiumEngine = Omit<PremiumAsset, "currency"> & {
   engineStatus: string; killSwitch: boolean;
 };
 export type PremiumSelection = { accountId: string; symbol: string };
+export type LiveQuoteBalance = { accountId: string; currency: string; free: number;
+  locked: number; observedAt: string };
 export type PremiumOperatorPresentation = {
   accounts: PremiumAccount[];
   accountCaps?: Array<{ accountId: string; currency: string; cap: number }>;
@@ -37,6 +39,17 @@ export function premiumNativeGroups(engines: PremiumEngine[]) {
     group.engines.push(engine); groups.set(key, group);
   }
   return [...groups.values()];
+}
+
+/** A Binance free balance belongs to one account and one quote, never to an engine or mixed total. */
+export function premiumQuoteBalanceRows(groups: ReturnType<typeof premiumNativeGroups>,
+  balances: LiveQuoteBalance[]) {
+  return groups.map((group) => {
+    const found = balances.find((row) => row.accountId === group.accountId
+      && row.currency === group.currency && Number.isFinite(row.free) && row.free >= 0);
+    return { accountId: group.accountId, accountDisplayName: group.accountDisplayName,
+      currency: group.currency, free: found?.free ?? null };
+  });
 }
 
 /** Refuse mixed native currencies/accounts instead of silently adding them. */
