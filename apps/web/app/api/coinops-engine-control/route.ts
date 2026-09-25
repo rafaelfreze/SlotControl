@@ -264,7 +264,8 @@ export async function POST(request: NextRequest) {
       trading_engine_id: input.engineId,
     });
     const asset = engine.base_asset as "BTC" | "SOL";
-    if (!["BTC", "SOL"].includes(asset) || !["BRL", "USDT"].includes(engine.quote_asset))
+    if (!["BTC", "SOL"].includes(asset)
+      || !(environment === "TESTNET" ? ["USDC", "USDT"] : ["BRL", "USDT"]).includes(engine.quote_asset))
       throw new Error("COINOPS_ENGINE_MARKET_DENIED");
     const account = await scope.service.from("exchange_accounts")
       .select("id,status,kill_switch,is_legacy_default,credential_ref")
