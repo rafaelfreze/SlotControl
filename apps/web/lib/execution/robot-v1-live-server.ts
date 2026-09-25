@@ -675,8 +675,12 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
     p_lease_owner: run.lease_owner,
   });
   const successor = (Array.isArray(result.data) ? result.data[0] : result.data) as Run | null;
-  if (result.error || !successor || successor.previous_run_id !== run.id)
-    throw new Error("COINOPS_LIVE_RESET_FAILED");
+  if (result.error) {
+    const cause = /COINOPS_LIVE_RESET_[A-Z0-9_]+/.exec(result.error.message)?.[0];
+    throw new Error(cause ?? "COINOPS_LIVE_RESET_FAILED");
+  }
+  if (!successor || successor.previous_run_id !== run.id)
+    throw new Error("COINOPS_LIVE_RESET_RESULT_INVALID");
   for (const decision of plan.decisions) await completeStrategyDecision(service, owned(run),
     "REAL", decision.decision_id, { next_cycle_id: successor.id, state: "COMPLETED" });
   return successor.id;
@@ -832,6 +836,26 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
     stage = "AUDIT_EVENT";
     await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
       "RECONCILED", null, { source, next, strategy_version: STRATEGY_VERSION });
+    if (run.previous_run_id && !entryBlocked(run)) {
+      const healed = await runRows(service, run);
+      const residentBuys = healed.orders.filter((order) => order.side === "BUY"
+        && LIVE_ACTIVE_ORDER_STATUSES.has(order.status));
+      if (healed.slots.some((slot) => amount(slot.position_quantity) > 0)
+        && residentBuys.length === 1
+        && !healed.orders.some((order) => amount(order.executed_quantity) > 0
+          && !order.trades_reconciled)) {
+        const resolved = await service.from("robot_v1_live_alerts")
+          .update({ resolved_at: new Date().toISOString() })
+          .eq("trading_engine_id", run.trading_engine_id)
+          .eq("exchange_account_id", run.exchange_account_id)
+          .eq("code", "COINOPS_LIVE_RESET_FAILED").is("resolved_at", null);
+        if (resolved.error) throw new Error("COINOPS_LIVE_RESET_ALERT_RESOLUTION_FAILED");
+        await event(service, run, `RESET_RECOVERED:${run.previous_run_id}`,
+          "RESET_RECOVERED", null, { previous_run_id: run.previous_run_id,
+            open_positions: healed.slots.filter((slot) => amount(slot.position_quantity) > 0).length,
+            resident_buy_count: residentBuys.length });
+      }
+    }
     return { status: "OK", next };
   } catch (error) {
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
@@ -865,7 +889,7 @@ export async function auditLiveRun(runId: string) {
     if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
       && !order.trades_reconciled))
       throw new Error("COINOPS_LIVE_MONITOR_UNRECONCILED_FILL");
-    await monthly(service, run, ledger.slots, ledger.accounts);
+    const monthlyStatuses = await monthly(service, run, ledger.slots, ledger.accounts);
     await exposure(service, run);
     for (const account of ledger.accounts) {
       const expected = amount(account.contribution_brl) + amount(account.market_pnl_brl)
@@ -876,6 +900,10 @@ export async function auditLiveRun(runId: string) {
     const ownBuys = ledger.orders.filter((item) => item.side === "BUY"
       && LIVE_ACTIVE_ORDER_STATUSES.has(item.status));
     if (ownBuys.length > 1) throw new Error("COINOPS_LIVE_MONITOR_DUPLICATE_BUY");
+    if (!ledger.slots.some((item) => amount(item.position_quantity) > 0)
+      && ownBuys.length === 0 && monthlyStatuses.some((item) => item.eligibleForNewEntry)
+      && run.status === "ACTIVE" && !run.engine?.engine_kill_switch)
+      throw new Error("COINOPS_LIVE_MONITOR_ORPHANED_ENGINE");
     if (run.last_error || !run.last_reconciled_at
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
       throw new Error("COINOPS_LIVE_MONITOR_RECONCILIATION_STALE");
@@ -974,11 +1002,14 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
       throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
     const health = await loadLiveEngineExecutorStatus(run);
-    if (health.gate !== "LIVE_EXECUTOR_ACTIVE")
+    if (!["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_RESUME_EXECUTOR_NOT_ACTIVE");
     const prep = await scopedPreparation(service, userId, asset, { environment: "REAL", ...run });
     if (!prep.live_enabled || !prep.kill_switch)
       throw new Error("COINOPS_LIVE_RESUME_FLAGS_INVALID");
+    if (run.engine!.global_kill_switch || run.engine!.account_kill_switch
+      || run.engine!.status !== "ACTIVE")
+      throw new Error("COINOPS_LIVE_PARENT_KILL_SWITCH");
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
@@ -1003,8 +1034,6 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (updated.error || !updated.data || updated.data.kill_switch)
       throw new Error("COINOPS_LIVE_RESUME_GATE_UPDATE_FAILED");
     unlocked = true;
-    if (run.engine!.global_kill_switch || run.engine!.account_kill_switch || run.engine!.status !== "ACTIVE")
-      throw new Error("COINOPS_LIVE_PARENT_KILL_SWITCH");
     const engineGate = await service.from("trading_engines").update({ kill_switch: false })
       .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
       .eq("exchange_account_id", run.exchange_account_id).select("id").single();

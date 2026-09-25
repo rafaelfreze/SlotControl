@@ -119,7 +119,8 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
 }
 
 export async function buildOperatorPresentation(client: Client, data: Props, registry: DomainRegistry,
-  selection: PremiumSelection, prefetchedHealth?: Map<string, LiveExecutorStatus>): Promise<PremiumOperatorPresentation> {
+  selection: PremiumSelection, prefetchedHealth?: Map<string, LiveExecutorStatus>,
+  visibleEnvironment?: EngineContext["environment"]): Promise<PremiumOperatorPresentation> {
   if (selection.accountId !== "ALL" && !registry.accounts.some((account) => account.id === selection.accountId))
     throw new Error("COINOPS_ACCOUNT_SCOPE_DENIED");
   if (selection.symbol !== "ALL" && !registry.engines.some((engine) => engine.symbol === selection.symbol
@@ -131,7 +132,12 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
   const loaded = await Promise.all(registry.engines.map(async (row) => {
     const context = resolveEngineContext(registry, { environment: row.environment,
       exchange_account_id: row.exchange_account_id, trading_engine_id: row.id });
-    const scoped = context.legacy_compatible ? legacyEnginePresentation(data, context)
+    // The environment tabs navigate to distinct server renders. Loading every
+    // paused engine (including its historical events) on the LIVE route causes
+    // avoidable RLS scans and can exhaust PostgREST's statement timeout.
+    const scoped = visibleEnvironment && context.environment !== visibleEnvironment
+      ? emptyScoped(data, context)
+      : context.legacy_compatible ? legacyEnginePresentation(data, context)
       : await nativeEnginePresentation(client, data, context);
     return { context, scoped };
   }));

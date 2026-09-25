@@ -85,3 +85,15 @@ Binance; as ordens seguem exclusivamente pelo cron normal.
   executor, ledger de 25 slots, correspondência exata com ordens abertas,
   OPEN coberto por TP, fills reconciliados e exposição dentro dos hard caps.
   Se qualquer verificação falhar, novas BUYs permanecem bloqueadas.
+- Após o último fill de um ciclo, `COINOPS_LIVE_RESET_FAILED` exige confronto
+  Binance/ledger antes de qualquer nova MARKET. A transição ledger-only pode
+  concluir o ciclo antigo e criar um sucessor único de 25 slots mesmo com o
+  gate de BUY fechado; isso não envia ordens. Verificar `previous_run_id`,
+  ausência de posição/ordem antiga, fills reconciliados, 25 contas físicas e
+  sucessor único. O sucessor deve reconciliar sob kill switch antes do RESUME
+  autenticado. Após RESUME, o cron inicia a MARKET somente se a Strategy Engine
+  ainda determinar entrada, cria TP e uma próxima BUY. O alerta anterior só
+  é encerrado após posição protegida, uma BUY residente e reconciliação.
+- A visão Real de `/automacao` não consulta histórico Shadow/Testnet pausado no
+  carregamento. Abrir as abas correspondentes faz suas leituras históricas;
+  timeout de consulta nelas não deve derrubar a visão LIVE.
