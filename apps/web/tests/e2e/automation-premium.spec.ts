@@ -167,6 +167,9 @@ test("mobile mantém navegação superior no scroll sem barra inferior", async (
   await expect(page.getByLabel("Ambientes da Automação")).toBeVisible();
   await expect(page.getByLabel("Filtros da operação")).toBeVisible();
   await expect(page.getByLabel("Ferramentas da Automação")).toBeVisible();
+  await expect(page.getByLabel("Saúde da operação Live")).toContainText("Executor ONLINE");
+  await expect(page.getByLabel("Saúde da operação Live")).toContainText("Binance CONECTADA");
+  await expect(page.getByLabel("Saúde da operação Live")).toContainText("Estratégia ATIVA");
   await noSideEffects(page, audit);
 });
 
