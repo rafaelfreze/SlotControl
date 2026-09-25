@@ -104,6 +104,7 @@ async function runMiddleware(path: string, authenticated: boolean) {
     const { middleware } = compile("../../middleware.ts", {
       "next/server": nextServer,
       "@/lib/auth/navigation": navigation,
+      "@/lib/supabase/env": { getSupabaseDataSchema: () => "coinops" },
       "@supabase/ssr": { createServerClient: () => ({ auth: { getUser: async () => {
         userChecks += 1;
         return { data: { user: authenticated ? { id: "fixture" } : null } };
