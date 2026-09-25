@@ -2,6 +2,13 @@
 -- clientOrderId, which Binance Spot rejects before an order can be created.
 -- No exchange order or dispatch guard exists for this row. Preserve its
 -- original value in the immutable TP_PREPARED event for audit.
+alter table coinops.robot_v1_testnet_orders
+  drop constraint robot_v1_testnet_orders_client_order_id_check;
+
+alter table coinops.robot_v1_testnet_orders
+  add constraint robot_v1_testnet_orders_client_order_id_check
+  check (client_order_id ~ '^COV1-(BTC|SOL)-[0-9]+-[0-9]+-(BUY|SELL)-[a-f0-9]{12,18}$');
+
 do $$
 declare
   affected integer;
