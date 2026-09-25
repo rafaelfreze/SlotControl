@@ -122,9 +122,15 @@ export async function POST(request: NextRequest) {
     if (["DEACTIVATE", "REMOVE", "REPLACE"].includes(operation)) {
       if ((engines.data ?? []).some((engine) => engine.status !== "INACTIVE" || !engine.kill_switch))
         throw new Error("COINOPS_ADMIN_ENGINE_ACTIVE");
-      const runs = await service.from("robot_v1_live_runs").select("id")
-        .eq("exchange_account_id", accountId).in("status", ["PREPARING", "ACTIVE", "PAUSED"]).limit(1);
-      if (runs.error || (runs.data?.length ?? 0) > 0) throw new Error("COINOPS_ADMIN_LIVE_POSITION_REVIEW_REQUIRED");
+      const [liveRuns, testnetRuns] = await Promise.all([
+        service.from("robot_v1_live_runs").select("id")
+          .eq("exchange_account_id", accountId).in("status", ["PREPARING", "ACTIVE", "PAUSED"]).limit(1),
+        service.from("robot_v1_testnet_runs").select("id")
+          .eq("exchange_account_id", accountId).in("status", ["ACTIVE", "PAUSED"]).limit(1),
+      ]);
+      if (liveRuns.error || testnetRuns.error || (liveRuns.data?.length ?? 0) > 0
+        || (testnetRuns.data?.length ?? 0) > 0)
+        throw new Error("COINOPS_ADMIN_POSITION_REVIEW_REQUIRED");
     }
     if (operation === "DEACTIVATE") {
       const disabled = await service.from("exchange_accounts").update({ status: "DISABLED", kill_switch: true })

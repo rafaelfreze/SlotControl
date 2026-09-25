@@ -41,3 +41,9 @@ test("engine preparation is operator-scoped and never dispatches an exchange ord
   assert.match(activation, /prepareLiveCycle\(user\.id, asset, selection\)/);
   assert.doesNotMatch(panel, /(?:createOrder|cancelOrder|dispatchOrder)\s*\(/);
 });
+
+test("credential replacement and removal fail closed for active or paused Testnet cycles", () => {
+  const route = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+  assert.match(route, /from\("robot_v1_testnet_runs"\)[\s\S]*?\.eq\("exchange_account_id", accountId\)\.in\("status", \["ACTIVE", "PAUSED"\]\)/);
+  assert.match(route, /liveRuns\.error \|\| testnetRuns\.error[\s\S]*?testnetRuns\.data/);
+});

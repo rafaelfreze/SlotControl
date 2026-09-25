@@ -7,8 +7,8 @@ import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-pro
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 import { testnetFillEvents } from "../coinops-reports/testnet-fill-evidence";
-import { planTerminalTestnetRestart, TESTNET_ACTIVE_ORDER_STATUSES, testnetClientOrderId, testnetOpenPositionQuantity, testnetResetIdempotencyKey } from "./robot-v1-testnet-cycle";
-import { buildV1Grid, V1_RULES, V1_TEST_PROFILE, type V1Asset } from "./robot-v1";
+import { planTerminalTestnetRestart, TESTNET_ACTIVE_ORDER_STATUSES, testnetClientOrderId, testnetInitialCapital, testnetOpenPositionQuantity, testnetResetIdempotencyKey } from "./robot-v1-testnet-cycle";
+import { buildV1Grid, V1_RULES, type V1Asset } from "./robot-v1";
 import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
 import { projectTestnetEntryState, recoverTestnetStrategyDecisions, type RecoverableTestnetDecision } from "./strategy-testnet-recovery";
@@ -201,13 +201,13 @@ export async function startTestnetRun(userId: string, asset: V1Asset,
     : athProfile.next_normal_spacing_rate ?? athProfile.normal_spacing_rate);
   const adapter = BinanceSpotTestnetAdapter.fromAccount(engine, randomUUID(), []);
   const [account, filters, market, openOrders] = await Promise.all([adapter.reads.getAccount(), adapter.reads.getSymbolInfo(symbol), adapter.reads.getMarketPrice(symbol), adapter.reads.getOpenOrders(symbol)]);
-  const notional = V1_TEST_PROFILE.capitalUsdc / V1_TEST_PROFILE.slotCount;
-  buildV1Grid(asset, V1_TEST_PROFILE.capitalUsdc, market.price, filters,
+  const { capital, slotNotional: notional } = testnetInitialCapital(engine.hard_cap_quote, engine.is_legacy_default);
+  buildV1Grid(asset, notional * 25, market.price, filters,
     { gainRate: initialGain, entrySpacing: initialSpacing });
   const tradePermission = await adapter.checkTradePermission(symbol);
   if (!tradePermission.ok) throw new Error("COINOPS_TESTNET_TRADE_PERMISSION_INVALID");
   const freeUsdc = account.balances.find((balance) => balance.asset === engine.quote_asset)?.free ?? 0;
-  if (!account.canTrade || !Number.isFinite(notional) || notional < filters.minNotional || freeUsdc < V1_TEST_PROFILE.capitalUsdc) throw new Error("COINOPS_TESTNET_FUNDS_OR_FILTERS_INVALID");
+  if (!account.canTrade || !Number.isFinite(notional) || notional < filters.minNotional || freeUsdc < capital) throw new Error("COINOPS_TESTNET_FUNDS_OR_FILTERS_INVALID");
   if (openOrders.some((order) => order.clientOrderId?.startsWith(`COV1-${asset}-`))) throw new Error("COINOPS_TESTNET_UNRECONCILED_OWNED_ORDER");
   const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, operator_id: engine.operator_id, exchange_account_id: engine.exchange_account_id,
     trading_engine_id: engine.trading_engine_id, quote_asset: engine.quote_asset, asset, symbol, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: initialGain, entry_spacing: initialSpacing }).select("*").single();

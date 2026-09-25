@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveTestnetCredentials } from "./testnet-account-credentials.ts";
 import { BinanceSpotTestnetAdapter } from "./binance-spot-testnet-adapter.ts";
-import { testnetClientOrderId } from "./robot-v1-testnet-cycle.ts";
+import { testnetClientOrderId, testnetInitialCapital } from "./robot-v1-testnet-cycle.ts";
 import type { EngineContext } from "./operator-context.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -13,6 +13,13 @@ const engine = (n: number): EngineContext => ({ operator_id: id(1), exchange_acc
   engine_kill_switch: false, status: "ACTIVE", hard_cap_quote: 250, ath_reference_symbol: "BTCUSDT" });
 const entries = [2, 3].map((n) => ({ ...engine(n), engines: [{ trading_engine_id: id(10 + n), symbol: "BTCUSDT" }],
   apiKey: `fake-key-${n}`, apiSecret: `fake-secret-${n}` }));
+
+test("Testnet initial allocation respects each new account cap without inventing remainder", () => {
+  assert.deepEqual(testnetInitialCapital(419, false), { capital: 419, slotNotional: 16.76, unallocated: 0 });
+  assert.deepEqual(testnetInitialCapital("250.00", true), { capital: 250, slotNotional: 10, unallocated: 0 });
+  assert.deepEqual(testnetInitialCapital(419.03, false), { capital: 419.03, slotNotional: 16.76, unallocated: 0.03 });
+  for (const cap of [0, -1, 1.001, Number.NaN]) assert.throws(() => testnetInitialCapital(cap, false), /CAP_INVALID/);
+});
 
 test("Testnet credentials resolve exact account + engine; no Production or Rafael fallback", () => {
   const env = { COINOPS_TESTNET_ACCOUNTS_JSON: JSON.stringify(entries), BINANCE_API_KEY: "never-used",

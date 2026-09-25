@@ -3,6 +3,18 @@ import { TESTNET_TERMINAL_ORDER_STATUSES } from "./testnet-fill-accounting.ts";
 
 export const TESTNET_ACTIVE_ORDER_STATUSES = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
 
+/** New accounts use their configured fictitious cap; legacy runs retain the
+ * original 250-quote profile. Never infer or increase a missing cap. */
+export function testnetInitialCapital(hardCap: number | string, isLegacyDefault: boolean) {
+  const capital = isLegacyDefault ? 250 : Number(hardCap);
+  const cents = Math.round(capital * 100);
+  if (!Number.isFinite(capital) || capital <= 0 || Math.abs(cents - capital * 100) > 1e-7)
+    throw new Error("COINOPS_TESTNET_CAP_INVALID");
+  const slotCents = Math.floor(cents / 25);
+  if (slotCents < 1) throw new Error("COINOPS_TESTNET_CAP_INVALID");
+  return { capital, slotNotional: slotCents / 100, unallocated: (cents - slotCents * 25) / 100 };
+}
+
 export function testnetClientOrderId(runId: string, asset: "BTC" | "SOL", slot: number, side: "BUY" | "SELL", revision: number) {
   if (!runId || !Number.isInteger(slot) || slot < 1 || slot > 25 || !Number.isInteger(revision) || revision < 1) throw new Error("COINOPS_TESTNET_ORDER_ID_INVALID");
   // Preserve SOL's original hash contract so PREPARED orders recover the same
