@@ -166,7 +166,7 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
             disabled={busy || !engine.ready} onClick={() => void control(engine, "ACTIVATE")}>Ativar {engine.symbol}</button> : null}
           {engine.run?.status === "ACTIVE" ? <button type="button" className="px-button"
             disabled={busy} onClick={() => void control(engine, "PAUSE")}>Pausar</button> : null}
-          {engine.run?.status === "PAUSED" ? <button type="button" className="px-button px-button-primary"
+          {engine.run?.status === "PAUSED" || engine.environment === "REAL" && engine.run?.status === "ACTIVE" && engine.kill_switch ? <button type="button" className="px-button px-button-primary"
             disabled={busy} onClick={() => void control(engine, "RESUME")}>Retomar</button> : null}
         </div></article>)}
       {account.environment === "REAL" && account.status === "INACTIVE" && accountEngines.some((engine) => engine.status === "INACTIVE")

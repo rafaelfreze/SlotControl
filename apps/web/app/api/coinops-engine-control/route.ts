@@ -58,6 +58,13 @@ async function ownedAccount(scope: Scope, accountId: string) {
 }
 
 async function accountEnvironment(scope: Scope, accountId: string): Promise<Environment> {
+  const account = await scope.service.from("exchange_accounts")
+    .select("is_legacy_default").eq("operator_id", scope.operator.id)
+    .eq("id", accountId).single();
+  if (account.error || !account.data) throw new Error("COINOPS_ENGINE_ACCOUNT_DENIED");
+  // Rafael predates self-service credential checks. His account identity is
+  // still resolved server-side; this exception never applies to new accounts.
+  if (account.data.is_legacy_default) return "REAL";
   const check = await scope.service.from("account_onboarding_checks")
     .select("status,evidence").eq("operator_id", scope.operator.id)
     .eq("exchange_account_id", accountId).eq("check_key", "BINANCE_CREDENTIAL")
@@ -363,7 +370,10 @@ export async function POST(request: NextRequest) {
       return json(await pauseLiveRun(run.id, scope.operator.user_id, asset));
     }
     if (input.action === "RESUME") {
-      if (run.status !== "PAUSED") throw new Error("COINOPS_ENGINE_NOT_PAUSED");
+      // A fail-closed ACTIVE run may already have a reconciled successor, but
+      // its BUY gate is still closed. Resume validates exchange/ledger again.
+      if (!(["ACTIVE", "PAUSED"].includes(run.status) && (run.status === "PAUSED"
+        || engine.engine_kill_switch))) throw new Error("COINOPS_ENGINE_NOT_PAUSED");
       return json(await resumeLiveRun(run.id, scope.operator.user_id, asset));
     }
     if (input.action !== "ACTIVATE" || account.data.is_legacy_default

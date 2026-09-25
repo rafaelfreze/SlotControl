@@ -94,6 +94,10 @@ Binance; as ordens seguem exclusivamente pelo cron normal.
   autenticado. Após RESUME, o cron inicia a MARKET somente se a Strategy Engine
   ainda determinar entrada, cria TP e uma próxima BUY. O alerta anterior só
   é encerrado após posição protegida, uma BUY residente e reconciliação.
+  Para um sucessor `ACTIVE` porém protegido, a Central de Estratégia mostra
+  `Retomar`; a rota autenticada permite essa recuperação apenas com kill switch
+  do motor ligado e reaplica todos os gates de `resumeLiveRun`. O cadastro
+  legado Rafael é resolvido como REAL pelo servidor, sem credencial nova.
 - A visão Real de `/automacao` não consulta histórico Shadow/Testnet pausado no
   carregamento. Abrir as abas correspondentes faz suas leituras históricas;
   timeout de consulta nelas não deve derrubar a visão LIVE.
