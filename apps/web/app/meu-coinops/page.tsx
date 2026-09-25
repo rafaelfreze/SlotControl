@@ -162,7 +162,7 @@ export default async function MeuCoinOps() {
       </article>;
     })}</section>
     <ViewerGainSimulator markets={marketRows.map((row) => ({ symbol: row.symbol, currency: row.currency,
-      capital: row.operationalBalance, gainRate: row.gainRate, slotCount: row.slots.length }))} />
+      balances: row.slots.map((slot) => slot.balance), gainRate: row.gainRate }))} />
     <footer>Dados da sua conta no ledger CoinOps. Preços públicos são referências e podem diferir da execução. Última reconciliação {latest ? new Date(latest).toLocaleString("pt-BR") : "indisponível"}.</footer></div>
   </main>;
 }

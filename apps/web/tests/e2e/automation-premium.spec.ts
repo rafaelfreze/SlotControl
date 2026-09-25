@@ -154,22 +154,43 @@ async function screenshot(page: Page, testInfo: TestInfo, name: string) {
   )));
 }
 
-test("mobile mantém navegação superior no scroll sem barra inferior", async ({ page }) => {
+test("mobile fixa apenas logo e LIVE; filtros, abas e saúde rolam sem barra inferior", async ({ page }, testInfo) => {
   const audit = await mount(page, "live", 390, 844);
-  const header = page.locator(".px-mobile-sticky-header");
-  await expect(header).toBeVisible();
+  const topbar = page.locator(".px-topbar");
+  await expect(topbar).toBeVisible();
   await expect(page.locator(".px-bottom-nav")).toHaveCount(0);
-  const before = await header.boundingBox();
+  await page.screenshot({ path: testInfo.outputPath("mobile-logo-fixa-topo.png") });
+  const before = await topbar.boundingBox();
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300);
-  const after = await header.boundingBox();
+  const after = await topbar.boundingBox();
   expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(1);
-  await expect(page.getByLabel("Ambientes da Automação")).toBeVisible();
-  await expect(page.getByLabel("Filtros da operação")).toBeVisible();
-  await expect(page.getByLabel("Ferramentas da Automação")).toBeVisible();
+  for (const selector of [".px-context-bar", ".px-toolbar", ".px-mobile-health-strip"]) {
+    const box = await page.locator(selector).boundingBox();
+    expect(box!.y + box!.height).toBeLessThan(0);
+  }
+  await expect(topbar.getByText("CoinOps")).toBeVisible();
+  await expect(topbar.getByText("LIVE", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("mobile-logo-fixa-scroll.png") });
   await expect(page.getByLabel("Saúde da operação Live")).toContainText("Executor ONLINE");
   await expect(page.getByLabel("Saúde da operação Live")).toContainText("Binance CONECTADA");
   await expect(page.getByLabel("Saúde da operação Live")).toContainText("Estratégia ATIVA");
+  await noSideEffects(page, audit);
+});
+
+for (const width of [1024, 1440, 1920]) test(`contexto desktop não sobrepõe topo em ${width}px`, async ({ page }) => {
+  const audit = await mount(page, "live", width, 900);
+  const topbar = await page.locator(".px-topbar").boundingBox();
+  const context = await page.locator(".px-context-bar").boundingBox();
+  const toolbar = await page.locator(".px-toolbar").boundingBox();
+  expect(topbar && context && toolbar).toBeTruthy();
+  if (width <= 1450) expect(context!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height - 1);
+  else {
+    expect(context!.y).toBeGreaterThanOrEqual(topbar!.y);
+    expect(context!.y + context!.height).toBeLessThanOrEqual(topbar!.y + topbar!.height + 1);
+  }
+  expect(toolbar!.y).toBeGreaterThanOrEqual(context!.y + context!.height - 1);
+  expect((await geometry(page)).overflow).toBe(0);
   await noSideEffects(page, audit);
 });
 
