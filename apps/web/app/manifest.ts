@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "CoinOps",
     short_name: "CoinOps",
     description: "Operacoes inteligentes em criptomoedas",
-    start_url: "/",
+    start_url: "/automacao?view=live",
     scope: "/",
     display: "standalone",
     background_color: "#050505",

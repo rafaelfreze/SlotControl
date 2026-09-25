@@ -28,6 +28,10 @@
     "app/api/cron/live-monitor/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 60
+    },
+    "app/api/cron/coinops-push/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 60
     }
   },
   "crons": [
@@ -50,6 +54,10 @@
     {
       "path": "/api/cron/live-monitor",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/coinops-push",
+      "schedule": "* * * * *"
     }
   ]
 }
