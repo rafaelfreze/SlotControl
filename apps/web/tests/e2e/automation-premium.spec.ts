@@ -36,6 +36,7 @@ function clientModules() {
       if (["react", "react-dom", "next/link", "next/image", "next/navigation"].includes(imported))
         return `require(${JSON.stringify(imported)})`;
       if (imported.endsWith(".css")) return 'require("@boundary/css")';
+      if (imported === "@/lib/supabase/browser") return 'require("@boundary/supabase")';
       if (imported.endsWith("-actions") || imported.endsWith("/actions") || imported === "./actions")
         return 'require("@boundary/actions")';
       if (!imported.startsWith(".") && !imported.startsWith("@/"))
@@ -67,6 +68,8 @@ async function mount(page: Page, view: View, width: number, height = 960, data: 
   const bundle = clientModules();
   await page.addScriptTag({ content: `(() => {
     const React = window.React;
+    window.fetch = async () => ({ ok: false, json: async () => ({}) });
+    window.WebSocket = class { static OPEN = 1; readyState = 1; close() {} };
     const modules = {${bundle.code}};
     const cache = {};
     window.__fixtureActions = [];
@@ -79,6 +82,10 @@ async function mount(page: Page, view: View, width: number, height = 960, data: 
       'next/navigation': { usePathname: () => '/automacao', useSearchParams: () => new URLSearchParams('view=${view}'),
         useRouter: () => ({ refresh: () => {}, push: () => {}, replace: () => {} }) },
       '@boundary/css': {},
+      '@boundary/supabase': { createClient: () => ({
+        channel: () => ({ on() { return this; }, subscribe() { return this; } }),
+        removeChannel: async () => {},
+      }) },
       '@boundary/actions': new Proxy({}, { get: (_, name) => name === '__esModule' ? false : disabledAction(String(name)) }),
     };
     function require(id) {
@@ -201,15 +208,15 @@ for (const width of [360, 390, 430, 1024, 1280, 1440, 1920]) {
     await expect(trigger).toHaveAttribute("aria-expanded", "true");
     await expect(navigation).toBeVisible();
     const links = navigation.getByRole("link");
-    await expect(links).toHaveCount(9);
+    await expect(links).toHaveCount(8);
     expect(await links.evaluateAll((elements) => elements.map((element) => element.getAttribute("href"))))
-      .toEqual(["/automacao", "/dashboard", "/slots", "/plano-crescimento", "/historico", "/relatorios", "/ciclos", "/alertas", "/config"]);
-    for (const href of ["automacao", "dashboard", "slots", "plano-crescimento", "historico", "relatorios", "ciclos", "alertas", "config"])
+      .toEqual(["/automacao", "/slots", "/plano-crescimento", "/historico", "/relatorios", "/ciclos", "/alertas", "/config"]);
+    for (const href of ["automacao", "slots", "plano-crescimento", "historico", "relatorios", "ciclos", "alertas", "config"])
       expect(existsSync(resolve(appRoot, "app", href, "page.tsx")), `Rota real /${href}`).toBe(true);
     const navigationFrame = await navigation.boundingBox();
     const environments = page.getByLabel("Ambientes da Automação", { exact: true });
     const toolbar = page.getByLabel("Ferramentas da Automação", { exact: true });
-    expect((await environments.boundingBox())!.y).toBeGreaterThanOrEqual(navigationFrame!.y + navigationFrame!.height);
+    expect((await toolbar.boundingBox())!.y).toBeGreaterThanOrEqual(navigationFrame!.y + navigationFrame!.height);
     await expect(environments).toBeVisible();
     await expect(toolbar).toBeVisible();
     await expect(environments.getByRole("link")).toHaveCount(4);
@@ -227,7 +234,7 @@ for (const width of [360, 390, 430, 1024, 1280, 1440, 1920]) {
     await page.getByRole("heading", { name: "Olá, Rafael!", exact: true }).click();
     await expect(navigation).not.toBeVisible();
     await trigger.click();
-    await links.filter({ hasText: "Resumo" }).click();
+    await links.filter({ hasText: "Automação" }).click();
     await expect(navigation).not.toBeVisible();
     expect((await geometry(page)).overflow).toBe(0);
     await noSideEffects(page, audit);

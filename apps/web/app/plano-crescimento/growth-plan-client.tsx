@@ -65,7 +65,7 @@ export function GrowthPlanClient({ userLabel, plan, btcLadder, solLadder, histor
 
   return (
     <MobileScreen desktop={<DesktopPlan userLabel={userLabel} livePrices={livePrices} monitoring={monitoring} plan={plan} btcLadder={btcLadder} solLadder={solLadder} btcActionKeys={btcActionKeys} solActionKeys={solActionKeys} initialAsset={initialAsset} initialView={initialView} />}>
-      <AppHeader title="Plano de Crescimento" backHref="/dashboard" />
+      <AppHeader title="Plano de Crescimento" backHref="/automacao?view=live" />
       <MarketTicker livePrices={livePrices} />
       {setupError || !plan.ok ? <section className="inline-alert dashboard-alert">Falha ao carregar o plano: {setupError || plan.code || "dados indisponíveis"}</section> : null}
       {notice ? <section className={`${noticeTone === "error" ? "inline-alert" : "form-success"} dashboard-notice`} role="status">{notice}</section> : null}

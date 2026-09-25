@@ -9,7 +9,7 @@ test("entrada sem destino usa Automação, sem transformar Resumo em redirect", 
   assert.equal(AUTHENTICATED_HOME, "/automacao");
   assert.equal(getAuthDestination(), "/automacao");
   assert.equal(getAuthDestination({ redirectTo: "" }), "/automacao");
-  assert.equal(getAuthDestination({ redirectTo: "/dashboard" }), "/dashboard");
+  assert.equal(getAuthDestination({ redirectTo: "/dashboard" }), "/automacao");
 });
 
 test("retornos internos explícitos preservam rota, filtros e fragmento", () => {
@@ -72,7 +72,7 @@ test("callback troca o code uma vez e usa o novo destino padrão sem vazar o cod
 });
 
 test("callback conserva next interno e sua query, incluindo recuperação de senha", async () => {
-  for (const next of ["/dashboard", "/redefinir-senha", "/automacao?view=real#slots"]) {
+  for (const next of ["/redefinir-senha", "/automacao?view=real#slots"]) {
     const result = await callback().GET({ url: `https://coinops.example/auth/callback?code=fixture&next=${encodeURIComponent(next)}` });
     assert.equal(result.location, `https://coinops.example${next}`);
   }
@@ -131,15 +131,19 @@ test("sessão já autenticada no login/cadastro vai à Automação por padrão",
 });
 
 test("middleware preserva retornos internos validados e rejeita externos", async () => {
-  assert.equal((await runMiddleware("/login?redirectTo=%2Fdashboard", true)).location, "https://coinops.example/dashboard");
+  assert.equal((await runMiddleware("/login?redirectTo=%2Fdashboard", true)).location, "https://coinops.example/automacao");
   assert.equal((await runMiddleware("/login?returnTo=%2Fautomacao%3Fview%3Dtestnet", true)).location,
     "https://coinops.example/automacao?view=testnet");
   assert.equal((await runMiddleware("/login?next=https%3A%2F%2Fevil.example", true)).location, "https://coinops.example/automacao");
 });
 
-test("Resumo e rotas existentes mantêm seus guards, sem novo redirect quando autenticado", async () => {
+test("rota legada mantém guard e redireciona pelo componente", async () => {
   assert.equal((await runMiddleware("/dashboard", true)).passthrough, true);
   assert.equal((await runMiddleware("/dashboard", false)).location, "https://coinops.example/login?redirectTo=%2Fdashboard");
+  const page = compile("../../app/dashboard/page.tsx", {
+    "next/navigation": { redirect: (path: string) => { throw new Error(`redirect:${path}`); } }
+  }) as { default: () => void };
+  assert.throws(() => page.default(), /redirect:\/automacao\?view=live/);
 });
 
 test("root autenticado usa Automação e ainda exige usuário verificado", async () => {

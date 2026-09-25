@@ -6,7 +6,6 @@ import { PremiumBrand, PremiumIcon, type IconName } from "./premium-primitives";
 
 const destinations: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/automacao", label: "Automação", icon: "server" },
-  { href: "/dashboard", label: "Resumo", icon: "home" },
   { href: "/slots", label: "Slots", icon: "orders" },
   { href: "/plano-crescimento", label: "Plano", icon: "chart" },
   { href: "/historico", label: "Histórico", icon: "orders" },

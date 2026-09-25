@@ -12,7 +12,7 @@ type Tone = "gold" | "purple" | "green" | "red" | "blue" | "neutral";
 
 export function AppHeader({
   title,
-  backHref = "/dashboard",
+  backHref = "/automacao?view=live",
   action
 }: {
   title: string;
@@ -77,7 +77,6 @@ function TickerCell({ label, value, online = false }: { label: string; value: st
 }
 
 const navigation = [
-  { href: "/dashboard", label: "Resumo", icon: "◈" },
   { href: "/slots", label: "Slots", icon: "▦" },
   { href: "/plano-crescimento", label: "Plano", icon: "↗" },
   { href: "/automacao", label: "Automação", icon: "ϟ" },
@@ -85,7 +84,7 @@ const navigation = [
 ];
 
 function isCurrent(pathname: string, href: string) {
-  return pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+  return pathname === href || pathname.startsWith(href);
 }
 
 export function BottomNavigation() {
@@ -95,7 +94,7 @@ export function BottomNavigation() {
 
 export function DesktopSidebar() {
   const pathname = usePathname();
-  return <aside className="desktop-sidebar" aria-label="Navegacao lateral"><Link className="sidebar-brand" href="/dashboard"><Image src="/icon-96x96.png" alt="CoinOps" width={34} height={34} priority /><span>CoinOps<small>OPERACOES EM CRIPTO</small></span></Link><nav>{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</nav></aside>;
+  return <aside className="desktop-sidebar" aria-label="Navegacao lateral"><Link className="sidebar-brand" href="/automacao?view=live"><Image src="/icon-96x96.png" alt="CoinOps" width={34} height={34} priority /><span>CoinOps<small>OPERACOES EM CRIPTO</small></span></Link><nav>{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</nav></aside>;
 }
 
 export function StatCard({ title, value, helper, tone = "neutral", financialValue }: { title: string; value: string; helper?: string; tone?: Tone; financialValue?: number }) {

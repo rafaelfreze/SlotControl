@@ -15,7 +15,6 @@ type DesktopIconName = "dashboard" | "slots" | "plan" | "history" | "reports" | 
 type DesktopNavigationItem = { href: string; label: string; icon: DesktopIconName };
 
 export const desktopNavigation: readonly DesktopNavigationItem[] = [
-  { href: "/dashboard", label: "Resumo", icon: "dashboard" },
   { href: "/slots", label: "Slots", icon: "slots" },
   { href: "/plano-crescimento", label: "Plano", icon: "plan" },
   { href: "/historico", label: "Histórico", icon: "history" },
@@ -79,7 +78,7 @@ export function DesktopSidebar({ livePrices, monitoring, userLabel }: Pick<Deskt
 
   return (
     <aside id="coinops-desktop-sidebar" className="desktop-workspace-sidebar" aria-label="Navegação principal do CoinOps">
-      <Link className="desktop-sidebar-brand" href="/dashboard" aria-label="CoinOps - Resumo">
+      <Link className="desktop-sidebar-brand" href="/automacao?view=live" aria-label="CoinOps - Automação">
         <Image src="/icon-96x96.png" alt="" width={34} height={34} priority />
         <span>COINOPS</span>
       </Link>
@@ -177,7 +176,7 @@ export function DesktopEmptyState({ title, children }: { title: string; children
 
 function getActiveNavigationHref(pathname: string) {
   return desktopNavigation
-    .filter((item) => pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`)))
+    .filter((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))
     .sort((left, right) => right.href.length - left.href.length)[0]?.href;
 }
 

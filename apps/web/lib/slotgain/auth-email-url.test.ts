@@ -34,8 +34,8 @@ test("CoinOps Auth email callbacks fail closed for another product origin", () =
   environment.NEXT_PUBLIC_SITE_URL = "https://nexxfitpro.com.br";
   try {
     assert.equal(
-      getCoinOpsAuthCallback("/dashboard"),
-      "https://cripto-flax.vercel.app/auth/callback?next=%2Fdashboard"
+      getCoinOpsAuthCallback("/automacao"),
+      "https://cripto-flax.vercel.app/auth/callback?next=%2Fautomacao"
     );
   } finally {
     environment.NODE_ENV = previousEnvironment;

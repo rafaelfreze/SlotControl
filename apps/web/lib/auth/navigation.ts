@@ -15,6 +15,7 @@ export function getAuthDestination(paths: ReturnPaths = {}): string {
     const origin = "https://coinops.invalid";
     const target = new URL(value, origin);
     if (target.origin !== origin || target.pathname.startsWith("//")) return AUTHENTICATED_HOME;
+    if (target.pathname === "/dashboard" || target.pathname.startsWith("/dashboard/")) return AUTHENTICATED_HOME;
     return `${target.pathname}${target.search}${target.hash}`;
   } catch {
     return AUTHENTICATED_HOME;

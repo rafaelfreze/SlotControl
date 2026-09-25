@@ -19,7 +19,7 @@ export default async function AlertsPage() {
 
   const mobileAlerts = (
     <>
-      <AppHeader title="Alertas" backHref="/dashboard" />
+      <AppHeader title="Alertas" backHref="/automacao?view=live" />
       <section className="official-report-header">
         <div><small>Monitoramento</small><h1>Alertas oficiais</h1></div>
         <p>Eventos confirmados desde o baseline da estratégia.</p>
