@@ -24,6 +24,10 @@ A recuperação desse `VIEWER` revelou que a RPC compartilhada `resolve_auth_ema
 
 O portal separa capital operacional do ledger, resultado de mercado realizado e P&L aberto estimado por moeda. A leitura direta do saldo Binance é assíncrona; quando falha, mostra somente o último snapshot de validação com horário e aviso de desatualização. O preço público é referência visual, não preço de execução. Valores de moedas distintas nunca são somados.
 
+O visual mobile-first usa um cartão de saldo por moeda de cotação, cartões dos motores com preço/variação/candles públicos da Binance e os detalhes de slots e ganhos existentes. O simulador de ganhos é exclusivamente ilustrativo: `número de gains × capital operacional por slot × gain_rate` do ciclo atual, sem taxas, compounding ou previsão de mercado. Não há valor de capital, preço ou ganho fixado no produto. Cada moeda permanece isolada, e a composição do resultado continua disponível no cartão de saldo.
+
+Na Automação administrativa mobile, logo/status, ambiente, filtros e navegação de ferramentas permanecem visíveis durante o scroll. A barra de navegação inferior foi removida; módulos continuam acessíveis pelo menu global superior. Essas alterações não modificam executor, estratégia, ledger ou ordens.
+
 ## Verificação obrigatória antes de convidar pessoa real
 
 Validar Auth invite/recovery em ambiente publicado, política RLS de `viewer_access`, negativa de acesso cruzado e de métodos de escrita, leitura de saldo do executor e smoke mobile. O convite depende da configuração de entrega de e-mail do Supabase Auth. Não usar conta real de terceiro como fixture de teste.

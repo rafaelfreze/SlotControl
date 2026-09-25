@@ -6,7 +6,9 @@ import { getSupabaseDataSchema } from "@/lib/supabase/env";
 import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
 import { ViewerSignOut } from "./sign-out";
 import { ViewerLiveBalances } from "./live-balances";
+import { ViewerGainSimulator } from "./gain-simulator";
 import "./viewer.css";
+import "./viewer-redesign.css";
 
 export const metadata: Metadata = { title: "Meu CoinOps" };
 export const dynamic = "force-dynamic";
@@ -17,15 +19,22 @@ const number = (value: number | null, digits = 2) => value === null ? "—"
   : new Intl.NumberFormat("pt-BR", { maximumFractionDigits: digits }).format(value);
 const asNumber = (value: unknown) => { const n = Number(value); return Number.isFinite(n) ? n : 0; };
 
-async function publicPrice(symbol: string) {
-  if (!/^(BTC|SOL)(BRL|USDT|USDC)$/.test(symbol)) return null;
+async function publicMarket(symbol: string) {
+  if (!/^(BTC|SOL)(BRL|USDT|USDC)$/.test(symbol)) return { price: null, change: null, trend: [] as number[] };
   try {
-    const response = await fetch(`https://data-api.binance.vision/api/v3/ticker/price?symbol=${symbol}`,
-      { next: { revalidate: 300 }, signal: AbortSignal.timeout(4_000) });
-    if (!response.ok) return null;
-    const value = asNumber((await response.json()).price);
-    return value > 0 ? value : null;
-  } catch { return null; }
+    const [tickerResponse, candleResponse] = await Promise.all([
+      fetch(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${symbol}`,
+        { next: { revalidate: 60 }, signal: AbortSignal.timeout(4_000) }),
+      fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=1h&limit=24`,
+        { next: { revalidate: 300 }, signal: AbortSignal.timeout(4_000) }),
+    ]);
+    const ticker = tickerResponse.ok ? await tickerResponse.json() : null;
+    const candles = candleResponse.ok ? await candleResponse.json() : null;
+    const price = asNumber(ticker?.lastPrice);
+    const change = Number(ticker?.priceChangePercent);
+    return { price: price > 0 ? price : null, change: Number.isFinite(change) ? change : null,
+      trend: Array.isArray(candles) ? candles.map((row) => asNumber(row?.[4])).filter((value) => value > 0) : [] as number[] };
+  } catch { return { price: null, change: null, trend: [] as number[] }; }
 }
 
 export default async function MeuCoinOps() {
@@ -54,13 +63,13 @@ export default async function MeuCoinOps() {
   const marketRows = await Promise.all((engines.data ?? []).map(async (engine) => {
     const scoped = <T extends string>(table: string, columns: T) => service.from(table).select(columns)
       .eq("operator_id", operatorId).eq("exchange_account_id", accountId).eq("trading_engine_id", engine.id);
-    const [run, accounts, gains, price] = await Promise.all([
-      scoped("robot_v1_live_runs", "id,status,last_reconciled_at,last_error")
+    const [run, accounts, gains, marketData] = await Promise.all([
+      scoped("robot_v1_live_runs", "id,status,last_reconciled_at,last_error,gain_rate")
         .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle(),
       scoped("robot_v1_live_slot_accounts", "slot_number,balance_quote,market_pnl_quote,gain_count").order("slot_number"),
       scoped("robot_v1_slot_gain_totals", "slot_number,period_key,monthly_gain_count,lifetime_gain_count")
         .eq("period_key", month),
-      publicPrice(engine.symbol),
+      publicMarket(engine.symbol),
     ]);
     if (run.error || accounts.error || gains.error) throw new Error("COINOPS_VIEWER_LEDGER_UNAVAILABLE");
     const [slots, orders, alerts, history] = run.data ? await Promise.all([
@@ -94,7 +103,7 @@ export default async function MeuCoinOps() {
         monthly: gainMap.get(slot.slot_number)?.monthly_gain_count ?? 0,
         open: quantity > 0, quantity, entry, tp: tp ? asNumber(tp.price) : null,
         nextBuy: next ? asNumber(next.price) : null,
-        openPnl: quantity > 0 && price !== null && entry !== null ? (price - entry) * quantity : null,
+        openPnl: quantity > 0 && marketData.price !== null && entry !== null ? (marketData.price - entry) * quantity : null,
         realized: asNumber(slot.market_pnl_quote) };
     });
     const historyRows = [...(history?.data ?? [])].reverse().map((event) => ({ at: event.observed_at,
@@ -104,7 +113,8 @@ export default async function MeuCoinOps() {
         && !run.data.last_error && !(alerts?.data?.length)
         && !!run.data.last_reconciled_at
         && Date.now() - Date.parse(run.data.last_reconciled_at) < 15 * 60_000,
-      updatedAt: run.data?.last_reconciled_at ?? null, price, cap: asNumber(engine.hard_cap_quote),
+      updatedAt: run.data?.last_reconciled_at ?? null, price: marketData.price, change: marketData.change,
+      trend: marketData.trend, gainRate: asNumber(run.data?.gain_rate), cap: asNumber(engine.hard_cap_quote),
       slots: slotRows, openCount: slotRows.filter((slot) => slot.open).length,
       realized: slotRows.reduce((sum, slot) => sum + slot.realized, 0),
       openPnl: slotRows.reduce((sum, slot) => sum + (slot.openPnl ?? 0), 0),
@@ -118,38 +128,31 @@ export default async function MeuCoinOps() {
         && typeof (item as { free?: unknown }).free === "number" && typeof (item as { locked?: unknown }).locked === "number") : [];
   const allHealthy = marketRows.length > 0 && marketRows.every((row) => row.healthy);
   const latest = marketRows.map((row) => row.updatedAt).filter((value): value is string => !!value).sort().at(0);
+  const firstName = String(name || account.data.display_name).trim().split(/\s+/)[0];
+  const currencySummaries = currencies.map((currency) => {
+    const group = marketRows.filter((row) => row.currency === currency);
+    return { currency, capital: group.reduce((sum, row) => sum + row.operationalBalance, 0),
+      committed: group.reduce((sum, row) => sum + row.slots.reduce((total, slot) => total + slot.committed, 0), 0),
+      realized: group.reduce((sum, row) => sum + row.realized, 0),
+      openPnl: group.reduce((sum, row) => sum + row.openPnl, 0) };
+  });
   return <main className="viewer-app">
-    <header className="viewer-header"><div><span className="viewer-mark">◉</span><span><strong>CoinOps</strong><small>Meu CoinOps · {account.data.display_name}</small></span></div><ViewerSignOut /></header>
-    <section className="viewer-hero"><div><small>Bem-vindo(a), {name}</small><h1>Seu resultado, com clareza.</h1><p>Seu robô e seus investimentos em uma única visão, somente leitura.</p></div>
-      <span className={allHealthy ? "viewer-health is-ok" : "viewer-health"}>{allHealthy ? "● Operando normalmente" : "● Atenção · confira a atualização"}</span></section>
+    <div className="viewer-shell"><header className="viewer-header"><div className="viewer-brand"><span className="viewer-mark" aria-hidden="true"><i /></span><span><strong>CoinOps</strong><small>Meu CoinOps · {account.data.display_name}</small></span></div><div className="viewer-account"><span className="viewer-initial" aria-hidden="true">{firstName.charAt(0).toUpperCase()}</span><span>{account.data.display_name}</span><ViewerSignOut /></div></header>
+    <section className="viewer-hero"><div><h1>Bom dia, {firstName}!</h1><p>{allHealthy ? "Seu robô está operando normalmente." : "Confira o estado da sua operação abaixo."}</p></div>
+      <div className="viewer-health-group"><span className={allHealthy ? "viewer-health is-ok" : "viewer-health"}>{allHealthy ? "● OPERANDO" : "● ATENÇÃO"}</span><small>Atualizado {latest ? new Date(latest).toLocaleString("pt-BR") : "sem reconciliação confirmada"}</small></div></section>
     <ViewerLiveBalances fallback={{ balances: observedBalances.map((row) => ({ ...row, total: row.free + row.locked })),
-      observedAt: balanceEvidence?.checked_at ?? null }} />
-    <section className="viewer-grid" aria-label="Resultados por moeda">{currencies.map((currency) => {
-      const group = marketRows.filter((row) => row.currency === currency);
-      const capital = group.reduce((sum, row) => sum + row.operationalBalance, 0);
-      const realized = group.reduce((sum, row) => sum + row.realized, 0);
-      const openPnl = group.reduce((sum, row) => sum + row.openPnl, 0);
-      return <article className="viewer-panel" key={currency}><div className="viewer-section-title"><h2>{currency} · capital operacional</h2><span>CoinOps</span></div>
-        <strong className="viewer-big">{amount(capital, currency)}</strong>
-        <div className="viewer-facts"><div><small>Em posições</small><b>{amount(group.reduce((sum, row) => sum + row.slots.reduce((n, slot) => n + slot.committed, 0), 0), currency)}</b></div>
-          <div><small>Resultado realizado</small><b>{amount(realized, currency)}</b></div>
-          <div><small>Resultado aberto estimado</small><b>{amount(openPnl, currency)}</b></div>
-          <div><small>Resultado total estimado</small><b>{amount(realized + openPnl, currency)}</b></div></div>
-        <p className="viewer-footnote">Capital operacional do ledger CoinOps. Saldo livre e bloqueado na Binance aparecem na leitura separada acima.</p>
-      </article>;
-    })}{!currencies.length ? <article className="viewer-panel"><h2>Conta em preparação</h2><p>Nenhum mercado Real ativado para esta conta.</p></article> : null}</section>
+      observedAt: balanceEvidence?.checked_at ?? null }} summaries={currencySummaries} />
+    {!currencies.length ? <section className="viewer-panel viewer-empty"><h2>Conta em preparação</h2><p>Nenhum mercado Real ativado para esta conta.</p></section> : null}
     <section className="viewer-market-grid">{marketRows.map((market) => {
-      const points = market.history.reduce<Array<{ at: string; total: number }>>((rows, item) => {
-        rows.push({ at: item.at, total: (rows.at(-1)?.total ?? 0) + item.result }); return rows;
-      }, []);
-      const totals = [0, ...points.map((point) => point.total)];
-      const min = Math.min(...totals), max = Math.max(...totals), spread = max - min || 1;
-      const coords = totals.map((value, index) => `${index * 100 / Math.max(1, totals.length - 1)},${42 - (value - min) / spread * 34}`).join(" ");
-      return <article className="viewer-panel" key={market.symbol}><div className="viewer-section-title"><h2>{market.symbol.replace(market.currency, `/${market.currency}`)}</h2><span className={market.healthy ? "viewer-ok" : "viewer-warn"}>{market.healthy ? "OPERANDO" : "ATENÇÃO"}</span></div>
-        <div className="viewer-market-summary"><div><small>Preço de referência</small><strong>{amount(market.price, market.currency)}</strong></div><div><small>Slots</small><strong>{market.slots.length}</strong></div><div><small>Posições abertas</small><strong>{market.openCount}</strong></div><div><small>Gains totais</small><strong>{market.slots.reduce((sum, slot) => sum + slot.gains, 0)}</strong></div></div>
-        <svg className="viewer-chart" viewBox="0 0 100 48" preserveAspectRatio="none" role="img" aria-label={`Evolução do resultado realizado de ${market.symbol}`}><polyline points={coords} /></svg>
-        <small className="viewer-footnote">Evolução do resultado realizado · {points.length} fechamento(s) · atualizado {market.updatedAt ? new Date(market.updatedAt).toLocaleString("pt-BR") : "não informado"}</small>
-        <details className="viewer-details"><summary>Ver os {market.slots.length} slots</summary><div className="viewer-slots">{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
+      const trend = market.trend;
+      const min = Math.min(...trend), max = Math.max(...trend), spread = max - min || 1;
+      const coords = trend.map((value, index) => `${index * 100 / Math.max(1, trend.length - 1)},${44 - (value - min) / spread * 36}`).join(" ");
+      const base = market.symbol.replace(market.currency, "");
+      return <article className={`viewer-panel viewer-market viewer-market--${base.toLowerCase()}`} key={market.symbol}><div className="viewer-section-title"><div className="viewer-market-name"><span className="viewer-coin" aria-hidden="true">{base === "BTC" ? "₿" : "◎"}</span><h2>{base}/{market.currency}</h2></div><span className={market.healthy ? "viewer-ok" : "viewer-warn"}>{market.healthy ? "OPERANDO" : "ATENÇÃO"}</span></div>
+        <div className="viewer-market-price"><strong>{number(market.price)}</strong><span>{market.currency}</span>{market.change !== null ? <small className={market.change >= 0 ? "viewer-up" : "viewer-down"}>{market.change >= 0 ? "▲" : "▼"} {number(Math.abs(market.change))}% (24h)</small> : null}</div>
+        {trend.length > 1 ? <svg className="viewer-chart" viewBox="0 0 100 48" preserveAspectRatio="none" role="img" aria-label={`Preço nas últimas 24 horas de ${market.symbol}`}><polyline points={coords} /></svg> : <div className="viewer-chart viewer-chart-empty">Histórico de preços indisponível</div>}
+        <div className="viewer-market-summary"><div><small>Posições</small><strong>{market.openCount} / {market.slots.length}</strong></div><div><small>Gains</small><strong>{market.slots.reduce((sum, slot) => sum + slot.gains, 0)}</strong></div><div><small>P&amp;L aberto estimado</small><strong className={market.openPnl >= 0 ? "viewer-up" : "viewer-down"}>{amount(market.price === null ? null : market.openPnl, market.currency)}</strong></div></div>
+        <details className="viewer-details"><summary>Ver detalhes →</summary><div className="viewer-slots"><p className="viewer-footnote">{market.slots.length} slots · {market.openCount} posição(ões) aberta(s)</p>{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
           <strong>Slot #{slot.slot}<span>{slot.open ? "ABERTO" : slot.nextBuy ? "PRÓXIMA COMPRA" : "EM ESPERA"}</span></strong>
           <small>Saldo {amount(slot.balance, market.currency)} · {slot.gains} gains · {slot.monthly} no mês</small>
           {slot.open ? <small>Quantidade {number(slot.quantity, 8)} · Entrada {amount(slot.entry, market.currency)} · TP {amount(slot.tp, market.currency)}</small> : null}
@@ -158,6 +161,8 @@ export default async function MeuCoinOps() {
         <details className="viewer-details"><summary>Histórico de ganhos</summary><div className="viewer-slots">{market.history.slice(-20).reverse().map((item, index) => <div className="viewer-slot" key={`${item.at}-${index}`}><strong>Slot #{item.slot} · {amount(item.result, market.currency)}</strong><small>{new Date(item.at).toLocaleString("pt-BR")}</small></div>)}{!market.history.length ? <p>Sem gain realizado neste período.</p> : null}</div></details>
       </article>;
     })}</section>
-    <footer>Dados do ledger CoinOps. Preços públicos de referência podem diferir da execução. Última reconciliação {latest ? new Date(latest).toLocaleString("pt-BR") : "indisponível"}.</footer>
+    <ViewerGainSimulator markets={marketRows.map((row) => ({ symbol: row.symbol, currency: row.currency,
+      capital: row.operationalBalance, gainRate: row.gainRate, slotCount: row.slots.length }))} />
+    <footer>Dados da sua conta no ledger CoinOps. Preços públicos são referências e podem diferir da execução. Última reconciliação {latest ? new Date(latest).toLocaleString("pt-BR") : "indisponível"}.</footer></div>
   </main>;
 }

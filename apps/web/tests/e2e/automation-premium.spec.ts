@@ -154,6 +154,22 @@ async function screenshot(page: Page, testInfo: TestInfo, name: string) {
   )));
 }
 
+test("mobile mantém navegação superior no scroll sem barra inferior", async ({ page }) => {
+  const audit = await mount(page, "live", 390, 844);
+  const header = page.locator(".px-mobile-sticky-header");
+  await expect(header).toBeVisible();
+  await expect(page.locator(".px-bottom-nav")).toHaveCount(0);
+  const before = await header.boundingBox();
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300);
+  const after = await header.boundingBox();
+  expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(1);
+  await expect(page.getByLabel("Ambientes da Automação")).toBeVisible();
+  await expect(page.getByLabel("Filtros da operação")).toBeVisible();
+  await expect(page.getByLabel("Ferramentas da Automação")).toBeVisible();
+  await noSideEffects(page, audit);
+});
+
 for (const view of views) for (const width of [1440, 390]) {
   test(`${view}: screenshot ${width >= 1024 ? "desktop" : "mobile"} e render sem efeitos colaterais`, async ({ page }, testInfo) => {
     const audit = await mount(page, view, width, width < 1024 ? 844 : 1000);
