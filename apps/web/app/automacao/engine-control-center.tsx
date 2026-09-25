@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Account = { id: string; display_name: string; status: string; kill_switch: boolean;
@@ -45,8 +45,8 @@ function split(total: string, assets: MarketAsset[]) {
     [asset, ((base + (index < rest ? 1 : 0)) / 100).toFixed(2)])) as Record<MarketAsset, string>;
 }
 
-export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCredentials }: {
-  initialAccountId: string; onEditEngine: (accountId: string, symbol: string) => void;
+export function EngineControlCenter({ initialAccountId, environment, onEditEngine, onOpenCredentials }: {
+  initialAccountId: string; environment: "REAL" | "TESTNET"; onEditEngine: (accountId: string, symbol: string) => void;
   onOpenCredentials: () => void }) {
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -66,14 +66,14 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
   const accountEngines = engines.filter((item) => item.exchange_account_id === accountId);
   const plannedSplit = useMemo(() => equal && capital ? split(capital, assets) : null,
     [equal, capital, assets]);
-  async function refresh() {
+  const refresh = useCallback(async () => {
     const response = await fetch(api, { cache: "no-store", credentials: "same-origin" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? "COINOPS_ENGINE_STATUS_UNAVAILABLE");
-    setAccounts(payload.accounts ?? []);
-    setEngines(payload.engines ?? []);
-  }
-  useEffect(() => { void refresh().catch(() => setMessage("Estado dos motores indisponível.")); }, []);
+    setAccounts((payload.accounts ?? []).filter((item: Account) => item.environment === environment));
+    setEngines((payload.engines ?? []).filter((item: Engine) => item.environment === environment));
+  }, [environment]);
+  useEffect(() => { void refresh().catch(() => setMessage("Estado dos motores indisponível.")); }, [refresh]);
   function invalidate() { setPreview(null); setRequestId(crypto.randomUUID()); }
   function updateRule(asset: MarketAsset, field: keyof Rules[MarketAsset], value: string) {
     setRules((current) => ({ ...current, [asset]: { ...current[asset], [field]: value } }));

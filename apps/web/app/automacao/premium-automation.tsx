@@ -196,8 +196,8 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     </main>
     <nav className="px-bottom-nav" aria-label="Navegação principal"><a href="/dashboard"><PremiumIcon name="home" />Resumo</a><button type="button" onClick={goOperations}><PremiumIcon name="orders" />Operações</button><a href={`/automacao?view=${view}`} aria-current="page"><span className="px-bot"><PremiumIcon name="server" /></span>Automação</a><a href={reportHref}><PremiumIcon name="reports" />Relatórios</a><button type="button" onClick={() => setPanel("menu")}><PremiumIcon name="menu" />Mais</button></nav>
     <PremiumDrawer open={panel !== null} title={title} onClose={() => setPanel(null)}>
-      <div hidden={panel !== "strategy"}>{view === "live" && data.operator ? <>
-        <EngineControlCenter initialAccountId={selection.accountId}
+      <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
+        <EngineControlCenter initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
           onEditEngine={(accountId, symbol) => { setSelection({ accountId, symbol }); setEngineId(null); }}
           onOpenCredentials={() => setPanel("config")} />
         {concrete && strategyPanels?.[concrete.engineId] ? <div className="px-engine-existing-profile">

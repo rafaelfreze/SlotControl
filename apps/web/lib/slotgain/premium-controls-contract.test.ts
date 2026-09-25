@@ -70,6 +70,14 @@ test("premium navigation is presentation-only and keeps operational actions behi
   assert.match(premium, /account=\$\{selection\.accountId\}&engine=\$\{concrete\?\.engineId \?\? "ALL"\}/);
 });
 
+test("strategy drawer exposes the shared self-service center to Testnet without mixing Production accounts", () => {
+  const engineCenter = read("engine-control-center.tsx");
+  assert.match(premium, /\(view === "live" \|\| view === "testnet"\) && data\.operator/);
+  assert.match(premium, /<EngineControlCenter initialAccountId=\{selection\.accountId\} environment=\{environment as "REAL" \| "TESTNET"\}/);
+  assert.match(engineCenter, /payload\.accounts \?\? \[\]\)\.filter\(\(item: Account\) => item\.environment === environment\)/);
+  assert.match(engineCenter, /payload\.engines \?\? \[\]\)\.filter\(\(item: Engine\) => item\.environment === environment\)/);
+});
+
 test("premium drawer retains native modal semantics and an accessible close control", () => {
   assert.match(primitives, /useRef<HTMLDialogElement>/);
   assert.match(primitives, /dialog\.showModal\(\)/);
