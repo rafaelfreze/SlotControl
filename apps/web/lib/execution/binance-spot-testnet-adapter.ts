@@ -48,12 +48,18 @@ export class BinanceSpotTestnetAdapter {
   private readonly beforeWrite: (() => Promise<void>) | undefined;
   private routing: { engine: EngineContext; runId: string; persistedIds: ReadonlySet<string> } | null = null;
 
-  constructor(credentials: Credentials, options: { fetcher?: FetchLike; now?: () => number; beforeWrite?: () => Promise<void> } = {}) {
+  constructor(credentials: Credentials, options: { fetcher?: FetchLike; now?: () => number;
+    beforeWrite?: () => Promise<void>; skipClientTimeSync?: boolean } = {}) {
     if (!credentials.apiKey || !credentials.apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
     this.credentials = credentials;
     this.fetcher = options.fetcher || fetch;
     this.now = options.now || Date.now;
     this.beforeWrite = options.beforeWrite;
+    // Account-scoped traffic is re-signed by the fixed-IP executor, which
+    // obtains Binance Testnet time immediately before forwarding. A second
+    // clock request from Vercel is redundant and can fail before the secure
+    // transport is reached.
+    this.hasServerTime = options.skipClientTimeSync === true;
     this.reads = new BinanceSpotAdapter(credentials, { fetcher: this.fetcher, now: this.now, baseUrl: BINANCE_SPOT_TESTNET_BASE_URL, marketDataBaseUrl: BINANCE_SPOT_TESTNET_BASE_URL });
   }
 
@@ -87,7 +93,8 @@ export class BinanceSpotTestnetAdapter {
       return Response.json(result.payload, { status: result.binance_status });
     };
     const adapter = new BinanceSpotTestnetAdapter(credentials,
-      { ...options, fetcher: proxied ? proxyFetcher : options.fetcher });
+      { ...options, fetcher: proxied ? proxyFetcher : options.fetcher,
+        skipClientTimeSync: proxied });
     adapter.routing = { engine, runId, persistedIds: new Set(persistedIds) };
     return adapter;
   }

@@ -87,6 +87,20 @@ test("TRADE probe validates without placing an exchange order", async () => {
   assert.ok(calls.every((call) => call.url.startsWith(BINANCE_SPOT_TESTNET_BASE_URL)));
 });
 
+test("executor-routed TRADE probe relies on executor clock and skips direct Testnet time lookup", async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "testnet-proxy", apiSecret: "testnet-proxy" }, {
+    now: () => 1000, skipClientTimeSync: true, fetcher: async (url, init) => {
+      calls.push({ url, method: init?.method || "GET" });
+      if (url.endsWith("/api/v3/time")) throw new Error("direct Testnet clock must not be called");
+      return json({});
+    },
+  });
+  assert.deepEqual(await adapter.checkTradePermission("BTCUSDT", 16.76), { ok: true, error: null });
+  assert.deepEqual(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`),
+    ["POST /api/v3/order/test"]);
+});
+
 test("owned trades preserve base and quote commissions for partial-fill accounting", async () => {
   const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url) => {
     if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });
