@@ -8,7 +8,7 @@ import { testnetClientOrderId } from "./robot-v1-testnet-cycle.ts";
 
 export const BINANCE_SPOT_TESTNET_BASE_URL = "https://testnet.binance.vision";
 const TESTNET_SYMBOLS = new Set(["BTCUSDC", "SOLUSDC", "BTCUSDT", "SOLUSDT"]);
-const OWNED_CLIENT_ID = /^COV1-(BTC|SOL)-\d+(?:-\d+)?-(BUY|SELL)-[a-f0-9]{18}$/;
+const OWNED_CLIENT_ID = /^COV1-(BTC|SOL)-\d+-\d+-(BUY|SELL)-[a-f0-9]{12,18}$/;
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type Credentials = { apiKey: string; apiSecret: string };
 type LimitOrder = { type: "LIMIT"; symbol: string; side: "BUY" | "SELL"; quantity: string; price: string; clientOrderId: string; maxNotional: number };
@@ -21,7 +21,7 @@ export type TestnetTrade = { id: string; quantity: number; quoteQuantity: number
 
 function decimal(value: string) { return /^\d+(?:\.\d{1,12})?$/.test(value) && Number(value) > 0; }
 function verifyOwned(symbol: string, clientOrderId: string) {
-  if (!TESTNET_SYMBOLS.has(symbol) || !OWNED_CLIENT_ID.test(clientOrderId)) throw new Error("COINOPS_TESTNET_ORDER_NOT_OWNED");
+  if (!TESTNET_SYMBOLS.has(symbol) || clientOrderId.length > 36 || !OWNED_CLIENT_ID.test(clientOrderId)) throw new Error("COINOPS_TESTNET_ORDER_NOT_OWNED");
   const asset = symbol.slice(0, -4);
   if (!clientOrderId.startsWith(`COV1-${asset}-`)) throw new Error("COINOPS_TESTNET_SYMBOL_MISMATCH");
 }
@@ -102,7 +102,7 @@ export class BinanceSpotTestnetAdapter {
     const { engine, runId, persistedIds } = this.routing;
     if (engine.symbol !== symbol) throw new Error("COINOPS_TESTNET_ACCOUNT_MARKET_DENIED");
     if (persistedIds.has(clientOrderId)) return;
-    const match = /^COV1-(BTC|SOL)-(\d+)-(\d+)-(BUY|SELL)-[a-f0-9]{18}$/.exec(clientOrderId);
+    const match = /^COV1-(BTC|SOL)-(\d+)-(\d+)-(BUY|SELL)-[a-f0-9]{12,18}$/.exec(clientOrderId);
     if (!match || match[1] !== engine.base_asset || testnetClientOrderId(runId, match[1] as "BTC" | "SOL",
       Number(match[2]), match[4] as "BUY" | "SELL", Number(match[3])) !== clientOrderId)
       throw new Error("COINOPS_TESTNET_ACCOUNT_ORDER_DENIED");

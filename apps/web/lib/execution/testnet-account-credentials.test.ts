@@ -56,6 +56,7 @@ test("Testnet routed adapter denies another engine's order/cancel before network
           orderId: 42, clientOrderId: ownId, symbol: responseSymbol, side: "BUY", status: "NEW", executedQty: "0", cummulativeQuoteQty: "0", price: "60000" });
       } });
     await assert.rejects(adapter.getOwnedOrder("BTCUSDT", foreignId), /ACCOUNT_ORDER_DENIED/);
+    await assert.rejects(adapter.getOwnedOrder("BTCUSDT", `${ownId}a`), /ORDER_NOT_OWNED/);
     await assert.rejects(adapter.cancelOwnedOrder("BTCUSDT", "42", foreignId), /ACCOUNT_ORDER_DENIED/);
     await assert.rejects(adapter.getOwnedOrder("BTCUSDC", ownId), /ACCOUNT_MARKET_DENIED/);
     assert.equal(calls.length, 0);

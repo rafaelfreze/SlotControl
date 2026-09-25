@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { testnetFillEvents } from "./testnet-fill-evidence.ts";
+import { testnetClientOrderId } from "../execution/robot-v1-testnet-cycle.ts";
 
 const scope = { productId: "10000000-0000-4000-8000-000000000001", tenantId: "20000000-0000-4000-8000-000000000001", userId: "30000000-0000-4000-8000-000000000001" };
 const client = "COV1-SOL-1-1-BUY-0123456789abcdef01";
@@ -18,4 +19,10 @@ test("horário não fornecido não vira horário exato de fill e ordem manual é
   const [event] = testnetFillEvents(scope, "run", 1, client, "9", trades, observedAt);
   assert.equal(event!.details.filledAt, null); assert.equal(event!.details.timestampBasis, "COLLECTION_TIME_EXCHANGE_TIME_UNAVAILABLE");
   assert.throws(() => testnetFillEvents(scope, "run", 1, "manual-order", "9", trades, observedAt), /OWNERSHIP/);
+});
+test("auditoria aceita o identificador curto do TP do slot 10, mas recusa o legado inválido", () => {
+  const trades = [{ id: "3", quantity: .083, quoteQuantity: 9.95, commission: 0, commissionAsset: "USDC", isBuyer: false }];
+  const clientId = testnetClientOrderId("00000000-0000-4000-8000-000000000001", "SOL", 10, "SELL", 1);
+  assert.equal(testnetFillEvents(scope, "run", 10, clientId, "810243", trades, observedAt).length, 1);
+  assert.throws(() => testnetFillEvents(scope, "run", 10, `${clientId}4`, "810243", trades, observedAt), /OWNERSHIP/);
 });

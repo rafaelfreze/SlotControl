@@ -20,7 +20,12 @@ export function testnetClientOrderId(runId: string, asset: "BTC" | "SOL", slot: 
   // Preserve SOL's original hash contract so PREPARED orders recover the same
   // Binance client ID after deployment. BTC receives its own namespace.
   const source = asset === "SOL" ? `coinops-testnet|${runId}|${slot}|${side}|${revision}` : `coinops-testnet|${runId}|BTC|${slot}|${side}|${revision}`;
-  return `COV1-${asset}-${slot}-${revision}-${side}-${createHash("sha256").update(source).digest("hex").slice(0, 18)}`;
+  const prefix = `COV1-${asset}-${slot}-${revision}-${side}-`;
+  // Binance Spot accepts at most 36 characters. A two-digit slot with SELL
+  // needs one fewer hash character than the original one-digit-slot IDs.
+  const hashLength = Math.min(18, 36 - prefix.length);
+  if (hashLength < 12) throw new Error("COINOPS_TESTNET_ORDER_ID_INVALID");
+  return `${prefix}${createHash("sha256").update(source).digest("hex").slice(0, hashLength)}`;
 }
 
 export type TestnetCycleOrderState = {

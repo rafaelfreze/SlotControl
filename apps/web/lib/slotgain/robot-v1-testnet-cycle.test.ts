@@ -44,6 +44,20 @@ test("BTC and SOL Testnet orders have isolated, stable ownership IDs", () => {
   assert.notEqual(btc, testnetClientOrderId(runId, "BTC", 1, "SELL", 1));
 });
 
+test("all 25 Testnet slots keep BUY and TP client IDs within Binance's 36-character limit", () => {
+  const runId = "00000000-0000-4000-8000-000000000001";
+  const ids = new Set<string>();
+  for (const asset of ["BTC", "SOL"] as const) for (let slot = 1; slot <= 25; slot++)
+    for (const revision of [1, 2, 10, 100]) for (const side of ["BUY", "SELL"] as const) {
+      const id = testnetClientOrderId(runId, asset, slot, side, revision);
+      assert.ok(id.length <= 36, id);
+      assert.ok(!ids.has(id), id);
+      ids.add(id);
+    }
+  assert.equal(ids.size, 400);
+  assert.match(testnetClientOrderId(runId, "SOL", 10, "SELL", 1), /^COV1-SOL-10-1-SELL-[a-f0-9]{17}$/);
+});
+
 test("multiple resident next BUYs fail closed", () => {
   assert.throws(() => planTerminalTestnetRestart([...terminal, { ...terminal[2]!, client_order_id: "duplicate" }], 0.001), /MULTIPLE_ACTIVE_BUYS/);
 });
