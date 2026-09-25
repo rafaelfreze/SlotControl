@@ -101,6 +101,14 @@ test("executor-routed TRADE probe relies on executor clock and skips direct Test
     ["POST /api/v3/order/test"]);
 });
 
+test("executor-routed probe preserves sanitized executor rejection for panel diagnosis", async () => {
+  const adapter = new BinanceSpotTestnetAdapter({ apiKey: "testnet-proxy", apiSecret: "testnet-proxy" }, {
+    skipClientTimeSync: true,
+    fetcher: async () => { throw new Error("EXECUTOR_TESTNET_PROBE_DENIED"); },
+  });
+  await assert.rejects(adapter.checkTradePermission("BTCUSDT", 16.76), /EXECUTOR_TESTNET_PROBE_DENIED/);
+});
+
 test("owned trades preserve base and quote commissions for partial-fill accounting", async () => {
   const adapter = new BinanceSpotTestnetAdapter({ apiKey: "test-key", apiSecret: "test-secret" }, { now: () => 1000, fetcher: async (url) => {
     if (url.endsWith("/api/v3/time")) return json({ serverTime: 1000 });

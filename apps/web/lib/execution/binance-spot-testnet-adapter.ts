@@ -289,7 +289,10 @@ export class BinanceSpotTestnetAdapter {
     const url = `${BINANCE_SPOT_TESTNET_BASE_URL}${path}${method === "GET" ? `?${payload.toString()}` : ""}`;
     let response: Response;
     try { response = await this.fetcher(url, { method, cache: "no-store", signal: AbortSignal.timeout(8000), headers: { accept: "application/json", "X-MBX-APIKEY": this.credentials.apiKey, ...(method === "GET" ? {} : { "content-type": "application/x-www-form-urlencoded" }) }, ...(method === "GET" ? {} : { body: payload.toString() }) }); }
-    catch { throw new Error("COINOPS_TESTNET_NETWORK_UNKNOWN_RESULT"); }
+    catch (error) {
+      if (error instanceof Error && /^(?:COINOPS|EXECUTOR)_[A-Z0-9_]+$/.test(error.message)) throw error;
+      throw new Error("COINOPS_TESTNET_NETWORK_UNKNOWN_RESULT");
+    }
     const body = await response.json().catch(() => ({})) as OrderPayload | TradePayload[];
     return { ok: response.ok, status: response.status, code: Array.isArray(body) ? undefined : body.code, payload: body };
   }
