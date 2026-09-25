@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { BINANCE_SPOT_TESTNET_BASE_URL, BinanceSpotTestnetAdapter } from "../execution/binance-spot-testnet-adapter.ts";
 
-const id = "COV1-BTC-2-BUY-0123456789abcdef01";
-const sellId = "COV1-BTC-2-SELL-0123456789abcdef01";
+const id = "COV1-BTC-2-1-BUY-0123456789abcdef01";
+const sellId = "COV1-BTC-2-1-SELL-0123456789abcdef01";
 const payload = (clientOrderId: string, status = "NEW") => ({ orderId: 42, clientOrderId, symbol: "BTCUSDC", side: clientOrderId.includes("-BUY-") ? "BUY" : "SELL", status, executedQty: "0", cummulativeQuoteQty: "0", price: "60000" });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
