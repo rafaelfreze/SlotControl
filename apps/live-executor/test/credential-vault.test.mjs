@@ -54,6 +54,18 @@ test("credential validation is GET-only and fails closed on unknown or dangerous
     environment: "REAL", expectedEgressIp: "203.0.113.10", fetcher: fixture.fetcher }), /FORMAT_INVALID/);
 });
 
+test("Spot Testnet credential passes authenticated read without claiming Production grants", async () => {
+  const fixture = binanceFixture();
+  const observed = await inspectBinanceCredential({ apiKey, apiSecret, environment: "TESTNET",
+    expectedEgressIp: "203.0.113.10", fetcher: fixture.fetcher, now: () => now });
+  assert.equal(observed.status, "PASS");
+  assert.equal(observed.permission.spotTrading, true);
+  assert.equal(observed.permission.withdrawals, null);
+  assert.equal(observed.whitelistAccepted, null);
+  assert.ok(fixture.calls.every((call) => call.method === "GET"));
+  assert.ok(fixture.calls.every((call) => !call.url.includes("apiRestrictions")));
+});
+
 test("new inactive account is isolated from Rafael and cannot authorize an order", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "coinops-registry-test-"));
   const staticRegistry = validateExecutorRegistry(registryFixture([engineFixture("BTCBRL", ACCOUNT_A, 1, true)]));

@@ -13,6 +13,7 @@ import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCreden
 import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
 import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
 import { BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
+import { forwardTestnetRequest } from "./testnet-transport.mjs";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -81,6 +82,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       : path === "/v1/admin/snapshot" ? "ACCOUNT_SNAPSHOT"
       : path === "/v1/admin/promote" ? "REGISTRY_PROMOTION"
       : path === "/v1/admin/capital" ? "REGISTRY_CAPITAL"
+      : path === "/v1/testnet/transport" ? "TESTNET_TRANSPORT"
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
       : path === "/v1/trades" ? "READ_TRADES"
@@ -101,7 +103,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       if (request.method !== "POST" || !["/v1/health", "/v1/dry-run", "/v1/state", "/v1/query-order",
         "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
         "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/promote",
-        "/v1/admin/capital"].includes(path))
+        "/v1/admin/capital", "/v1/testnet/transport"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
       if (!request.headers["content-type"]?.startsWith("application/json"))
         throw new ExecutorRejection("EXECUTOR_CONTENT_TYPE_INVALID", 415);
@@ -116,6 +118,19 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       symbol = typeof input.symbol === "string" && /^[A-Z0-9]{4,40}$/.test(input.symbol) ? input.symbol : null;
       const key = request.headers["x-coinops-idempotency-key"];
       keyHash = typeof key === "string" ? sha256(key).slice(0, 12) : null;
+      if (path === "/v1/testnet/transport") {
+        assertCredentialScope(input);
+        if (key !== `TESTNET:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || input.environment !== "TESTNET" || !/^[0-9a-f-]{36}$/i.test(input.trading_engine_id ?? ""))
+          throw new ExecutorRejection("EXECUTOR_TESTNET_SCOPE_DENIED", 403);
+        const credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        const result = await forwardTestnetRequest(input, credential, fetcher);
+        status = 200; outcome = result.binance_status < 400 ? "TESTNET_FORWARDED" : "TESTNET_BINANCE_REJECTED";
+        scope = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+          trading_engine_id: input.trading_engine_id, environment: "TESTNET" };
+        writeJson(response, 200, { ...scope, ...result });
+        return;
+      }
       if (path === "/v1/admin/snapshot") {
         let credential;
         if (input.credential_ref === "legacy-binance-production") {
@@ -138,23 +153,29 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
         }
         if (key !== `SNAPSHOT:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
-          || input.environment !== "REAL" || !Array.isArray(input.symbols)
+          || !["REAL", "TESTNET"].includes(input.environment) || !Array.isArray(input.symbols)
           || input.symbols.length < 1 || input.symbols.length > 2
           || new Set(input.symbols).size !== input.symbols.length
-          || !["BRL", "USDT"].includes(input.quote_asset)
-          || input.symbols.some((item) => !/^(BTC|SOL)(BRL|USDT)$/.test(item)
+          || !["BRL", "USDT", "USDC"].includes(input.quote_asset)
+          || input.symbols.some((item) => !/^(BTC|SOL)(BRL|USDT|USDC)$/.test(item)
             || !item.endsWith(input.quote_asset)))
           throw new ExecutorRejection("EXECUTOR_SNAPSHOT_SCOPE_DENIED", 403);
+        if (input.environment === "REAL" && input.quote_asset === "USDC"
+          || input.environment === "TESTNET" && input.quote_asset === "BRL"
+          || input.credential_ref === "legacy-binance-production" && input.environment !== "REAL")
+          throw new ExecutorRejection("EXECUTOR_SNAPSHOT_SCOPE_DENIED", 403);
+        const host = input.environment === "TESTNET" ? "https://testnet.binance.vision" : undefined;
         const [observation, market] = await Promise.all([
-          inspectBinanceCredential({ ...credential, environment: "REAL", expectedEgressIp, fetcher, now }),
-          getPublicMarket(fetcher, now, input.symbols),
+          inspectBinanceCredential({ ...credential, environment: input.environment, expectedEgressIp, fetcher, now }),
+          getPublicMarket(fetcher, now, input.symbols, host),
         ]);
         if (observation.status !== "PASS")
           throw new ExecutorRejection("EXECUTOR_SNAPSHOT_PERMISSION_DENIED", 403);
-        const adapter = new BinanceSpotAdapter(credential, { fetcher, now, maxReadRetries: 0 });
+        const adapter = new BinanceSpotAdapter(credential, { fetcher, now, maxReadRetries: 0,
+          ...(host ? { baseUrl: host, marketDataBaseUrl: host } : {}) });
         const orders = await Promise.all(input.symbols.map((item) => adapter.getOpenOrders(item)));
         const result = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
-          environment: "REAL", quote_asset: input.quote_asset,
+          environment: input.environment, quote_asset: input.quote_asset,
           observed_at: observation.validatedAt, executor_ip: observation.executorIp,
           permission: observation.permission, whitelist_accepted: observation.whitelistAccepted,
           balances: observation.balances,

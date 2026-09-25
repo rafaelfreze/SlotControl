@@ -53,7 +53,7 @@ export async function GET() {
       service.from("account_onboarding_checks").select("exchange_account_id,status,evidence,checked_at")
         .eq("operator_id", operator.id).eq("check_key", "BINANCE_CREDENTIAL").order("checked_at", { ascending: false }).limit(100),
       service.from("trading_engines").select("id,exchange_account_id,environment,symbol,quote_asset,status,hard_cap_quote,config")
-        .eq("operator_id", operator.id).eq("environment", "REAL").order("symbol"),
+        .eq("operator_id", operator.id).in("environment", ["REAL", "TESTNET"]).order("symbol"),
     ]);
     if (accounts.error || checks.error || engines.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
     const latest = new Map<string, { status: string; evidence: Record<string, unknown>; checked_at: string }>();

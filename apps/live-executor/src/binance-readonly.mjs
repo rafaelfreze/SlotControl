@@ -24,17 +24,21 @@ async function getJson(fetcher, url) {
   throw new Error("EXECUTOR_BINANCE_GET_FAILED");
 }
 
-export async function getPublicMarket(fetcher = fetch, now = Date.now, symbols = SYMBOLS) {
+export async function getPublicMarket(fetcher = fetch, now = Date.now, symbols = SYMBOLS,
+  host = BINANCE_SPOT) {
   if (!Array.isArray(symbols) || !symbols.length || symbols.some((symbol) => !/^[A-Z0-9]{4,40}$/.test(symbol)))
     throw new Error("EXECUTOR_MARKET_SCOPE_INVALID");
+  if (![BINANCE_SPOT, "https://testnet.binance.vision"].includes(host))
+    throw new Error("EXECUTOR_MARKET_HOST_DENIED");
+  const publicHost = host === BINANCE_SPOT ? BINANCE_PUBLIC : host;
   const clockRequest = async () => {
     const started = now();
-    const value = await getJson(fetcher, `${BINANCE_SPOT}/api/v3/time`);
+    const value = await getJson(fetcher, `${host}/api/v3/time`);
     return { value, midpoint: (started + now()) / 2 };
   };
   const [info, prices, clock] = await Promise.all([
-    getJson(fetcher, `${BINANCE_PUBLIC}/api/v3/exchangeInfo?symbols=${encodeURIComponent(JSON.stringify(symbols))}`),
-    getJson(fetcher, `${BINANCE_PUBLIC}/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(symbols))}`),
+    getJson(fetcher, `${publicHost}/api/v3/exchangeInfo?symbols=${encodeURIComponent(JSON.stringify(symbols))}`),
+    getJson(fetcher, `${publicHost}/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(symbols))}`),
     clockRequest(),
   ]);
   const observedAt = new Date(now()).toISOString();

@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Account = { id: string; display_name: string; status: string; kill_switch: boolean;
-  is_legacy_default: boolean; credentialValidated: boolean };
+  is_legacy_default: boolean; credentialValidated: boolean; environment: "REAL" | "TESTNET" | null };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: string;
-  status: string; kill_switch: boolean; hard_cap_quote: number | string;
+  environment: "REAL" | "TESTNET"; status: string; kill_switch: boolean; hard_cap_quote: number | string;
   operational: boolean; ready: boolean; evidence: { physicalSlots: number; open: number;
     residentTp: number; nextBuy: number; recent: boolean; clean: boolean };
   run: { id: string; status: string; last_error: string | null; last_reconciled_at: string | null } | null;
@@ -52,7 +52,7 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [engines, setEngines] = useState<Engine[]>([]);
   const [accountId, setAccountId] = useState(initialAccountId === "ALL" ? "" : initialAccountId);
-  const [quote, setQuote] = useState<"BRL" | "USDT">("USDT");
+  const [quote, setQuote] = useState<"BRL" | "USDT" | "USDC">("USDT");
   const [assets, setAssets] = useState<MarketAsset[]>(["BTC", "SOL"]);
   const [capital, setCapital] = useState("");
   const [equal, setEqual] = useState(true);
@@ -62,6 +62,7 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const account = accounts.find((item) => item.id === accountId);
+  const testnet = account?.environment === "TESTNET";
   const accountEngines = engines.filter((item) => item.exchange_account_id === accountId);
   const plannedSplit = useMemo(() => equal && capital ? split(capital, assets) : null,
     [equal, capital, assets]);
@@ -121,9 +122,10 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
   async function control(engine: Engine, operation: "PREPARE" | "ACTIVATE" | "PAUSE" | "RESUME") {
     const accountName = account?.display_name ?? "Conta";
     if (operation === "ACTIVATE" && !window.confirm(
-      `Iniciar operações REAIS em ${accountName} / ${engine.symbol} com limite máximo de ${money(engine.hard_cap_quote, engine.quote_asset)}?\n\nA primeira MARKET, TP e próxima BUY serão executadas somente após os gates de Binance e ledger.`)) return;
-    if (operation === "PAUSE" && !window.confirm(
-      `Pausar ${accountName} / ${engine.symbol}? A próxima BUY própria será cancelada; TPs e posições ficam protegidos.`)) return;
+      `Iniciar operações ${engine.environment === "TESTNET" ? "FICTÍCIAS Testnet" : "REAIS"} em ${accountName} / ${engine.symbol} com limite máximo de ${money(engine.hard_cap_quote, engine.quote_asset)}?\n\nA primeira MARKET, TP e próxima BUY serão executadas somente após os gates de Binance e ledger.`)) return;
+    if (operation === "PAUSE" && !window.confirm(engine.environment === "TESTNET"
+      ? `Pausar ${accountName} / ${engine.symbol} no Testnet? As ordens fictícias próprias, inclusive TPs, serão canceladas com auditoria. As posições permanecem no ledger e os TPs serão restaurados antes de novas entradas ao retomar.`
+      : `Pausar ${accountName} / ${engine.symbol}? A próxima BUY própria será cancelada; TPs e posições ficam protegidos.`)) return;
     await action(async () => {
       const result = await send({ action: operation, accountId, engineId: engine.id });
       setMessage(`${engine.symbol}: ${result.status}. ${operation === "ACTIVATE" ? "O worker server-side conclui e reconcilia as ordens; confira o estado atualizado." : ""}`);
@@ -133,16 +135,17 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
   const newAccount = account && !account.is_legacy_default && account.status === "INACTIVE"
     && account.credentialValidated && accountEngines.length === 0;
   return <section className="px-engine-center" aria-label="Central de estratégia e motores">
-    <header className="px-engine-center-head"><div><span className="px-eyebrow">CONFIGURAÇÃO OPERACIONAL · REAL</span>
+    <header className="px-engine-center-head"><div><span className="px-eyebrow">CONFIGURAÇÃO OPERACIONAL · {testnet ? "TESTNET" : "REAL"}</span>
       <h2>Estratégia e motores</h2><p>Conta e moeda explícitas. O preview consulta a Binance, não envia ordens.
       Cada motor tem seu cap, 25 slots e ciclo próprio.</p></div>
       <button type="button" className="px-button" onClick={onOpenCredentials}>Contas Binance →</button></header>
     <div className="px-engine-account-picker"><label>Conta Binance<select aria-label="Conta Binance para motores"
-      value={accountId} onChange={(event) => { setAccountId(event.target.value); invalidate(); }}>
+      value={accountId} onChange={(event) => { setAccountId(event.target.value);
+        setQuote(accounts.find((item) => item.id === event.target.value)?.environment === "TESTNET" ? "USDT" : "BRL"); invalidate(); }}>
       <option value="">Selecione uma conta</option>{accounts.map((item) =>
         <option key={item.id} value={item.id}>{item.display_name} · {item.status}</option>)}</select></label>
       {account ? <span className={`px-badge ${account.status === "ACTIVE" ? "" : "px-badge--warning"}`}>
-        {account.status} · {account.credentialValidated ? "API validada" : "API a validar"}</span> : null}</div>
+        {account.status} · {account.environment ?? "ambiente a validar"} · {account.credentialValidated ? "API validada" : "API a validar"}</span> : null}</div>
     {account && accountEngines.length > 0 ? <div className="px-engine-list"><h3>Motores da conta</h3>
       {accountEngines.map((engine) => <article className="px-engine-row" key={engine.id}>
         <div><strong>{engine.symbol}</strong><small>{money(engine.hard_cap_quote, engine.quote_asset)} cap · 25 slots
@@ -154,29 +157,29 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
         <span className={`px-badge ${engine.run?.status === "ACTIVE" && !engine.operational ? "px-badge--warning" : ""}`}>
           {engine.run?.status === "PAUSED" ? "PAUSADO" : engine.run?.status === "ACTIVE"
             ? engine.operational ? "OPERANDO" : "ATIVO · VERIFICAR"
-            : engine.run?.status === "PREPARING" ? engine.ready ? "READY" : "PREPARANDO · VERIFICAR" : "INACTIVE"}</span>
+            : engine.ready ? "READY" : engine.run?.status === "PREPARING" ? "PREPARANDO · VERIFICAR" : "INACTIVE"}</span>
         <div className="px-engine-actions">
           <button type="button" className="px-button" onClick={() => onEditEngine(accountId, engine.symbol)}>Editar regras</button>
-          {engine.status === "INACTIVE" && !engine.run ? <button type="button" className="px-button"
-            disabled={busy || !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>Preparar 25 slots</button> : null}
-          {engine.run?.status === "PREPARING" ? <button type="button" className="px-button px-button-primary"
+          {engine.status === "INACTIVE" && !engine.run && !engine.ready ? <button type="button" className="px-button"
+            disabled={busy || !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>{engine.environment === "TESTNET" ? "Validar para READY" : "Preparar 25 slots"}</button> : null}
+          {engine.ready ? <button type="button" className="px-button px-button-primary"
             disabled={busy || !engine.ready} onClick={() => void control(engine, "ACTIVATE")}>Ativar {engine.symbol}</button> : null}
           {engine.run?.status === "ACTIVE" ? <button type="button" className="px-button"
             disabled={busy} onClick={() => void control(engine, "PAUSE")}>Pausar</button> : null}
           {engine.run?.status === "PAUSED" ? <button type="button" className="px-button px-button-primary"
             disabled={busy} onClick={() => void control(engine, "RESUME")}>Retomar</button> : null}
         </div></article>)}
-      {account.status === "INACTIVE" && accountEngines.some((engine) => engine.status === "INACTIVE")
+      {account.environment === "REAL" && account.status === "INACTIVE" && accountEngines.some((engine) => engine.status === "INACTIVE")
         ? <button type="button" className="px-text-button" disabled={busy}
           onClick={() => void action(async () => { await send({ action: "SYNC", accountId });
             setMessage("Registro INACTIVE sincronizado no executor; nenhuma ordem enviada."); await refresh(); })}>
           Sincronizar configuração INACTIVE com executor</button> : null}
     </div> : null}
     {newAccount ? <div className="px-engine-builder"><h3>Adicionar motores · {account.display_name}</h3>
-      <p>O capital é autorização, não saldo consumido. Escolha BRL ou USDT; moedas não são convertidas nem somadas.
+      <p>O capital é autorização, não saldo consumido. Escolha uma moeda suportada pela Binance {testnet ? "Testnet" : "Production"}; moedas não são convertidas nem somadas.
         O saldo excedente permanece fora do CoinOps.</p>
-      <div className="px-engine-form-grid"><label>Moeda de cotação<select value={quote} onChange={(event) => { setQuote(event.target.value as "BRL" | "USDT"); invalidate(); }}>
-        <option value="BRL">BRL</option><option value="USDT">USDT</option></select></label>
+      <div className="px-engine-form-grid"><label>Moeda de cotação<select value={quote} onChange={(event) => { setQuote(event.target.value as "BRL" | "USDT" | "USDC"); invalidate(); }}>
+        {testnet ? <option value="USDC">USDC</option> : <option value="BRL">BRL</option>}<option value="USDT">USDT</option></select></label>
         <label>Capital total autorizado<input type="text" inputMode="decimal" value={capital}
           onChange={(event) => { setCapital(event.target.value); invalidate(); }} placeholder="Ex.: 838,00" /></label></div>
       <div className="px-engine-market-select" aria-label="Mercados"><span>Mercados</span>
@@ -222,7 +225,7 @@ export function EngineControlCenter({ initialAccountId, onEditEngine, onOpenCred
       </article>)}<small>Estimativas não são ordens. Os filtros, saldos e caps são verificados novamente antes da ativação.</small>
     </section> : null}
     {message ? <p role="status" className="px-engine-message">{message}</p> : null}
-    <p className="px-caption">Pausar bloqueia novas entradas e preserva TPs. Retomar exige reconciliação recente;
+    <p className="px-caption">Pausar bloqueia novas entradas; no Testnet, ordens próprias são canceladas de forma auditável e TPs são restaurados ao retomar. Retomar exige reconciliação recente;
       configurar perfil existente vale para o próximo ciclo e não reprifica posições OPEN.</p>
   </section>;
 }

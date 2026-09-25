@@ -1,7 +1,7 @@
 import { distributeLiveCapital } from "./live-capital-distribution.ts";
 import { isIdentity } from "./operator-context.ts";
 
-export type EnginePlanInput = { accountId: string; requestId: string; quote: "BRL" | "USDT";
+export type EnginePlanInput = { accountId: string; requestId: string; quote: "BRL" | "USDT" | "USDC";
   capital: string; engines: Array<{ asset: "BTC" | "SOL"; capital: string;
     gainPercent: string; spacingPercent: string; postAthPercent: string }> };
 
@@ -25,7 +25,7 @@ function rate(value: unknown): number {
 
 export function validateEnginePlan(input: EnginePlanInput) {
   if (!input || !isIdentity(input.accountId) || !isIdentity(input.requestId)
-    || !["BRL", "USDT"].includes(input.quote)
+    || !["BRL", "USDT", "USDC"].includes(input.quote)
     || !Array.isArray(input.engines) || input.engines.length < 1 || input.engines.length > 2
     || new Set(input.engines.map((item) => item.asset)).size !== input.engines.length
     || input.engines.some((item) => !["BTC", "SOL"].includes(item.asset)))

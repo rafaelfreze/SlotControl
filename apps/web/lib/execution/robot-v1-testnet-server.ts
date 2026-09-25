@@ -8,6 +8,7 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/en
 import { createServiceRoleClient } from "../supabase/service-role";
 import { testnetFillEvents } from "../coinops-reports/testnet-fill-evidence";
 import { planTerminalTestnetRestart, TESTNET_ACTIVE_ORDER_STATUSES, testnetClientOrderId, testnetInitialCapital, testnetOpenPositionQuantity, testnetResetIdempotencyKey } from "./robot-v1-testnet-cycle";
+import { distributeLiveCapital } from "./live-capital-distribution";
 import { buildV1Grid, V1_RULES, type V1Asset } from "./robot-v1";
 import { STRATEGY_VERSION, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry, planStrategyTakeProfit, type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } from "./strategy-decision-server";
@@ -156,12 +157,16 @@ async function release(service: Service, run: Run, leaseOwner: string, error: st
 }
 
 async function ensurePlan(service: Service, run: Run, filters: SymbolFilters) {
+  const allocation = run.config_snapshot?.initial_slot_allocations;
+  const slotBalances = Array.isArray(allocation) && allocation.length === 25
+    && allocation.every((value) => typeof value === "number" && Number.isFinite(value) && value > 0)
+    ? allocation as number[] : null;
   const slotPayload = Array.from({ length: 25 }, (_, index) => {
     const target = floorStep(amount(run.anchor_price) * Math.pow(1 - amount(run.entry_spacing), index), filters.priceTick);
     return {
       run_id: run.id, ...owned(run), slot_number: index + 1,
       target_buy_price: target, entry_reference_price: target,
-      balance_usdc: amount(run.slot_notional_usdc)
+      balance_usdc: slotBalances?.[index] ?? amount(run.slot_notional_usdc)
     };
   });
   const { error } = await service.from("robot_v1_testnet_slots").upsert(slotPayload, { onConflict: "run_id,slot_number", ignoreDuplicates: true });
@@ -202,15 +207,17 @@ export async function startTestnetRun(userId: string, asset: V1Asset,
   const adapter = BinanceSpotTestnetAdapter.fromAccount(engine, randomUUID(), []);
   const [account, filters, market, openOrders] = await Promise.all([adapter.reads.getAccount(), adapter.reads.getSymbolInfo(symbol), adapter.reads.getMarketPrice(symbol), adapter.reads.getOpenOrders(symbol)]);
   const { capital, slotNotional: notional } = testnetInitialCapital(engine.hard_cap_quote, engine.is_legacy_default);
-  buildV1Grid(asset, notional * 25, market.price, filters,
-    { gainRate: initialGain, entrySpacing: initialSpacing });
-  const tradePermission = await adapter.checkTradePermission(symbol);
+  const initialSlotAllocations = engine.is_legacy_default ? null : distributeLiveCapital(capital);
+  buildV1Grid(asset, capital, market.price, filters,
+    { gainRate: initialGain, entrySpacing: initialSpacing }, initialSlotAllocations ?? undefined);
+  const tradePermission = await adapter.checkTradePermission(symbol, notional);
   if (!tradePermission.ok) throw new Error("COINOPS_TESTNET_TRADE_PERMISSION_INVALID");
   const freeUsdc = account.balances.find((balance) => balance.asset === engine.quote_asset)?.free ?? 0;
   if (!account.canTrade || !Number.isFinite(notional) || notional < filters.minNotional || freeUsdc < capital) throw new Error("COINOPS_TESTNET_FUNDS_OR_FILTERS_INVALID");
   if (openOrders.some((order) => order.clientOrderId?.startsWith(`COV1-${asset}-`))) throw new Error("COINOPS_TESTNET_UNRECONCILED_OWNED_ORDER");
   const { data: created, error: insertError } = await service.from("robot_v1_testnet_runs").insert({ product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId, operator_id: engine.operator_id, exchange_account_id: engine.exchange_account_id,
-    trading_engine_id: engine.trading_engine_id, quote_asset: engine.quote_asset, asset, symbol, anchor_price: market.price, slot_notional_usdc: notional, gain_rate: initialGain, entry_spacing: initialSpacing }).select("*").single();
+    trading_engine_id: engine.trading_engine_id, quote_asset: engine.quote_asset, asset, symbol, anchor_price: market.price, slot_notional_usdc: capital / 25, gain_rate: initialGain, entry_spacing: initialSpacing,
+    config_snapshot: initialSlotAllocations ? { initial_slot_allocations: initialSlotAllocations } : null }).select("*").single();
   if (insertError?.code === "23505") {
     const { data: concurrent } = await service.from("robot_v1_testnet_runs").select("id").eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id).eq("status", "ACTIVE").maybeSingle();
     if (concurrent) { await advanceTestnetRun(concurrent.id, "CONCURRENT_START_RECOVERY"); return concurrent.id as string; }
@@ -488,7 +495,7 @@ async function activateTestnetAthProfile(service: Service, run: Run, profile: At
     if (auditError) throw new Error("COINOPS_ATH_TESTNET_CONFIG_AUDIT_FAILED");
   }
   if (run.config_version === null) {
-    const snapshot = { gain_rate: targetGain, normal_spacing_rate: targetNormal,
+    const snapshot = { ...(run.config_snapshot ?? {}), gain_rate: targetGain, normal_spacing_rate: targetNormal,
       post_ath_spacing_rate: targetPost, regime: profile.regime,
       ath_price: profile.ath_price, ath_source: profile.ath_source };
     await renewTestnetLease(service, run);
@@ -774,10 +781,15 @@ async function restartTerminalCycle(service: Service, run: Run, slots: Slot[], o
   const strategyReset = planStrategyClosedSlot(context(run), candidatesWithFills(slots, orders, monthly), closed.id);
   if (strategyReset.mode !== "GLOBAL_RESET") return null;
   if (!monthly.some((status) => status.eligibleForNewEntry)) return null;
-  const nextCapital = amount(run.next_capital_usdc ?? amount(run.slot_notional_usdc) * 25);
+  const initialAllocation = run.config_snapshot?.initial_slot_allocations;
+  const baselineCapital = Array.isArray(initialAllocation) && initialAllocation.length === 25
+    && initialAllocation.every((value) => typeof value === "number" && Number.isFinite(value) && value > 0)
+    ? initialAllocation.reduce((sum, value) => sum + value, 0)
+    : amount(run.slot_notional_usdc) * 25;
+  const nextCapital = amount(run.next_capital_usdc ?? baselineCapital);
   const nextGainRate = amount(run.next_gain_rate ?? run.gain_rate);
   const nextSpacing = amount(run.next_entry_spacing ?? run.entry_spacing);
-  const nextSlotBalanceDelta = nextCapital / 25 - amount(run.slot_notional_usdc);
+  const nextSlotBalanceDelta = (nextCapital - baselineCapital) / 25;
   const previewMarket = await adapter.reads.getMarketPrice(run.symbol);
   const nextBalances = slots.map((slot) => amount(slot.balance_usdc) + nextSlotBalanceDelta);
   if (nextCapital > 2500 || nextBalances.some((balance) => balance <= 0 || balance > 100)) throw new Error("COINOPS_TESTNET_NEXT_CAPITAL_INVALID");

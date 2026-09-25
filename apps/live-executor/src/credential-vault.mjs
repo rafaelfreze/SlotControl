@@ -132,9 +132,15 @@ export async function inspectBinanceCredential({ apiKey, apiSecret, environment,
     fixTrading: environment === "REAL" ? grant(restrictions?.enableFixApiTrade) : null,
     portfolioMargin: environment === "REAL" ? grant(restrictions?.enablePortfolioMarginTrading) : null };
   // Missing permission fields are UNKNOWN, never proof that a dangerous grant is disabled.
-  const safe = environment === "REAL" && whitelistAccepted === true && permission.read === true
-    && permission.spotTrading === true && ["withdrawals", "internalTransfer", "universalTransfer",
-      "margin", "futures", "options", "fixTrading", "portfolioMargin"].every((name) => permission[name] === false);
+  // Spot Testnet does not expose the Production API-restrictions endpoint.
+  // Its authenticated account GET and canTrade flag are the available gates;
+  // unknown Production-only grants must never block a fictitious account or
+  // be misrepresented as verified disabled permissions.
+  const safe = environment === "TESTNET"
+    ? permission.read === true && permission.spotTrading === true
+    : whitelistAccepted === true && permission.read === true
+      && permission.spotTrading === true && ["withdrawals", "internalTransfer", "universalTransfer",
+        "margin", "futures", "options", "fixTrading", "portfolioMargin"].every((name) => permission[name] === false);
   const balances = account.balances.filter((row) => /^[A-Z0-9]{2,20}$/.test(row.asset ?? ""))
     .map((row) => ({ asset: row.asset, free: Number(row.free), locked: Number(row.locked) }))
     .filter((row) => Number.isFinite(row.free) && Number.isFinite(row.locked) && row.free >= 0 && row.locked >= 0);

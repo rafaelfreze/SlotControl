@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { BinanceSpotAdapter } from "./binance-spot-adapter.ts";
 import type { EngineContext } from "./operator-context.ts";
 import { resolveTestnetCredentials } from "./testnet-account-credentials.ts";
+import { operatorExecutorAdmin } from "./operator-executor-admin.ts";
 import { testnetClientOrderId } from "./robot-v1-testnet-cycle.ts";
 
 export const BINANCE_SPOT_TESTNET_BASE_URL = "https://testnet.binance.vision";
@@ -58,8 +59,35 @@ export class BinanceSpotTestnetAdapter {
 
   static fromAccount(engine: EngineContext, runId: string, persistedIds: readonly string[], options: { beforeWrite?: () => Promise<void>; fetcher?: FetchLike; now?: () => number } = {}) {
     if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
-    const adapter = new BinanceSpotTestnetAdapter(resolveTestnetCredentials(engine, process.env), options);
     if (!runId || !TESTNET_SYMBOLS.has(engine.symbol)) throw new Error("COINOPS_TESTNET_ACCOUNT_MARKET_DENIED");
+    // Existing legacy engines retain their pinned environment keys. New
+    // accounts use the same executor credential vault as Production; the
+    // Testnet Secret is never sent back to Vercel or stored in its environment.
+    const proxied = !engine.is_legacy_default && !options.fetcher;
+    const credentials = proxied ? { apiKey: "testnet-proxy", apiSecret: "testnet-proxy" }
+      : resolveTestnetCredentials(engine, process.env);
+    const proxyFetcher: FetchLike = async (url, init) => {
+      const target = new URL(url);
+      if (target.origin !== BINANCE_SPOT_TESTNET_BASE_URL) throw new Error("COINOPS_TESTNET_PROXY_HOST_DENIED");
+      if (!new Headers(init?.headers).has("X-MBX-APIKEY")) return fetch(url, init);
+      const method = init?.method ?? "GET";
+      const params = method === "GET" ? target.searchParams : new URLSearchParams(String(init?.body ?? ""));
+      for (const field of ["timestamp", "recvWindow", "signature"]) params.delete(field);
+      const result = await operatorExecutorAdmin<{ operator_id: string; exchange_account_id: string;
+        trading_engine_id: string; environment: string; binance_status: number; payload: unknown }>(
+        "/v1/testnet/transport", { operator_id: engine.operator_id,
+          exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id,
+          credential_ref: `account_${engine.exchange_account_id.replaceAll("-", "")}`,
+          environment: "TESTNET", symbol: engine.symbol, run_id: runId,
+          method, path: target.pathname, params: Object.fromEntries(params.entries()) }, "TESTNET");
+      if (result.operator_id !== engine.operator_id || result.exchange_account_id !== engine.exchange_account_id
+        || result.trading_engine_id !== engine.trading_engine_id || result.environment !== "TESTNET"
+        || !Number.isInteger(result.binance_status) || result.binance_status < 200 || result.binance_status > 599)
+        throw new Error("COINOPS_TESTNET_PROXY_SCOPE_MISMATCH");
+      return Response.json(result.payload, { status: result.binance_status });
+    };
+    const adapter = new BinanceSpotTestnetAdapter(credentials,
+      { ...options, fetcher: proxied ? proxyFetcher : options.fetcher });
     adapter.routing = { engine, runId, persistedIds: new Set(persistedIds) };
     return adapter;
   }
@@ -103,8 +131,10 @@ export class BinanceSpotTestnetAdapter {
   }
 
   /** Binance validates TRADE permission and filters without entering an order. */
-  async checkTradePermission(symbol: string = "SOLUSDC") {
-    const response = await this.signedRequest("POST", "/api/v3/order/test", { symbol, side: "BUY", type: "MARKET", quoteOrderQty: "10" });
+  async checkTradePermission(symbol: string = "SOLUSDC", quoteOrderQty = 10) {
+    if (!Number.isFinite(quoteOrderQty) || quoteOrderQty <= 0)
+      throw new Error("COINOPS_TESTNET_PROBE_NOTIONAL_INVALID");
+    const response = await this.signedRequest("POST", "/api/v3/order/test", { symbol, side: "BUY", type: "MARKET", quoteOrderQty: String(quoteOrderQty) });
     return { ok: response.ok, error: response.ok ? null : `BINANCE_TEST_ORDER_HTTP_${response.status}_${response.code ?? "UNKNOWN"}` };
   }
 

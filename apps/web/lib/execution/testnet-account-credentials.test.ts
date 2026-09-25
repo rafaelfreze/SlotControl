@@ -3,6 +3,7 @@ import test from "node:test";
 import { resolveTestnetCredentials } from "./testnet-account-credentials.ts";
 import { BinanceSpotTestnetAdapter } from "./binance-spot-testnet-adapter.ts";
 import { testnetClientOrderId, testnetInitialCapital } from "./robot-v1-testnet-cycle.ts";
+import { distributeLiveCapital } from "./live-capital-distribution.ts";
 import type { EngineContext } from "./operator-context.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -18,6 +19,10 @@ test("Testnet initial allocation respects each new account cap without inventing
   assert.deepEqual(testnetInitialCapital(419, false), { capital: 419, slotNotional: 16.76, unallocated: 0 });
   assert.deepEqual(testnetInitialCapital("250.00", true), { capital: 250, slotNotional: 10, unallocated: 0 });
   assert.deepEqual(testnetInitialCapital(419.03, false), { capital: 419.03, slotNotional: 16.76, unallocated: 0.03 });
+  const allocations = distributeLiveCapital(419.03);
+  assert.deepEqual(allocations.slice(0, 4), [16.77, 16.77, 16.77, 16.76]);
+  assert.equal(Math.round(allocations.reduce((sum, value) => sum + value, 0) * 100), 41903);
+  assert.equal(419.03 / 25 * 25, 419.03);
   for (const cap of [0, -1, 1.001, Number.NaN]) assert.throws(() => testnetInitialCapital(cap, false), /CAP_INVALID/);
 });
 
