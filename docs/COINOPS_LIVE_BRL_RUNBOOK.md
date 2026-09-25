@@ -74,6 +74,10 @@ Binance; as ordens seguem exclusivamente pelo cron normal.
   consultas de estado, ordem e trades repetem somente erros transitórios de
   rede/502/503/504, com espera limitada; POST de create/cancel não é repetido.
   Falha persistente continua fail-closed e requer prova Binance + ledger.
+- A lease de reconciliação LIVE é de três minutos para abranger uma invocação
+  com múltiplas leituras sequenciais. Cada preparo/dispatch renova e valida
+  ownership antes de escrever; perda de lease mantém o motor protegido e
+  exige nova prova Binance/ledger antes de `Retomar`.
 - Em incidente, `KILL_SWITCH=ON` no executor e no preparo SQL bloqueia novas
   BUYs. Não apagar o ledger. Ordens de proteção SELL podem continuar sob
   `TRADING_ENABLED=true`; cancelamento protetivo só admite BUY própria com ID

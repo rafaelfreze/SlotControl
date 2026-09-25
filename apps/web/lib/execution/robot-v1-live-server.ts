@@ -65,6 +65,10 @@ type Order = Scope & LedgerScope & { id: string; run_id: string; slot_id: string
 type Ledger = Awaited<ReturnType<typeof runRows>>;
 
 const PUBLIC_SPOT = "https://data-api.binance.vision";
+// A reconciliation may perform several sequential Binance GETs and database
+// checks. Keep the lease beyond one bounded serverless invocation; every
+// dispatch still renews and asserts ownership immediately before its write.
+const LIVE_LEASE_MS = 180_000;
 const amount = (value: number | string | null | undefined) => Number(value ?? 0);
 const floorStep = (value: number, step: number) => Number((Math.floor((value + 1e-10) / step) * step).toFixed(12));
 const owned = (run: Run) => ({ product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id,
@@ -167,7 +171,7 @@ async function monthly(service: Service, run: Run, slots: Slot[], accounts: Acco
 }
 
 async function renewLease(service: Service, run: Run) {
-  const until = new Date(Date.now() + 90_000).toISOString();
+  const until = new Date(Date.now() + LIVE_LEASE_MS).toISOString();
   const result = await service.from("robot_v1_live_runs").update({ lease_until: until })
     .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner)
     .gt("lease_until", new Date().toISOString()).select("id").maybeSingle();
@@ -179,7 +183,7 @@ async function claim(service: Service, runId: string): Promise<Run | null> {
   const owner = randomUUID();
   const now = new Date();
   const result = await service.from("robot_v1_live_runs")
-    .update({ lease_owner: owner, lease_until: new Date(now.getTime() + 90_000).toISOString() })
+    .update({ lease_owner: owner, lease_until: new Date(now.getTime() + LIVE_LEASE_MS).toISOString() })
     .eq("id", runId).eq("tenant_id", getCoinOpsServiceTenantId()).in("status", ["ACTIVE", "PAUSED"])
     .or(`lease_until.is.null,lease_until.lt.${now.toISOString()}`).select("*").maybeSingle();
   if (result.error) throw new Error("COINOPS_LIVE_LEASE_FAILED");

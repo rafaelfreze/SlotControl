@@ -51,3 +51,11 @@ test("LIVE ledger reset migration permits fail-closed recovery but still rejects
   assert.match(migration, /reset_idempotency_key is distinct from p_reset_key/);
   assert.match(migration, /unique index if not exists robot_v1_live_runs_one_successor_per_engine/);
 });
+
+test("LIVE recovery lease outlives a bounded invocation and dispatch still renews ownership", () => {
+  const server = readFileSync(new URL("./robot-v1-live-server.ts", import.meta.url), "utf8");
+  assert.match(server, /const LIVE_LEASE_MS = 180_000/);
+  assert.match(server, /lease_until: new Date\(now\.getTime\(\) \+ LIVE_LEASE_MS\)/);
+  assert.match(server, /\.eq\("lease_owner", run\.lease_owner\)\s*\.gt\("lease_until"/);
+  assert.match(server, /async function prepareOrder[\s\S]*?await renewLease\(service, run\)/);
+});
