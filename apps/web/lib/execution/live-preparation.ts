@@ -2,13 +2,13 @@ import { planAthLadder } from "./ath-ladder.ts";
 import { calculateStrategyTakeProfit, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit,
   planStrategyPostAthNextEntry, STRATEGY_VERSION, type StrategyCandidate } from "./strategy-engine.ts";
 import type { V1Asset } from "./robot-v1.ts";
+import { distributeLiveCapital, LIVE_SLOT_COUNT } from "./live-capital-distribution.ts";
+export { distributeLiveCapital, LIVE_SLOT_COUNT } from "./live-capital-distribution.ts";
 
 export const LIVE_PREPARATION_VERSION = "5.1";
 export const LIVE_FEE_RESERVE_RATE = 0.002; // Conservative until account commission is verified (0.2%).
 export const LIVE_PRICE_BUFFER_RATE = 0.02; // Ticker/average-price and quantity-rounding headroom.
 export const LIVE_MARKET_MAX_AGE_MS = 120_000;
-export const LIVE_SLOT_COUNT = 25;
-
 type RawFilter = { filterType?: string; minPrice?: string; maxPrice?: string; tickSize?: string;
   minQty?: string; maxQty?: string; stepSize?: string; minNotional?: string; maxNotional?: string;
   applyToMarket?: boolean; applyMinToMarket?: boolean; avgPriceMins?: number };
@@ -136,8 +136,9 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
   const currentMinimumBrl = levels.find((level) => level.operationalRank === 1)!.minimumNotionalBrl;
   const ladderMinimumBrl = Math.max(...levels.map((level) => level.minimumNotionalBrl));
   const recommendedSlotBrl = centsUp(ladderMinimumBrl * (1 + LIVE_FEE_RESERVE_RATE + LIVE_PRICE_BUFFER_RATE));
-  const slotCapital = caps.capital / LIVE_SLOT_COUNT;
+  const slotCapitals = distributeLiveCapital(caps.capital);
   const slots: LiveSlotPreview[] = levels.map((level) => {
+    const slotCapital = slotCapitals[level.physicalSlotNumber - 1];
     const estimatedQuantity = roundDownStep(slotCapital / level.entry, rules.quantityStep);
     const sellQuantityAfterFee = roundDownStep(estimatedQuantity * (1 - LIVE_FEE_RESERVE_RATE), rules.quantityStep);
     const valid = estimatedQuantity >= level.minimumQuantity && estimatedQuantity <= rules.maxQuantity

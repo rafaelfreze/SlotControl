@@ -11,6 +11,8 @@ import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableI
 import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCredential, loadCredential, refreshCredential,
   removeCredential, saveCredential } from "./credential-vault.mjs";
 import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
+import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
+import { BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -76,6 +78,9 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
     const action = path === "/health" ? "HEALTH" : path === "/v1/dry-run" ? "DRY_RUN"
       : path === "/v1/admin/credentials" ? "CREDENTIAL_ADMIN"
       : path === "/v1/admin/registry" ? "REGISTRY_ADMIN"
+      : path === "/v1/admin/snapshot" ? "ACCOUNT_SNAPSHOT"
+      : path === "/v1/admin/promote" ? "REGISTRY_PROMOTION"
+      : path === "/v1/admin/capital" ? "REGISTRY_CAPITAL"
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
       : path === "/v1/trades" ? "READ_TRADES"
@@ -95,7 +100,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       }
       if (request.method !== "POST" || !["/v1/health", "/v1/dry-run", "/v1/state", "/v1/query-order",
         "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
-        "/v1/admin/credentials", "/v1/admin/registry"].includes(path))
+        "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/promote",
+        "/v1/admin/capital"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
       if (!request.headers["content-type"]?.startsWith("application/json"))
         throw new ExecutorRejection("EXECUTOR_CONTENT_TYPE_INVALID", 415);
@@ -110,6 +116,95 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       symbol = typeof input.symbol === "string" && /^[A-Z0-9]{4,40}$/.test(input.symbol) ? input.symbol : null;
       const key = request.headers["x-coinops-idempotency-key"];
       keyHash = typeof key === "string" ? sha256(key).slice(0, 12) : null;
+      if (path === "/v1/admin/snapshot") {
+        let credential;
+        if (input.credential_ref === "legacy-binance-production") {
+          const reference = registry?.credentials?.[input.credential_ref];
+          const rows = registry?.engines?.filter((row) => row.operator_id === input.operator_id
+            && row.exchange_account_id === input.exchange_account_id
+            && row.credential_ref === input.credential_ref && row.is_legacy_default
+            && row.legacy_ownership && row.environment === "REAL") ?? [];
+          if (registry?.legacy_account_id !== input.exchange_account_id
+            || !rows.length || !reference || !reference.api_key_env || !reference.api_secret_env
+            || !credentialEnvironment[reference.api_key_env]
+            || !credentialEnvironment[reference.api_secret_env]
+            || !Array.isArray(input.symbols)
+            || input.symbols.some((item) => !rows.some((row) => row.symbol === item)))
+            throw new ExecutorRejection("EXECUTOR_SNAPSHOT_SCOPE_DENIED", 403);
+          credential = { apiKey: credentialEnvironment[reference.api_key_env],
+            apiSecret: credentialEnvironment[reference.api_secret_env] };
+        } else {
+          assertCredentialScope(input);
+          credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        }
+        if (key !== `SNAPSHOT:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || input.environment !== "REAL" || !Array.isArray(input.symbols)
+          || input.symbols.length < 1 || input.symbols.length > 2
+          || new Set(input.symbols).size !== input.symbols.length
+          || !["BRL", "USDT"].includes(input.quote_asset)
+          || input.symbols.some((item) => !/^(BTC|SOL)(BRL|USDT)$/.test(item)
+            || !item.endsWith(input.quote_asset)))
+          throw new ExecutorRejection("EXECUTOR_SNAPSHOT_SCOPE_DENIED", 403);
+        const [observation, market] = await Promise.all([
+          inspectBinanceCredential({ ...credential, environment: "REAL", expectedEgressIp, fetcher, now }),
+          getPublicMarket(fetcher, now, input.symbols),
+        ]);
+        if (observation.status !== "PASS")
+          throw new ExecutorRejection("EXECUTOR_SNAPSHOT_PERMISSION_DENIED", 403);
+        const adapter = new BinanceSpotAdapter(credential, { fetcher, now, maxReadRetries: 0 });
+        const orders = await Promise.all(input.symbols.map((item) => adapter.getOpenOrders(item)));
+        const result = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+          environment: "REAL", quote_asset: input.quote_asset,
+          observed_at: observation.validatedAt, executor_ip: observation.executorIp,
+          permission: observation.permission, whitelist_accepted: observation.whitelistAccepted,
+          balances: observation.balances,
+          markets: market.markets.map((item, index) => ({ symbol: input.symbols[index],
+            price: item.priceBrl, observed_at: item.observedAt, rules: item.raw,
+            open_orders: orders[index].map((order) => ({ clientOrderId: order.clientOrderId,
+              side: order.side, status: order.status })) })) };
+        status = 200; outcome = "READ_ONLY_SNAPSHOT";
+        writeJson(response, 200, result);
+        return;
+      }
+      if (path === "/v1/admin/promote") {
+        assertCredentialScope(input);
+        if (key !== `PROMOTE:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || input.environment !== "REAL")
+          throw new ExecutorRejection("EXECUTOR_REGISTRY_PROMOTION_DENIED", 403);
+        await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        const active = await loadCombinedRegistry(registry, stateDirectory,
+          (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code }));
+        const row = active.engines.find((item) => item.trading_engine_id === input.trading_engine_id);
+        if (!row || row.exchange_account_id !== input.exchange_account_id || row.operator_id !== input.operator_id
+          || row.symbol !== input.symbol || row.status !== "INACTIVE" && row.status !== "ACTIVE")
+          throw new ExecutorRejection("EXECUTOR_REGISTRY_PROMOTION_DENIED", 403);
+        if (row.status === "INACTIVE") {
+          const credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
+          const transport = new BinanceLiveTransport({ ...credential, fetcher, now, engine: row });
+          const exchange = await transport.safetySnapshot(row.symbol);
+          if (exchange.openOrders.some((order) => order.clientOrderId?.startsWith(`C2-${sha256(`${row.exchange_account_id}|${row.trading_engine_id}`).slice(0, 10)}-`)))
+            throw new ExecutorRejection("EXECUTOR_REGISTRY_EXISTING_OWNED_ORDER", 409);
+        }
+        const promoted = await promoteRegistryEngine(registry, stateDirectory, input);
+        engineHealthCache.delete(input.trading_engine_id);
+        status = 200; outcome = promoted.replayed ? "REPLAYED" : "PROMOTED";
+        writeJson(response, 200, { ...promoted, operator_id: input.operator_id,
+          exchange_account_id: input.exchange_account_id, environment: input.environment });
+        return;
+      }
+      if (path === "/v1/admin/capital") {
+        assertCredentialScope(input);
+        if (key !== `CAPITAL:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || input.environment !== "REAL")
+          throw new ExecutorRejection("EXECUTOR_CAP_CHANGE_DENIED", 403);
+        await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        const changed = await changeRegistryCapital(registry, stateDirectory, input);
+        for (const engine of input.engines) engineHealthCache.delete(engine.trading_engine_id);
+        status = 200; outcome = changed.replayed ? "REPLAYED" : "CAP_CHANGED";
+        writeJson(response, 200, { ...changed, operator_id: input.operator_id,
+          exchange_account_id: input.exchange_account_id, quote_asset: input.quote_asset });
+        return;
+      }
       if (path === "/v1/admin/registry") {
         assertCredentialScope(input);
         if (key !== `REGISTRY:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? ""))

@@ -897,6 +897,66 @@ export async function auditLiveRun(runId: string) {
   }
 }
 
+/** Stop new entries for one engine, never a whole Binance account. Resident
+ * TPs remain in place; the paused run stays in the reconciliation worker. */
+export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset) {
+  assertScope();
+  const service = createServiceRoleClient();
+  const lookup = await service.from("robot_v1_live_runs").select("*").eq("id", runId)
+    .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId).single();
+  if (lookup.error || !lookup.data || lookup.data.asset !== asset
+    || !["ACTIVE", "PAUSED"].includes(lookup.data.status))
+    throw new Error("COINOPS_LIVE_PAUSE_RUN_DENIED");
+  if (lookup.data.status === "PAUSED") return { status: "PAUSED", asset, cycle_id: runId };
+  // First close the SQL BUY gate. A concurrent cron may finish its current
+  // protected operation, but no new entry may start after this update.
+  const gate = await service.from("robot_v1_live_preparations")
+    .update({ kill_switch: true }).eq("trading_engine_id", lookup.data.trading_engine_id)
+    .eq("exchange_account_id", lookup.data.exchange_account_id).eq("user_id", userId)
+    .eq("live_enabled", true).select("id").single();
+  if (gate.error || !gate.data) throw new Error("COINOPS_LIVE_PAUSE_GATE_FAILED");
+  const engineGate = await service.from("trading_engines").update({ kill_switch: true })
+    .eq("id", lookup.data.trading_engine_id).eq("exchange_account_id", lookup.data.exchange_account_id)
+    .select("id").single();
+  if (engineGate.error || !engineGate.data) throw new Error("COINOPS_LIVE_PAUSE_GATE_FAILED");
+  const run = await claim(service, runId);
+  if (!run) throw new Error("COINOPS_LIVE_PAUSE_LEASE_BUSY");
+  let errorCode: string | null = null;
+  try {
+    await validateRunEngine(service, run);
+    let ledger = await runRows(service, run);
+    for (const order of ledger.orders) await reconcileOrder(service, run, order);
+    ledger = await runRows(service, run);
+    for (const order of ledger.orders.filter((item) => item.side === "BUY"
+      && ["NEW", "PARTIALLY_FILLED"].includes(item.status))) {
+      await cancelOwnedEntry(service, run, order);
+      const slot = ledger.slots.find((item) => item.id === order.slot_id);
+      if (slot && Number(order.executed_quantity) === 0)
+        await updateSlot(service, run, slot, { entry_state: "PLANNED" });
+    }
+    ledger = await runRows(service, run);
+    let state = await readLiveExecutorState(run);
+    await ensureTakeProfits(service, run, ledger, state);
+    ledger = await runRows(service, run);
+    state = await readLiveExecutorState(run);
+    await assertAllPositionsProtected(run, ledger, state);
+    const paused = await service.from("robot_v1_live_runs").update({ status: "PAUSED" })
+      .eq("id", run.id).eq("lease_owner", run.lease_owner).eq("status", "ACTIVE")
+      .select("id,status").single();
+    if (paused.error || paused.data?.status !== "PAUSED")
+      throw new Error("COINOPS_LIVE_PAUSE_STATE_FAILED");
+    await event(service, run, `PAUSED:${new Date().toISOString()}`, "LIVE_PAUSED", null,
+      { source: "OPERATOR_CONTROL", canceled_buy_count: ledger.orders.filter((item) =>
+        item.side === "BUY" && item.status === "CANCELED").length });
+    return { status: "PAUSED", asset, cycle_id: run.id };
+  } catch (error) {
+    errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
+      ? error.message : "COINOPS_LIVE_PAUSE_FAILED";
+    await preventNewBuys(service, run, errorCode);
+    throw new Error(errorCode);
+  } finally { await release(service, run, errorCode); }
+}
+
 /** Operator recovery is read-only against Binance. The SQL BUY gate opens only
  * after a fresh exchange/ledger match, protected positions and hard caps. */
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset) {
@@ -908,7 +968,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
   let errorCode: string | null = null;
   try {
     await validateRunEngine(service, run);
-    if (run.user_id !== userId || run.asset !== asset || run.status !== "ACTIVE"
+    if (run.user_id !== userId || run.asset !== asset || !["ACTIVE", "PAUSED"].includes(run.status)
       || run.symbol !== `${asset}${run.quote_asset}` || run.strategy_version !== STRATEGY_VERSION
       || run.last_error || !run.last_reconciled_at
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
@@ -949,6 +1009,13 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
       .eq("exchange_account_id", run.exchange_account_id).select("id").single();
     if (engineGate.error || !engineGate.data) throw new Error("COINOPS_LIVE_RESUME_ENGINE_GATE_FAILED");
+    if (run.status === "PAUSED") {
+      const resumed = await service.from("robot_v1_live_runs").update({ status: "ACTIVE" })
+        .eq("id", run.id).eq("lease_owner", run.lease_owner).eq("status", "PAUSED")
+        .select("id,status").single();
+      if (resumed.error || resumed.data?.status !== "ACTIVE")
+        throw new Error("COINOPS_LIVE_RESUME_STATE_FAILED");
+    }
     await event(service, run, `RESUMED:${new Date().toISOString()}`, "LIVE_RESUMED",
       null, { executor_version: health.health?.version, source: "OPERATOR_CONTROL" });
     const alert = await service.from("robot_v1_live_alerts")
@@ -1033,9 +1100,11 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
         || saved.operational_rank !== planned.operational_rank; }))
     throw new Error("COINOPS_LIVE_PLAN_RECOVERY_MISMATCH");
   for (let number = 1; number <= 25; number++) {
+    const slotCapital = sizing.slots.find((slot) => slot.physicalSlotNumber === number)?.capitalBrl;
+    if (slotCapital === undefined) throw new Error("COINOPS_LIVE_ACCOUNT_SEED_FAILED");
     const account = await service.from("robot_v1_live_slot_accounts").update({
-      contribution_brl: sizing.configuredCapitalBrl / 25,
-      balance_brl: sizing.configuredCapitalBrl / 25,
+      contribution_brl: slotCapital,
+      balance_brl: slotCapital,
     }).eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
       .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).eq("slot_number", number)
       .eq("balance_brl", 0).eq("contribution_brl", 0).select("slot_number").maybeSingle();
@@ -1044,8 +1113,8 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
       const prior = await service.from("robot_v1_live_slot_accounts").select("balance_brl,contribution_brl")
         .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
         .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).eq("slot_number", number).single();
-      if (prior.error || amount(prior.data?.balance_brl) !== sizing.configuredCapitalBrl / 25
-        || amount(prior.data?.contribution_brl) !== sizing.configuredCapitalBrl / 25)
+      if (prior.error || amount(prior.data?.balance_brl) !== slotCapital
+        || amount(prior.data?.contribution_brl) !== slotCapital)
         throw new Error("COINOPS_LIVE_ACCOUNT_RECOVERY_MISMATCH");
     }
   }

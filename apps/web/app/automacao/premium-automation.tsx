@@ -13,6 +13,8 @@ import { OperatorOnboardingPanel } from "./operator-onboarding-panel";
 import { BinanceAccountsPanel } from "./binance-accounts-panel";
 import { ViewerUsersPanel } from "./viewer-users-panel";
 import { NativeEngineAudit } from "./native-engine-audit";
+import { EngineControlCenter } from "./engine-control-center";
+import { LiveAdjustmentsCenter } from "./live-adjustments-center";
 import type { OnboardingCheck } from "./operator-onboarding";
 import { AssetIcon, PremiumDrawer, PremiumIcon, displayMoney as money, displayNumber as number, displayTime as time, type IconName } from "./premium-primitives";
 import "./premium-automation.css";
@@ -118,7 +120,7 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
 const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMap((item) => item.events.map((event) => ({ ...event, asset: item.asset, account: item.accountDisplayName, symbol: item.symbol, environment: env })))).sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
   const reportHref = `/relatorios?account=${selection.accountId}&engine=${concrete?.engineId ?? "ALL"}&environment=${environment}`;
   const viewHref = (target: AutomationView) => `/automacao?view=${target}&account=${selection.accountId}`;
-  const title = panel === "slot" ? `${active?.accountDisplayName ?? ""} · ${active?.symbol ?? asset} · Slot #${selectedSlot?.number}` : panel === "asset" ? `${active?.accountDisplayName ?? ""} · ${asset}/${currency} · operações e slots` : panel === "strategy" ? "Estratégia e regime ATH" : panel === "adjustments" ? "Ajustes manuais" : panel === "config" ? "Configurações e controles" : panel === "simulator" ? "Simuladores isolados" : panel === "audit" ? "Análise e auditoria completa" : "Navegação CoinOps";
+  const title = panel === "slot" ? `${active?.accountDisplayName ?? ""} · ${active?.symbol ?? asset} · Slot #${selectedSlot?.number}` : panel === "asset" ? `${active?.accountDisplayName ?? ""} · ${asset}/${currency} · operações e slots` : panel === "strategy" ? "Estratégia e motores" : panel === "adjustments" ? "Ajustes manuais" : panel === "config" ? "Configurações e controles" : panel === "simulator" ? "Simuladores isolados" : panel === "audit" ? "Análise e auditoria completa" : "Navegação CoinOps";
   return <div className="px-app" data-testid="premium-automation" data-environment={environment}>
     <PremiumGlobalNavigation><div className="px-context-bar">
        <nav className="px-environments" aria-label="Ambientes da Automação">{(Object.keys(labels) as AutomationView[]).map((item) => <a key={item} href={viewHref(item)} aria-current={view === item ? "page" : undefined}>{labels[item]}{item === "live" && liveActive ? <i /> : null}</a>)}<span>Central operacional</span></nav>
@@ -175,9 +177,20 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     </main>
     <nav className="px-bottom-nav" aria-label="Navegação principal"><a href="/dashboard"><PremiumIcon name="home" />Resumo</a><button type="button" onClick={goOperations}><PremiumIcon name="orders" />Operações</button><a href={`/automacao?view=${view}`} aria-current="page"><span className="px-bot"><PremiumIcon name="server" /></span>Automação</a><a href={reportHref}><PremiumIcon name="reports" />Relatórios</a><button type="button" onClick={() => setPanel("menu")}><PremiumIcon name="menu" />Mais</button></nav>
     <PremiumDrawer open={panel !== null} title={title} onClose={() => setPanel(null)}>
-      <div key={`strategy:${selection.accountId}:${selection.symbol}`} hidden={panel !== "strategy"}>{view === "overview" ? <p>Selecione Real, Shadow ou Testnet para configurar o perfil isolado.</p> : allowedControls ? concrete && strategyPanels ? strategyPanels[concrete.engineId] : strategyPanel : <p role="status">Selecione uma conta e um mercado específicos nos filtros para alterar a estratégia.</p>}</div>
+      <div hidden={panel !== "strategy"}>{view === "live" && data.operator ? <>
+        <EngineControlCenter initialAccountId={selection.accountId}
+          onEditEngine={(accountId, symbol) => { setSelection({ accountId, symbol }); setEngineId(null); }}
+          onOpenCredentials={() => setPanel("config")} />
+        {concrete && strategyPanels?.[concrete.engineId] ? <div className="px-engine-existing-profile">
+          <h3>Regras do motor selecionado · {concrete.accountDisplayName} / {concrete.symbol}</h3>
+          {strategyPanels[concrete.engineId]}</div> : null}
+      </> : view === "overview" ? <p>Selecione Real, Shadow ou Testnet para configurar o perfil isolado.</p>
+        : allowedControls ? concrete && strategyPanels ? strategyPanels[concrete.engineId] : strategyPanel
+          : <p role="status">Selecione uma conta e um mercado específicos nos filtros para alterar a estratégia.</p>}</div>
       {/* Keep the one adjustment form mounted: previews and idempotency keys must survive closing the drawer. */}
-      <div key={`adjustments:${selection.accountId}:${selection.symbol}`} hidden={panel !== "adjustments"}>{allowedControls ? concrete && adjustmentPanels ? adjustmentPanels[concrete.engineId] : adjustmentsPanel : <p role="status">Selecione uma conta e um mercado específicos nos filtros para ajustar um slot. Nenhum ajuste usa o escopo Todos.</p>}</div>
+      <div key={`adjustments:${selection.accountId}:${selection.symbol}`} hidden={panel !== "adjustments"}>{environment === "REAL" && data.operator
+        ? <LiveAdjustmentsCenter active={panel === "adjustments"} initialAccountId={selection.accountId} initialSymbol={selection.symbol} />
+        : allowedControls ? concrete && adjustmentPanels ? adjustmentPanels[concrete.engineId] : adjustmentsPanel : <p role="status">Selecione uma conta e um mercado específicos nos filtros para ajustar um slot. Nenhum ajuste usa o escopo Todos.</p>}</div>
       {panel === "simulator" ? <div className="px-simulator-links"><a href="/automacao/simulador-ath"><PremiumIcon name="strategy" /><strong>Simulador ATH</strong><p>Regime, Top 15 / Reserve, floor e prioridade de reentrada.</p><span>Explorar cenários →</span></a><a href="/automacao/simulador-ajustes"><PremiumIcon name="adjust" /><strong>Simulador de ajustes A–J</strong><p>Provas contábeis de gains, aportes e posições abertas.</p><span>Ver cenários determinísticos →</span></a><p>Simulações isoladas. Não criam ordens nem movimentam saldo.</p></div> : null}
       {panel === "onboarding" && data.operator ? <OperatorOnboardingPanel operator={data.operator} checks={data.onboardingChecks ?? []} /> : null}
       {panel === "config" && data.operator ? <><BinanceAccountsPanel /><ViewerUsersPanel /></> : null}

@@ -1,4 +1,14 @@
-# CoinOps — relatórios auditáveis, versão 3
+# CoinOps — relatórios auditáveis (runbook histórico)
+
+O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
+`report_version = 11`. O texto abaixo documenta a evolução histórica da versão 3;
+afirmações antigas de LIVE bloqueado não descrevem a operação atual.
+Na versão 11, `APORTES.csv` e o dataset `contributions` exportam o ledger
+imutável de ajustes LIVE por conta, motor e slot físico, com origem/moeda,
+valor nativo, câmbio observado, estado OPEN, sequência, motivo e reversão.
+Gain manual permanece separado de P&L de mercado; aporte não cria gain.
+Fontes ausentes geram WARNING e nunca viram zero. A exportação é somente leitura
+e não cria/cancela ordens Binance.
 
 O nome histórico deste runbook é preservado. `report_version = 3` acrescenta a auditoria temporal de missed e a janela exata da Strategy Engine 4.1.0. A versão 2 introduziu decisões; pacotes anteriores preservam sua versão e não são reinterpretados.
 

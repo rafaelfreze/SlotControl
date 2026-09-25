@@ -21,6 +21,7 @@ const ENGINE_TABLES = new Set(["robot_v1_configs", "robot_v1_cycles", "robot_v1_
   "robot_v1_live_preparations", "robot_v1_live_slot_accounts", "robot_v1_live_runs", "robot_v1_live_slots", "robot_v1_live_orders",
   "robot_v1_live_fills", "robot_v1_live_events", "robot_v1_ath_profiles", "robot_v1_ath_events", "robot_v1_manual_adjustments",
   "robot_v1_monthly_slot_gains", "robot_v1_strategy_decisions", "robot_v1_live_alerts", "robot_v1_real_prepared_slot_accounts"]);
+ENGINE_TABLES.add("robot_v1_live_adjustment_items");
 
 function assertFilters(filters: ReportFilters) {
   const start = Date.parse(filters.start); const end = Date.parse(filters.end);
@@ -118,6 +119,11 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   const tasks: Array<() => Promise<SourceRow[]>> = [];
   tasks.push(() => load("robot_v1_ath_profiles", source("id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,previous_ath,ath_observed_at,ath_source,ath_verified_at,ath_history_candle_count,ath_floor_reference,ath_floor_source,ath_floor_defined_at,transition_key,transition_observed_at,created_at,updated_at", ["environment", "asset"], { environmentColumn: true, assetColumn: "asset" })));
   if (withReal) {
+    const selectedAccountIds = [...new Set(reportEngines.map((engine) => engine.exchange_account_id))];
+    tasks.push(() => load("robot_v1_live_adjustment_batches", source("id,operator_id,exchange_account_id,request_id,kind,quote_asset,origin_currency,origin_amount,amount_quote,fx_rate,fx_observed_at,evidence,reason,reversal_of,created_at", ["created_at", "id"],
+      { related: { column: "exchange_account_id", ids: selectedAccountIds }, time: "created_at", until })));
+    tasks.push(() => load("robot_v1_live_adjustment_items", source("id,batch_id,symbol,slot_number,physical_slot_id,amount_quote,gain_units,balance_before,balance_after,monthly_before,monthly_after,lifetime_before,lifetime_after,open_at_time,position_committed_quote,operation_sequence,period_key,created_at", ["created_at", "id"],
+      { time: "created_at", until })));
     tasks.push(() => load("robot_v1_live_preparations", source("asset,symbol,quote_asset,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,compounding_enabled,single_active_entry,initial_market_enabled,local_reentry_enabled,kill_switch,live_enabled,config_version,updated_at", ["asset"], { assetColumn: "asset" })));
     tasks.push(() => load("robot_v1_live_global_caps", source("max_total_live_exposure_brl,config_version,updated_at", ["updated_at"])));
     tasks.push(() => load("robot_v1_live_slot_accounts", source("asset,slot_number,quote_asset,balance_brl,market_pnl_brl,manual_gain_brl,contribution_brl,fees_brl,balance_quote,market_pnl_quote,manual_gain_quote,contribution_quote,fees_quote,gain_count,dust_quantity,dust_cost_brl,updated_at", ["asset", "slot_number"], { assetColumn: "asset" })));

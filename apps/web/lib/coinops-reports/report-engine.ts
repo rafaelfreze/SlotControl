@@ -20,7 +20,7 @@ export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1";
   exchangeAccountId?: string; tradingEngineId?: string; symbol?: string };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string }; registry?: DomainRegistry };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments", "contributions"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -94,6 +94,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   const configs = source("robot_v1_configs"), cycles = source("robot_v1_cycles"), slots = source("robot_v1_slots");
   const accounts = source("robot_v1_slot_accounts"), credits = source("robot_v1_slot_profit_credits");
   const manualAdjustments = source("robot_v1_manual_adjustments");
+  const liveAdjustmentBatches = source("robot_v1_live_adjustment_batches");
+  const liveAdjustmentItems = source("robot_v1_live_adjustment_items");
+  const liveAdjustmentBatchById = new Map(liveAdjustmentBatches.map((row) => [str(row.id), row]));
   const rawOperations = source("robot_v1_slot_operations"), testnetRuns = source("robot_v1_testnet_runs"), testnetSlots = source("robot_v1_testnet_slots"), testnetOrders = source("robot_v1_testnet_orders");
   const temporalOccurrences = testnetRuns.flatMap((run) => buildTestnetMissedOccurrences(
     source("robot_v1_testnet_events").filter((event) => event.run_id === run.id).map((event) => ({ ...event, event_type: str(event.event_type) })),
@@ -761,7 +764,26 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
         effective_for_next_operation: row.effective_for_next_operation, reason: row.reason, note: row.note,
         created_by: row.created_by, timestamp: row.created_at, reversal_of: row.reversal_of,
         idempotency_key: row.idempotency_key, strategy_version: row.strategy_version,
-        config_version: row.config_version, evidence_basis: "IMMUTABLE_MANUAL_ADJUSTMENT_LEDGER" }))
+        config_version: row.config_version, evidence_basis: "IMMUTABLE_MANUAL_ADJUSTMENT_LEDGER" })),
+    contributions: liveAdjustmentItems.filter((row) => inPeriod(row.created_at, filters)
+      && Boolean(liveAdjustmentBatchById.get(str(row.batch_id)))).map((row) => {
+      const batch = liveAdjustmentBatchById.get(str(row.batch_id))!;
+      return { contribution_id: batch.id, timestamp: row.created_at,
+        exchange_account_id: batch.exchange_account_id, trading_engine_id: row.trading_engine_id,
+        environment: "REAL", symbol: row.symbol, quote_asset: batch.quote_asset, kind: batch.kind,
+        origin_currency: batch.origin_currency, origin_amount: batch.origin_amount,
+        amount_quote: row.amount_quote, fx_rate: batch.fx_rate,
+        fx_observed_at: batch.fx_observed_at, evidence: batch.evidence,
+        slot_number: row.slot_number, physical_slot_id: row.physical_slot_id,
+        amount_per_slot: row.amount_quote, balance_before: row.balance_before,
+        balance_after: row.balance_after, gain_units: row.gain_units,
+        monthly_before: row.monthly_before, monthly_after: row.monthly_after,
+        open_at_time: row.open_at_time, operation_sequence: row.operation_sequence,
+        status: batch.kind === "REVERSAL" ? "REVERSED" : liveAdjustmentBatches.some((candidate) => candidate.reversal_of === batch.id
+          && timestamp(candidate.created_at) < timestamp(filters.end)) ? "REVERSED_LATER" : "APPLIED",
+        reversal_of: batch.reversal_of, reason: batch.reason,
+        evidence_basis: "IMMUTABLE_LIVE_ADJUSTMENT_BATCH_AND_SLOT_ITEM; NO_EXCHANGE_ORDER" };
+    })
   };
   const preparation = filters.environments.includes("REAL")
     ? buildLivePreparationAudit(input.sources, input.generatedAt) : null;

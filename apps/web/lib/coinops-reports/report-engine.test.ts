@@ -41,6 +41,24 @@ function addTestnet(input: AuditInput) {
   return input;
 }
 
+test("LIVE external contribution exports native quote and never becomes market gain", () => {
+  const input = fixture();
+  input.sources.robot_v1_live_adjustment_batches = [{ ...owner, id: "batch-1", exchange_account_id: "account-1",
+    kind: "CAPITAL", quote_asset: "USDT", origin_currency: "BRL", origin_amount: "100",
+    amount_quote: "18", fx_rate: "5.55555556", reason: "Aporte externo", created_at: at("01:00") }];
+  input.sources.robot_v1_live_adjustment_items = [{ ...owner, batch_id: "batch-1",
+    trading_engine_id: "engine-1", symbol: "SOLUSDT", slot_number: 4,
+    physical_slot_id: "REAL:engine-1:4", amount_quote: "18", gain_units: 0,
+    balance_before: "16.76", balance_after: "34.76", monthly_before: 0,
+    monthly_after: 0, open_at_time: true, operation_sequence: 1, created_at: at("01:00") }];
+  const report = buildAuditReport(input, { ...filters, environments: ["REAL"] });
+  assert.equal(report.datasets.contributions.length, 1);
+  assert.equal(report.datasets.contributions[0].quote_asset, "USDT");
+  assert.equal(report.datasets.contributions[0].gain_units, 0);
+  assert.equal(report.datasets.contributions[0].amount_quote, "18");
+  assert.equal(report.datasets.gains.length, 0);
+});
+
 test("physical Shadow account reconciles manual capital without classifying it as market profit", () => {
   const input = fixture();
   Object.assign(input.sources.robot_v1_slot_accounts[0]!, { balance_usdc: 17.1, manual_gain_usdc: 5, contribution_usdc: 2, gain_count: 3 });

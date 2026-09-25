@@ -321,3 +321,81 @@ for(const quote of ["BRL","USDT"] as const)check(`5.6 SQL: ${quote} account cap 
  select position_committed_quote=10.01 and quote_asset='${quote}' from coinops.robot_v1_live_slots where run_id='${runB}' and slot_number=1;`);
  assert.equal(out.split("\n").filter(x=>x==="t").length,3);
 });
+check("5.8 SQL: provisioning and immutable adjustments install without touching LIVE rows",()=>{
+ const before=sql("select count(*) from coinops.robot_v1_live_slot_accounts");
+ const path=resolve("../../supabase/migrations");
+ for(const file of ["20260925024845_add_operator_engine_provisioning.sql",
+  "20260925024857_add_live_operator_adjustments.sql",
+  "20260925024909_add_live_operator_adjustment_reversal.sql",
+  "20260925024922_add_live_contribution_plans.sql"])
+  invoke(["-f",join(path,file)]);
+ assert.equal(sql("select count(*) from coinops.robot_v1_live_slot_accounts"),before);
+ assert.equal(sql("select count(*) from coinops.robot_v1_live_adjustment_batches"),"0");
+ assert.equal(sql("select count(*) from coinops.robot_v1_live_contribution_plans"),"0");
+ const provision=tx(`insert into coinops.exchange_accounts(id,operator_id,display_name,status,kill_switch,
+   credential_ref,executor_profile) values('${accountB}','${operator}','Fixture New','INACTIVE',true,
+   'account_${accountB.replaceAll("-","")}','coinops-fixed-ip');
+  insert into coinops.account_onboarding_checks(operator_id,exchange_account_id,check_key,status,
+   evidence,created_by,idempotency_key) values('${operator}','${accountB}','BINANCE_CREDENTIAL','PASS',
+   '{"environment":"REAL","status":"PASS","whitelist_accepted":true,"permission":{"spotTrading":true,"withdrawals":false}}',
+   '${user}','fixture-credential-0001');
+  select jsonb_array_length(coinops.stage_operator_engine_plan('${operator}','${accountB}','USDT',20,
+   '[{"asset":"BTC","capital":10,"gain":0.012,"spacing":0.02,"postAth":0.05},
+     {"asset":"SOL","capital":10,"gain":0.055,"spacing":0.03,"postAth":0.08}]',
+   '33333333-4444-4555-8666-777777777777'))=2;
+  select count(*)=2 and bool_and(status='INACTIVE' and kill_switch and not legacy_compatible)
+   from coinops.trading_engines where exchange_account_id='${accountB}';
+  select count(*)=50 and sum(balance_brl)=0 from coinops.robot_v1_live_slot_accounts
+   where exchange_account_id='${accountB}';
+  select jsonb_array_length(coinops.stage_operator_engine_plan('${operator}','${accountB}','USDT',20,
+   '[{"asset":"BTC","capital":10,"gain":0.012,"spacing":0.02,"postAth":0.05},
+     {"asset":"SOL","capital":10,"gain":0.055,"spacing":0.03,"postAth":0.08}]',
+   '33333333-4444-4555-8666-777777777777'))=2;`);
+ assert.equal(provision.split("\n").filter(x=>x==="t").length,4);
+ const allocation=`(select jsonb_build_array(jsonb_build_object('engineId','${engineB}',
+  'slotNumber',1,'amount',0,'gainUnits',1,'balanceBefore',a.balance_brl,
+  'operationSequence',s.operation_sequence,'monthlyBefore',0,'lifetimeBefore',0))
+  from coinops.robot_v1_live_slot_accounts a join coinops.robot_v1_live_slots s
+  on s.trading_engine_id=a.trading_engine_id and s.slot_number=a.slot_number
+  where a.trading_engine_id='${engineB}' and a.slot_number=1)`;
+ const out=tx(`${otherLive("USDT")}
+  update coinops.robot_v1_live_runs set lease_owner=null,lease_until=null where id='${runB}';
+  select coinops.apply_live_operator_adjustment('${operator}','${accountB}','${user}',
+    'MANUAL_GAIN','USDT','USDT',0,0,null,null,null,'fixture gain',${allocation},20,
+    '11111111-2222-4333-8444-555555555555')->>'status';
+  select gain_count=1 and balance_brl=10 and contribution_brl=10
+    from coinops.robot_v1_live_slot_accounts where trading_engine_id='${engineB}' and slot_number=1;
+  select monthly_gain_count=1 and lifetime_gain_count=1
+    from coinops.robot_v1_slot_gain_totals where trading_engine_id='${engineB}' and slot_number=1;
+  select coinops.reverse_live_operator_adjustment('${operator}','${accountB}','${user}',
+    (select id from coinops.robot_v1_live_adjustment_batches where request_id='11111111-2222-4333-8444-555555555555'),
+    'fixture reverse','22222222-3333-4444-8555-666666666666')->>'status';
+  select gain_count=0 and balance_brl=10 from coinops.robot_v1_live_slot_accounts
+    where trading_engine_id='${engineB}' and slot_number=1;
+  select count(*)=2 and bool_and(reversal_of is null or kind='REVERSAL')
+    from coinops.robot_v1_live_adjustment_batches where exchange_account_id='${accountB}';`);
+ assert.deepEqual(out.split("\n").filter(x=>["APPLIED","REVERSED","t"].includes(x)),
+  ["APPLIED","t","t","REVERSED","t","t"]);
+ const capitalAllocation=`(select jsonb_build_array(jsonb_build_object('engineId','${engineB}',
+  'slotNumber',1,'amount',2,'gainUnits',0,'balanceBefore',a.balance_brl,
+  'operationSequence',s.operation_sequence,'monthlyBefore',0,'lifetimeBefore',0))
+  from coinops.robot_v1_live_slot_accounts a join coinops.robot_v1_live_slots s
+  on s.trading_engine_id=a.trading_engine_id and s.slot_number=a.slot_number
+  where a.trading_engine_id='${engineB}' and a.slot_number=1)`;
+ const funded=tx(`${otherLive("USDT")}
+  update coinops.robot_v1_live_runs set lease_owner=null,lease_until=null where id='${runB}';
+  select coinops.apply_live_operator_adjustment('${operator}','${accountB}','${user}',
+   'CAPITAL','USDT','USDT',2,2,null,null,null,'fixture capital',${capitalAllocation},20,
+   '44444444-5555-4666-8777-888888888888')->>'status';
+  select balance_brl=12 and contribution_brl=12 and gain_count=0
+   from coinops.robot_v1_live_slot_accounts where trading_engine_id='${engineB}' and slot_number=1;
+  select hard_cap_quote=22 from coinops.account_quote_caps where exchange_account_id='${accountB}';
+  select coinops.reverse_live_operator_adjustment('${operator}','${accountB}','${user}',
+   (select id from coinops.robot_v1_live_adjustment_batches where request_id='44444444-5555-4666-8777-888888888888'),
+   'fixture reverse','55555555-6666-4777-8888-999999999999')->>'status';
+  select balance_brl=10 and contribution_brl=10 from coinops.robot_v1_live_slot_accounts
+   where trading_engine_id='${engineB}' and slot_number=1;
+  select hard_cap_quote=20 from coinops.account_quote_caps where exchange_account_id='${accountB}';`);
+ assert.deepEqual(funded.split("\n").filter(x=>["APPLIED","REVERSED","t"].includes(x)),
+  ["APPLIED","t","t","REVERSED","t","t"]);
+});

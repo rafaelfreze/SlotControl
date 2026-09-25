@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { validateExecutorRegistry, resolveExecutorContext, assertEngineOrder, engineOrderPrefix,
-  durableIntent, saveInactiveRegistryAccount, promotePreparedRegistryAccount,
+  durableIntent, saveInactiveRegistryAccount, promotePreparedRegistryAccount, promoteRegistryEngine,
+  changeRegistryCapital,
   loadCombinedRegistry, canReadDynamicRegistry } from "../src/account-registry.mjs";
 import { sha256, requestSignature, withWriteIdempotency } from "../src/security.mjs";
 import { createExecutorHandler } from "../src/server.mjs";
@@ -95,6 +96,72 @@ test("root promotion releases only the exact staged Thyely pair and is idempoten
     assert.equal(combined.engines.filter((row) => row.exchange_account_id === accountId
       && row.status === "ACTIVE" && row.execution_allowed && !row.kill_switch).length, 2);
     await assert.rejects(saveInactiveRegistryAccount(staticRegistry, directory, scope, staged), /SYNC_DENIED/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("panel promotion activates only the selected staged engine and preserves siblings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-panel-promotion-"));
+  const staticRegistry = validateExecutorRegistry(registryFixture([engines[0]]));
+  const accountId = ACCOUNT_B, scope = { operator_id: engines[4].operator_id,
+    exchange_account_id: accountId, credential_ref: `account_${accountId.replaceAll("-", "")}`,
+    environment: "REAL" };
+  const staged = ["BTCBRL", "SOLBRL"].map((symbol, index) => ({
+    ...engineFixture(symbol, accountId, 30 + index, false), credential_ref: scope.credential_ref,
+    status: "INACTIVE", execution_allowed: false, kill_switch: true,
+    account_kill_switch: true, global_kill_switch: true,
+    hard_cap_quote: index === 0 ? 450 : 275, account_cap_quote: 725,
+    max_order_quote: index === 0 ? 450 : 275,
+  }));
+  try {
+    await saveInactiveRegistryAccount(staticRegistry, directory, scope, staged);
+    const first = staged[0], second = staged[1];
+    await assert.rejects(promoteRegistryEngine(staticRegistry, directory,
+      { ...scope, ...first, hard_cap_quote: 451 }), /PROMOTION_DENIED/);
+    const activated = await promoteRegistryEngine(staticRegistry, directory, { ...scope, ...first });
+    assert.equal(activated.status, "ACTIVE"); assert.equal(activated.replayed, false);
+    assert.equal((await promoteRegistryEngine(staticRegistry, directory, { ...scope, ...first })).replayed, true);
+    const midpoint = await loadCombinedRegistry(staticRegistry, directory);
+    assert.equal(midpoint.engines.find((row) => row.trading_engine_id === first.trading_engine_id).status, "ACTIVE");
+    assert.equal(midpoint.engines.find((row) => row.trading_engine_id === second.trading_engine_id).status, "INACTIVE");
+    await promoteRegistryEngine(staticRegistry, directory, { ...scope, ...second });
+    const complete = await loadCombinedRegistry(staticRegistry, directory);
+    assert.equal(complete.engines.filter((row) => row.exchange_account_id === accountId && row.status === "ACTIVE").length, 2);
+    assert.equal(complete.engines.find((row) => row.trading_engine_id === engines[0].trading_engine_id).status, "ACTIVE");
+    const over = structuredClone(complete); over.engines.find((row) => row.trading_engine_id === second.trading_engine_id).hard_cap_quote = 276;
+    assert.throws(() => validateExecutorRegistry(over), /ACCOUNT_CAP_EXCEEDED/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("native-quote capital update is exact, replayable and cannot alter Rafael or a sibling", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-cap-change-"));
+  const accountId = randomUUID(), operatorId = randomUUID();
+  const scope = { operator_id: operatorId, exchange_account_id: accountId,
+    credential_ref: `account_${accountId.replaceAll("-", "")}`, environment: "REAL" };
+  const staticRegistry = registryFixture(engines.filter((row) => row.exchange_account_id === ACCOUNT_A));
+  const staged = ["BTCUSDT", "SOLUSDT"].map((symbol, index) => ({
+    ...engineFixture(symbol, accountId, index + 20), ...scope, status: "INACTIVE",
+    account_cap_quote: 838, hard_cap_quote: 419, max_order_quote: 419,
+    execution_allowed: false, kill_switch: true, account_kill_switch: true,
+    global_kill_switch: true, is_legacy_default: false, legacy_ownership: false,
+  }));
+  try {
+    await saveInactiveRegistryAccount(staticRegistry, directory, scope, staged);
+    for (const row of staged) await promoteRegistryEngine(staticRegistry, directory, { ...scope, ...row });
+    const request = { ...scope, quote_asset: "USDT", expected_account_cap_quote: 838,
+      target_account_cap_quote: 1038,
+      engines: staged.map((row) => ({ trading_engine_id: row.trading_engine_id, symbol: row.symbol,
+        expected_hard_cap_quote: 419, target_hard_cap_quote: 519 })) };
+    await assert.rejects(changeRegistryCapital(staticRegistry, directory,
+      { ...request, engines: request.engines.map((row) => ({ ...row, target_hard_cap_quote: 620 })) }), /CAP_CHANGE_STALE/);
+    assert.equal((await changeRegistryCapital(staticRegistry, directory, request)).replayed, false);
+    assert.equal((await changeRegistryCapital(staticRegistry, directory, request)).replayed, true);
+    const after = await loadCombinedRegistry(staticRegistry, directory);
+    assert.equal(after.engines.filter((row) => row.exchange_account_id === accountId)
+      .reduce((sum, row) => sum + row.hard_cap_quote, 0), 1038);
+    assert.equal(after.engines.find((row) => row.trading_engine_id === engines[0].trading_engine_id).hard_cap_quote,
+      engines[0].hard_cap_quote);
+    await assert.rejects(changeRegistryCapital(staticRegistry, directory,
+      { ...request, exchange_account_id: ACCOUNT_A }), /CAP_CHANGE_DENIED/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -189,17 +256,20 @@ test("legacy completed and uncertain claims survive scope migration and restart 
 test("signed executor observes only selected account and rejects cross-account replay before Binance", async () => {
   const calls = [];
   let rejectAccountA = false;
+  const legacyKey = "A".repeat(64), legacySecret = "S".repeat(64);
+  const legacyCredentialEnvironment = { ...credentialEnvironment,
+    FIXTURE_ADMIN_LEGACY_KEY: legacyKey, FIXTURE_ADMIN_LEGACY_SECRET: legacySecret };
   const stateDirectory = await mkdtemp(join(tmpdir(), "coinops-account-http-"));
   const fetcher = async (url, init = {}) => {
     const parsed = new URL(url), key = init.headers?.["X-MBX-APIKEY"];
     calls.push({ path: parsed.pathname, method: init.method, key });
     const symbol = parsed.searchParams.get("symbol") ?? "BTCBRL";
     if (parsed.pathname === "/api/v3/time") return Response.json({ serverTime: NOW });
-    if (parsed.pathname === "/sapi/v1/account/apiRestrictions") return Response.json({ ipRestrict: !(rejectAccountA && key === "fictional-key-A"), enableReading: true,
+    if (parsed.pathname === "/sapi/v1/account/apiRestrictions") return Response.json({ ipRestrict: !(rejectAccountA && key === legacyKey), enableReading: true,
       enableSpotAndMarginTrading: true, enableWithdrawals: false, enableInternalTransfer: false, permitsUniversalTransfer: false,
       enableMargin: false, enableFutures: false, enableVanillaOptions: false, enablePortfolioMarginTrading: false, enableFixApiTrade: false });
-    if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [{ asset: "BRL", free: key === "fictional-key-A" ? "725" : "123", locked: "0" },
-      { asset: "USDT", free: key === "fictional-key-A" ? "111" : "222", locked: "0" }] });
+    if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [{ asset: "BRL", free: key === legacyKey ? "725" : "123", locked: "0" },
+      { asset: "USDT", free: key === legacyKey ? "111" : "222", locked: "0" }] });
     if (parsed.pathname === "/api/v3/exchangeInfo") return Response.json({ symbols: (parsed.searchParams.has("symbols")
       ? JSON.parse(parsed.searchParams.get("symbols")) : [symbol]).map((requested) => ({ symbol: requested,
       status: "TRADING", baseAsset: requested.slice(0, 3), quoteAsset: requested.slice(3),
@@ -212,8 +282,12 @@ test("signed executor observes only selected account and rejects cross-account r
     if (parsed.hostname === "api.ipify.org") return Response.json({ ip: "203.0.113.10" });
     throw Error("UNEXPECTED_FAKE_REQUEST");
   };
-  const pinnedRegistry = { ...registry, legacy_account_id: ACCOUNT_A };
-  const server = createServer(createExecutorHandler({ secret: SECRET, stateDirectory, registry: pinnedRegistry, credentialEnvironment,
+  const pinnedRegistry = { ...registry, legacy_account_id: ACCOUNT_A,
+    credentials: { ...registry.credentials,
+      "legacy-binance-production": { api_key_env: "FIXTURE_ADMIN_LEGACY_KEY",
+        api_secret_env: "FIXTURE_ADMIN_LEGACY_SECRET" } } };
+  const server = createServer(createExecutorHandler({ secret: SECRET, stateDirectory, registry: pinnedRegistry,
+    credentialEnvironment: legacyCredentialEnvironment,
     allowLegacyClients: true, legacyVersion: "old-contract-version", version: "new-runtime-version",
     expectedEgressIp: "203.0.113.10", fetcher, now: () => NOW, logger: () => {} }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -231,14 +305,31 @@ test("signed executor observes only selected account and rejects cross-account r
       const body = await response.json();
       assert.equal(body.exchange_account_id, engine.exchange_account_id); assert.equal(body.symbol, engine.symbol);
       assert.ok(calls.slice(before).filter((call) => call.key).every((call) => call.key ===
-        (engine.exchange_account_id === ACCOUNT_A ? "fictional-key-A" : "fictional-key-B")));
+        (engine.exchange_account_id === ACCOUNT_A ? legacyKey : "fictional-key-B")));
     }
     const before = calls.length;
     assert.equal((await send({ ...intentContext(engines[0]), exchange_account_id: ACCOUNT_B })).status, 403);
     assert.equal(calls.length, before);
+    const snapshotId = randomUUID();
+    const legacySnapshot = await send({ operator_id: engines[0].operator_id,
+      exchange_account_id: ACCOUNT_A, credential_ref: "legacy-binance-production",
+      environment: "REAL", quote_asset: "BRL", symbols: ["BTCBRL"],
+      request_id: snapshotId, idempotency_key: `SNAPSHOT:${snapshotId}` }, "/v1/admin/snapshot");
+    assert.equal(legacySnapshot.status, 200, await legacySnapshot.clone().text());
+    const legacyResult = await legacySnapshot.json();
+    assert.equal(legacyResult.exchange_account_id, ACCOUNT_A);
+    assert.equal(legacyResult.markets[0].symbol, "BTCBRL");
+    assert.ok(!JSON.stringify(legacyResult).includes("fictional-secret"));
+    assert.ok(calls.length > before);
+    const afterLegitimateSnapshot = calls.length;
+    const tampered = await send({ operator_id: engines[0].operator_id,
+      exchange_account_id: ACCOUNT_B, credential_ref: "legacy-binance-production",
+      environment: "REAL", quote_asset: "BRL", symbols: ["BTCBRL"],
+      request_id: randomUUID(), idempotency_key: "SNAPSHOT:another-account" }, "/v1/admin/snapshot");
+    assert.equal(tampered.status, 403);
     const wrongOwned = { ...intentContext(engines[4]), clientOrderId: "COR1-BTC-1-1-BUY-0123456789abcd" };
     assert.equal((await send(wrongOwned, "/v1/query-order")).status, 403);
-    assert.equal(calls.length, before);
+    assert.equal(calls.length, afterLegitimateSnapshot);
     assert.equal((await send({ symbol: "BTCBRL" })).status, 200);
     const publicHealth = await (await fetch(`http://127.0.0.1:${server.address().port}/health`)).json();
     assert.equal(publicHealth.version, "old-contract-version");
@@ -252,7 +343,8 @@ test("signed executor observes only selected account and rejects cross-account r
     assert.equal((await unaffected.json()).version, "new-runtime-version");
     assert.ok(calls.every((call) => call.method === "GET"));
   } finally { await new Promise((resolve) => server.close(resolve)); }
-  const strict = createServer(createExecutorHandler({ secret: SECRET, stateDirectory, registry: pinnedRegistry, credentialEnvironment,
+  const strict = createServer(createExecutorHandler({ secret: SECRET, stateDirectory, registry: pinnedRegistry,
+    credentialEnvironment: legacyCredentialEnvironment,
     version: "new-runtime-version", expectedEgressIp: "203.0.113.10", fetcher, now: () => NOW, logger: () => {} }));
   await new Promise((resolve) => strict.listen(0, "127.0.0.1", resolve));
   try {
