@@ -56,8 +56,16 @@ async function loadLegacyTestnetData(supabase: ReturnType<typeof createClient>, 
     const [slots, orders, events, missedEvents] = await Promise.all([
       supabase.from("robot_v1_testnet_slots").select("run_id,slot_number,entry_state,target_buy_price,balance_usdc,gain_count,net_profit_usdc,missed_at,operation_sequence,entry_origin,entry_reference_price,last_take_profit_price,created_at,updated_at,post_ath_group,post_ath_group_rank,operational_rank").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).in("run_id", runIds).order("slot_number"),
       supabase.from("robot_v1_testnet_orders").select("run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).in("run_id", runIds).order("created_at"),
-      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).in("run_id", runIds).order("observed_at", { ascending: false }).limit(40),
-      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details").eq("exchange_account_id", accountId).in("trading_engine_id", engineIds).eq("run_id", run.id).in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100),
+      // The cockpit shows events for the selected run only. Scanning and sorting
+      // every historical run hit the database statement timeout on each refresh.
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details")
+        .eq("tenant_id", tenantId).eq("user_id", userId).eq("exchange_account_id", accountId)
+        .in("trading_engine_id", engineIds).eq("run_id", run.id)
+        .order("observed_at", { ascending: false }).limit(40),
+      supabase.from("robot_v1_testnet_events").select("id,run_id,event_type,slot_number,observed_at,details")
+        .eq("tenant_id", tenantId).eq("user_id", userId).eq("exchange_account_id", accountId)
+        .in("trading_engine_id", engineIds).eq("run_id", run.id)
+        .in("event_type", [...TESTNET_MISSED_EVENT_TYPES]).order("observed_at", { ascending: false }).limit(100),
     ]);
     if (slots.error || orders.error || events.error || missedEvents.error)
       throw slots.error || orders.error || events.error || missedEvents.error;
@@ -186,7 +194,11 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     supabase.from("robot_v1_slot_operations").select("id,cycle_id,slot_id,physical_slot_number,logical_level,operation_sequence,allocation_usdc,entry_price,executed_quantity,take_profit_price,gross_quote_pnl,estimated_quote_fees,net_quote_pnl,opened_at,closed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("closed_at", { ascending: false }).limit(loadHistoricalEnvironments ? 2000 : 0),
     supabase.from("robot_v1_slot_accounts").select("config_id,slot_number,initial_balance_usdc,balance_usdc,gain_count,gross_profit_usdc,fees_usdc,net_profit_usdc,last_operation_id").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("slot_number").limit(loadHistoricalEnvironments ? 100 : 0),
     supabase.from("robot_v1_audit_events").select("cycle_id,slot_id,event_type,next_state,observed_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds).order("observed_at", { ascending: false }).limit(loadHistoricalEnvironments ? 40 : 0),
-    supabase.from("robot_v1_market_candles").select("symbol,candle_open_at,open_price,high_price,low_price,close_price").in("symbol", ["BTCUSDC", "SOLUSDC"]).order("candle_open_at", { ascending: false }).limit(loadHistoricalEnvironments ? 180 : 0),
+    supabase.from("robot_v1_market_candles").select("symbol,candle_open_at,open_price,high_price,low_price,close_price")
+      .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
+      .eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
+      .in("symbol", ["BTCUSDC", "SOLUSDC"]).order("candle_open_at", { ascending: false })
+      .limit(loadHistoricalEnvironments ? 180 : 0),
     supabase.from("exchange_order_intents").select("id").limit(12),
     supabase.from("robot_v1_slot_gain_totals").select("product_id,tenant_id,user_id,environment,asset,slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
       .eq("tenant_id", tenantId).eq("user_id", user.id),

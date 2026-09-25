@@ -11,6 +11,7 @@ type SyncStatus = "AO VIVO" | "RECONECTANDO" | "DESATUALIZADO";
 const STALE_MS = 150_000;
 const ONLINE_REFRESH_MS = 120_000;
 const FALLBACK_REFRESH_MS = 30_000;
+const MIN_REFRESH_GAP_MS = 15_000;
 
 export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngine[],
   selection: PremiumSelection, snapshotAt: string) {
@@ -44,14 +45,15 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
     setConnected(false);
     const refresh = (delay = 1_000) => {
       if (pendingRefresh.current) return;
+      const wait = Math.max(delay, MIN_REFRESH_GAP_MS - (Date.now() - lastRefreshRequested.current));
       pendingRefresh.current = setTimeout(() => {
         pendingRefresh.current = null;
         if (active && document.visibilityState === "visible"
-          && Date.now() - lastRefreshRequested.current > 2_000) {
+          && Date.now() - lastRefreshRequested.current >= MIN_REFRESH_GAP_MS) {
           lastRefreshRequested.current = Date.now();
           router.refresh();
         }
-      }, delay);
+      }, wait);
     };
     const hash = scopes.reduce((value, scope) =>
       [...scope.trading_engine_id].reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, value), 0);
@@ -71,11 +73,13 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
         ? ONLINE_REFRESH_MS : FALLBACK_REFRESH_MS)) refresh(0);
     }, FALLBACK_REFRESH_MS);
     const onFocus = () => {
-      if (document.visibilityState !== "visible" || Date.now() - lastFocus.current < 1_000) return;
+      if (document.visibilityState !== "visible" || Date.now() - lastFocus.current < MIN_REFRESH_GAP_MS) return;
       lastFocus.current = Date.now();
       setConnected(false);
-      lastRefreshRequested.current = Date.now();
-      router.refresh();
+      if (Date.now() - lastRefreshRequested.current >= MIN_REFRESH_GAP_MS) {
+        lastRefreshRequested.current = Date.now();
+        router.refresh();
+      }
       setGeneration((current) => current + 1);
     };
     document.addEventListener("visibilitychange", onFocus);
