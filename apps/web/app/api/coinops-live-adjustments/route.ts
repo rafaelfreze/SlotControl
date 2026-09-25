@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { allocateBulkSlots, projectSlotAdjustment } from "@/lib/execution/live-adjustment-plans";
 import { operatorAccountSnapshot, operatorExecutorAdmin } from "@/lib/execution/operator-executor-admin";
+import { isIdentity } from "@/lib/execution/operator-context";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
@@ -13,7 +14,6 @@ export const runtime = "nodejs";
 export const preferredRegion = "gru1";
 export const maxDuration = 60;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers });
 type Service = ReturnType<typeof createServiceRoleClient>;
@@ -78,7 +78,7 @@ async function verifyBrlUsdtConversion(originBrl: number, receivedUsdt: number) 
 }
 
 function inputGuard(input: Draft) {
-  if (!UUID.test(input.accountId ?? "") || !UUID.test(input.requestId ?? "")
+  if (!isIdentity(input.accountId) || !isIdentity(input.requestId)
     || !["BRL", "USDT"].includes(input.quote)
     || input.reason?.trim().length < 3 || input.reason.trim().length > 160)
     throw new Error("COINOPS_ADJUSTMENT_INPUT_INVALID");
@@ -189,7 +189,7 @@ async function preview(scope: Scope, input: Draft) {
   let amount = 0, origin = 0;
   let fxReference: Awaited<ReturnType<typeof verifyBrlUsdtConversion>> | null = null;
   if (input.kind === "MANUAL_GAIN") {
-    if (!UUID.test(input.engineId ?? "") || !Number.isInteger(input.slotNumber)
+    if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
       || input.slotNumber! < 1 || input.slotNumber! > 25
       || !Number.isInteger(input.gainUnits) || input.gainUnits! < 1 || input.gainUnits! > 25
       || !state.engines.some((engine) => engine.id === input.engineId))
@@ -201,7 +201,7 @@ async function preview(scope: Scope, input: Draft) {
     if (amount > state.availableForNewCapital)
       throw new Error("APORTE_BLOQUEADO_SALDO_INSUFICIENTE");
     if (input.slotNumber !== undefined) {
-      if (!UUID.test(input.engineId ?? "") || !Number.isInteger(input.slotNumber)
+      if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
         || input.slotNumber < 1 || input.slotNumber > 25
         || !state.engines.some((engine) => engine.id === input.engineId))
         throw new Error("COINOPS_ADJUSTMENT_SLOT_INVALID");
@@ -432,7 +432,7 @@ export async function POST(request: NextRequest) {
       revalidatePath("/automacao"); revalidatePath("/relatorios");
       return json(saved.data);
     }
-    if (!UUID.test(input.originalId ?? "")) throw new Error("COINOPS_ADJUSTMENT_REVERSAL_INVALID");
+    if (!isIdentity(input.originalId)) throw new Error("COINOPS_ADJUSTMENT_REVERSAL_INVALID");
     const original = await scope.service.from("robot_v1_live_adjustment_batches")
       .select("id,exchange_account_id,kind,quote_asset,origin_amount,amount_quote,reversal_of")
       .eq("id", input.originalId).eq("operator_id", scope.operator.id)

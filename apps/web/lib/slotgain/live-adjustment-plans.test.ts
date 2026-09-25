@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { allocateBulkSlots, projectSlotAdjustment, splitBulkEngines } from "../execution/live-adjustment-plans.ts";
+import { isIdentity } from "../execution/operator-context.ts";
 
 const btc = "11111111-1111-4111-8111-111111111111";
 const sol = "22222222-2222-4222-8222-222222222222";
+
+test("admin adjustment identifiers accept canonical UUIDs, not truncated UUIDs", () => {
+  assert.equal(isIdentity(btc), true);
+  assert.equal(isIdentity("11111111-1111-4111-111111111111"), false);
+});
 
 test("bulk 50/50 and 25 slots preserve every cent and engine boundary", () => {
   const shares = splitBulkEngines(200, [btc, sol]);
