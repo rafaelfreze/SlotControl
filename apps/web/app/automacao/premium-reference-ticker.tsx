@@ -1,11 +1,10 @@
 "use client";
 
-import { useLivePrices } from "@/lib/slotgain/live-prices";
+import type { useLivePrices } from "@/lib/slotgain/live-prices";
 import { displayNumber } from "./premium-primitives";
 
 /** One existing market subscription; USDT reference never enters BRL/USDC accounting. */
-export function PremiumReferenceTicker() {
-  const market = useLivePrices();
+export function PremiumReferenceTicker({ market }: { market: ReturnType<typeof useLivePrices> }) {
   return <div className="px-reference-ticker" aria-label="Mercado de referência USDT">
     <span>Mercado de referência · USDT</span>
     <span>BTC <strong>{displayNumber(market.prices.BTC)}</strong></span>

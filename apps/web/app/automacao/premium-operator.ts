@@ -1,6 +1,7 @@
 import type { Props } from "./automation-mobile";
 import { buildPremiumAssets, type PremiumAsset, type PremiumEnvironment } from "./premium-model.ts";
 import type { EngineContext } from "../../lib/execution/operator-context";
+import type { LiveExecutorStatus } from "../../lib/execution/live-executor-health";
 
 /** Public presentation only. Credential references never cross this boundary. */
 export type PremiumAccount = { id: string; displayName: string; status: string; killSwitch: boolean };
@@ -78,4 +79,36 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
     health: blocked && model.health.healthy ? { healthy: false, tone: "attention", label: "PROTEGIDO",
       reason: "Novas entradas bloqueadas por controle da conta, motor ou preparação LIVE." } : model.health,
     killSwitch };
+}
+
+/** Public ticker enriches the read-only USDT view; it never changes the ledger or engine. */
+export function withLiveUsdtPrice(engine: PremiumEngine, observedPrice: number | null): PremiumEngine {
+  if (engine.environment !== "REAL" || engine.symbol !== `${engine.asset}USDT`
+    || engine.currency !== "USDT") return engine;
+  const price = observedPrice !== null && Number.isFinite(observedPrice) && observedPrice > 0 ? observedPrice : null;
+  const slots = engine.slots.map((slot) => ({ ...slot, currentPrice: price,
+    openPnl: slot.state === "OPEN" ? price !== null && slot.quantity !== null && slot.committed !== null
+      ? slot.quantity * price - slot.committed : null : slot.openPnl }));
+  const openPnl = slots.some((slot) => slot.openPnl === null) ? null
+    : slots.reduce((total, slot) => total + (slot.openPnl ?? 0), 0);
+  return { ...engine, price, slots, openPnl };
+}
+
+/** Use each selected engine's executor evidence, never another account's legacy snapshot. */
+export function selectedLiveExecutorStatus(engines: PremiumEngine[], engineData: Record<string, Props>): {
+  online: boolean; binanceConnected: boolean; ip: string | null; latencyMs: number | null; killSwitch: boolean | null;
+} {
+  const statuses = engines.map((engine): LiveExecutorStatus | null => {
+    const data = engineData[engine.engineId];
+    return data?.nativeLiveControl?.executor ?? data?.livePreparation?.executor ?? null;
+  });
+  const verified = statuses.length > 0 && statuses.every((status) => status?.gate === "LIVE_EXECUTOR_ACTIVE");
+  const binanceConnected = statuses.length > 0 && statuses.every((status) => status?.gate === "LIVE_EXECUTOR_ACTIVE"
+    || status?.health?.binance_connectivity === "OK");
+  const ips = [...new Set(statuses.map((status) => status?.ip).filter((ip): ip is string => !!ip))];
+  const latencies = statuses.map((status) => status?.health?.latency_ms).filter((value): value is number => typeof value === "number");
+  return { online: verified, binanceConnected, ip: ips.length === 1 ? ips[0] : null,
+    latencyMs: latencies.length === statuses.length && latencies.length ? Math.max(...latencies) : null,
+    killSwitch: statuses.length > 0 && statuses.every((status) => status?.health)
+      ? statuses.some((status) => status?.health?.kill_switch) : null };
 }

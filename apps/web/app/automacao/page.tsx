@@ -20,8 +20,7 @@ import { resolveEngineContext } from "@/lib/execution/operator-context";
 import { buildOperatorPresentation } from "./operator-presentation-server";
 import type { Presentation } from "./premium-automation";
 import { PremiumAutomation } from "./premium-automation";
-import { PremiumReferenceTicker } from "./premium-reference-ticker";
-import { getPremiumBrlCandles } from "./premium-market";
+import { getPremiumMarketCandles } from "./premium-market";
 import type { LiveAssetData, TestnetAssetData } from "./automation-mobile";
 import { AthProfilesPanel } from "./ath-profiles-panel";
 import { ManualAdjustmentsPanel, type RecentManualAdjustment } from "./manual-adjustments-panel";
@@ -150,7 +149,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     .order("created_at", { ascending: false }).limit(40);
   const dailyCandlesPromise = Promise.all([
     ...(["BTCUSDC", "SOLUSDC"] as const).map((symbol) => getDailyMarketCandles(symbol).catch(() => [])),
-    ...(["BTCBRL", "SOLBRL"] as const).map(getPremiumBrlCandles),
+    ...(["BTCBRL", "SOLBRL", "BTCUSDT", "SOLUSDT"] as const).map(getPremiumMarketCandles),
   ]);
   const productionPromise = loadLiveProductionSnapshot(legacyRealContexts).catch(() => null);
   const executorPromise = loadLiveExecutorStatus();
@@ -391,7 +390,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       initial={initialManualTarget && searchParams?.engine === engine.engineId ? initialManualTarget : null} />;
   }
   return <PremiumAutomation view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
-    marketTicker={<PremiumReferenceTicker />} data={presentation} strategyPanel={null} adjustmentsPanel={null}
+    data={presentation} strategyPanel={null} adjustmentsPanel={null}
     strategyPanels={strategyPanels} adjustmentPanels={adjustmentPanels}
     initialAdjustments={Boolean(initialManualTarget && searchParams?.engine)} />;
 }

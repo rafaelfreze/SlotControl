@@ -1,7 +1,7 @@
 import type { Candle } from "./automation-mobile";
 
 /** Presentation-only public GET. No credentials, order API or strategy dependency. */
-export async function getPremiumBrlCandles(symbol: "BTCBRL" | "SOLBRL"): Promise<Candle[]> {
+export async function getPremiumMarketCandles(symbol: "BTCBRL" | "SOLBRL" | "BTCUSDT" | "SOLUSDT"): Promise<Candle[]> {
   try {
     const response = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=1d&limit=30`, {
       next: { revalidate: 300 }, signal: AbortSignal.timeout(5_000),
