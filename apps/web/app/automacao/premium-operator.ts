@@ -94,11 +94,10 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
     killSwitch };
 }
 
-/** Public ticker enriches the read-only USDT view; it never changes the ledger or engine. */
-export function withLiveUsdtPrice(engine: PremiumEngine, observedPrice: number | null): PremiumEngine {
-  if (engine.environment !== "REAL" || engine.symbol !== `${engine.asset}USDT`
-    || engine.currency !== "USDT") return engine;
-  const price = observedPrice !== null && Number.isFinite(observedPrice) && observedPrice > 0 ? observedPrice : null;
+/** Public ticker enriches the read-only presentation; it never changes the ledger or engine. */
+export function withLiveMarketPrice(engine: PremiumEngine, observedPrice: number | null): PremiumEngine {
+  if (!['REAL', 'TESTNET'].includes(engine.environment) || observedPrice === null) return engine;
+  const price = Number.isFinite(observedPrice) && observedPrice > 0 ? observedPrice : null;
   const slots = engine.slots.map((slot) => ({ ...slot, currentPrice: price,
     openPnl: slot.state === "OPEN" ? price !== null && slot.quantity !== null && slot.committed !== null
       ? slot.quantity * price - slot.committed : null : slot.openPnl }));

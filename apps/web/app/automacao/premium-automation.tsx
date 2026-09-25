@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { useLivePrices } from "@/lib/slotgain/live-prices";
+import { useAutomationMarketPrices } from "./use-automation-market-prices";
+import { useAutomationLiveSync } from "./use-automation-live-sync";
 import { AutomationDetails, type AutomationView } from "./automation-center";
 import type { Candle, Props } from "./automation-mobile";
 import { type PremiumAsset, type PremiumSlot } from "./premium-model";
-import { concretePremiumEngine, legacyPremiumEngines, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveUsdtPrice, type LiveQuoteBalance, type PremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
+import { concretePremiumEngine, legacyPremiumEngines, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveMarketPrice, type LiveQuoteBalance, type PremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { PremiumReferenceTicker } from "./premium-reference-ticker";
 import { PremiumControls } from "./premium-controls";
 import { PremiumGlobalNavigation } from "./premium-global-navigation";
@@ -19,7 +20,7 @@ import type { OnboardingCheck } from "./operator-onboarding";
 import { AssetIcon, PremiumDrawer, PremiumIcon, displayMoney as money, displayNumber as number, displayTime as time, type IconName } from "./premium-primitives";
 import "./premium-automation.css";
 
-export type Presentation = Props & { athProfiles?: Array<{ environment: string; asset: string; regime: string }>; deploymentSha?: string; operator?: PremiumOperatorPresentation; onboardingChecks?: OnboardingCheck[] };
+export type Presentation = Props & { athProfiles?: Array<{ environment: string; asset: string; regime: string }>; deploymentSha?: string; operator?: PremiumOperatorPresentation; onboardingChecks?: OnboardingCheck[]; snapshotAt?: string };
 type Panel = "strategy" | "simulator" | "adjustments" | "config" | "asset" | "slot" | "audit" | "menu" | "onboarding" | null;
 const labels = { overview: "Visão Geral", shadow: "Shadow", testnet: "Testnet", live: "Real" };
 const tones = (value: number | null) => value == null ? "" : value < 0 ? "px-negative" : "px-positive";
@@ -80,12 +81,14 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
       .then((result) => { if (!abort.signal.aborted) setQuoteBalances(Array.isArray(result?.balances) ? result.balances : []); })
       .catch(() => { if (!abort.signal.aborted) setQuoteBalances([]); });
     return () => abort.abort();
-  }, [view]);
+  }, [view, data.snapshotAt]);
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
-  const market = useLivePrices();
   const engines = useMemo(() => data.operator?.engines ?? legacyPremiumEngines(data), [data]);
+  const market = useAutomationMarketPrices(engines.filter((engine) => view === "overview"
+    || engine.environment === environment).map((engine) => engine.symbol));
+  const sync = useAutomationLiveSync(view, engines, selection, data.snapshotAt ?? new Date(0).toISOString());
   const assets = useMemo(() => selectPremiumEngines(engines, environment, selection).map((engine) =>
-    withLiveUsdtPrice(engine, market.status === "online" ? market.prices[engine.asset] ?? null : null)),
+    withLiveMarketPrice(engine, market.status !== "stale" ? market.prices[engine.symbol] ?? null : null)),
     [engines, environment, selection, market.prices, market.status]);
   const overview = useMemo(() => view === "overview" ? (["SHADOW", "TESTNET", "REAL"] as const).map((env) => ({ env, assets: selectPremiumEngines(engines, env, selection) })) : [], [engines, selection, view]);
   const active = assets.find((item) => item.engineId === engineId) ?? assets[0];
@@ -141,7 +144,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     <PremiumGlobalNavigation><div className="px-context-bar">
        <nav className="px-environments" aria-label="Ambientes da Automação">{(Object.keys(labels) as AutomationView[]).map((item) => <a key={item} href={viewHref(item)} aria-current={view === item ? "page" : undefined}>{labels[item]}{item === "live" && liveActive ? <i /> : null}</a>)}<span>Central operacional</span></nav>
        <div className="px-scope-filters" aria-label="Filtros da operação"><label>Conta<select aria-label="Conta" value={selection.accountId} onChange={(event) => changeSelection({ accountId: event.target.value, symbol: "ALL" })}><option value="ALL">Todos</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><label>Mercado<select aria-label="Mercado" value={selection.symbol} onChange={(event) => changeSelection({ ...selection, symbol: event.target.value })}><option value="ALL">Todos os mercados</option>{symbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}</select></label><small>Filtros de leitura · não alteram ordens</small></div>
-     </div><div className="px-top-status"><span className={`px-live ${liveActive ? "is-live" : ""}`}><i />{liveActive ? "LIVE" : liveConfigured ? "LIVE · ATENÇÃO" : "EM PREPARAÇÃO"}</span><small>Executor {liveStatus.ip ?? "não consultado"}<br />Binance Production</small></div><button className="px-avatar px-account-trigger" type="button" aria-label="Abrir menu da conta" onClick={() => setPanel("menu")}>{userLabel.slice(0, 2).toUpperCase()}</button></PremiumGlobalNavigation>
+     </div><div className="px-top-status"><span className={`px-live ${liveActive ? "is-live" : ""}`}><i />{liveActive ? "LIVE" : liveConfigured ? "LIVE · ATENÇÃO" : "EM PREPARAÇÃO"}</span><span className={`px-sync px-sync--${sync.status === "AO VIVO" ? "live" : sync.stale ? "stale" : "reconnecting"}`} role="status" aria-live="polite" title={`Snapshot operacional: ${new Date(sync.lastSyncedAt).toISOString()}`}><i />{sync.status}<small>{sync.status === "AO VIVO" && sync.recent ? "Atualizado agora" : `Última sincronização ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Campo_Grande", hour: "2-digit", minute: "2-digit" }).format(sync.lastSyncedAt)}`}</small></span><small>Executor {liveStatus.ip ?? "não consultado"}<br />Binance Production</small></div><button className="px-avatar px-account-trigger" type="button" aria-label="Abrir menu da conta" onClick={() => setPanel("menu")}>{userLabel.slice(0, 2).toUpperCase()}</button></PremiumGlobalNavigation>
     <nav className="px-toolbar" aria-label="Ferramentas da Automação" data-testid="premium-toolbar">{([
       ["home", "Início", () => window.scrollTo({ top: 0, behavior: "smooth" })], ["orders", "Operações", goOperations], ["strategy", "Estratégia", () => setPanel("strategy")], ["simulator", "Simulador", () => setPanel("simulator")], ["adjust", "Ajustes", () => setPanel("adjustments")], ["reports", "Relatórios", null], ["settings", "Configurações", () => setPanel("config")],
     ] as Array<[IconName, string, (() => void) | null]>).map(([icon, label, action]) => action ? <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button> : <a key={label} href={reportHref}><PremiumIcon name={icon} />{label}</a>)}</nav>

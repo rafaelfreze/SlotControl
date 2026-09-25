@@ -94,6 +94,11 @@
 .px-global-navigation .px-scope-filters{flex:none;flex-wrap:nowrap;padding:0;gap:8px}
 .px-global-navigation .px-scope-filters select{max-width:180px;min-height:38px}
 .px-global-navigation .px-top-status{flex:none}
+.px-sync{display:flex;align-items:center;gap:5px;color:#fac979;font-size:11px;font-weight:700;white-space:nowrap}
+.px-sync i{width:7px;height:7px;flex:none;border-radius:50%;background:currentColor}
+.px-sync small{color:#a8bac9;font-size:10px;font-weight:400}
+.px-sync--live{color:#20e69a}.px-sync--stale{color:#ff8c8c}
+@media(max-width:760px){.px-sync{font-size:10px}.px-sync small{display:none}}
 @media(max-width:1450px){
   .px-global-navigation .px-context-bar{order:5;flex-basis:100%;margin:0;padding:7px 0;border-top:1px solid #183044}
   .px-global-navigation .px-brand{margin-right:auto}

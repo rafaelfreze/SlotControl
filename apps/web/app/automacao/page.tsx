@@ -390,7 +390,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       initial={initialManualTarget && searchParams?.engine === engine.engineId ? initialManualTarget : null} />;
   }
   return <PremiumAutomation view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
-    data={presentation} strategyPanel={null} adjustmentsPanel={null}
+    data={{ ...presentation, snapshotAt: new Date().toISOString() }} strategyPanel={null} adjustmentsPanel={null}
     strategyPanels={strategyPanels} adjustmentPanels={adjustmentPanels}
     initialAdjustments={Boolean(initialManualTarget && searchParams?.engine)} />;
 }

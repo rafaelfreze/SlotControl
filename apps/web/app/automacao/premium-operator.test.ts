@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { concretePremiumEngine, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveUsdtPrice, type PremiumEngine } from "./premium-operator.ts";
+import { concretePremiumEngine, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveMarketPrice, type PremiumEngine } from "./premium-operator.ts";
 import type { Props } from "./automation-mobile";
 
 const make = (account: string, symbol: string, quote: string, amount: number): PremiumEngine => ({
@@ -47,19 +47,20 @@ test("ALL and missing/ambiguous engines never authorize a mutation target", () =
   assert.equal(concretePremiumEngine(engines, { accountId: "A", symbol: "BTCUSDT" }, "REAL")?.engineId, "A:BTCUSDT");
 });
 
-test("public USDT quote updates only the read-only native presentation", () => {
+test("public market quote updates only the read-only native presentation", () => {
   const original = { ...engines[2], price: null, openPnl: null,
     slots: [{ state: "OPEN", quantity: .1, committed: 10, currentPrice: null, openPnl: null },
       { state: "PLANNED", quantity: 0, committed: 0, currentPrice: null, openPnl: 0 }] } as PremiumEngine;
-  const quoted = withLiveUsdtPrice(original, 110);
+  const quoted = withLiveMarketPrice(original, 110);
   assert.equal(quoted.price, 110);
   assert.equal(quoted.slots[0].currentPrice, 110);
   assert.equal(quoted.slots[0].openPnl, 1);
   assert.equal(quoted.openPnl, 1);
   assert.equal(original.price, null);
   assert.equal(original.slots[0].currentPrice, null);
-  assert.equal(withLiveUsdtPrice(original, NaN).price, null);
-  assert.equal(withLiveUsdtPrice(engines[0], 110), engines[0]);
+  assert.equal(withLiveMarketPrice(original, NaN).price, null);
+  assert.equal(withLiveMarketPrice({ ...engines[0], slots: original.slots }, 440_000).price, 440_000);
+  assert.equal(withLiveMarketPrice({ ...engines[0], environment: "SHADOW" }, 110).price, engines[0].price);
 });
 
 test("selected LIVE health uses Thyely engine evidence, not Rafael's legacy snapshot", () => {
