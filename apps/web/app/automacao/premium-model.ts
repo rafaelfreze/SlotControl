@@ -88,8 +88,11 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
   const base = emptyAsset(asset, "REAL"), live = data.liveAssetData?.[asset];
   const config = data.livePreparation?.configs.find((row) => row.asset === asset);
   const sizing = data.livePreparation?.sizing.find((row) => row.asset === asset);
+  const native = data.engineContext?.environment === "REAL" && !data.engineContext.legacy_compatible;
+  const amount = (row: unknown, brl: string, quote: string) => number(rawField(row, native ? quote : brl));
   const price = number(sizing?.priceBrl);
-  base.price = price; base.cap = number(config?.max_total_exposure_brl); base.regime = config?.regime ?? null;
+  base.price = price; base.cap = native ? number(data.engineContext?.hard_cap_quote)
+    : number(config?.max_total_exposure_brl); base.regime = config?.regime ?? null;
   if (!live) return base;
   const orders = live.orders.map(normalizeOrder), events = eventsFor(live.events);
   const slots = live.slots.map((row): PremiumSlot => {
@@ -101,13 +104,13 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     const tp = slotOrders.find((item) => item.side === "SELL" && item.resident);
     const buys = slotOrders.filter((item) => item.side === "BUY" && ACTIVE_ORDERS.has(item.status));
     const reserved = sum(buys.map((item) => {
-      const intended = number(rawField(item.raw, "reserved_notional_brl"))
+      const intended = amount(item.raw, "reserved_notional_brl", "reserved_notional_quote")
         ?? number(rawField(item.raw, "requested_quote"))
         ?? (item.quantity !== null && item.price !== null ? item.quantity * item.price : null);
       return intended === null || item.quote === null ? null : Math.max(0, intended - item.quote);
     }));
-    const committed = number(row.position_committed_brl), quantity = number(row.position_quantity);
-    const marketPnl = number(account?.market_pnl_brl), fees = number(account?.fees_brl);
+    const committed = amount(row, "position_committed_brl", "position_committed_quote"), quantity = number(row.position_quantity);
+    const marketPnl = amount(account, "market_pnl_brl", "market_pnl_quote"), fees = amount(account, "fees_brl", "fees_quote");
     const open = row.entry_state === "OPEN";
     // The ledger's committed amount includes the actual entry cost. Use the
     // last filled BUY for displayed entry price; target_buy_price is an intention.
@@ -116,7 +119,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     return { number: row.slot_number, physicalId: null, rank: row.operational_rank,
       group: row.post_ath_group, groupRank: row.post_ath_group_rank,
       ...slotState(row.entry_state, month !== null && month >= base.goal), entryPrice: entry, currentPrice: price,
-      tpPrice: tp?.price ?? null, quantity, balance: number(account?.balance_brl), committed, reserved,
+      tpPrice: tp?.price ?? null, quantity, balance: amount(account, "balance_brl", "balance_quote"), committed, reserved,
       realizedPnl: difference(marketPnl, fees), fees, openPnl: open ? price === null || quantity === null || committed === null ? null : quantity * price - committed : 0,
       gains, monthlyGains: month, goal: base.goal, targetReached: month !== null && month >= base.goal,
       eligible: month === null ? null : month < base.goal, operationSequence: row.operation_sequence,
@@ -124,7 +127,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
       raw: { slot: row, account, monthly } };
   });
   const committed = sum(slots.map((slot) => slot.committed)), reserved = sum(slots.map((slot) => slot.reserved));
-  const capital = live.accounts.length ? sum(live.accounts.map((row) => number(row.balance_brl))) : null;
+  const capital = live.accounts.length ? sum(live.accounts.map((row) => amount(row, "balance_brl", "balance_quote"))) : null;
   const quantityStep = number(sizing?.rules?.quantityStep);
   const unprotected = slots.filter((slot) => {
     if (slot.state !== "OPEN") return false;
@@ -143,8 +146,9 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
   const capExceeded = exposure !== null && base.cap !== null && exposure > base.cap + 1e-8;
   const missedCount = live.slots.filter((slot) => slot.missed_at).length;
   const activeIssue = Boolean(live.run.last_error) || live.alerts.length > 0 || unprotected > 0 || nextCount > 1 || invariantFailed || capExceeded;
-  const executorActive = data.livePreparation?.executor?.gate === "LIVE_EXECUTOR_ACTIVE";
-  const paused = rawField(config, "kill_switch") === true || config?.live_enabled === false;
+  const executorActive = (native ? data.nativeLiveControl?.executor : data.livePreparation?.executor)?.gate === "LIVE_EXECUTOR_ACTIVE";
+  const paused = native ? data.nativeLiveControl?.killSwitch === true || data.nativeLiveControl?.liveEnabled !== true
+    : rawField(config, "kill_switch") === true || config?.live_enabled === false;
   const healthy = !activeIssue && !paused && executorActive && live.run.status === "ACTIVE"
     && fresh(live.run.last_reconciled_at, now) && missedCount === 0;
   return { ...base, price, capital, committed, reserved, exposure: add(committed, reserved),

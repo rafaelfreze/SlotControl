@@ -68,7 +68,8 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
   const preparation = data.livePreparation?.configs.find((config) => config.asset === context.base_asset);
   const killSwitch = context.global_kill_switch || context.account_kill_switch || context.engine_kill_switch
     || (context.environment === "REAL" && ((preparation && "kill_switch" in preparation && preparation.kill_switch === true)
-      || preparation?.live_enabled === false));
+      || preparation?.live_enabled === false || data.nativeLiveControl?.killSwitch === true
+      || (data.nativeLiveControl !== undefined && !data.nativeLiveControl.liveEnabled)));
   const blocked = context.environment === "REAL" && (killSwitch || context.status !== "ACTIVE");
   return { ...model, symbol: context.symbol, currency: context.quote_asset,
     engineId: context.trading_engine_id, accountId: context.exchange_account_id,

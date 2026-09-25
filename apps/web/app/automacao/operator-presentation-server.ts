@@ -17,7 +17,7 @@ function emptyScoped(data: Props, context: EngineContext): Props {
   return { ...data, engineContext: context, balances: [], configs: [], cycles: [], slots: [],
     operations: [], slotAccounts: [], events: [], candles: [], monthlyGoals: [],
     testnet: null, testnetRun: null, testnetSlots: [], testnetOrders: [], testnetEvents: [],
-    testnetHistory: [], testnetAssetData: {}, liveAssetData: {}, livePreparation: null,
+    testnetHistory: [], testnetAssetData: {}, liveAssetData: {}, livePreparation: null, nativeLiveControl: undefined,
     connectionStatus: null, lastSyncedAt: null, reconciliationStatus: null, reconciliationAt: null, mismatches: 0 };
 }
 
@@ -63,14 +63,18 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
       .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle();
     if (run.error) throw new Error("COINOPS_ENGINE_RUN_UNAVAILABLE");
     if (!run.data) return result;
-    const [slots, orders, accounts, events, alerts] = await Promise.all([
+    const [slots, orders, accounts, events, alerts, preparation] = await Promise.all([
       query("robot_v1_live_slots", "slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,position_committed_quote,missed_at").eq("run_id", run.data.id).order("slot_number"),
       query("robot_v1_live_orders", "side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl,reserved_notional_quote").eq("run_id", run.data.id).order("created_at"),
       query("robot_v1_live_slot_accounts", "slot_number,balance_brl,balance_quote,market_pnl_brl,market_pnl_quote,manual_gain_brl,manual_gain_quote,fees_brl,fees_quote,gain_count,dust_quantity,dust_cost_brl,dust_cost_quote").order("slot_number"),
       query("robot_v1_live_events", "event_type,slot_number,observed_at,details").eq("run_id", run.data.id).order("observed_at", { ascending: false }).limit(40),
       query("robot_v1_live_alerts", "severity,code,last_seen_at").is("resolved_at", null).limit(20),
+      query("robot_v1_live_preparations", "live_enabled,kill_switch").maybeSingle(),
     ]);
-    if ([slots, orders, accounts, events, alerts].some((row) => row.error)) throw new Error("COINOPS_ENGINE_LEDGER_UNAVAILABLE");
+    if ([slots, orders, accounts, events, alerts, preparation].some((row) => row.error) || !preparation.data)
+      throw new Error("COINOPS_ENGINE_LEDGER_UNAVAILABLE");
+    result.nativeLiveControl = { liveEnabled: preparation.data.live_enabled,
+      killSwitch: preparation.data.kill_switch, executor: null };
     result.liveAssetData = { [asset]: { run: run.data, slots: slots.data ?? [], orders: orders.data ?? [],
       accounts: accounts.data ?? [], events: events.data ?? [], alerts: alerts.data ?? [],
       monthlyGains: (totals.data ?? []).filter((row) => row.period_key === monthlyPeriodKey(new Date())) } };
@@ -133,7 +137,8 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
   }));
   const caps = await capsPromise;
   if (caps.error) throw new Error("COINOPS_ACCOUNT_CAPS_UNAVAILABLE");
-  const live = loaded.filter(({ context, scoped }) => context.environment === "REAL" && scoped.livePreparation);
+  const live = loaded.filter(({ context, scoped }) => context.environment === "REAL"
+    && (scoped.livePreparation || scoped.nativeLiveControl));
   // Two concurrent read-only health checks keep BTC/SOL within one UI budget,
   // while bounding fan-out if additional legitimate engines are introduced.
   for (let offset = 0; offset < live.length; offset += 2) {
@@ -141,9 +146,10 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
       // Public /health can intentionally advertise the old compatibility
       // contract during rollout. Only the authenticated, identity-validated
       // engine observation can attest this market's LIVE state and kill switch.
-      scoped.livePreparation = { ...scoped.livePreparation!,
-        executor: prefetchedHealth?.get(context.trading_engine_id)
-          ?? await loadLiveExecutorStatus(undefined, undefined, fetchUiHealth, undefined, context) };
+      const executor = prefetchedHealth?.get(context.trading_engine_id)
+        ?? await loadLiveExecutorStatus(undefined, undefined, fetchUiHealth, undefined, context);
+      if (scoped.livePreparation) scoped.livePreparation = { ...scoped.livePreparation, executor };
+      else if (scoped.nativeLiveControl) scoped.nativeLiveControl = { ...scoped.nativeLiveControl, executor };
     }));
   }
   const engines = loaded.map(({ context, scoped }) => {

@@ -138,6 +138,9 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (!legacyAccount) throw new Error("COINOPS_LEGACY_ACCOUNT_UNAVAILABLE");
   const legacyEngineIds = registry.engines.filter((engine) => engine.legacy_compatible && engine.exchange_account_id === legacyAccount.id).map((engine) => engine.id);
   const legacyRealContexts = registry.engines.filter((engine) => engine.environment === "REAL" && engine.exchange_account_id === legacyAccount.id && engine.legacy_compatible).map((engine) => resolveEngineContext(registry, { environment: "REAL", exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id }));
+  const realContexts = registry.engines.filter((engine) => engine.environment === "REAL").map((engine) =>
+    resolveEngineContext(registry, { environment: "REAL", exchange_account_id: engine.exchange_account_id,
+      trading_engine_id: engine.id }));
   const productId = registryScope.data.product_id;
   // Start independent remote reads before the ledger fan-out. Previously each
   // group waited for the previous group, adding their network latencies.
@@ -151,7 +154,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   ]);
   const productionPromise = loadLiveProductionSnapshot(legacyRealContexts).catch(() => null);
   const executorPromise = loadLiveExecutorStatus();
-  const scopedHealthPromise = Promise.all(legacyRealContexts.map(async (context) =>
+  const scopedHealthPromise = Promise.all(realContexts.map(async (context) =>
     [context.trading_engine_id, await loadLiveEngineExecutorStatus(context)] as const));
   const testnetDataPromise = loadLegacyTestnetData(supabase, legacyAccount.id, legacyEngineIds, tenantId, user.id);
   const liveDataPromise = loadLegacyLiveData(supabase, legacyAccount.id, legacyEngineIds, productId, tenantId, user.id);

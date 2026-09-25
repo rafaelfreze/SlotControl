@@ -109,6 +109,45 @@ test("LIVE prepared TP is not claimed resident or protective", () => {
   assert.equal(btc.health.tone, "error");
 });
 
+test("native USDT LIVE uses its own executor, preparation gates and quote ledger", () => {
+  const slots = Array.from({ length: 25 }, (_, index) => ({ slot_number: index + 1,
+    entry_state: index === 0 ? "OPEN" : index === 1 ? "ARMED" : "PLANNED",
+    target_buy_price: 80, operational_rank: index + 1, post_ath_group: null,
+    post_ath_group_rank: null, operation_sequence: 1, position_quantity: index === 0 ? .1 : 0,
+    position_committed_brl: 0, position_committed_quote: index === 0 ? 10 : 0, missed_at: null }));
+  const accounts = slots.map((row) => ({ slot_number: row.slot_number, balance_brl: 0,
+    balance_quote: 16.76, market_pnl_brl: 0, market_pnl_quote: 0,
+    fees_brl: 0, fees_quote: 0, gain_count: 0 }));
+  const input = fixture({ engineContext: { environment: "REAL", legacy_compatible: false,
+    hard_cap_quote: 419 }, nativeLiveControl: { liveEnabled: true, killSwitch: false,
+      executor: { gate: "LIVE_EXECUTOR_ACTIVE" } }, liveAssetData: { BTC: {
+        run: { id: "thyely-btc", status: "ACTIVE", entry_regime: "NORMAL",
+          last_reconciled_at: AT, last_error: null, gain_rate: .012, entry_spacing: .02 },
+        slots, accounts, monthlyGains: [], events: [], alerts: [], orders: [
+          order({ client_order_id: "filled", status: "FILLED", executed_quantity: .1, cumulative_quote: 10 }),
+          order({ client_order_id: "tp", side: "SELL", purpose: "TP", price: 101.2, requested_quantity: .1 }),
+          order({ client_order_id: "next", slot_number: 2, price: 80,
+            requested_quantity: .2, requested_quote: 16, reserved_notional_brl: 0,
+            reserved_notional_quote: 16 }),
+        ] } } });
+  const native = buildPremiumAssets(input, "REAL", NOW)[0];
+  assert.equal(native.health.healthy, true);
+  assert.equal(native.cap, 419);
+  assert.ok(Math.abs(native.capital! - 419) < 1e-9);
+  assert.equal(native.committed, 10);
+  assert.equal(native.reserved, 16);
+  assert.equal(native.exposure, 26);
+  const noExecutor = structuredClone(input);
+  noExecutor.nativeLiveControl!.executor!.gate = "ATTENTION";
+  assert.equal(buildPremiumAssets(noExecutor, "REAL", NOW)[0].health.healthy, false);
+  const paused = structuredClone(input);
+  paused.nativeLiveControl!.killSwitch = true;
+  assert.equal(buildPremiumAssets(paused, "REAL", NOW)[0].health.healthy, false);
+  const exceeded = structuredClone(input);
+  exceeded.engineContext!.hard_cap_quote = 25;
+  assert.equal(buildPremiumAssets(exceeded, "REAL", NOW)[0].health.tone, "error");
+});
+
 test("Testnet preserves immutable cycle totals and does not reserve PREPARED intentions", () => {
   const slot = { slot_number: 1, entry_state: "PLANNED", target_buy_price: 90,
     balance_usdc: 10.5, gain_count: 1, net_profit_usdc: .5, missed_at: null,

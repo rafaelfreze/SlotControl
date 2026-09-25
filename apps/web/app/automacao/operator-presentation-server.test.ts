@@ -177,3 +177,71 @@ test("UI timeout is fail-closed for both engines and never inherits public healt
     assert.equal(executor.health, null);
   }
 });
+
+test("native LIVE reads its own preparation and scoped executor health without inheriting Rafael", async () => {
+  const nativeAccount = { id: id(50), operator_id: id(1), display_name: "Native fixture",
+    status: "ACTIVE", is_legacy_default: false, kill_switch: false };
+  const nativeEngine = { id: id(51), operator_id: id(1), exchange_account_id: id(50),
+    environment: "REAL" as const, symbol: "BTCUSDT", base_asset: "BTC", quote_asset: "USDT",
+    status: "ACTIVE", kill_switch: false, hard_cap_quote: 419, legacy_compatible: false };
+  const nativeRegistry: DomainRegistry = { operator: registry.operator,
+    accounts: [nativeAccount], engines: [nativeEngine] };
+  const at = new Date().toISOString();
+  const slots = Array.from({ length: 25 }, (_, index) => ({ slot_number: index + 1,
+    entry_state: index === 0 ? "OPEN" : index === 1 ? "ARMED" : "PLANNED",
+    target_buy_price: 80, operational_rank: index + 1, post_ath_group: null,
+    post_ath_group_rank: null, operation_sequence: 1, position_quantity: index === 0 ? .1 : 0,
+    position_committed_quote: index === 0 ? 10 : 0, missed_at: null }));
+  const rows: Record<string, unknown> = {
+    robot_v1_slot_gain_totals: [],
+    robot_v1_live_runs: { id: id(52), status: "ACTIVE", symbol: "BTCUSDT",
+      entry_regime: "NORMAL", last_reconciled_at: at, last_error: null,
+      config_version: 1, gain_rate: .012, entry_spacing: .02 },
+    robot_v1_live_slots: slots,
+    robot_v1_live_orders: [
+      { client_order_id: "filled", exchange_order_id: "1", slot_number: 1, side: "BUY",
+        purpose: "ENTRY", status: "FILLED", price: 100, requested_quantity: .1,
+        executed_quantity: .1, cumulative_quote: 10 },
+      { client_order_id: "tp", exchange_order_id: "2", slot_number: 1, side: "SELL",
+        purpose: "TP", status: "NEW", price: 101.2, requested_quantity: .1,
+        executed_quantity: 0, cumulative_quote: 0 },
+      { client_order_id: "next", exchange_order_id: "3", slot_number: 2, side: "BUY",
+        purpose: "ENTRY", status: "NEW", price: 80, requested_quantity: .2,
+        reserved_notional_quote: 16, executed_quantity: 0, cumulative_quote: 0 },
+    ],
+    robot_v1_live_slot_accounts: slots.map((slot) => ({ slot_number: slot.slot_number,
+      balance_quote: 16.76, market_pnl_quote: 0, fees_quote: 0, gain_count: 0 })),
+    robot_v1_live_events: [], robot_v1_live_alerts: [],
+    robot_v1_live_preparations: { live_enabled: true, kill_switch: false },
+    account_quote_caps: [{ exchange_account_id: nativeAccount.id, quote_asset: "USDT", hard_cap_quote: 838 }],
+  };
+  const client = { from(table: string) {
+    assert.ok(table in rows, `Unexpected native table ${table}`);
+    const value = { data: rows[table], error: null };
+    const chain: Record<string, unknown> = {};
+    for (const method of ["select", "eq", "in", "is", "order", "limit"])
+      chain[method] = () => chain;
+    chain.maybeSingle = async () => value;
+    chain.then = (resolve: (value: unknown) => void) => Promise.resolve(value).then(resolve);
+    return chain;
+  } } as unknown as Parameters<typeof BuildPresentation>[0];
+  const source = readFileSync(new URL("./operator-presentation-server.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const dependencies: Record<string, unknown> = { "server-only": {},
+    "@/lib/execution/operator-context": { resolveEngineContext },
+    "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
+    "./premium-operator": { buildPremiumEngine },
+    "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
+  const evaluated: Record<string, unknown> = {};
+  new Function("require", "exports", compiled)((name: string) => dependencies[name], evaluated);
+  const build = evaluated.buildOperatorPresentation as typeof BuildPresentation;
+  const result = await build(client, data(), nativeRegistry, { accountId: "ALL", symbol: "ALL" },
+    new Map([[nativeEngine.id, { gate: "LIVE_EXECUTOR_ACTIVE", ip, health }]]));
+  assert.equal(result.engines.length, 1);
+  assert.equal(result.engines[0].health.healthy, true);
+  assert.equal(result.engines[0].currency, "USDT");
+  assert.equal(result.engines[0].exposure, 26);
+  assert.equal(result.engineData[nativeEngine.id].nativeLiveControl?.executor?.gate, "LIVE_EXECUTOR_ACTIVE");
+  assert.equal(result.engineData[nativeEngine.id].livePreparation, null);
+});
