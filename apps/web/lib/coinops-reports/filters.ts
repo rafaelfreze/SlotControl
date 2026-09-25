@@ -3,7 +3,7 @@ import { STRATEGY_4_1_EFFECTIVE_AT } from "./missed-level-temporal.ts";
 import { isIdentity } from "../execution/operator-context.ts";
 
 export const REPORT_TIMEZONE = "America/Campo_Grande";
-export const REPORT_VERSION = 11;
+export const REPORT_VERSION = 12;
 const DAY = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 

@@ -50,6 +50,18 @@ test("LIVE report: credited BTC TP populates period gain, operation, native net 
   assert.equal(report.datasets.alerts[0]!.recorded_severity, "CRITICAL");
 });
 
+test("LIVE price invariant report fails on active alert and keeps resolved evidence historical", () => {
+  const data = fixture();
+  data.sources.robot_v1_live_alerts!.push({ ...scope, id: "price-alert", asset: "BTC",
+    severity: "CRITICAL", code: "COINOPS_STRATEGY_PRICE_INVARIANT_FAILED",
+    first_seen_at: at("14:45"), last_seen_at: at("14:45"), resolved_at: null });
+  assert.equal(buildAuditReport(data, filters).datasets.checks.find((row) => row.code === "STRATEGY_PRICE_INVARIANT")?.status, "FAIL");
+  data.sources.robot_v1_live_alerts!.at(-1)!.resolved_at = at("14:50");
+  const report = buildAuditReport(data, filters);
+  assert.equal(report.datasets.checks.find((row) => row.code === "STRATEGY_PRICE_INVARIANT")?.status, "WARNING");
+  assert.ok(report.datasets.live_execution.some((row) => row.row_type === "ALERT" && row.id === "price-alert"));
+});
+
 test("LIVE report: time window excludes prior gain and future checkpoint without using lifetime as profit", () => {
   const data = fixture();
   const after = buildAuditReport(data, { ...filters, start: at("14:20") }).datasets.summary[0]!;

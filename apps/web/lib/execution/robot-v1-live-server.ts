@@ -21,6 +21,7 @@ import { createServiceRoleClient } from "../supabase/service-role";
 import type { V1Asset } from "./robot-v1";
 import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
+import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -300,6 +301,40 @@ async function prepareOrder(service: Service, run: Run, slot: Slot, decision: St
   return order;
 }
 
+function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: number,
+  observedPrice?: number | null) {
+  if (order.purpose === "INITIAL") return;
+  const slot = ledger.slots.find((item) => item.id === order.slot_id);
+  if (!slot || !order.price) throw new Error("COINOPS_STRATEGY_PRICE_INVARIANT_FAILED");
+  const check = (price: number) => {
+    if (order.side === "BUY") {
+      assertStrategyBuyPrice({ price, referencePrice: amount(slot.entry_reference_price),
+        anchorPrice: Number(run.config_snapshot?.ladder_anchor_price ?? run.anchor_price),
+        spacing: amount(run.entry_spacing), tick, entryOrigin: slot.entry_origin });
+    } else {
+      const buys = ledger.orders.filter((item) => item.slot_id === slot.id
+        && item.operation_sequence === order.operation_sequence && item.side === "BUY"
+        && amount(item.executed_quantity) > 0);
+      const quantity = buys.reduce((sum, item) => sum + amount(item.executed_quantity), 0);
+      if (!quantity) throw new Error("COINOPS_STRATEGY_PRICE_INVARIANT_FAILED");
+      const averageFillPrice = buys.reduce((sum, item) => sum + amount(item.cumulative_quote), 0) / quantity;
+      assertStrategyTakeProfitPrice({ price, averageFillPrice,
+        gainRate: amount(run.gain_rate), spacing: amount(run.entry_spacing), tick });
+    }
+  };
+  check(amount(order.price));
+  if (observedPrice !== undefined && observedPrice !== null) check(observedPrice);
+}
+
+function assertLiveResidentPrices(run: Run, ledger: Ledger, state: LiveExecutorState) {
+  for (const order of ledger.orders.filter((item) => LIVE_ACTIVE_ORDER_STATUSES.has(item.status))) {
+    const observed = state.open_orders.find((item) => item.clientOrderId === order.client_order_id);
+    // A missing order may have filled since the snapshot; reconcile it first.
+    // A resident price mismatch is deterministic and must stop new dispatches.
+    assertLiveOrderPrice(run, ledger, order, state.filters.priceTick, observed?.price);
+  }
+}
+
 async function reconcileOrder(service: Service, run: Run, order: Order) {
   if (order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)) return order;
   let observed = (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
@@ -312,16 +347,17 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
     if (order.side === "BUY" && health.gate !== "LIVE_EXECUTOR_ACTIVE") return order;
     if (order.side === "SELL" && !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_TP_EXECUTOR_UNAVAILABLE");
+    const state = await readLiveExecutorState(run);
+    const rows = await runRows(service, run);
+    assertLiveOrderPrice(run, rows, order, state.filters.priceTick);
+    const expectedOwnedOpenIds = await assertExchangeMatchesLedger(run, rows.orders, state,
+      order.client_order_id);
     const guard = await service.from("robot_v1_live_orders")
       .update({ submission_guarded_at: new Date().toISOString() })
       .eq("id", order.id).eq("run_id", run.id).eq("status", "PREPARED")
       .is("submission_guarded_at", null).select("submission_guarded_at").maybeSingle();
     if (guard.error || !guard.data) throw new Error("COINOPS_LIVE_SUBMISSION_GUARD_FAILED");
     order.submission_guarded_at = guard.data.submission_guarded_at;
-    const state = await readLiveExecutorState(run);
-    const rows = await runRows(service, run);
-    const expectedOwnedOpenIds = await assertExchangeMatchesLedger(run, rows.orders, state,
-      order.client_order_id);
     const caps = await service.from("robot_v1_live_preparations")
       .select("max_total_exposure_brl,kill_switch,live_enabled")
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
@@ -593,6 +629,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   const result = await service.from("robot_v1_live_runs").update({
     entry_regime: profile.regime, entry_spacing: profile.regime === "POST_ATH"
       ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
+    config_snapshot: { ...run.config_snapshot, ladder_anchor_price: state.price.price },
     ath_transition_key: profile.transition_key, ath_period_key: period,
   }).eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner)
     .select("*").single();
@@ -664,7 +701,8 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
     await dispatchStrategyDecision(service, owned(run), "REAL", decision.decision_id);
   }
   const resetKey = `RESET:${run.id}:${closed.last_credited_sell_client_order_id ?? closed.id}`;
-  const snapshot = { gain_rate: gain, normal_spacing_rate: amount(profile.normal_spacing_rate),
+  const snapshot = { gain_rate: gain, ladder_anchor_price: state.price.price,
+    normal_spacing_rate: amount(profile.normal_spacing_rate),
     post_ath_spacing_rate: amount(profile.post_ath_spacing_rate), regime: profile.regime,
     ath_price: profile.ath_price, ath_source: profile.ath_source };
   await renewLease(service, run);
@@ -803,10 +841,12 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
     let ledger = await runRows(service, run);
     stage = "RECONCILE_ORDERS";
+    assertLiveResidentPrices(run, ledger, await readLiveExecutorState(run));
     for (const order of ledger.orders) await reconcileOrder(service, run, order);
     ledger = await runRows(service, run);
     stage = "READ_STATE";
     let state = await readLiveExecutorState(run);
+    assertLiveResidentPrices(run, ledger, state);
     stage = "PROTECT_TP";
     await ensureTakeProfits(service, run, ledger, state);
     stage = "CREDIT_SLOTS";
@@ -889,6 +929,8 @@ export async function auditLiveRun(runId: string) {
       throw new Error("COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY");
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
+    await assertExchangeMatchesLedger(run, ledger.orders, state);
+    assertLiveResidentPrices(run, ledger, state);
     await assertAllPositionsProtected(run, ledger, state);
     if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
       && !order.trades_reconciled))
@@ -1095,7 +1137,8 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
     || brlFree === undefined || brlFree < sizing.configuredCapitalBrl
     || state.open_orders.some((order) => order.clientOrderId?.startsWith(liveEngineOrderPrefix(prep.engine!))))
     throw new Error("COINOPS_LIVE_PREPARATION_GATE_FAILED");
-  const snapshot = { gain_rate: Number(profile.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
+  const snapshot = { gain_rate: Number(profile.gain_rate), ladder_anchor_price: anchor,
+    normal_spacing_rate: Number(profile.normal_spacing_rate),
     post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
     ath_price: profile.ath_price, ath_source: profile.ath_source };
   const inserted = existing.data ? { data: existing.data, error: null }

@@ -11,16 +11,21 @@ import * as recovery from "../execution/strategy-testnet-recovery.ts";
 import * as fillEvidence from "../coinops-reports/testnet-fill-evidence.ts";
 import * as fillAccounting from "../execution/testnet-fill-accounting.ts";
 import * as executionLease from "../execution/execution-lease.ts";
+import * as capitalDistribution from "../execution/live-capital-distribution.ts";
+import * as priceInvariant from "../execution/strategy-price-invariant.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
-  syncOrder: (service: unknown, run: Row, slot: Row, order: Row, adapter: unknown) => Promise<void>;
+  syncOrder: (service: unknown, run: Row, slot: Row, order: Row, adapter: unknown,
+    filters: Row, orders: Row[]) => Promise<void>;
   ensureTakeProfits: (service: unknown, run: Row, slots: Row[], orders: Row[], filters: Row, adapter: unknown) => Promise<void>;
   prepareOrder: (service: unknown, run: Row, slot: Row, side: string, purpose: string, revision: number, quantity: number | null, quote: number | null, price: number | null, decisionId?: string) => Promise<Row>;
 };
 
 const run = { operator_id: "operator-fixture", exchange_account_id: "account-fixture", trading_engine_id: "engine-fixture", quote_asset: "USDC", id: "fixture-cycle", asset: "SOL", symbol: "SOLUSDC", product_id: "11111111-1111-1111-1111-111111111111", tenant_id: "22222222-2222-2222-2222-222222222222", user_id: "33333333-3333-3333-3333-333333333333", gain_rate: 0.005, entry_spacing: 0.01, previous_run_id: null, status: "ACTIVE", lease_owner: "fixture-lease", lease_until: new Date(Date.now() + 90_000).toISOString() };
-const slot = { id: "physical-slot-5", run_id: run.id, tenant_id: run.tenant_id, slot_number: 5, operation_sequence: 2, entry_state: "OPEN", target_buy_price: 114.28, balance_usdc: 10.05046, missed_at: null };
+const slot = { id: "physical-slot-5", run_id: run.id, tenant_id: run.tenant_id, slot_number: 5, operation_sequence: 2,
+  entry_state: "OPEN", entry_origin: "REENTRY", entry_reference_price: 114.28,
+  target_buy_price: 114.28, balance_usdc: 10.05046, missed_at: null };
 const filters = { symbol: "SOLUSDC", baseAsset: "SOL", quoteAsset: "USDC", quantityStep: 0.001, priceTick: 0.01, minQuantity: 0.001, maxQuantity: 10000, minNotional: 5 };
 function order(values: Row): Row {
   const side = values.side === "SELL" ? "SELL" : "BUY";
@@ -114,6 +119,8 @@ function harness(seedOrders: Row[], status = "NEW") {
     "./binance-spot-adapter": {}, "./ath-ladder": {}, "./ath-profile-server": {},
     "./strategy-testnet-recovery": recovery, "../coinops-reports/testnet-fill-evidence": fillEvidence,
     "./testnet-fill-accounting": fillAccounting, "./execution-lease": executionLease,
+    "./live-capital-distribution": capitalDistribution,
+    "./strategy-price-invariant": priceInvariant,
     "./monthly-slot-server": { loadMonthlySlotStatuses: async (_service: unknown,
       _environment: unknown, _scope: unknown, snapshot: Row[]) => {
       monthlySnapshotLengths.push(snapshot.length);
@@ -147,7 +154,7 @@ for (const purpose of ["INITIAL", "ENTRY"]) {
     const h = harness([prepared]);
     h.monthly[0].eligibleForNewEntry = false;
     h.monthly[0].monthlyTargetReached = true;
-    await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter);
+    await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter, filters, [prepared]);
     assert.deepEqual(h.monthlySnapshotLengths, [25]);
     assert.equal(h.requests.length, 0, "no POST occurs after a manual gain made the slot ineligible");
     assert.equal(h.storedOrders[0].status, "CANCELED");
@@ -155,12 +162,36 @@ for (const purpose of ["INITIAL", "ENTRY"]) {
   });
 }
 
+test("Testnet refuses an off-reference BUY before consuming a dispatch permit", async () => {
+  const prepared = order({ purpose: "ENTRY", operation_sequence: 2, status: "PREPARED",
+    price: 114.29, submission_guarded_at: null, exchange_order_id: null,
+    executed_quantity: 0, cumulative_quote: 0, trades_reconciled: false });
+  const h = harness([prepared]);
+  await assert.rejects(h.runtime.syncOrder(h.service, run, h.slots[0], prepared,
+    h.adapter, filters, [prepared]), /COINOPS_STRATEGY_PRICE_INVARIANT_FAILED/);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.storedOrders[0].submission_guarded_at, null);
+});
+
+test("Testnet refuses a wrong TP before any exchange write", async () => {
+  const buy = order({ side: "BUY", revision: 2, operation_sequence: 2 });
+  const prepared = order({ side: "SELL", revision: 2, operation_sequence: 2,
+    status: "PREPARED", price: 114.87, submission_guarded_at: null,
+    exchange_order_id: null, executed_quantity: 0, cumulative_quote: 0,
+    trades_reconciled: false });
+  const h = harness([buy, prepared]);
+  await assert.rejects(h.runtime.syncOrder(h.service, run, h.slots[0], prepared,
+    h.adapter, filters, [buy, prepared]), /COINOPS_STRATEGY_PRICE_INVARIANT_FAILED/);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.storedOrders[1].submission_guarded_at, null);
+});
+
 test("first PREPARED BUY revalidates the current period instead of holding a new-month eligible slot", async () => {
   const prepared = order({ operation_sequence: 2, status: "PREPARED", submission_guarded_at: null,
     exchange_order_id: null, executed_quantity: 0, cumulative_quote: 0, trades_reconciled: false });
   const h = harness([prepared]);
   h.monthly[0].periodKey = "2026-10";
-  await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter);
+  await h.runtime.syncOrder(h.service, run, h.slots[0], prepared, h.adapter, filters, [prepared]);
   assert.deepEqual(h.monthlySnapshotLengths, [25]);
   assert.equal(h.requests.length, 1);
   assert.equal(h.storedOrders[0].status, "NEW");

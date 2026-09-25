@@ -140,6 +140,12 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
   if (context.filters.environments.includes("REAL")) {
     const enabled = datasets.rules.some((rule) => ["production_write_enabled", "live_enabled"].includes(s(rule.parameter)) && rule.value === true);
     const liveRuns = datasets.live_execution.filter((row) => row.row_type === "RUN");
+    const priceAlerts = datasets.live_execution.filter((row) => row.row_type === "ALERT"
+      && row.code === "COINOPS_STRATEGY_PRICE_INVARIANT_FAILED" && !row.resolved_at);
+    add("STRATEGY_PRICE_INVARIANT", priceAlerts.length ? "FAIL" : "WARNING",
+      priceAlerts.length ? `${priceAlerts.length} alerta(s) ativo(s) de preço estratégico; novas entradas devem permanecer bloqueadas.`
+        : "Nenhum alerta ativo de preço no ledger carregado; o relatório não contém uma leitura direta e contemporânea das ordens Binance para certificar PASS.",
+      { environment: "REAL", evidence_scope: "PERSISTED_LIVE_ALERTS_NOT_EXCHANGE_SNAPSHOT" });
     add("PRODUCTION_LIVE_BLOCKED", liveRuns.length ? "WARNING" : enabled ? "FAIL" : "PASS",
       liveRuns.length ? "Gate pré-LIVE histórico não se aplica a ciclo LIVE; consulte LIVE_EXECUTION.csv e os checks de execução." :
         "A versão exportada mantém LIVE bloqueado e Production somente leitura; exportação não chama a Binance.",

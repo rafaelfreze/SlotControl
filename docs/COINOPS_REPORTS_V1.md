@@ -1,8 +1,12 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 11`. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 12`. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
+Na versão 12, o check `STRATEGY_PRICE_INVARIANT` marca FAIL para alerta LIVE
+ativo de preço estratégico e WARNING na ausência desse alerta: o pacote não
+inclui uma leitura Binance direta e contemporânea, portanto não inventa PASS.
+O alerta histórico resolvido permanece exportado em `LIVE_EXECUTION.csv`.
 Na versão 11, `APORTES.csv` e o dataset `contributions` exportam o ledger
 imutável de ajustes LIVE por conta, motor e slot físico, com origem/moeda,
 valor nativo, câmbio observado, estado OPEN, sequência, motivo e reversão.
@@ -18,7 +22,7 @@ Central: `/relatorios`. Legado de relatórios oficiais de ciclos: `/plano-cresci
 
 Produto CoinOps, Supabase `otdfpmsegjxpqrzisfmi`, schema `coinops`. A rota `/api/coinops-reports` autentica com `auth.getUser()`, resolve produto/tenant/usuário no servidor pela configuração CoinOps e pela estratégia visível sob RLS. Cada página de cada consulta filtra os três identificadores; uma linha de outro escopo aborta a exportação. O cliente não escolhe tenant nem usuário. A rota não usa service role, credenciais Binance ou serviços de execução.
 
-Downloads são respostas privadas `no-store`, sem URL pública persistente ou arquivo bruto armazenado. O histórico da interface guarda somente os metadados dos downloads da sessão, sem valores financeiros. Não há duplicação do ledger nem das operações. Não há nova permissão para executar ordens. Production Binance continua READ-ONLY e LIVE bloqueado.
+Downloads são respostas privadas `no-store`, sem URL pública persistente ou arquivo bruto armazenado. O histórico da interface guarda somente os metadados dos downloads da sessão, sem valores financeiros. Não há duplicação do ledger nem das operações. Não há nova permissão para executar ordens. O relatório permanece somente leitura mesmo com motores LIVE operando no executor separado.
 
 ## Pacote e formatos
 
