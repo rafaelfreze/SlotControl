@@ -102,10 +102,14 @@ obter benchmark.
 ## Continuação medida em 2026-09-26 (não substitui os gates)
 
 O patch de isolamento do registro dinâmico foi integrado a GitHub/main em
-`47a62b0`; `a3c3c4e` tornou a fixture privada no Linux. O executor em produção
-continuou executando o binário anterior enquanto se validava o rollout. O
-checkout de fonte do VPS recebeu `38c8404`, mas o restart ainda não estava
-confirmado nesta medição. Nunca inferir versão do processo apenas por `git HEAD`.
+`47a62b0`; `a3c3c4e` tornou a fixture privada no Linux. No VPS, os 36 testes
+do executor passaram em Node 24; o checkout e o processo LIVE foram atualizados
+para `a3c3c4e` em 26/09, com restart único após verificar zero claims pendentes.
+O novo PID 86498 respondeu healthy, e às 13:05 UTC os seis motores LIVE tinham
+reconciliação recente, kill switches desligados, zero alertas, uma BUY residente
+por motor e 1/1/2/2/1/1 TPs no ledger (Thyely BTC/SOL, Rafael BTC/SOL,
+Caixeta BTC/SOL). Vercel `dpl_2wznTHPavCfH1BxKWKdMZwiZFiYL` ficou READY;
+cron pós-restart retornou `COMPLETED`. Nenhuma ordem foi usada como teste.
 
 - O harness HTTP real do executor, contra uma Binance fictícia no próprio VPS,
   observou 50/100/2.500 em 2.128 s (GET p50/p95/p99 de 237/251/252 ms,
@@ -149,7 +153,7 @@ confirmado nesta medição. Nunca inferir versão do processo apenas por `git HE
 
 | Gate | Estado honesto |
 | --- | --- |
-| MULTI_ACCOUNT_ISOLATION_PASS | Roteamento e GET sintético 1/5/conta passaram; rollout do processo LIVE ainda a confirmar |
+| MULTI_ACCOUNT_ISOLATION_PASS | Roteamento e GET sintético 1/5/conta passaram; patch LIVE implantado e seis engines reconciliados, mas não comprovado em 50 contas LIVE |
 | ENGINE_BLAST_RADIUS_PASS | PASS apenas no harness HTTP/claims; falta fluxo real de cron/ledger sob falha |
 | BINANCE_RATE_LIMIT_PASS | REPROVADO: snapshot 100/200 excede o teto; cron 50/100 completo não medido |
 | SCHEDULER_CONCURRENCY_PASS | Pool limitado e fairness passaram em teste; cron 50/100 dentro de 60 s não comprovado |
