@@ -55,14 +55,15 @@ export async function getPublicMarket(fetcher = fetch, now = Date.now, symbols =
   return { markets, observedAt, driftMs };
 }
 
-export async function getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher = fetch }) {
+export async function getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher = fetch,
+  adapter = null, accountPromise = null }) {
   if (!apiKey || !apiSecret) return "UNVERIFIED";
   try {
-    const adapter = new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, maxReadRetries: 0 });
-    const query = new URLSearchParams({ recvWindow: "5000", timestamp: String(await adapter.getServerTime()) });
+    const reader = adapter ?? new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, maxReadRetries: 0 });
+    const query = new URLSearchParams({ recvWindow: "5000", timestamp: String(await reader.getServerTime()) });
     query.set("signature", createHmac("sha256", apiSecret).update(query.toString()).digest("hex"));
     const [account, response] = await Promise.all([
-      adapter.getAccount(),
+      accountPromise ?? reader.getAccount(),
       fetcher(`${BINANCE_SPOT}/sapi/v1/account/apiRestrictions?${query}`, {
         method: "GET", cache: "no-store", signal: AbortSignal.timeout(8000),
         headers: { accept: "application/json", "X-MBX-APIKEY": apiKey },

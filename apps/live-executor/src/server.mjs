@@ -14,6 +14,8 @@ import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-reg
 import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
 import { BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { forwardTestnetRequest } from "./testnet-transport.mjs";
+import { createSharedPublicFetcher, sharedAccountRead } from "./shared-binance-reads.mjs";
+import { createBinanceReadBudgetFetcher } from "./binance-rate-budget.mjs";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -44,6 +46,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
   version = "unversioned", region = "UNSPECIFIED", logger = safeLog,
   tradingEnabled = false, killSwitch = true, registry = null, credentialEnvironment = process.env,
   allowLegacyClients = false, legacyVersion = null }) {
+  fetcher = createSharedPublicFetcher(createBinanceReadBudgetFetcher(fetcher, now));
+  const pendingAccountReads = new Map();
   let cachedHealth = null;
   const engineHealthCache = new Map();
   async function health() {
@@ -292,7 +296,9 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       const engine = resolved.engine;
       scope = responseContext(engine);
       const transport = new BinanceLiveTransport({ apiKey: resolved.apiKey, apiSecret: resolved.apiSecret,
-        fetcher, now, engine });
+        fetcher, now, engine, sharedAccountRead: path === "/v1/state"
+          ? (read) => sharedAccountRead(pendingAccountReads, engine.exchange_account_id, resolved.apiKey, read)
+          : null });
       const flags = { tradingEnabled: tradingEnabled && engine.execution_allowed,
         killSwitch: killSwitch || engine.kill_switch || engine.account_kill_switch || engine.global_kill_switch };
       if (path === "/v1/health") {

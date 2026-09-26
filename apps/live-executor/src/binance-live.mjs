@@ -37,7 +37,7 @@ function normalizeOrder(payload, clientOrderId, engine = null) {
 /** Production transport exists only on the fixed-IP VPS. It never accepts an
  * exchange host, asset, or client order namespace from arbitrary callers. */
 export class BinanceLiveTransport {
-  constructor({ apiKey, apiSecret, fetcher = fetch, now = Date.now, engine = null }) {
+  constructor({ apiKey, apiSecret, fetcher = fetch, now = Date.now, engine = null, sharedAccountRead = null }) {
     if (!apiKey || !apiSecret) throw new ExecutorRejection("EXECUTOR_BINANCE_CREDENTIALS_MISSING", 503);
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
@@ -46,6 +46,7 @@ export class BinanceLiveTransport {
     this.reads = new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, now, maxReadRetries: 0 });
     this.offset = null;
     this.engine = engine;
+    this.sharedAccountRead = sharedAccountRead;
   }
 
   ownership(symbol, id, side) {
@@ -80,9 +81,12 @@ export class BinanceLiveTransport {
     // partially observed snapshot is never reused for an order decision.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        const accountPromise = this.sharedAccountRead
+          ? this.sharedAccountRead(() => this.reads.getAccount()) : this.reads.getAccount();
         const [permission, account, filters, price, openOrders, bnbBrlPrice] = await Promise.all([
-          getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret, fetcher: this.fetcher }),
-          this.reads.getAccount(), this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
+          getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret,
+            fetcher: this.fetcher, adapter: this.reads, accountPromise }),
+          accountPromise, this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
           this.reads.getOpenOrders(symbol),
           this.reads.getMarketPrice(`BNB${this.engine?.quote_asset ?? "BRL"}`).catch(() => null),
         ]);

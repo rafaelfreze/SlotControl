@@ -26,3 +26,16 @@ export function automationSignalMatches(scope: AutomationSignalScope, value: unk
     && signal.trading_engine_id === scope.trading_engine_id
     && signal.symbol === scope.symbol;
 }
+
+/** One Realtime filter per visible context, not one filter per engine/slot.
+ * Auth/RLS remains authoritative; the exact tuple is checked again on receipt. */
+export function automationSignalFilter(scopes: AutomationSignalScope[],
+  selection: PremiumSelection): string | undefined {
+  if (!scopes.length) return undefined;
+  if (selection.accountId !== "ALL" && selection.symbol !== "ALL" && scopes.length === 1)
+    return `trading_engine_id=eq.${scopes[0].trading_engine_id}`;
+  if (selection.accountId !== "ALL") return `exchange_account_id=eq.${selection.accountId}`;
+  if (selection.symbol !== "ALL") return `symbol=eq.${selection.symbol}`;
+  return scopes.every((scope) => scope.environment === scopes[0].environment)
+    ? `environment=eq.${scopes[0].environment}` : undefined;
+}

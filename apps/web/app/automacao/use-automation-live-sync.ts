@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/browser";
 import type { AutomationView } from "./automation-center";
 import type { PremiumEngine, PremiumSelection } from "./premium-operator";
-import { automationSignalMatches, automationSignalScopes } from "./automation-live-scope";
+import { automationSignalFilter, automationSignalMatches, automationSignalScopes } from "./automation-live-scope";
 
 type SyncStatus = "AO VIVO" | "RECONECTANDO" | "DESATUALIZADO";
 const STALE_MS = 150_000;
@@ -16,6 +16,8 @@ const MIN_REFRESH_GAP_MS = 15_000;
 export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngine[],
   selection: PremiumSelection, snapshotAt: string) {
   const router = useRouter();
+  const selectedAccountId = selection.accountId;
+  const selectedSymbol = selection.symbol;
   const scopeKey = useMemo(() => JSON.stringify(automationSignalScopes(engines, view, selection)),
     [engines, view, selection]);
   const [connected, setConnected] = useState(false);
@@ -58,10 +60,10 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
     const hash = scopes.reduce((value, scope) =>
       [...scope.trading_engine_id].reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, value), 0);
     const channel = scopes.length ? client.channel(`automation-refresh-${hash.toString(16)}`) : null;
-    for (const scope of scopes) channel?.on("postgres_changes", {
+    if (channel) channel.on("postgres_changes", {
       event: "*", schema: "coinops", table: "automation_refresh_signals",
-      filter: `trading_engine_id=eq.${scope.trading_engine_id}`,
-    }, (payload) => { if (active && automationSignalMatches(scope, payload.new)) refresh(); });
+      filter: automationSignalFilter(scopes, { accountId: selectedAccountId, symbol: selectedSymbol }),
+    }, (payload) => { if (active && scopes.some((scope) => automationSignalMatches(scope, payload.new))) refresh(); });
     channel?.subscribe((state) => {
       if (!active) return;
       connectedRef.current = state === "SUBSCRIBED";
@@ -93,7 +95,7 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
       window.removeEventListener("focus", onFocus);
       if (channel) void client.removeChannel(channel);
     };
-  }, [scopeKey, generation, router]);
+  }, [scopeKey, selectedAccountId, selectedSymbol, generation, router]);
   const stale = clock - lastSyncedAt > STALE_MS;
   const status: SyncStatus = stale ? "DESATUALIZADO" : connected ? "AO VIVO" : "RECONECTANDO";
   return { status, lastSyncedAt, stale, recent: clock - lastSyncedAt < 30_000 };

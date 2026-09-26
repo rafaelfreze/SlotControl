@@ -98,3 +98,69 @@ com latência, memória, REQUEST_WEIGHT, falhas 1/5/credencial, fairness,
 restart e 2.500 slots reais em fixture. Só então limitar concorrência e
 otimizar consultas conforme gargalos medidos. Não modificar ordem LIVE para
 obter benchmark.
+
+## Continuação medida em 2026-09-26 (não substitui os gates)
+
+O patch de isolamento do registro dinâmico foi integrado a GitHub/main em
+`47a62b0`; `a3c3c4e` tornou a fixture privada no Linux. O executor em produção
+continuou executando o binário anterior enquanto se validava o rollout. O
+checkout de fonte do VPS recebeu `38c8404`, mas o restart ainda não estava
+confirmado nesta medição. Nunca inferir versão do processo apenas por `git HEAD`.
+
+- O harness HTTP real do executor, contra uma Binance fictícia no próprio VPS,
+  observou 50/100/2.500 em 2.128 s (GET p50/p95/p99 de 237/251/252 ms,
+  RSS 133→147 MB), e 100/200/5.000 em 4.171 s (240/283/292 ms,
+  RSS 148→156 MB), com 100 ms de latência fictícia por chamada. Esses são
+  **slots lógicos**; o harness não executa `advanceLiveRun` nem Supabase.
+- Um segundo harness executou claims duráveis `MARKET → TP → NEXT BUY` em
+  `/tmp` no VPS: 50/100/2.500 slots de fixture, 300 ordens fictícias únicas,
+  363 ms de parede, p50/p95/p99 por engine 42/60/61 ms, RSS 66→76 MB;
+  100/200/5.000, 600 ordens únicas, 793 ms, p50/p95/p99 40/84/88 ms,
+  RSS 76→79 MB. Perda da resposta após MARKET em 1 engine, 5 engines e uma
+  credencial inteira recuperou 1/5/2 claims por evidência fictícia exata;
+  nenhum segundo POST. Não simula RPCs de ciclo/slot, fills ou Binance real.
+- PostgreSQL 17 isolado na máquina de desenvolvimento, com 100 contas,
+  200 engines, 5.000 linhas de slots e 288.000 eventos sintéticos, executou
+  144.567 transações em 30 s a 12 clientes/4 threads: 4.868 TPS,
+  2,462 ms de média, 0 falhas. Amostra de 7.527 transações:
+  p50/p95/p99 2,054/3,152/6,163 ms. Em 50/100, 5.161 TPS e 0 falhas;
+  amostra p50/p95/p99 2,069/3,280/6,584 ms. Não cobre RLS, PostgREST,
+  rede ou limites do Supabase gerenciado; a instância de benchmark foi parada.
+- No Supabase real, uma consulta PostgREST de eventos por contexto tem 1.965
+  chamadas históricas, média 535 ms e máximo 3.556 ms, apesar de EXPLAIN
+  direto via índice `(run_id, observed_at desc)` executar em 0,455 ms.
+  O efeito de RLS/PostgREST sob carga não foi isolado; não criar índice ou
+  migration por suposição.
+- Um minuto de logs sanitizados do processo LIVE atual, com 6 engines, mostrou
+  44 `READ_STATE` e 14 `READ_TRADES`. A amplificação é material: projetar
+  100 engines/minuto a partir dela excederia amplamente o orçamento do IP.
+  A versão atual de Vercel retorna `COMPLETED` para os 6 engines; isto não
+  demonstra cron de 100 engines dentro dos 60 s disponíveis.
+- O limitador de leituras por IP, single-flight por credencial e filtro
+  Realtime único por contexto foram implementados **somente na branch de
+  auditoria**. Os testes sintéticos de 50 contas inicialmente reprovaram por
+  peso de `exchangeInfo`; cache público de filtros por 1 s corrigiu o
+  snapshot inicial de 50/100, mas 100/200 ainda excedeu o teto de 4.800
+  pesos/minuto sem coalescência. Mais importante, o cron completo usa vários
+  snapshots por engine: não há prova de que 50/100 mantenham a cadência com
+  Binance real. Por isso o limitador/cache não foi publicado em Production.
+
+### Estado dos gates após esta rodada
+
+| Gate | Estado honesto |
+| --- | --- |
+| MULTI_ACCOUNT_ISOLATION_PASS | Roteamento e GET sintético 1/5/conta passaram; rollout do processo LIVE ainda a confirmar |
+| ENGINE_BLAST_RADIUS_PASS | PASS apenas no harness HTTP/claims; falta fluxo real de cron/ledger sob falha |
+| BINANCE_RATE_LIMIT_PASS | REPROVADO: snapshot 100/200 excede o teto; cron 50/100 completo não medido |
+| SCHEDULER_CONCURRENCY_PASS | Pool limitado e fairness passaram em teste; cron 50/100 dentro de 60 s não comprovado |
+| RECOVERY_AT_SCALE_PASS | Claims passaram em 50/100 e 100/200; ciclo/ledger/restart de processo completos não comprovados |
+| DATABASE_SCALE_PASS | Banco local sintético passou; Supabase gerenciado/RLS/PostgREST não comprovados |
+| REALTIME_SCALE_PASS | Um filtro por contexto passou em teste; longa duração/browser/RLS em carga não comprovados |
+
+`COINOPS_50_ACCOUNTS_READY` permanece **REPROVADO**. O próximo gargalo
+objetivo não é RAM do VPS: é o número de snapshots/leituras Binance por engine
+por minuto e o cron de 60 s. Reduzir leituras redundantes sem reutilizar estado
+desatualizado depois de fill/order write; medir peso real/minuto, p99 e idade de
+reconciliação sob 100 engines em ambiente isolado. Somente se a cadência não
+couber após essa redução, dividir a execução em workers/IPs com filas e
+leases por engine. Não usar Production como gerador de carga.
