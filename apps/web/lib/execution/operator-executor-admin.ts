@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { RawLiveSymbol } from "./live-preparation.ts";
+import { resolveExecutorForAccount, withExecutorShard } from "./executor-shards-server.ts";
 
 export type OperatorExchangeSnapshot = { operator_id: string; exchange_account_id: string;
   environment: string; quote_asset: string; observed_at: string; executor_ip: string;
@@ -10,25 +11,21 @@ export type OperatorExchangeSnapshot = { operator_id: string; exchange_account_i
   markets: Array<{ symbol: string; price: number; observed_at: string;
     rules: RawLiveSymbol; open_orders: Array<{ clientOrderId: string; side: string; status: string }> }> };
 
-function config() {
-  const ip = process.env.LIVE_EXECUTOR_EGRESS_IP;
-  const base = process.env.LIVE_EXECUTOR_BASE_URL;
-  const secret = process.env.COINOPS_EXECUTOR_HMAC_SECRET;
-  if (!ip || base !== `https://${ip}` || !secret) throw new Error("COINOPS_ENGINE_EXECUTOR_UNAVAILABLE");
-  return { base, secret };
-}
-
 export async function operatorExecutorAdmin<T>(path: "/v1/admin/snapshot" | "/v1/admin/promote" | "/v1/admin/capital" | "/v1/testnet/transport",
   payload: Record<string, unknown>, prefix: "SNAPSHOT" | "PROMOTE" | "CAPITAL" | "TESTNET"): Promise<T> {
-  const { base, secret } = config();
+  const target = await resolveExecutorForAccount(String(payload.operator_id ?? ""), String(payload.exchange_account_id ?? ""));
+  const { base, secret } = target;
   const requestId = randomUUID(), key = `${prefix}:${requestId}`;
-  const body = JSON.stringify({ ...payload, request_id: requestId });
+  const body = JSON.stringify(withExecutorShard({ ...payload, request_id: requestId }, target));
   const response = await fetch(`${base}${path}`, { method: "POST", cache: "no-store",
     headers: signedExecutorHeaders(secret, path, body, key), body,
     signal: AbortSignal.timeout(25_000) });
   const result = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) throw new Error(result.error && /^EXECUTOR_[A-Z0-9_]+$/.test(result.error)
     ? result.error : "COINOPS_ENGINE_EXECUTOR_UNAVAILABLE");
+  if (target.shardId !== "executor-01"
+    && (result as Record<string, unknown>).executor_shard_id !== target.shardId)
+    throw new Error("EXECUTOR_RESPONSE_SHARD_MISMATCH");
   return result;
 }
 

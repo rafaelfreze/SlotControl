@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { signedExecutorHeaders } from "./live-executor-client";
+import { resolveExecutorForAccount, withExecutorShard } from "./executor-shards-server";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 
@@ -39,18 +40,22 @@ export async function syncInactiveBinanceAccount(service: Service, operatorId: s
       hard_cap_quote: engineCap, account_cap_quote: accountCap, max_order_quote: maxOrder,
       credential_ref: credentialRef, executor_profile: "coinops-fixed-ip" });
   }
-  const ip = process.env.LIVE_EXECUTOR_EGRESS_IP, base = process.env.LIVE_EXECUTOR_BASE_URL;
-  const secret = process.env.COINOPS_EXECUTOR_HMAC_SECRET;
-  if (!ip || base !== `https://${ip}` || !secret) throw new Error("COINOPS_ADMIN_EXECUTOR_UNAVAILABLE");
+  // CONNECT precedes PROVISION. An empty executor must not acquire credential-only
+  // registry state: the vault already saved the credential, and PROVISION will
+  // synchronize its explicitly scoped engines after the admin previews a plan.
+  if (rows.length === 0) return { registered_engines: 0, status: "INACTIVE" };
+  const target = await resolveExecutorForAccount(operatorId, accountId);
+  const { base, secret } = target;
   const requestId = randomUUID(), key = `REGISTRY:${requestId}`, path = "/v1/admin/registry";
-  const body = JSON.stringify({ operator_id: operatorId, exchange_account_id: accountId,
-    credential_ref: credentialRef, environment, request_id: requestId, engines: rows });
+  const body = JSON.stringify(withExecutorShard({ operator_id: operatorId, exchange_account_id: accountId,
+    credential_ref: credentialRef, environment, request_id: requestId, engines: rows }, target));
   const response = await fetch(`${base}${path}`, { method: "POST", cache: "no-store",
     headers: signedExecutorHeaders(secret, path, body, key), body, signal: AbortSignal.timeout(15_000) });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result.operator_id !== operatorId || result.exchange_account_id !== accountId
     || result.trading_enabled !== false || result.status !== "INACTIVE"
-    || result.registered_engines !== rows.length)
+    || result.registered_engines !== rows.length
+    || target.shardId !== "executor-01" && result.executor_shard_id !== target.shardId)
     throw new Error("COINOPS_ADMIN_REGISTRY_SYNC_FAILED");
   return { registered_engines: rows.length, status: "INACTIVE" };
 }

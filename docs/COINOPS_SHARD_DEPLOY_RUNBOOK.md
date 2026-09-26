@@ -53,6 +53,8 @@ Validar health novamente após restart. Nunca exibir o env, vault, headers assin
 
 O registry de ordens do executor é REAL. Testnet usa `registry_scope=CREDENTIAL_BOUND_TRANSPORT`: informa somente `credential_account_ids` lidos dos metadados locais, sem decriptação, UID, fingerprint ou secret. O control plane cruza a atribuição única de cada conta e calcula engines/contas ativos pelo ledger/run Testnet; credenciais staged/inativas podem ser um superset. Não inventar `engine_ids` ou contagem local Testnet. Inventário corrompido/ausente bloqueia nova admissão Testnet, não os motores LIVE existentes.
 
+As flags globais explícitas do executor também bloqueiam `POST`/`DELETE` financeiro Testnet em `/api/v3/order`: exigem `TRADING_ENABLED=true` e `KILL_SWITCH=OFF`. GETs de diagnóstico e `/api/v3/order/test` (não cria ordem) permanecem disponíveis. Falha de engine não altera essas flags globais; o bloqueio individual continua no control plane. Isso não altera o contrato de cancelamento protetor LIVE.
+
 ## Rollback
 
 Executar o mesmo script de deploy com o SHA anterior compatível, registrado na evidência de release. Isso preserva registry, vault, nonces e claims de idempotência. Não restaurar snapshots antigos de estado financeiro. Após rollback, confirmar health/versão, reconciliação de cada conta do shard, ausência de duplicação, logs e que outros shards permaneceram operacionais.

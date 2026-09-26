@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { advanceTestnetRun } from "./robot-v1-testnet-server";
-import { runTestnetCronBatch, type TestnetCronMode, type TestnetCronRun } from "./testnet-cron";
+import { runShardedTestnetCronBatch, type TestnetCronMode, type TestnetCronRun } from "./testnet-cron";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 
@@ -31,10 +31,15 @@ export async function handleTestnetCron(request: NextRequest, mode: TestnetCronM
       .eq("tenant_id", tenantId).eq("status", "ACTIVE")
       .in("trading_engine_id", (engines.data || []).map((engine) => engine.id)).order("trading_engine_id");
     if (error) throw new Error("COINOPS_TESTNET_RUN_DISCOVERY_FAILED");
-    if (new Set((data || []).map((run) => run.trading_engine_id)).size !== (data || []).length)
-      throw new Error("COINOPS_TESTNET_DUPLICATE_ENGINE_RUN");
+    const accounts = await service.from("exchange_accounts").select("id,operator_id,executor_shard_id")
+      .in("operator_id", (operators.data || []).map((operator) => operator.id));
+    if (accounts.error || !accounts.data) throw new Error("COINOPS_TESTNET_ACCOUNT_DISCOVERY_FAILED");
+    const accountShards = new Map(accounts.data.map((account) =>
+      [`${account.operator_id}:${account.id}`, account.executor_shard_id as string]));
+    const runs = (data || []).map((run) => ({ ...run,
+      executor_shard_id: accountShards.get(`${run.operator_id}:${run.exchange_account_id}`) ?? null }));
     const invocationId = randomUUID();
-    const results = await runTestnetCronBatch((data || []) as TestnetCronRun[], mode, {
+    const results = await runShardedTestnetCronBatch(runs as TestnetCronRun[], mode, {
       now: Date.now,
       advance: advanceTestnetRun,
       currentRun: async (runId) => {
@@ -47,7 +52,8 @@ export async function handleTestnetCron(request: NextRequest, mode: TestnetCronM
           run_id: run.id, product_id: run.product_id, tenant_id: run.tenant_id, user_id: run.user_id,
           operator_id: run.operator_id, exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id,
           event_key: `${evidence.type}:${invocationId}:${run.id}`, event_type: evidence.type,
-          observed_at: evidence.observedAt, details: { ...evidence.details, app_commit_sha: process.env.VERCEL_GIT_COMMIT_SHA || null },
+          observed_at: evidence.observedAt, details: { ...evidence.details, executor_shard_id: run.executor_shard_id,
+            app_commit_sha: process.env.VERCEL_GIT_COMMIT_SHA || null },
         });
         if (result.error) throw new Error("COINOPS_TESTNET_RECONCILIATION_EVIDENCE_FAILED");
       },

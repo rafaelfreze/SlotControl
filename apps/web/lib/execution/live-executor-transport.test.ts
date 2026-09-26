@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readLiveExecutorHealth, readLiveExecutorOrder, readLiveExecutorState, readLiveExecutorTrades } from "./live-executor-transport.ts";
+import * as transport from "./live-executor-transport.ts";
+import { resolveExecutorShard } from "./executor-shards-server.ts";
+
+const resolver = async () => resolveExecutorShard("executor-01");
+const readLiveExecutorHealth = (engine: transport.ExecutorEngineScope, fetcher: typeof fetch) =>
+  transport.readLiveExecutorHealth(engine, fetcher, resolver);
+const readLiveExecutorState = (engine: transport.ExecutorEngineScope, fetcher: typeof fetch) =>
+  transport.readLiveExecutorState(engine, fetcher, resolver);
+const readLiveExecutorOrder = (engine: transport.ExecutorEngineScope, clientId: string, orderId: string | null, fetcher: typeof fetch) =>
+  transport.readLiveExecutorOrder(engine, clientId, orderId, fetcher, resolver);
+const readLiveExecutorTrades = (engine: transport.ExecutorEngineScope, clientId: string, orderId: string, fetcher: typeof fetch) =>
+  transport.readLiveExecutorTrades(engine, clientId, orderId, fetcher, resolver);
 
 const engine = { operator_id: "00000000-0000-4000-8000-000000000001",
   exchange_account_id: "00000000-0000-4000-8000-000000000002",

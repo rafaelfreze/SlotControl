@@ -6,6 +6,7 @@ export type TestnetCronRun = {
   id: string; asset: "BTC" | "SOL"; product_id: string; tenant_id: string; user_id: string;
   status: string; last_reconciled_at: string | null; lease_until: string | null; last_error: string | null;
   operator_id?: string; exchange_account_id?: string; trading_engine_id?: string; symbol?: string; quote_asset?: string;
+  executor_shard_id?: string | null;
 };
 export type TestnetCronResult = {
   runId: string; asset: "BTC" | "SOL"; status: string; ageBeforeMs: number | null;
@@ -38,7 +39,8 @@ export async function reconcileTestnetCronRun(run: TestnetCronRun, mode: Testnet
   const ageBeforeMs = reconciliationAge(run, started);
   const base = { runId: run.id, asset: run.asset, ageBeforeMs, operator_id: run.operator_id,
     exchange_account_id: run.exchange_account_id, trading_engine_id: run.trading_engine_id,
-    symbol: run.symbol, environment: "TESTNET", quote_asset: run.quote_asset };
+    symbol: run.symbol, environment: "TESTNET", quote_asset: run.quote_asset,
+    executor_shard_id: run.executor_shard_id };
   if (mode === "WATCHDOG" && !run.last_error && ageBeforeMs !== null && ageBeforeMs < TESTNET_STALE_AFTER_MS) {
     return { ...base, status: "WATCHDOG_HEALTHY", durationMs: 0, lastReconciledAt: run.last_reconciled_at };
   }
@@ -87,5 +89,32 @@ export async function runTestnetCronBatch(runs: TestnetCronRun[], mode: TestnetC
   for (let index = 0; index < runs.length; index += 2) {
     results.push(...await Promise.all(runs.slice(index, index + 2).map((run) => reconcileTestnetCronRun(run, mode, deps))));
   }
+  return results;
+}
+
+/** Keep the established two-at-a-time batch order within each shard. Missing
+ * ownership or duplicate active runs fail only their own engine, not peers. */
+export async function runShardedTestnetCronBatch(runs: TestnetCronRun[], mode: TestnetCronMode, deps: Dependencies) {
+  const counts = new Map<string, number>();
+  for (const run of runs) if (run.trading_engine_id) counts.set(run.trading_engine_id,
+    (counts.get(run.trading_engine_id) ?? 0) + 1);
+  const pools = new Map<string, Array<{ run: TestnetCronRun; index: number }>>();
+  const results = new Array<TestnetCronResult>(runs.length);
+  runs.forEach((run, index) => {
+    const error = !run.executor_shard_id ? "COINOPS_TESTNET_SHARD_REQUIRED"
+      : !run.trading_engine_id || counts.get(run.trading_engine_id) !== 1
+        ? "COINOPS_TESTNET_DUPLICATE_ENGINE_RUN" : null;
+    if (error) {
+      results[index] = { runId: run.id, asset: run.asset, status: "FAILED",
+        durationMs: 0, ageBeforeMs: reconciliationAge(run, deps.now()), error };
+      return;
+    }
+    const pool = pools.get(run.executor_shard_id!) ?? [];
+    pool.push({ run, index }); pools.set(run.executor_shard_id!, pool);
+  });
+  await Promise.all([...pools.values()].map(async (pool) => {
+    const batch = await runTestnetCronBatch(pool.map((row) => row.run), mode, deps);
+    batch.forEach((value, index) => { results[pool[index].index] = value; });
+  }));
   return results;
 }

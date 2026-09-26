@@ -1,4 +1,5 @@
 import { readLiveExecutorHealth, type ExecutorEngineScope } from "./live-executor-transport.ts";
+import { resolveExecutorForAccount, type ExecutorAccountResolver } from "./executor-shards-server.ts";
 
 export type LiveExecutorHealth = {
   healthy: boolean;
@@ -32,15 +33,21 @@ export async function loadLiveExecutorStatus(
   fetcher: typeof fetch = fetch,
   validatedVersion = process.env.LIVE_EXECUTOR_VALIDATED_VERSION,
   engine?: ExecutorEngineScope,
+  resolver: ExecutorAccountResolver = resolveExecutorForAccount,
 ): Promise<LiveExecutorStatus> {
-  if (!baseUrl || !expectedIp || baseUrl !== `https://${expectedIp}`
-    || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(expectedIp))
-    return { gate: "UNCONFIGURED", ip: expectedIp || null, health: null };
   try {
+    const target = engine ? await resolver(engine.operator_id, engine.exchange_account_id) : null;
+    if (target) {
+      baseUrl = target.base; expectedIp = target.ip; validatedVersion = target.validatedVersion;
+    }
+    if (!baseUrl || !expectedIp || baseUrl !== `https://${expectedIp}`
+      || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(expectedIp))
+      return { gate: "UNCONFIGURED", ip: expectedIp || null, health: null };
     const response = engine ? null : await fetcher(`${baseUrl}/health`, {
       method: "GET", cache: "no-store", signal: AbortSignal.timeout(5_000),
     });
-    const health = engine ? await readLiveExecutorHealth(engine, fetcher) : await response!.json() as LiveExecutorHealth;
+    const health = engine ? await readLiveExecutorHealth(engine, fetcher, async () => target!)
+      : await response!.json() as LiveExecutorHealth;
     const verified = (engine || response!.ok) && health.healthy === true
       && Boolean(validatedVersion) && health.version === validatedVersion
       && health.environment === (engine ? "REAL" : "BINANCE_PRODUCTION_PREPARED")
@@ -55,7 +62,7 @@ export async function loadLiveExecutorStatus(
             : "ATTENTION" as const;
     return { gate, ip: expectedIp, health };
   } catch {
-    return { gate: "ATTENTION", ip: expectedIp, health: null };
+    return { gate: "ATTENTION", ip: expectedIp ?? null, health: null };
   }
 }
 

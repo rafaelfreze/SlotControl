@@ -2,6 +2,7 @@ import { sendToDevice } from "@/lib/coinops-notifications/push-server";
 import { shouldPush } from "@/lib/coinops-notifications/push-policy";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { capacityScope } from "./capacity-server";
+import { capacityAlertMessage } from "./capacity-alert-policy";
 
 type Alert = { id: string; shard_id: string; code: string; severity: "WARNING" | "CRITICAL";
   first_seen_at: string };
@@ -73,10 +74,7 @@ export async function dispatchCapacityPush() {
           lease_until: null, error_code: "INCIDENT_CLOSED" }).eq("id", item.id);
         continue;
       }
-      await sendToDevice(device, { title: "CoinOps — ALERTA",
-        body: `${alert.shard_id} · ${alert.code.replaceAll("_", " ")}`,
-        url: "/automacao?view=live#coinops-infrastructure",
-        tag: `capacity:${alert.id}:${alert.first_seen_at}` });
+      await sendToDevice(device, capacityAlertMessage(alert));
       const saved = await service.from("executor_capacity_deliveries").update({ status: "SENT",
         sent_at: new Date().toISOString(), lease_until: null, error_code: null }).eq("id", item.id);
       if (saved.error) throw new Error("COINOPS_CAPACITY_PUSH_AUDIT_FAILED");

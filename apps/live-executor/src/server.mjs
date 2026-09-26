@@ -175,6 +175,11 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         if (key !== `TESTNET:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
           || input.environment !== "TESTNET" || !/^[0-9a-f-]{36}$/i.test(input.trading_engine_id ?? ""))
           throw new ExecutorRejection("EXECUTOR_TESTNET_SCOPE_DENIED", 403);
+        // Public/read-only diagnostics remain available while financial Testnet
+        // writes obey this executor's explicit operator-controlled safety flags.
+        if (input.path === "/api/v3/order" && ["POST", "DELETE"].includes(input.method)
+          && (!tradingEnabled || killSwitch))
+          throw new ExecutorRejection("EXECUTOR_TRADING_DISABLED", 403);
         const credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
         const result = await forwardTestnetRequest(input, credential, fetcher);
         status = 200; outcome = result.binance_status < 400 ? "TESTNET_FORWARDED" : "TESTNET_BINANCE_REJECTED";

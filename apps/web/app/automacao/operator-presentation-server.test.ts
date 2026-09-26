@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { resolveEngineContext, type DomainRegistry, type EngineContext } from "../../lib/execution/operator-context.ts";
-import { loadLiveExecutorStatus } from "../../lib/execution/live-executor-health.ts";
+import { loadLiveExecutorStatus as loadExecutorStatus } from "../../lib/execution/live-executor-health.ts";
+import { resolveExecutorShard } from "../../lib/execution/executor-shards-server.ts";
 import { monthlyPeriodKey, rankMonthlySlots } from "../../lib/execution/monthly-slot-policy.ts";
 import { buildPremiumEngine } from "./premium-operator.ts";
 import type { buildOperatorPresentation as BuildPresentation } from "./operator-presentation-server";
@@ -11,6 +12,8 @@ import type { Props } from "./automation-mobile";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const ip = "46.101.104.48";
+const loadLiveExecutorStatus = (...args: Parameters<typeof loadExecutorStatus>) =>
+  loadExecutorStatus(args[0], args[1], args[2], args[3], args[4], async () => resolveExecutorShard("executor-01"));
 const registry: DomainRegistry = {
   operator: { id: id(1), product_id: id(2), tenant_id: id(3), user_id: id(4), status: "ACTIVE", kill_switch: false },
   accounts: [{ id: id(5), operator_id: id(1), display_name: "Fixture", status: "ACTIVE", is_legacy_default: true, kill_switch: false }],
@@ -168,8 +171,10 @@ test("BTC/SOL UI health runs concurrently with two bounded five-second observati
 
 test("UI timeout is fail-closed for both engines and never inherits public healthy evidence", async () => {
   const { result, requests, deadlines } = await run(undefined, { timeout: true });
-  assert.equal(requests.length, 2);
-  assert.deepEqual(deadlines, [5_000, 5_000]);
+  // Preserve the existing read-only transport's four bounded attempts. Each
+  // attempt has the UI's5s ceiling; no exchange write is retried by this path.
+  assert.equal(requests.length, 8);
+  assert.deepEqual(deadlines, Array(8).fill(5_000));
   for (const engine of result.engines) {
     assert.equal(engine.health.healthy, false);
     const executor = result.engineData[engine.engineId].livePreparation!.executor;

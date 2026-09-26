@@ -17,7 +17,9 @@ nenhuma migração de conta/IP ocorre automaticamente.
 ## Medição e política inicial
 
 O executor registra os cabeçalhos IP-wide `x-mbx-used-weight-1m` das respostas
-Binance Production já necessárias para a operação, sem criar novas leituras.
+Binance Production já necessárias para a operação. Um shard sem tráfego recente
+faz no máximo um GET público `/api/v3/time` por minuto para obter evidência real
+do peso de seu próprio IP; não fabrica zero quando o header está ausente.
 Publica via rota HMAC `/v1/capacity` o atual, média e pico por minuto nos
 últimos 15 minutos, CPU do processo, RSS, RAM do host, heartbeat e contagem
 de contas/motores. O cron server-side `/api/cron/coinops-capacity` coleta a
@@ -57,9 +59,40 @@ Preview sem ordem retorna CAPACITY_OK/REQUIRED/UNKNOWN. PROVISION permanece
 INACTIVE sem ordem, e ACTIVATE revalida capacidade em RPC atômica antes de
 abrir o run. Não muda a lógica da Strategy Engine ou o tratamento de TP/BUY.
 ADMIN vê o card de infraestrutura; VIEWER não acessa a rota. Alertas por shard
-`BINANCE_WEIGHT_WARNING`, `EXECUTOR_CAPACITY_WARNING`, `CAPACITY_LIMIT`
+`BINANCE_WEIGHT_WARNING`, `EXECUTOR_CAPACITY_WARNING`, `CAPACITY_LIMIT`,
+`EXECUTOR_OFFLINE`, `SCHEDULER_BACKLOG_WARNING`, `ENGINE_STALE` e `EXECUTOR_RESOURCE_WARNING`
 reutilizam subscriptions de operador, com incidente e entrega deduplicados.
 Push nunca contém segredo/credential_ref nem cria operação.
+
+## Multi-shard
+
+Cada registro `executor_shards` tem IP e limites próprios. A coleta assina a
+requisição para o executor correspondente, confere IP/identidade e calcula
+backlog, reconciliação e alertas apenas das contas atribuídas a esse shard.
+Falha de uma coleta não elimina a amostra anterior nem impede a coleta do
+vizinho. Falta de telemetria abre OFFLINE depois da tolerância de 120 s e
+preserva outros incidentes até haver evidência de recuperação.
+
+Novos shards retornam os conjuntos exatos de account/engine IDs da registry;
+a coleta cruza-os com o ledger. A compatibilidade do Executor 01 anterior
+mantém comparação por contagens até sua atualização explícita, sem reinício
+incidental nesta expansão. Contagens atuais da telemetria representam motores
+REAL ACTIVE; Testnet conserva scheduler separado e não é somado como orçamento
+de Production. CPU representa o processo e RAM representa RSS/limite do host,
+não uma medição de todos os processos do VPS.
+
+ASSIGN cria somente uma conta INACTIVE, sem credencial/engine/ordem. Prefere
+shard HEALTHY (<50%) e menor pressão medida, com custo inicial de 900 por motor
+planejado e teto projetado de 65%. O vínculo e o ambiente de onboarding ficam
+imutáveis. A reserva final continua obrigatória após configurar whitelist e
+credential; um cadastro abandonado não reserva capacidade para sempre.
+
+O card ADMIN exibe IP, métricas, heartbeat e admissão individualmente. VIEWER
+não recebe configuração de infraestrutura. A URL de push identifica o card
+do shard; alertas de engine continuam apontando conta/motor e agora incluem
+o shard no texto. Não usar essa arquitetura para rotacionar IP ou contornar
+rate limiting, nem inferir capacidade para dezenas de contas a partir de um
+executor vazio.
 
 Ordem segura de publicação: validar migration em PostgreSQL descartável;
 confirmar backend/schema/estado LIVE; aplicar migration aditiva; instalar

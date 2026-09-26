@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { signedExecutorHeaders } from "@/lib/execution/live-executor-client";
+import { requireLiveIdentityCoverage } from "@/lib/execution/initial-identity-bootstrap";
+import { resolveExecutorForAccount, resolveExecutorShard, withExecutorShard } from "@/lib/execution/executor-shards-server";
+import { assertRetiredRegistry, reassignStagedAccount } from "@/lib/execution/staged-shard-reassignment";
+import { claimAccountIdentity } from "@/lib/execution/binance-identity-server";
 import { syncInactiveBinanceAccount } from "@/lib/execution/binance-account-registry-server";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
@@ -26,20 +30,20 @@ async function adminScope() {
 }
 
 async function callExecutor(input: Record<string, unknown>, requestId: string) {
-  const ip = process.env.LIVE_EXECUTOR_EGRESS_IP;
-  const base = process.env.LIVE_EXECUTOR_BASE_URL;
-  const secret = process.env.COINOPS_EXECUTOR_HMAC_SECRET;
-  if (!ip || base !== `https://${ip}` || !secret) throw new Error("COINOPS_ADMIN_EXECUTOR_UNAVAILABLE");
+  const executor = await resolveExecutorForAccount(String(input.operator_id), String(input.exchange_account_id));
   const path = "/v1/admin/credentials";
   const key = `CREDENTIAL:${requestId}`;
-  const body = JSON.stringify(input);
-  const response = await fetch(`${base}${path}`, { method: "POST", cache: "no-store",
-    headers: signedExecutorHeaders(secret, path, body, key), body, signal: AbortSignal.timeout(30_000) });
+  const body = JSON.stringify(withExecutorShard(input, executor));
+  const response = await fetch(`${executor.base}${path}`, { method: "POST", cache: "no-store",
+    headers: signedExecutorHeaders(executor.secret, path, body, key), body, signal: AbortSignal.timeout(30_000) });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(typeof result.error === "string" && /^EXECUTOR_[A-Z0-9_]+$/.test(result.error)
     ? result.error : "COINOPS_ADMIN_EXECUTOR_UNAVAILABLE");
   if (result.exchange_account_id !== input.exchange_account_id || result.operator_id !== input.operator_id
     || result.environment !== input.environment || result.apiKey || result.apiSecret)
+    throw new Error("COINOPS_ADMIN_EXECUTOR_SCOPE_MISMATCH");
+  if (executor.shardId !== "executor-01" && result.executor_shard_id !== executor.shardId
+    || result.executor_shard_id && result.executor_shard_id !== executor.shardId)
     throw new Error("COINOPS_ADMIN_EXECUTOR_SCOPE_MISMATCH");
   return result;
 }
@@ -47,20 +51,24 @@ async function callExecutor(input: Record<string, unknown>, requestId: string) {
 export async function GET() {
   try {
     const { operator, service } = await adminScope();
-    const [accounts, checks, engines] = await Promise.all([
-      service.from("exchange_accounts").select("id,display_name,status,kill_switch,is_legacy_default,credential_ref")
+    const [accounts, checks, engines, shards] = await Promise.all([
+      service.from("exchange_accounts").select("id,display_name,status,kill_switch,is_legacy_default,credential_ref,executor_shard_id,onboarding_environment")
         .eq("operator_id", operator.id).in("status", ["ACTIVE", "INACTIVE"]).order("created_at"),
       service.from("account_onboarding_checks").select("exchange_account_id,status,evidence,checked_at")
         .eq("operator_id", operator.id).eq("check_key", "BINANCE_CREDENTIAL").order("checked_at", { ascending: false }).limit(100),
       service.from("trading_engines").select("id,exchange_account_id,environment,symbol,quote_asset,status,hard_cap_quote,config")
         .eq("operator_id", operator.id).in("environment", ["REAL", "TESTNET"]).order("symbol"),
+      service.from("executor_shards").select("id,egress_ipv4"),
     ]);
-    if (accounts.error || checks.error || engines.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
+    if (accounts.error || checks.error || engines.error || shards.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
     const latest = new Map<string, { status: string; evidence: Record<string, unknown>; checked_at: string }>();
     for (const check of checks.data ?? []) if (!latest.has(check.exchange_account_id))
       latest.set(check.exchange_account_id, check);
     return json({ accounts: (accounts.data ?? []).map((account) => ({ id: account.id, name: account.display_name,
       status: account.status, killSwitch: account.kill_switch, legacy: account.is_legacy_default,
+      shardId: account.executor_shard_id,
+      executorIp: (shards.data ?? []).find((shard) => shard.id === account.executor_shard_id)?.egress_ipv4 ?? null,
+      onboardingEnvironment: account.onboarding_environment,
       credentialRef: account.is_legacy_default ? null : account.credential_ref,
       validation: latest.get(account.id) ?? null })),
       engines: (engines.data ?? []).filter((engine) => (accounts.data ?? []).some((account) =>
@@ -83,21 +91,55 @@ export async function POST(request: NextRequest) {
     validateCredentialIntent(input);
     const { operator, service } = await adminScope();
     const accountId = input.accountId!, operation = input.operation!, requestId = input.requestId!;
+    if (operation === "ASSIGN") {
+      if (input.environment === "REAL")
+        await requireLiveIdentityCoverage(service, getCoinOpsServiceTenantId()!);
+      const assigned = await service.rpc("assign_executor_shard", { p_operator_id: operator.id,
+        p_account_id: accountId, p_display_name: input.displayName!.trim(),
+        p_environment: input.environment!, p_planned_engines: input.plannedEngines!, p_request_id: requestId });
+      if (assigned.error || !assigned.data) throw new Error("COINOPS_ADMIN_ASSIGNMENT_FAILED");
+      if (assigned.data.code !== "ASSIGNED") throw new Error(assigned.data.code === "CAPACITY_REQUIRED"
+        ? "COINOPS_CAPACITY_REQUIRED" : "COINOPS_CAPACITY_UNKNOWN");
+      return json(assigned.data);
+    }
     const accountRead = await service.from("exchange_accounts")
-      .select("id,operator_id,display_name,status,kill_switch,is_legacy_default,credential_ref")
+      .select("id,operator_id,display_name,status,kill_switch,is_legacy_default,credential_ref,executor_shard_id,onboarding_environment")
       .eq("id", accountId).maybeSingle();
     if (accountRead.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
-    let account = accountRead.data;
+    const account = accountRead.data;
     assertOwnedAccount(account, operator.id);
-    if (!account && operation === "CONNECT") {
-      const inserted = await service.from("exchange_accounts").insert({ id: accountId, operator_id: operator.id,
-        display_name: input.displayName!.trim(), status: "INACTIVE", kill_switch: true,
-        is_legacy_default: false, credential_ref: `account_${accountId.replaceAll("-", "")}`,
-        executor_profile: "coinops-fixed-ip" })
-        .select("id,operator_id,display_name,status,kill_switch,is_legacy_default,credential_ref").single();
-      if (inserted.error || !inserted.data) throw new Error("COINOPS_ADMIN_ACCOUNT_CREATE_FAILED");
-      account = inserted.data;
+    if (operation === "REASSIGN_STAGED") {
+      if (!account) throw new Error("COINOPS_ADMIN_ACCOUNT_DENIED");
+      return json(await reassignStagedAccount({
+        check: async (preview, originRetired) => {
+          const result = await service.rpc("reassign_staged_executor_shard", {
+            p_operator_id: operator.id, p_account_id: accountId, p_from_shard: input.fromShardId!,
+            p_to_shard: input.toShardId!, p_request_id: requestId,
+            p_preview: preview, p_origin_retired: originRetired });
+          if (result.error || !result.data) throw new Error(
+            /^COINOPS_[A-Z0-9_]+$/.test(result.error?.message ?? "")
+              ? result.error!.message : "COINOPS_STAGED_REASSIGNMENT_FAILED");
+          return result.data;
+        },
+        retire: async () => {
+          // Preview independently checks the stored source. Never resolve from
+          // a cached account binding or copy its vault to the destination.
+          if (account.executor_shard_id !== input.fromShardId || account.status !== "INACTIVE" || !account.kill_switch)
+            throw new Error("COINOPS_STAGED_REASSIGNMENT_DENIED");
+          const source = resolveExecutorShard(account.executor_shard_id);
+          const path = "/v1/admin/registry", key = `REGISTRY:${requestId}`;
+          const body = JSON.stringify(withExecutorShard({ operator_id: operator.id,
+            exchange_account_id: accountId, credential_ref: account.credential_ref,
+            environment: "REAL", request_id: requestId, engines: [] }, source));
+          const response = await fetch(`${source.base}${path}`, { method: "POST", cache: "no-store",
+            headers: signedExecutorHeaders(source.secret, path, body, key), body,
+            signal: AbortSignal.timeout(15_000) });
+          if (!response.ok) throw new Error("COINOPS_SOURCE_REGISTRY_RETIREMENT_FAILED");
+          assertRetiredRegistry(await response.json(), operator.id, accountId, source.shardId);
+        },
+      }));
     }
+    if (!account && operation === "CONNECT") throw new Error("COINOPS_ADMIN_ASSIGNMENT_REQUIRED");
     if (!account || !["INACTIVE", "DISABLED", "ACTIVE"].includes(account.status)
       || operation !== "REVALIDATE" && (account.kill_switch !== true || account.status === "ACTIVE")
       || ["CONNECT", "REPLACE"].includes(operation) && account.status !== "INACTIVE")
@@ -115,10 +157,12 @@ export async function POST(request: NextRequest) {
     if (history.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
     const recordedEnvironment = history.data?.[0]?.evidence?.environment as string | undefined;
     const environment = operation === "CONNECT" ? input.environment!
-      : recordedEnvironment ?? [...environments][0] ?? (operation === "REVALIDATE" ? input.environment : undefined);
+      : recordedEnvironment ?? account.onboarding_environment ?? [...environments][0]
+        ?? (operation === "REVALIDATE" ? input.environment : undefined);
     if (!["REAL", "TESTNET"].includes(environment ?? "") || environments.size > 1
       || environments.size === 1 && !environments.has(environment)
-      || operation === "CONNECT" && recordedEnvironment && recordedEnvironment !== environment)
+      || operation === "CONNECT" && recordedEnvironment && recordedEnvironment !== environment
+      || account.onboarding_environment && account.onboarding_environment !== environment)
       throw new Error("COINOPS_ADMIN_ENVIRONMENT_MISMATCH");
     if (["DEACTIVATE", "REMOVE", "REPLACE"].includes(operation)) {
       if ((engines.data ?? []).some((engine) => engine.status !== "INACTIVE" || !engine.kill_switch))
@@ -145,7 +189,15 @@ export async function POST(request: NextRequest) {
       credential_ref: account.credential_ref, environment, operation,
       request_id: requestId,
       ...(["CONNECT", "REPLACE"].includes(operation) ? { apiKey: input.apiKey, apiSecret: input.apiSecret } : {}) }, requestId);
-    const evidence = { environment, status: result.status ?? (result.removed ? "REMOVED" : "NO_CHANGE"),
+    // New onboarding must claim physical ownership globally before a registry
+    // can be staged. A rejected claim leaves only encrypted, nonoperating credentials.
+    // Old executor01 accounts retain their existing validation/recovery behavior.
+    if (operation !== "REMOVE" && (account.onboarding_environment || account.executor_shard_id !== "executor-01"))
+      await claimAccountIdentity(service, operator.id, accountId, environment as "REAL" | "TESTNET",
+        result.uidHash ?? (environment === "TESTNET" ? result.credentialHash : null));
+    const evidence = { environment, executor_shard_id: account.executor_shard_id,
+      identity_source: result.uidHash ? "BINANCE_UID" : environment === "TESTNET" && result.credentialHash ? "TESTNET_API_KEY" : null,
+      status: result.status ?? (result.removed ? "REMOVED" : "NO_CHANGE"),
       fingerprint: result.fingerprint ?? null, credential_ref: result.credential_ref ?? account.credential_ref,
       executor_ip: result.executorIp ?? null, whitelist_accepted: result.whitelistAccepted ?? null,
       permission: result.permission ?? null, account_identity: result.accountIdentity ?? null,

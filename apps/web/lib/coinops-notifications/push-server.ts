@@ -154,7 +154,7 @@ export async function dispatchOperationalPush() {
   const [subsResult, accountsResult, enginesResult] = await Promise.all([
     service.from("operator_push_subscriptions").select("id,operator_id,user_id,endpoint,p256dh,auth_secret,warning_enabled")
       .in("operator_id", operatorIds).eq("enabled", true),
-    service.from("exchange_accounts").select("id,operator_id,display_name")
+    service.from("exchange_accounts").select("id,operator_id,display_name,executor_shard_id")
       .in("id", [...new Set(alerts.map((alert) => alert.exchange_account_id))]),
     service.from("trading_engines").select("id,operator_id,exchange_account_id,symbol,environment")
       .in("id", [...new Set(alerts.map((alert) => alert.trading_engine_id))]),
@@ -218,7 +218,7 @@ export async function dispatchOperationalPush() {
         continue;
       }
       await sendToDevice(sub, { title: "CoinOps — ALERTA",
-        body: `${account.display_name} · ${engine.symbol.replace(/(BRL|USDT|USDC)$/, "/$1")} · ${publicPushReason(alert.code)}`,
+        body: `${account.display_name} · ${engine.symbol.replace(/(BRL|USDT|USDC)$/, "/$1")} · ${account.executor_shard_id.replace("executor-", "Executor ")} · ${publicPushReason(alert.code)}`,
         url: alertDeepLink(alert.exchange_account_id, engine.symbol,
           engine.environment === "TESTNET" ? "TESTNET" : "REAL", alert.id), tag: `${alert.id}:${alert.first_seen_at}` });
       const update = await service.from("operator_push_deliveries").update({ status: "SENT",

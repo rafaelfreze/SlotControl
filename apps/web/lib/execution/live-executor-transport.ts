@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { EngineContext } from "./operator-context.ts";
+import { resolveExecutorForAccount, withExecutorShard, type ExecutorAccountResolver } from "./executor-shards-server.ts";
 
 export type ExecutorEngineScope = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "symbol" | "quote_asset">;
 export type ExecutorContext = ExecutorEngineScope & { environment: "REAL"; decision_id: string; idempotency_key: string };
@@ -43,12 +44,10 @@ function validState(value: LiveExecutorState, engine: ExecutorEngineScope) {
 }
 
 async function request<T>(path: string, input: Record<string, unknown>, key: string,
-  fetcher: typeof fetch = fetch): Promise<T> {
-  const ip = process.env.LIVE_EXECUTOR_EGRESS_IP;
-  const base = process.env.LIVE_EXECUTOR_BASE_URL;
-  const secret = process.env.COINOPS_EXECUTOR_HMAC_SECRET;
-  if (!ip || base !== `https://${ip}` || !secret) throw new Error("EXECUTOR_NOT_CONFIGURED");
-  const body = JSON.stringify(input);
+  fetcher: typeof fetch = fetch, resolver: ExecutorAccountResolver = resolveExecutorForAccount): Promise<T> {
+  const target = await resolver(String(input.operator_id ?? ""), String(input.exchange_account_id ?? ""));
+  const { base, secret } = target;
+  const body = JSON.stringify(withExecutorShard(input, target));
   const response = await fetcher(`${base}${path}`, { method: "POST", cache: "no-store",
     headers: signedExecutorHeaders(secret, path, body, key), body,
     signal: AbortSignal.timeout(path === "/v1/state" ? 25_000 : 35_000) });
@@ -60,6 +59,9 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
   }
   for (const field of ["operator_id", "exchange_account_id", "trading_engine_id", "environment", "symbol", "quote_asset"])
     if ((payload as Record<string, unknown>)[field] !== input[field]) throw new Error("EXECUTOR_RESPONSE_SCOPE_MISMATCH");
+  if (target.shardId !== "executor-01"
+    && (payload as Record<string, unknown>).executor_shard_id !== target.shardId)
+    throw new Error("EXECUTOR_RESPONSE_SHARD_MISMATCH");
   return payload;
 }
 
@@ -71,11 +73,12 @@ function transientReadError(error: unknown) {
     || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
 }
 async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades",
-  input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch): Promise<T> {
+  input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch,
+  resolver: ExecutorAccountResolver = resolveExecutorForAccount): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const key = readKey();
-      return await request<T>(path, input(key), key, fetcher);
+      return await request<T>(path, input(key), key, fetcher, resolver);
     } catch (error) {
       if (attempt === 3 || !transientReadError(error)) throw error;
       // Rolling executor restarts may interrupt a GET. Retry observations only;
@@ -85,18 +88,20 @@ async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-or
   }
   throw new Error("EXECUTOR_READ_UNAVAILABLE");
 }
-export async function readLiveExecutorHealth(engine: ExecutorEngineScope, fetcher?: typeof fetch) {
+export async function readLiveExecutorHealth(engine: ExecutorEngineScope, fetcher?: typeof fetch,
+  resolver?: ExecutorAccountResolver) {
   // A single failed observation (e.g. transient Binance read/egress timeout) must not
   // irreversibly kill-switch an otherwise protected engine. Only GET-equivalent reads retry.
   return readWithRetry<import("./live-executor-health").LiveExecutorHealth>("/v1/health",
-    (key) => executorContext(engine, key, key), fetcher);
+    (key) => executorContext(engine, key, key), fetcher, resolver);
 }
-export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher?: typeof fetch) {
+export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher?: typeof fetch,
+  resolver?: ExecutorAccountResolver) {
   // Retry only an observation. Never retry create/cancel after an uncertain result.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const state = await readWithRetry<LiveExecutorState>("/v1/state",
-        (key) => executorContext(engine, key, key), fetcher);
+        (key) => executorContext(engine, key, key), fetcher, resolver);
       if (!validState(state, engine)) throw new Error("EXECUTOR_STATE_INVALID");
       return state;
     } catch (error) {
@@ -106,7 +111,8 @@ export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher
   }
   throw new Error("EXECUTOR_STATE_INVALID");
 }
-export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, fetcher?: typeof fetch) {
+export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, fetcher?: typeof fetch,
+  resolver?: ExecutorAccountResolver) {
   const key = readKey();
   return request<{
     capabilities: { readEnabled: boolean; tradingEnabled: boolean;
@@ -116,27 +122,28 @@ export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, 
     prices: Record<"BTCUSDT" | "SOLUSDT", unknown>;
     orders: import("./types").ExchangeOrder[];
     trades: import("./types").ExchangeTrade[];
-  }>("/v1/reconciliation", { scope: "COINOPS_SHADOW_READ_ONLY", ...executorContext(engine, key, key) }, key, fetcher);
+  }>("/v1/reconciliation", { scope: "COINOPS_SHADOW_READ_ONLY", ...executorContext(engine, key, key) }, key, fetcher, resolver);
 }
 export async function readLiveExecutorOrder(engine: ExecutorEngineScope, clientOrderId: string,
-  orderId?: string | null, fetcher?: typeof fetch) {
+  orderId?: string | null, fetcher?: typeof fetch, resolver?: ExecutorAccountResolver) {
   return readWithRetry<{ order: LiveOrder | null }>("/v1/query-order",
-    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher);
+    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher, resolver);
 }
 export async function readLiveExecutorTrades(engine: ExecutorEngineScope, clientOrderId: string,
-  orderId: string, fetcher?: typeof fetch) {
+  orderId: string, fetcher?: typeof fetch, resolver?: ExecutorAccountResolver) {
   return readWithRetry<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/trades",
-    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), fetcher);
+    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), fetcher, resolver);
 }
 export async function createLiveExecutorOrder(input: Record<string, unknown> & { clientOrderId: string }, engine: ExecutorEngineScope,
   decisionId: string,
-  fetcher?: typeof fetch) {
+  fetcher?: typeof fetch, resolver?: ExecutorAccountResolver) {
   return request<{ order: LiveOrder; replayed: boolean }>("/v1/create-order", { ...input, ...executorContext(engine, decisionId, input.clientOrderId) },
-    input.clientOrderId, fetcher);
+    input.clientOrderId, fetcher, resolver);
 }
 export async function cancelLiveExecutorOrder(input: { symbol: string;
-  clientOrderId: string; orderId: string }, engine: ExecutorEngineScope, fetcher?: typeof fetch) {
+  clientOrderId: string; orderId: string }, engine: ExecutorEngineScope, fetcher?: typeof fetch,
+  resolver?: ExecutorAccountResolver) {
   return request<{ order: LiveOrder; replayed: boolean }>("/v1/cancel-order", { ...input,
     ...executorContext(engine, `CANCEL:${input.clientOrderId}`, `CANCEL:${input.clientOrderId}`) },
-    `CANCEL:${input.clientOrderId}`, fetcher);
+    `CANCEL:${input.clientOrderId}`, fetcher, resolver);
 }

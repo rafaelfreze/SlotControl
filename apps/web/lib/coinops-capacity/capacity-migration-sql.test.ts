@@ -40,14 +40,18 @@ before(async () => {
     "-o", `-h 127.0.0.1 -p ${port}`, "-w", "start"], { env, windowsHide: true, stdio: "ignore" });
   psql(`create role anon; create role authenticated; create role service_role bypassrls;
     create schema coinops; create schema private; grant usage on schema coinops to service_role;
-    create table coinops.exchange_accounts(id uuid primary key, status text, executor_note text);
-    create table coinops.trading_engines(id uuid primary key, exchange_account_id uuid references coinops.exchange_accounts(id), environment text);
+    create table coinops.operators(id uuid primary key, user_id uuid, status text);
+    create table coinops.exchange_accounts(id uuid primary key, status text, executor_note text, operator_id uuid);
+    create table coinops.trading_engines(id uuid primary key, exchange_account_id uuid references coinops.exchange_accounts(id),
+      environment text, operator_id uuid, status text);
     create table coinops.operator_push_subscriptions(id uuid primary key);
-    insert into coinops.exchange_accounts values ('${account}','ACTIVE','untouched');
-    insert into coinops.trading_engines values ('${engine}','${account}','REAL');`);
+    insert into coinops.exchange_accounts values ('${account}','ACTIVE','untouched','${account}');
+    insert into coinops.trading_engines values ('${engine}','${account}','REAL','${account}','ACTIVE');`);
   execFileSync(join(bin, "psql.exe"), ["-X", "-w", "-h", "127.0.0.1", "-p", String(port),
     "-U", "capacity_audit", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-At", "-c", sql],
   { env, windowsHide: true, stdio: "pipe" });
+  psql(readFileSync(resolve("../../supabase/migrations/20260926194558_protect_testnet_shard_capacity.sql"), "utf8"));
+  psql(readFileSync(resolve("../../supabase/migrations/20260926202114_add_coinops_environment_capacity.sql"), "utf8"));
 });
 after(() => {
   if (available && existsSync(join(directory, "postmaster.pid")))
@@ -85,6 +89,40 @@ check("RLS and grants deny authenticated clients capacity writes and reservation
     || ':' || has_function_privilege('authenticated','coinops.reserve_executor_capacity(text,uuid)','EXECUTE')`);
   assert.equal(grants, "false:false");
   assert.equal(psql("select relforcerowsecurity from pg_class where oid='coinops.executor_capacity_samples'::regclass"), "t");
+});
+check("Testnet admission without its own telemetry fails closed and never consumes the Production budget", () => {
+  const testnet = "33333333-3333-4333-8333-333333333333";
+  psql(`insert into coinops.trading_engines values ('${testnet}','${account}','TESTNET','${account}','INACTIVE');
+    update coinops.executor_capacity_admissions set expires_at=now()-interval '1 minute';
+    update coinops.executor_capacity_samples set cpu_percent=5,heartbeat_at=now(),binance_weight_peak=2400`);
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-02','${testnet}')`), "CAPACITY_UNKNOWN");
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-01','${testnet}')`), "CAPACITY_UNKNOWN");
+  assert.equal(psql(`select count(*) from coinops.executor_capacity_admissions where engine_id='${testnet}'`), "0");
+  psql(`update coinops.trading_engines set status='ACTIVE' where id='${testnet}';
+    insert into coinops.executor_capacity_admissions(engine_id,shard_id,environment,reserved_weight,expires_at)
+    values('${testnet}','executor-01','TESTNET',9000,now()+interval '5 minutes')`);
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-01','${engine}')`), "CAPACITY_OK",
+    "2400 Production weight plus 900 remains below 3900 regardless of Testnet activity or reservations");
+  assert.equal(psql(`select environment||':'||reserved_weight from coinops.executor_capacity_admissions
+    where engine_id='${engine}'`), "REAL:900");
+  assert.equal(psql(`select environment||':'||status from coinops.trading_engines where id='${testnet}'`), "TESTNET:ACTIVE");
+  assert.equal(psql(`select status||':'||executor_note from coinops.exchange_accounts where id='${account}'`), "ACTIVE:untouched");
+  assert.equal(psql(`select environment||':'||status from coinops.trading_engines where id='${engine}'`), "REAL:ACTIVE");
+  psql(`insert into coinops.executor_capacity_environment_samples(shard_id,environment,observed_at,heartbeat_at,
+    weight_observed_at,binance_weight_current,binance_weight_average,binance_weight_peak,binance_weight_samples,
+    cpu_percent,ram_used_mb,ram_limit_mb,account_count,engine_count,registry_match)
+    values('executor-01','TESTNET',now(),now(),now(),20,25,30,3,5,147,961,1,1,true)`);
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-01','${testnet}')`), "CAPACITY_OK",
+    "fresh independent Testnet telemetry permits its own reservation, excluding the Production one");
+  assert.equal(psql(`select environment||':'||reserved_weight from coinops.executor_capacity_admissions
+    where engine_id='${testnet}'`), "TESTNET:900");
+  psql("update coinops.executor_capacity_environment_samples set binance_weight_peak=3400");
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-01','${testnet}')`), "CAPACITY_REQUIRED");
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-01','${engine}')`), "CAPACITY_OK");
+  psql("update coinops.executor_capacity_environment_samples set heartbeat_at=now()-interval '3 minutes'");
+  assert.equal(psql(`select coinops.reserve_executor_capacity('executor-01','${testnet}')`), "CAPACITY_UNKNOWN");
+  assert.equal(psql(`select has_table_privilege('authenticated','coinops.executor_capacity_environment_samples','SELECT')
+    ||':'||has_function_privilege('authenticated','coinops.executor_capacity_sample_for_environment(text,text)','EXECUTE')`), "false:false");
 });
 check("resolved capacity incident reopens with a fresh fingerprint, while repeat observations do not", () => {
   const first = psql(`insert into coinops.executor_capacity_alerts(shard_id,code,severity)

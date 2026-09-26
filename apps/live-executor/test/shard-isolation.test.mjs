@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { createExecutorHandler } from "../src/server.mjs";
 import { assertExecutorShardContext, assertRegistryShard, durableIntent,
   mergeDynamicRegistry, validateExecutorRegistry, saveInactiveRegistryAccount,
@@ -242,6 +242,47 @@ test("Testnet forwarding needs own-shard signature and locally bound account cre
     assert.deepEqual(capacity.environments.TESTNET.credential_account_ids, [ACCOUNT_B]);
     assert.deepEqual(capacity.account_ids, []);
   } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
+});
+
+test("Testnet financial writes obey executor flags while reads and no-order probes remain available", async () => {
+  for (const flags of [{ tradingEnabled: false, killSwitch: true },
+    { tradingEnabled: true, killSwitch: true }, { tradingEnabled: true, killSwitch: false }]) {
+    const calls = [], running = await serve({ ...flags, fetcher: async (url, init) => {
+      calls.push({ path: new URL(url).pathname, method: init.method });
+      return Response.json(url.endsWith("/time") ? { serverTime: NOW } : { orderId: 123 });
+    } });
+    try {
+      const scope = { operator_id: OPERATOR, exchange_account_id: ACCOUNT_B,
+        credential_ref: `account_${ACCOUNT_B.replaceAll("-", "")}`, environment: "TESTNET" };
+      await saveCredential({ directory: join(running.stateDirectory, "credentials"), masterSecret: SECRET,
+        scope, apiKey: "A".repeat(64), apiSecret: "B".repeat(64), observation: {
+          status: "PASS", validatedAt: new Date(NOW).toISOString() } });
+      const run_id = randomUUID();
+      const clientId = `COV1-BTC-1-1-BUY-${sha256(`coinops-testnet|${run_id}|BTC|1|BUY|1`).slice(0, 18)}`;
+      const base = { ...scope, executor_shard_id: "executor-02", run_id, symbol: "BTCUSDT",
+        trading_engine_id: "10000000-0000-4000-8000-000000000007" };
+      const submit = (input) => {
+        const request_id = randomUUID();
+        return post(running.url, "/v1/testnet/transport", { ...base, ...input, request_id }, `TESTNET:${request_id}`);
+      };
+      for (const input of [{ method: "POST", path: "/api/v3/order", params: {
+        symbol: "BTCUSDT", side: "BUY", type: "MARKET", quoteOrderQty: "11", newClientOrderId: clientId } },
+      { method: "DELETE", path: "/api/v3/order", params: { symbol: "BTCUSDT", orderId: "123",
+        origClientOrderId: clientId, cancelRestrictions: "ONLY_NEW",
+        newClientOrderId: `COV1-C-${createHmac("sha256", "coinops-testnet-cancel-id").update(clientId).digest("hex").slice(0, 18)}` } }]) {
+        const response = await submit(input);
+        const allowed = flags.tradingEnabled && !flags.killSwitch;
+        assert.equal(response.status, allowed ? 200 : 403);
+        if (!allowed) assert.equal((await response.json()).error, "EXECUTOR_TRADING_DISABLED");
+      }
+      assert.equal(calls.filter((call) => call.path === "/api/v3/order").length,
+        flags.tradingEnabled && !flags.killSwitch ? 2 : 0);
+      assert.equal((await submit({ method: "GET", path: "/api/v3/account", params: {} })).status, 200);
+      assert.equal((await submit({ method: "POST", path: "/api/v3/order/test", params: {
+        symbol: "BTCUSDT", side: "BUY", type: "MARKET", quoteOrderQty: "11" } })).status, 200);
+      assert.equal(calls.filter((call) => call.path === "/api/v3/order/test").length, 1);
+    } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
+  }
 });
 
 test("one shard network failure and restart do not invalidate another shard's health or telemetry", async () => {

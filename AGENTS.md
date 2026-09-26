@@ -158,6 +158,18 @@ no ambiente de destino antes de operação remota.
 - Planeje SCALE_OUT/novo IP antes da saturação de peso Binance; SCALE_UP somente se CPU/RAM forem o gargalo medido. Nenhuma conta pode consumir o headroom de recuperação das demais. Não crie VPS/IP/recurso cobrável sem autorização.
 - O modelo de decisão fica em `apps/web/lib/coinops-capacity/capacity-manager.ts`. O gate de admissão somente é considerado ativo após migration, coleta contínua, publicação do executor e web, e smoke comprovados. Motores existentes não dependem do Capacity Manager para operar; indisponibilidade dele bloqueia apenas novas ativações.
 
+### Contrato multi-shard e onboarding
+
+- Toda Binance Account tem uma única atribuição primária `executor_shard_id`, imutável após operar. A única exceção é reatribuição explícita de conta INACTIVE/killed que nunca operou, pelo RPC guardado `reassign_staged_executor_shard`: retirar registry inativo da origem, verificar ausência de qualquer ordem/fill/posição/ciclo operado/lease/reserva, manter IDs e slots e exigir credential PASS no novo shard/IP. Nunca copiar vault nem migrar LIVE automaticamente. Resolver o executor pelo vínculo validado no backend, nunca por IP/shard escolhido livremente pelo browser. Shard desconhecido não pode cair no Executor 01 por fallback.
+- Account UUID e identidade física Binance são fronteiras distintas: a mesma identidade Binance não pode ganhar outro dono em outro shard. Claims de identidade ficam server-side, sem UID/secret no frontend; falha de claim impede nova ativação.
+- Cadastro: ASSIGN por capacidade fresca → exibir executor/IP → whitelist e credential → Preview → gate final serializado → Activate. Atribuição não reserva capacidade indefinidamente. Revalidar no último instante; não mover contas existentes nem desligar um motor para abrir espaço.
+- Filas concorrentes LIVE e Testnet são limitadas e independentes por shard. Locks/idempotência financeiros continuam por engine/run. Falha de transporte ou deploy de um shard não deve monopolizar a fila do outro.
+- Configuração web multi-shard é server-only (`COINOPS_EXECUTOR_SHARDS_JSON`); cada entrada tem IP/base/HMAC exclusivos. Executor usa `COINOPS_EXECUTOR_SHARD_ID` e rejeita envelope de shard divergente antes de acessar vault/exchange. Não copiar credenciais, locks ou estado do Executor 01 para um novo executor.
+- Peso Binance é orçamento de cada IP, jamais soma de orçamentos de IPs diferentes. Shard vazio coleta evidência pública limitada; ausência de métrica não é peso zero nem capacidade disponível. Alertas incluem shard e contexto de conta/engine quando aplicável; ausência de telemetria não resolve incidentes anteriores.
+- Production e Testnet possuem evidência de request weight separada por host. Production mantém sua tabela de capacidade; Testnet usa amostra por ambiente e inventário de contas autorizadas no vault combinado com engines do ledger. Ausência desse payload em executores antigos bloqueia apenas nova admissão Testnet, nunca sua execução existente. Não atribuir peso fictício Testnet ao budget Production.
+- Deploy/rollback de novo executor usa GitHub/main + SHA completo, release imutável, health exato e estado persistente separado. Não dependa de checkout ou arquivo particular de PC/notebook. Nunca reinicie o Executor 01 para testar o Executor 02.
+- Não declarar a infraestrutura ativa com base apenas no código: conservar gates, SHA, IP, health, migrations, smoke e limitações no runbook/relatório da entrega. Teste de fixture não comprova uma ordem Binance Testnet real nem entrega física de push.
+
 ## Variáveis — nomes, nunca valores
 
 Descubra sempre o conjunto atual no runtime e nos exemplos. O inventário auditado inclui:

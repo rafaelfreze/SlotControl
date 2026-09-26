@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { asShardMetrics, capacityScope } from "@/lib/coinops-capacity/capacity-server";
+import { shardReservedWeight } from "@/lib/coinops-capacity/admission-reservations";
 import { assessShardCapacity, decideShardAdmission, DEFAULT_CAPACITY_POLICY } from "@/lib/coinops-capacity/capacity-manager";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
@@ -22,13 +23,16 @@ export async function GET() {
     return NextResponse.json({ error: "COINOPS_CAPACITY_ADMIN_DENIED" }, { status: 403, headers });
   try {
     const service = capacityScope();
-    const [shards, samples, alerts] = await Promise.all([
-      service.from("executor_shards").select("id,enabled,binance_limit_per_min,admission_ratio,incremental_engine_weight").order("id"),
+    const [shards, samples, alerts, reservations] = await Promise.all([
+      service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio,incremental_engine_weight").order("id"),
       service.from("executor_capacity_samples").select("*"),
       service.from("executor_capacity_alerts").select("shard_id,code,severity,first_seen_at")
         .is("resolved_at", null),
+      service.from("executor_capacity_admissions").select("shard_id,environment,reserved_weight")
+        .eq("environment", "REAL").gt("expires_at", new Date().toISOString()),
     ]);
-    if (shards.error || samples.error || alerts.error) throw new Error("COINOPS_CAPACITY_READ_FAILED");
+    if (shards.error || samples.error || alerts.error || reservations.error)
+      throw new Error("COINOPS_CAPACITY_READ_FAILED");
     return NextResponse.json({ shards: (shards.data ?? []).map((shard) => {
       const sample = (samples.data ?? []).find((item) => item.shard_id === shard.id) ?? null;
       const policy = { ...DEFAULT_CAPACITY_POLICY,
@@ -36,10 +40,12 @@ export async function GET() {
         admissionRatio: Number(shard.admission_ratio) };
       const metrics = sample && shard.enabled ? asShardMetrics(sample) : null;
       const assessment = assessShardCapacity(metrics, policy);
-      const admission = decideShardAdmission(metrics, Number(shard.incremental_engine_weight), policy);
+      const reservedWeight = shardReservedWeight(shard.id, "REAL", reservations.data ?? []);
+      const admission = decideShardAdmission(metrics, Number(shard.incremental_engine_weight) + reservedWeight, policy);
       const dualEngineAdmission = decideShardAdmission(metrics,
-        Number(shard.incremental_engine_weight) * 2, policy);
+        Number(shard.incremental_engine_weight) * 2 + reservedWeight, policy);
       return { id: shard.id, state: assessment.state, action: assessment.action,
+        egressIp: String(shard.egress_ipv4), reservedWeight,
         binanceWeightCurrent: sample?.binance_weight_current ?? null,
         binanceWeightAverage: sample?.binance_weight_average ?? null,
         binanceWeightPeak: sample?.binance_weight_peak ?? null,
@@ -48,10 +54,12 @@ export async function GET() {
         ramLimitMb: sample?.ram_limit_mb ?? null,
         schedulerBacklog: sample?.scheduler_backlog ?? null,
         reconciliationAgeMs: sample?.reconciliation_age_ms ?? null,
-        accountCount: assessment.accountCount, engineCount: assessment.engineCount,
+        accountCount: sample?.account_count ?? 0, engineCount: sample?.engine_count ?? 0,
         observedAt: sample?.observed_at ?? null,
-        canAddEngine: admission.allowed, admissionReason: admission.reason,
-        canAddTwoEngineAccount: dualEngineAdmission.allowed,
+        heartbeatAt: sample?.heartbeat_at ?? null,
+        executorVersion: sample?.executor_version ?? null,
+        canAddEngine: assessment.state === "HEALTHY" && admission.allowed, admissionReason: admission.reason,
+        canAddTwoEngineAccount: assessment.state === "HEALTHY" && dualEngineAdmission.allowed,
         alerts: (alerts.data ?? []).filter((item) => item.shard_id === shard.id) };
     }) }, { headers });
   } catch {

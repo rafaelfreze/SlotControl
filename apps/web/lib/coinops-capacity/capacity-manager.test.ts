@@ -53,3 +53,17 @@ test("one account cannot have two primary shards", () => {
   assert.throws(() => assertUniquePrimaryShard([{ accountId: "rafael", shardId: "01" },
     { accountId: "rafael", shardId: "02" }]), /COINOPS_ACCOUNT_MULTIPLE_PRIMARY_SHARDS/);
 });
+
+test("Diogo one-engine admission uses 15-minute pressure, not the latest counter alone", () => {
+  const observed = metrics({ binanceWeightCurrent: 3018, binanceWeightAverage: 3027,
+    binanceWeightPeak: 5139 });
+  assert.equal(observed.binanceWeightCurrent / 6000 * 100, 50.3);
+  assert.equal(assessShardCapacity(observed, undefined, now).binancePercent, 85.65);
+  assert.equal(decideShardAdmission(observed, 900, undefined, now).allowed, false);
+  // Exactly one engine, unchanged 65% admission ceiling and 35% recovery reserve.
+  const normal = metrics({ binanceWeightCurrent: 2257, binanceWeightAverage: 2600,
+    binanceWeightPeak: 3000 });
+  assert.equal(decideShardAdmission(normal, 900, undefined, now).allowed, true);
+  assert.equal(decideShardAdmission({ ...normal, binanceWeightPeak: 3001 }, 900, undefined, now).allowed, false);
+  assert.equal(decideShardAdmission(normal, 1800, undefined, now).allowed, false);
+});

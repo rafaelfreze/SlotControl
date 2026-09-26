@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { syncInactiveBinanceAccount } from "@/lib/execution/binance-account-registry-server";
+import { requireAccountIdentityBinding } from "@/lib/execution/binance-identity-server";
 import { BinanceSpotTestnetAdapter } from "@/lib/execution/binance-spot-testnet-adapter";
 import { loadLiveEngineExecutorStatus } from "@/lib/execution/live-executor-health";
 import { buildLiveSizing, parseLiveRules } from "@/lib/execution/live-preparation";
@@ -121,9 +122,9 @@ async function planPreview(scope: Scope, input: EnginePlanInput) {
       nextBuy: sizing.slots.find((slot) => slot.operationalRank === 2)?.entryPriceBrl,
       planned: sizing.dryRun.planned, strategyVersion: sizing.dryRun.strategyVersion };
   });
-  const capacity = environment === "REAL"
-    ? await previewAccountCapacity(scope.service, plan.accountId, plan.engines.length)
-    : { code: "CAPACITY_OK", shardId: null };
+  // Testnet also consumes this shard's resources. Never manufacture an OK when
+  // telemetry is unavailable merely because its exchange funds are fictitious.
+  const capacity = await previewAccountCapacity(scope.service, plan.accountId, plan.engines.length, environment);
   return { account: account.display_name, accountId: account.id, environment, quote: plan.quote,
     capital: plan.capital, free, outsideCoinOps: Number((free - plan.capital).toFixed(2)),
     observedAt: snapshot.observed_at, executorIp: snapshot.executor_ip,
@@ -373,6 +374,8 @@ export async function POST(request: NextRequest) {
       const free = snapshot.balances.find((balance) => balance.asset === engine.quote_asset)?.free ?? 0;
       if (free + 1e-8 < Number(engine.hard_cap_quote) || snapshot.markets[0]?.open_orders.length)
         throw new Error("COINOPS_ENGINE_TESTNET_ACTIVATION_UNSAFE");
+      await requireAccountIdentityBinding(scope.service, scope.operator.id, engine.exchange_account_id, "TESTNET");
+      await reserveEngineCapacity(scope.service, engine.trading_engine_id, engine.exchange_account_id);
       if (account.data.status === "INACTIVE") {
         const opened = await scope.service.from("exchange_accounts")
           .update({ status: "ACTIVE", kill_switch: false }).eq("id", account.data.id)
@@ -450,6 +453,7 @@ export async function POST(request: NextRequest) {
       || snapshot.markets[0]?.open_orders.some((order) => order.clientOrderId?.startsWith(ownPrefix))
       || Number(engine.hard_cap_quote) > Number(capRead.data.hard_cap_quote))
       throw new Error("COINOPS_ENGINE_ACTIVATION_SNAPSHOT_DENIED");
+    await requireAccountIdentityBinding(scope.service, scope.operator.id, engine.exchange_account_id, "REAL");
     await reserveEngineCapacity(scope.service, engine.trading_engine_id, engine.exchange_account_id);
     if (account.data.status === "INACTIVE") {
       const opened = await scope.service.from("exchange_accounts")
