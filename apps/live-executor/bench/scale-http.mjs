@@ -16,10 +16,14 @@ const SECRET = "fictional-scale-HMAC-secret-never-production";
 const SYMBOLS = ["BTCUSDT", "SOLUSDT"];
 const WAIT_MS = Number(process.env.COINOPS_SCALE_FAKE_LATENCY_MS ?? 5);
 const CONCURRENCY = Number(process.env.COINOPS_SCALE_CONCURRENCY ?? 12);
+const ROUNDS = Number(process.env.COINOPS_SCALE_STATE_ROUNDS ?? 1);
+const REQUIRE_PASS = process.env.COINOPS_SCALE_REQUIRE_PASS !== "false";
 if (!Number.isInteger(WAIT_MS) || WAIT_MS < 0 || WAIT_MS > 1000)
   throw new Error("COINOPS_SCALE_FAKE_LATENCY_INVALID");
 if (!Number.isInteger(CONCURRENCY) || CONCURRENCY < 1 || CONCURRENCY > 200)
   throw new Error("COINOPS_SCALE_CONCURRENCY_INVALID");
+if (!Number.isInteger(ROUNDS) || ROUNDS < 1 || ROUNDS > 10)
+  throw new Error("COINOPS_SCALE_ROUNDS_INVALID");
 
 const percentile = (values, percent) => {
   const ordered = [...values].sort((a, b) => a - b);
@@ -108,34 +112,40 @@ async function run(accountCount, fault) {
   try {
     const results = await runFairPool(engines.map((row, index) => ({ row, index })),
       CONCURRENCY, 0, async ({ row, index }) => {
-      const key = `scale-read-${String(index).padStart(8, "0")}`;
-      const input = intentContext(row, key), body = JSON.stringify(input);
-      const now = Date.now(), nonce = randomUUID().replaceAll("-", "");
       const requestStart = performance.now();
-      const response = await fetch(`${base}/v1/state`, { method: "POST", body, headers: {
-        "content-type": "application/json", "x-coinops-timestamp": String(now),
-        "x-coinops-nonce": nonce, "x-coinops-body-sha256": sha256(body),
-        "x-coinops-signature": requestSignature(SECRET, "POST", "/v1/state", now, nonce, body),
-        "x-coinops-idempotency-key": key,
-      } });
-      const payload = await response.json();
-      if (response.status === 200) {
+      let status = 200, completed = 0;
+      for (let round = 0; round < ROUNDS; round++) {
+        const key = `scale-read-${String(index).padStart(8, "0")}-${round}`;
+        const input = intentContext(row, key), body = JSON.stringify(input);
+        const now = Date.now(), nonce = randomUUID().replaceAll("-", "");
+        const response = await fetch(`${base}/v1/state`, { method: "POST", body, headers: {
+          "content-type": "application/json", "x-coinops-timestamp": String(now),
+          "x-coinops-nonce": nonce, "x-coinops-body-sha256": sha256(body),
+          "x-coinops-signature": requestSignature(SECRET, "POST", "/v1/state", now, nonce, body),
+          "x-coinops-idempotency-key": key,
+        } });
+        const payload = await response.json();
+        status = response.status;
+        if (status !== 200) break;
         assert.equal(payload.exchange_account_id, row.exchange_account_id);
         assert.equal(payload.trading_engine_id, row.trading_engine_id);
         assert.equal(payload.symbol, row.symbol);
+        completed++;
       }
-      return { status: response.status, latencyMs: performance.now() - requestStart,
+      return { status, completed, latencyMs: performance.now() - requestStart,
         id: row.trading_engine_id, account: row.exchange_account_id };
     });
     const affected = new Set(fault === "ONE_CREDENTIAL" ? engines.slice(0, 2).map((row) => row.trading_engine_id)
       : fault === "ONE_ENGINE" ? [engines[0].trading_engine_id]
         : fault === "FIVE_ENGINES" ? engines.slice(0, 5).map((row) => row.trading_engine_id) : []);
-    for (const result of results)
+    if (REQUIRE_PASS) for (const result of results)
       assert.equal(result.status === 200, !affected.has(result.id), `${fault} ${result.id} HTTP ${result.status}`);
     const cpu = process.cpuUsage(cpuBefore);
     return { accounts: accountCount, engines: engines.length, slotsLogical: engines.length * 25,
-      schedulerConcurrency: CONCURRENCY,
-      fault, healthyEngines: engines.length - affected.size, affectedEngines: affected.size,
+      schedulerConcurrency: CONCURRENCY, stateRounds: ROUNDS,
+      fault, healthyEngines: results.filter((item) => item.status === 200).length,
+      affectedEngines: results.filter((item) => item.status !== 200).length,
+      completedSnapshots: results.reduce((sum, item) => sum + item.completed, 0),
       wallMs: Number((performance.now() - started).toFixed(2)),
       latencyMs: { p50: percentile(results.map((item) => item.latencyMs), 50),
         p95: percentile(results.map((item) => item.latencyMs), 95),

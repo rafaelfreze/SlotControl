@@ -144,10 +144,18 @@ cron pós-restart retornou `COMPLETED`. Nenhuma ordem foi usada como teste.
   Realtime único por contexto foram implementados **somente na branch de
   auditoria**. Os testes sintéticos de 50 contas inicialmente reprovaram por
   peso de `exchangeInfo`; cache público de filtros por 1 s corrigiu o
-  snapshot inicial de 50/100, mas 100/200 ainda excedeu o teto de 4.800
-  pesos/minuto sem coalescência. Mais importante, o cron completo usa vários
-  snapshots por engine: não há prova de que 50/100 mantenham a cadência com
-  Binance real. Por isso o limitador/cache não foi publicado em Production.
+  snapshot inicial de 50/100. A 100 ms de latência fictícia, um snapshot de
+  100/200 também passou graças à coalescência; a resposta imediata, sem
+  coalescência temporal, falhou em 100/200. Mais importante, cinco snapshots
+  por engine (sem ordens e sem RPCs) esgotaram o orçamento: 30/60 teve 48
+  engines saudáveis e 12 afetados; 50/100 teve 48 saudáveis e 52 afetados;
+  100/200 teve 48 saudáveis e 152 afetados. O harness cobriu 260 snapshots
+  completos em 50/100 antes de bloquear novas leituras. Falhar 1 ou 5 engines
+  sob essa pressão não isola o efeito, pois o IP já estava saturado. O cron
+  real observou 44 snapshots para apenas seis engines em um minuto. Logo,
+  a arquitetura ainda não sustenta 50/100 em cadência de um minuto; publicar
+  o limitador agora apenas bloquearia motores. Limitador/cache/pool não foram
+  publicados em Production.
 
 ### Estado dos gates após esta rodada
 
