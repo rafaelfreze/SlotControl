@@ -26,7 +26,7 @@ export function CapacityCard() {
       const result = await response.json();
       setShards((current) => current?.map((item) => item.id === shard.id
         ? { ...item, warningsMuted: result.warningsMuted,
-          alerts: result.warningsMuted ? item.alerts.filter((alert) => !["BINANCE_WEIGHT_WARNING", "EXECUTOR_CAPACITY_WARNING"].includes(alert.code)) : item.alerts }
+          alerts: result.warningsMuted ? item.alerts.filter((alert) => !["BINANCE_WEIGHT_WARNING", "EXECUTOR_CAPACITY_WARNING", "CAPACITY_LIMIT"].includes(alert.code)) : item.alerts }
         : item) ?? null);
     } catch { setMuteError("Não foi possível salvar a preferência. Tente novamente."); }
     finally { setMutating(null); }
@@ -51,7 +51,7 @@ export function CapacityCard() {
         <button type="button" className="px-button px-capacity-mute" disabled={mutating === shard.id}
           onClick={() => void toggleWarnings(shard)}>{shard.warningsMuted
             ? "Reativar avisos de capacidade" : "Ocultar avisos de capacidade"}</button>
-        {shard.warningsMuted ? <small>Avisos repetitivos de Binance weight/capacidade ocultos para você. Incidentes operacionais e admissão permanecem ativos.</small> : null}
+        {shard.warningsMuted ? <small>Avisos repetitivos de Binance weight/limite ocultos para você. Incidentes operacionais e bloqueio de novas ativações continuam ativos.</small> : null}
         <span>IP fixo / whitelist: <code>{shard.egressIp}</code></span>
         <span>Binance atual: {shard.binanceWeightCurrent?.toFixed(0) ?? "—"} / {shard.binanceLimit} weight/min
           {shard.binanceWeightCurrent !== null && shard.binanceLimit > 0

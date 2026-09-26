@@ -3,7 +3,7 @@ import { shouldPush } from "@/lib/coinops-notifications/push-policy";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { capacityScope } from "./capacity-server";
 import { capacityAlertMessage } from "./capacity-alert-policy";
-import { capacityWarningMuted } from "./capacity-warning-mute";
+import { acknowledgeableCapacityAlert, capacityWarningMuted } from "./capacity-warning-mute";
 
 type Alert = { id: string; shard_id: string; code: string; severity: "WARNING" | "CRITICAL";
   first_seen_at: string };
@@ -78,13 +78,13 @@ export async function dispatchCapacityPush() {
           lease_until: null, error_code: "INCIDENT_CLOSED" }).eq("id", item.id);
         continue;
       }
-      if (alert.severity === "WARNING") {
+      if (acknowledgeableCapacityAlert(alert)) {
         const mute = await service.from("executor_capacity_warning_mutes").select("operator_id")
           .eq("operator_id", device.operator_id).eq("shard_id", alert.shard_id).maybeSingle();
         if (mute.error) throw new Error("COINOPS_CAPACITY_PUSH_MUTE_READ_FAILED");
         if (mute.data) {
           await service.from("executor_capacity_deliveries").update({ status: "EXPIRED",
-            lease_until: null, error_code: "WARNING_MUTED" }).eq("id", item.id);
+            lease_until: null, error_code: "CAPACITY_ACKNOWLEDGED" }).eq("id", item.id);
           continue;
         }
       }

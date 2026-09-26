@@ -68,9 +68,11 @@ O ADMIN pode ocultar os avisos repetitivos de weight/capacidade de um shard
 específico no card Infraestrutura (por exemplo, Executor 01 quando não recebe
 mais contas). A preferência é persistida por operador e shard em
 `executor_capacity_warning_mutes`; o dispatcher deixa de enfileirar e expira
-entregas WARNING de `BINANCE_WEIGHT_WARNING` e `EXECUTOR_CAPACITY_WARNING`
-pendentes para esse par. Alertas CRITICAL, fila, stale e recursos continuam chegando.
-O estado WARNING, métricas, histórico de incidentes e gate de admissão não são
+entregas de `BINANCE_WEIGHT_WARNING`, `EXECUTOR_CAPACITY_WARNING` e
+`CAPACITY_LIMIT` pendentes para esse par. A categoria `CAPACITY_LIMIT` continua
+CRITICAL no estado e no gate; apenas seu push repetitivo fica reconhecido.
+Incidentes operacionais CRITICAL, fila, stale e recursos continuam chegando.
+O estado, métricas, histórico de incidentes e gate de admissão não são
 alterados. “Reativar avisos de capacidade” remove apenas essa preferência.
 Esta é uma preferência de notificação, não um kill switch nem autorização para
 admitir um motor sem headroom.
