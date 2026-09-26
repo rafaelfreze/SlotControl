@@ -9,6 +9,7 @@ Este runbook serve exclusivamente para `executor-02` e posteriores. Os scripts r
 - GitHub/main é a fonte oficial. Deploy aceita somente SHA completo de 40 caracteres pertencente ao histórico de main; rollback usa outro SHA já revisado com suporte a shards.
 - IPv4 do servidor precisa ser o mesmo observado no egress. Não há rotação de IP nem rebalanceamento de conta LIVE. Destruir/recriar um Droplet pode alterar seu IPv4: não recriar infraestrutura com contas vinculadas.
 - O control plane mantém scheduler, ledger, admission e encaminhamento explícito por shard. O executor não recebe credenciais Supabase nem administra contas de outro shard.
+- O catálogo ADMIN de Estratégia pagina todas as contas do operador e usa `exchange_accounts.onboarding_environment` para exibir contas recém-atribuídas, mesmo antes da validação da API. Selecionar `account_id` consulta somente os motores e checks dessa conta; o backend resolve `executor_shard_id` e o IP sem escolha manual do usuário. Aparecer no seletor **não** significa credencial validada: preview/preparação exigem `BINANCE_CREDENTIAL PASS` no mesmo ambiente, e ativação mantém os gates de capacidade e trading. Após salvar credenciais em Configurações, reabrir Estratégia atualiza o estado. Nunca habilitar motores a partir do registro `EXECUTOR_ASSIGNMENT` sozinho.
 
 ## Provisionamento
 

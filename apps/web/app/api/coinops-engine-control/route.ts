@@ -15,6 +15,7 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
 import { previewAccountCapacity, reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
+import { engineCatalogAccount } from "@/lib/execution/engine-account-catalog";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -62,7 +63,8 @@ async function ownedAccount(scope: Scope, accountId: string) {
 
 async function accountEnvironment(scope: Scope, accountId: string): Promise<Environment> {
   const account = await scope.service.from("exchange_accounts")
-    .select("is_legacy_default").eq("operator_id", scope.operator.id)
+    .select("is_legacy_default,onboarding_environment,executor_shard_id")
+    .eq("operator_id", scope.operator.id)
     .eq("id", accountId).single();
   if (account.error || !account.data) throw new Error("COINOPS_ENGINE_ACCOUNT_DENIED");
   // Rafael predates self-service credential checks. His account identity is
@@ -74,7 +76,9 @@ async function accountEnvironment(scope: Scope, accountId: string): Promise<Envi
     .order("checked_at", { ascending: false }).limit(1).maybeSingle();
   const environment = check.data?.evidence?.environment;
   if (check.error || check.data?.status !== "PASS" || check.data?.evidence?.status !== "PASS"
-    || !["REAL", "TESTNET"].includes(environment))
+    || !["REAL", "TESTNET"].includes(environment)
+    || !account.data.executor_shard_id
+    || account.data.onboarding_environment && account.data.onboarding_environment !== environment)
     throw new Error("COINOPS_ENGINE_CREDENTIAL_NOT_VALIDATED");
   return environment as Environment;
 }
@@ -132,42 +136,73 @@ async function planPreview(scope: Scope, input: EnginePlanInput) {
       ? "PREVIEW_NO_WRITE" as const : "NOT_EXECUTABLE" as const };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const { operator, service } = await adminScope();
-    const [accounts, engines, caps, runs, testnetRuns, profiles, checks, readyChecks, preparations, alerts] = await Promise.all([
-      service.from("exchange_accounts")
-        .select("id,display_name,status,kill_switch,is_legacy_default")
-        .eq("operator_id", operator.id).in("status", ["ACTIVE", "INACTIVE"]).order("created_at"),
+    // PostgREST limits rows per request. Page the admin catalog instead of
+    // silently hiding the 1,001st account or tying it to executor-01.
+    const accountRows = [];
+    for (let offset = 0; ; offset += 500) {
+      const page = await service.from("exchange_accounts")
+        .select("id,display_name,status,kill_switch,is_legacy_default,onboarding_environment,executor_shard_id")
+        .eq("operator_id", operator.id).in("status", ["ACTIVE", "INACTIVE"])
+        .order("created_at").order("id").range(offset, offset + 499);
+      if (page.error) throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
+      accountRows.push(...(page.data ?? []));
+      if ((page.data?.length ?? 0) < 500) break;
+    }
+    const accountId = request.nextUrl.searchParams.get("accountId") ?? "";
+    if (accountId && !accountRows.some((item) => item.id === accountId))
+      throw new Error("COINOPS_ENGINE_ACCOUNT_DENIED");
+    // Historical accounts predate persisted environment assignment. Resolve
+    // only those records (plus the selected account) from their latest check.
+    // All newly assigned accounts use onboarding_environment directly.
+    const checkIds = [...new Set(accountRows.filter((item) =>
+      !item.onboarding_environment || item.id === accountId).map((item) => item.id))];
+    const checkResults = await Promise.all(checkIds.map(async (id) => ({ id,
+      result: await service.from("account_onboarding_checks")
+        .select("status,evidence").eq("operator_id", operator.id)
+        .eq("exchange_account_id", id).eq("check_key", "BINANCE_CREDENTIAL")
+        .order("checked_at", { ascending: false }).limit(1).maybeSingle(),
+    })));
+    if (checkResults.some((item) => item.result.error))
+      throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
+    const checkByAccount = new Map(checkResults.map((item) => [item.id, item.result.data]));
+    const accounts = accountRows.map((item) => engineCatalogAccount(item,
+      checkByAccount.get(item.id) ?? null));
+    if (!accountId) return json({ accounts, engines: [], caps: [] });
+    const [engines, caps, runs, testnetRuns, profiles, readyChecks, preparations, alerts] = await Promise.all([
       service.from("trading_engines")
         .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config")
-        .eq("operator_id", operator.id).in("environment", ["REAL", "TESTNET"]).order("symbol"),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .in("environment", ["REAL", "TESTNET"]).order("symbol"),
       service.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
-        .eq("operator_id", operator.id),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId),
       service.from("robot_v1_live_runs")
         .select("id,trading_engine_id,status,last_error,last_reconciled_at,created_at")
-        .eq("operator_id", operator.id).in("status", ["PREPARING", "ACTIVE", "PAUSED"]),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .in("status", ["PREPARING", "ACTIVE", "PAUSED"]),
       service.from("robot_v1_testnet_runs")
         .select("id,trading_engine_id,status,last_error,last_reconciled_at,created_at")
-        .eq("operator_id", operator.id).in("status", ["ACTIVE", "PAUSED"]),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .in("status", ["ACTIVE", "PAUSED"]),
       service.from("robot_v1_ath_profiles")
         .select("trading_engine_id,gain_rate,normal_spacing_rate,post_ath_spacing_rate,config_version")
-        .eq("operator_id", operator.id).in("environment", ["REAL", "TESTNET"]),
-      service.from("account_onboarding_checks")
-        .select("exchange_account_id,status,evidence,checked_at")
-        .eq("operator_id", operator.id).eq("check_key", "BINANCE_CREDENTIAL")
-        .order("checked_at", { ascending: false }).limit(100),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .in("environment", ["REAL", "TESTNET"]),
       service.from("account_onboarding_checks")
         .select("trading_engine_id,status,checked_at")
-        .eq("operator_id", operator.id).eq("check_key", "TESTNET_READY")
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .eq("check_key", "TESTNET_READY")
         .order("checked_at", { ascending: false }).limit(100),
       service.from("robot_v1_live_preparations")
         .select("trading_engine_id,live_enabled,kill_switch")
-        .eq("operator_id", operator.id),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId),
       service.from("robot_v1_live_alerts").select("trading_engine_id")
-        .eq("operator_id", operator.id).is("resolved_at", null),
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .is("resolved_at", null),
     ]);
-    if ([accounts, engines, caps, runs, testnetRuns, profiles, checks, readyChecks, preparations, alerts].some((item) => item.error))
+    if ([engines, caps, runs, testnetRuns, profiles, readyChecks, preparations, alerts].some((item) => item.error))
       throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
     const runIds = (runs.data ?? []).map((run) => run.id);
     const testnetRunIds = (testnetRuns.data ?? []).map((run) => run.id);
@@ -185,15 +220,8 @@ export async function GET() {
     ]) : [{ data: [], error: null }, { data: [], error: null }];
     if (slots.error || orders.error || testnetSlots.error || testnetOrders.error)
       throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
-    const validation = new Map<string, { valid: boolean; environment: Environment | null }>();
-    for (const row of checks.data ?? []) if (!validation.has(row.exchange_account_id))
-      validation.set(row.exchange_account_id, { valid: row.status === "PASS" && row.evidence?.status === "PASS",
-        environment: ["REAL", "TESTNET"].includes(row.evidence?.environment)
-          ? row.evidence.environment as Environment : null });
-    const accountById = new Map((accounts.data ?? []).map((item) => [item.id, item]));
-    return json({ accounts: (accounts.data ?? []).map((item) => ({ ...item,
-      credentialValidated: validation.get(item.id)?.valid ?? false,
-      environment: validation.get(item.id)?.environment ?? null })),
+    const accountById = new Map(accounts.map((item) => [item.id, item]));
+    return json({ accounts,
       engines: (engines.data ?? []).filter((item) => accountById.has(item.exchange_account_id)).map((item) => {
         const isTestnet = item.environment === "TESTNET";
         const run = (isTestnet ? testnetRuns.data : runs.data)?.find((row) => row.trading_engine_id === item.id) ?? null;
@@ -217,7 +245,7 @@ export async function GET() {
           evidence: { physicalSlots: runSlots.length, open, residentTp: tp, nextBuy, recent, clean },
           profile: profiles.data?.find((profile) => profile.trading_engine_id === item.id) ?? null };
       }),
-      caps: (caps.data ?? []).filter((item) => accountById.has(item.exchange_account_id)) });
+      caps: caps.data ?? [] });
   } catch { return json({ error: "COINOPS_ENGINE_ADMIN_UNAVAILABLE" }, 403); }
 }
 

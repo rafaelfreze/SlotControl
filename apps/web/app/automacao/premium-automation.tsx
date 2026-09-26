@@ -217,7 +217,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     </main>
     <PremiumDrawer open={panel !== null} title={title} onClose={() => setPanel(null)}>
       <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
-        <EngineControlCenter initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
+        <EngineControlCenter active={panel === "strategy"} initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
           onEditEngine={(accountId, symbol) => { setSelection({ accountId, symbol }); setEngineId(null); }}
           onOpenCredentials={() => setPanel("config")} />
         {concrete && strategyPanels?.[concrete.engineId] ? <div className="px-engine-existing-profile">

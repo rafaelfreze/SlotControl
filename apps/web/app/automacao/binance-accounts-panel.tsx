@@ -67,6 +67,10 @@ export function BinanceAccountsPanel() {
         ? "Capacidade do executor atingida. Adicione/expanda um executor antes de ativar novas contas."
         : code === "COINOPS_CAPACITY_UNKNOWN"
           ? "Telemetria indisponível ou desatualizada. Nova conta bloqueada por segurança; motores existentes continuam operando."
+          : code === "EXECUTOR_CREDENTIAL_ALREADY_BOUND"
+            ? "Esta API Key já está vinculada a outra conta neste executor. Crie uma API exclusiva na Binance da conta selecionada e configure a whitelist com o IP exibido. Nenhuma credencial ou motor novo foi ativado."
+            : code === "EXECUTOR_BINANCE_CREDENTIALS_MISSING"
+              ? "Esta conta ainda não possui credencial salva no executor atribuído. Insira a API Key e o Secret da própria conta em Conectar e validar."
           : code);
       await refresh().catch(() => {});
     } finally { setBusy(false); }

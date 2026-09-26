@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Account = { id: string; display_name: string; status: string; kill_switch: boolean;
-  is_legacy_default: boolean; credentialValidated: boolean; environment: "REAL" | "TESTNET" | null };
+  is_legacy_default: boolean; credentialValidated: boolean; environment: "REAL" | "TESTNET" | null;
+  executor_shard_id: string | null };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: string;
   environment: "REAL" | "TESTNET"; status: string; kill_switch: boolean; hard_cap_quote: number | string;
   operational: boolean; ready: boolean; evidence: { physicalSlots: number; open: number;
@@ -46,8 +47,8 @@ function split(total: string, assets: MarketAsset[]) {
     [asset, ((base + (index < rest ? 1 : 0)) / 100).toFixed(2)])) as Record<MarketAsset, string>;
 }
 
-export function EngineControlCenter({ initialAccountId, environment, onEditEngine, onOpenCredentials }: {
-  initialAccountId: string; environment: "REAL" | "TESTNET"; onEditEngine: (accountId: string, symbol: string) => void;
+export function EngineControlCenter({ active, initialAccountId, environment, onEditEngine, onOpenCredentials }: {
+  active: boolean; initialAccountId: string; environment: "REAL" | "TESTNET"; onEditEngine: (accountId: string, symbol: string) => void;
   onOpenCredentials: () => void }) {
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -62,19 +63,38 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const refreshSequence = useRef(0);
   const account = accounts.find((item) => item.id === accountId);
   const testnet = account?.environment === "TESTNET";
   const accountEngines = engines.filter((item) => item.exchange_account_id === accountId);
   const plannedSplit = useMemo(() => equal && capital ? split(capital, assets) : null,
     [equal, capital, assets]);
   const refresh = useCallback(async () => {
-    const response = await fetch(api, { cache: "no-store", credentials: "same-origin" });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error ?? "COINOPS_ENGINE_STATUS_UNAVAILABLE");
-    setAccounts((payload.accounts ?? []).filter((item: Account) => item.environment === environment));
-    setEngines((payload.engines ?? []).filter((item: Engine) => item.environment === environment));
-  }, [environment]);
-  useEffect(() => { void refresh().catch(() => setMessage("Estado dos motores indisponível.")); }, [refresh]);
+    const sequence = ++refreshSequence.current;
+    setLoading(true);
+    try {
+      const url = new URL(api, window.location.origin);
+      if (accountId) url.searchParams.set("accountId", accountId);
+      const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "COINOPS_ENGINE_STATUS_UNAVAILABLE");
+      if (sequence !== refreshSequence.current) return;
+      setAccounts((payload.accounts ?? []).filter((item: Account) => item.environment === environment));
+      setEngines((payload.engines ?? []).filter((item: Engine) =>
+        item.exchange_account_id === accountId && item.environment === environment));
+    } finally { if (sequence === refreshSequence.current) setLoading(false); }
+  }, [accountId, environment]);
+  useEffect(() => {
+    if (active) void refresh().catch(() => setMessage("Estado dos motores indisponível."));
+    else { refreshSequence.current += 1; setLoading(false); }
+  }, [active, refresh]);
+  useEffect(() => {
+    const nextAccountId = initialAccountId === "ALL" ? "" : initialAccountId;
+    setAccountId(nextAccountId);
+    setEngines([]);
+    setPreview(null);
+  }, [initialAccountId, environment]);
   function invalidate() { setPreview(null); setRequestId(crypto.randomUUID()); }
   function updateRule(asset: MarketAsset, field: keyof Rules[MarketAsset], value: string) {
     setRules((current) => ({ ...current, [asset]: { ...current[asset], [field]: value } }));
@@ -133,7 +153,7 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
       await refresh(); router.refresh();
     });
   }
-  const newAccount = account && !account.is_legacy_default && account.status === "INACTIVE"
+  const newAccount = !loading && account && !account.is_legacy_default && account.status === "INACTIVE"
     && account.credentialValidated && accountEngines.length === 0;
   return <section className="px-engine-center" aria-label="Central de estratégia e motores">
     <header className="px-engine-center-head"><div><span className="px-eyebrow">CONFIGURAÇÃO OPERACIONAL · {testnet ? "TESTNET" : "REAL"}</span>
@@ -141,12 +161,13 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
       Cada motor tem seu cap, 25 slots e ciclo próprio.</p></div>
       <button type="button" className="px-button" onClick={onOpenCredentials}>Contas Binance →</button></header>
     <div className="px-engine-account-picker"><label>Conta Binance<select aria-label="Conta Binance para motores"
-      value={accountId} onChange={(event) => { setAccountId(event.target.value);
+      value={accountId} onChange={(event) => { setAccountId(event.target.value); setEngines([]);
+        setAccounts((current) => current.map((item) => ({ ...item, credentialValidated: false })));
         setQuote(accounts.find((item) => item.id === event.target.value)?.environment === "TESTNET" ? "USDT" : "BRL"); invalidate(); }}>
       <option value="">Selecione uma conta</option>{accounts.map((item) =>
         <option key={item.id} value={item.id}>{item.display_name} · {item.status}</option>)}</select></label>
       {account ? <span className={`px-badge ${account.status === "ACTIVE" ? "" : "px-badge--warning"}`}>
-        {account.status} · {account.environment ?? "ambiente a validar"} · {account.credentialValidated ? "API validada" : "API a validar"}</span> : null}</div>
+        {account.status} · {account.environment ?? "ambiente a validar"} · {account.executor_shard_id ?? "shard a definir"} · {loading ? "Verificando API" : account.credentialValidated ? "API validada" : "API a validar"}</span> : null}</div>
     {account && accountEngines.length > 0 ? <div className="px-engine-list"><h3>Motores da conta</h3>
       {accountEngines.map((engine) => <article className="px-engine-row" key={engine.id}>
         <div><strong>{engine.symbol}</strong><small>{money(engine.hard_cap_quote, engine.quote_asset)} cap · 25 slots
