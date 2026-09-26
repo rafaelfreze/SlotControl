@@ -152,6 +152,8 @@ no ambiente de destino antes de operação remota.
 
 ## Multi-account, isolamento e capacidade
 
+- Watchdog operacional é server-side: crons Vercel, telemetria dos executores e reconciliação LIVE. Navegador, PC e Codex não são componentes do laço 24/7. A checagem rápida usa dados internos; Binance REST e qualquer correção de ordem passam somente pelo reconciliador com lease/idempotência por motor. Condição ambígua permanece `BLOCKED_SAFE` no menor escopo, com incidente persistido e push. Consulte `docs/COINOPS_SERVER_WATCHDOG.md`; não aumente o polling Binance para satisfazer um indicador visual.
+
 - O CoinOps é multi-account. Toda ação deve carregar explicitamente `operator_id`, `exchange_account_id`, `trading_engine_id`, ambiente e símbolo ao atravessar account → engine → job → lease/lock → reconciliação → alerta → kill switch. Falha local bloqueia somente o engine afetado; kill switch global exige causa sistêmica comprovada.
 - Cada conta tem exatamente um executor/shard primário de IP fixo. Não rotacione IP para contornar rate limit Binance. Novo shard/IP serve capacidade, disponibilidade e isolamento; migração de conta LIVE exige procedimento explícito e revisão da whitelist Binance, nunca rebalanceamento automático.
 - Capacidade é medida, não deduzida do número de usuários. Antes de admitir nova carga, exigir telemetria fresca do shard, custo incremental conservador e headroom para recovery: peso Binance/IP, CPU, RAM, backlog, reconciliação, heartbeat e retries. Se a evidência estiver ausente, a decisão é `CAPACITY_UNKNOWN`, nunca um SIM inventado.
