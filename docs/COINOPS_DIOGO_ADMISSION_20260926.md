@@ -4,6 +4,8 @@ Escopo: exatamente um novo motor REAL, R$275, 25 slots. Fonte publicada:
 GitHub/main `b97e396e4c74581cdfdd00a1cf6d297b668304fe`, Supabase
 `otdfpmsegjxpqrzisfmi` / `coinops`, Executor 01 `46.101.104.48`.
 Este registro é um checkpoint datado, não uma autorização permanente.
+O estado inicial acima é histórico; a publicação e a reatribuição posteriores
+estão registradas na seção final, sem substituir as medições originais.
 
 ## Por que 3018/6000 apareceu junto de 85,7%
 
@@ -98,3 +100,34 @@ ser recalculada na admissão. Não apagar picos para conseguir PASS.
 Às20:18:30 UTC, os sete runs atuais continuavam ACTIVE, kill switches false,
 reconciliações20:18:15–20:18:27 e last_error null. Runs COMPLETED anteriores
 foram preservados e não devem ser confundidos com o estado do ciclo atual.
+
+## Checkpoint de reatribuição — 2026-09-26T20:57:55Z
+
+**COMPROVADO:** GitHub/main `fd567fe613108c0c7e2ae7bed57cd02ed7ff7d30`
+publicado na Vercel, deployment `dpl_6fNfjUvMk87HaExZFKg4bybzJvMM` **READY**.
+Executor02 no mesmo SHA `fd567fe`, health **HEALTHY**, IP `164.90.223.159`.
+
+**COMPROVADO:** Diogo foi reatribuído pelo fluxo normal autenticado da UI ao
+Executor02 às20:57:55UTC, preservando conta **INACTIVE**, zero ordens, capital
+R$275 e 25 slots. A mudança de executor não ativou o motor e não autorizou
+compra manual. O vínculo antigo01 deixou de ser o destino do onboarding.
+
+**COMPROVADO:** bootstrap server-side registrou as quatro identidades das
+contas LIVE existentes. A configuração temporária
+`COINOPS_INITIAL_IDENTITY_BINDINGS_JSON` foi removida da Vercel; sua retirada
+do runtime ocorrerá no próximo deploy. Nenhum valor de hash ou secret é
+registrado neste documento. Os sete motores do Executor01 permaneceram
+intactos, PID94831 sem restart.
+
+**COMPROVADO na UI autenticada às2026-09-26T21:01:32.184Z:** credencial de
+Diogo **PASS / REAL**, executor `164.90.223.159`, whitelist aceita, leitura
+e Spot habilitados; saques e transferências interna/universal desabilitados.
+Conta atribuída ao Executor02; SOLBRL **INACTIVE**, R$275, 25 slots, R$11/slot.
+Nenhum UID, fingerprint ou hash foi incluído neste documento.
+
+**A CONFIRMAR:** Preview e Capacity Check final. **Ativação não executada**;
+ela permanece no fluxo normal, a ser confirmada pelo próprio usuário.
+
+**NÃO TESTADO nesta etapa:** Testnet E2E no Executor02, entrega física de push
+multi-shard e monitoramento do Executor02 offline. Health e publicação não
+transformam esses gates em PASS, nem autorizam declarar todos os gates READY.

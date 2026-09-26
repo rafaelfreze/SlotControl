@@ -53,8 +53,8 @@ sem bloquear trading existente. Não usar esse snapshot como autorização futur
 
 ## Diogo e escopo autorizado
 
-O proprietário confirmou whitelist da API Diogo em164.90.223.159. O cadastro
-original ainda aponta para01, INACTIVE/PREPARING,25slots,0ordens/posições.
+O proprietário confirmou whitelist da API Diogo em164.90.223.159. No checkpoint
+original, o cadastro apontava para01, INACTIVE/PREPARING,25slots,0ordens/posições.
 Não ativar pelo01 e não executar compra por terminal/SQL.
 Reatribuição preparada é exceção explícita apenas para conta que nunca operou:
 retirar registry INACTIVE da origem, verificar novamente ausência de histórico
@@ -74,8 +74,8 @@ A ativação final será clicada pelo próprio usuário.
   explícita. Validação autenticada runtime depende do deploy web abaixo.
 - Acesso MCP SQL é read-only. Não ampliar grants para bootstrap de identidade.
   Vercel env run corretamente omite Secrets. O registro das quatro identidades
-  será executado pelo backend com configuração temporária de hashes, autorizada
-  separadamente pelo proprietário; retirar a configuração após cobertura completa.
+  foi executado pelo backend com configuração temporária de hashes, autorizada
+  separadamente pelo proprietário; a cobertura completa consta no checkpoint final.
   Nenhum hash/UID/key/secret deve entrar no Git, relatório ou frontend.
 - Às20:44UTC, Executor01 ainda PID94831 desde18:45:28UTC;02 PID10969,
   memoryCurrent62.90MB, healthHTTPS122dcc1, drift3.5ms. Sete LIVE ACTIVE,
@@ -85,14 +85,53 @@ A ativação final será clicada pelo próprio usuário.
 - Validação local: executor57/57; SQL efêmero serial26/26; suíte web nãoSQL603/603;
   lint, typecheck e build PASS antes da pequena adição do bootstrap de identidade.
 
-## Pendências neste checkpoint — NÃO TESTADO / NÃO PUBLICADO
+## Checkpoint publicado — COMPROVADO
 
-- Control-plane/web multi-shard ainda não publicado; bootstrap/coverage pendentes.
-- Telemetria contínua autenticada e duas amostras por minuto distinto do02 no banco.
-- SmokeADMIN autenticado novo card, alerta/pushmultishard e entrega física.
-- Falha offline monitorada; TestnetE2E com exchange real. Fixtures não substituem
+- GitHub/main e checkout local alinhados em
+  `fd567fe613108c0c7e2ae7bed57cd02ed7ff7d30`.
+- Control plane/web publicado na Vercel: deployment
+  `dpl_6fNfjUvMk87HaExZFKg4bybzJvMM`, SHA `fd567fe`, **READY**.
+- Executor02 atualizado para `fd567fe`, health **HEALTHY**, IP fixo
+  `164.90.223.159`. Esse health não equivale a um Testnet E2E de trading.
+- As quatro identidades Binance das contas LIVE existentes foram registradas
+  pelo bootstrap server-side. A variável temporária
+  `COINOPS_INITIAL_IDENTITY_BINDINGS_JSON` foi removida da configuração Vercel;
+  a remoção passa a valer no runtime no próximo deploy. O deployment já publicado
+  pode conservar sua configuração anterior, com bootstrap idempotente.
+- Diogo foi reatribuído pelo fluxo normal autenticado da UI às
+  **2026-09-26T20:57:55Z**: executor-02, IP `164.90.223.159`, conta **INACTIVE**,
+  zero ordens, capital R$275 e 25 slots preservados. Não foi uma ativação.
+- Executor01 manteve os sete motores LIVE existentes intactos; PID **94831**,
+  sem restart, deploy ou migração das quatro contas nesta etapa.
+- Coleta server-side autenticada do02 confirmada em minutos distintos no banco;
+  amostra21:03:42UTC: 68 weight atual/pico, média14,63, CPU0,399%, RSS122,48MB,
+  fila0, registry confere, versãofd567fe. Os sete motores01 continuavam ACTIVE
+  e reconciliados em21:03:15–28UTC, sem last_error.
+- SmokeADMIN autenticado confirmou os dois cards com IPs distintos. Entrega
+  física de push multi-shard ainda não foi comprovada.
+- Validação final do blocofd567fe: testes focados bootstrap/admissão/coletor
+  11/11 e guardas Testnet13/13, lint/typecheck/build PASS. São suítes sobrepostas;
+  não somar esses totais aos57/603 anteriores como testes únicos.
+- A configuração Production do02 foi alinhada à versãofd567fe depois do primeiro
+  deploy web. O deploy deste checkpoint documental deve incorporá-la e retirar
+  a variável temporária de bootstrap; confirmar READY antes do handoff.
+
+**COMPROVADO na UI autenticada às2026-09-26T21:01:32.184Z:** credencial de
+Diogo com resultado **PASS / REAL**, executor `164.90.223.159`, whitelist
+aceita, leitura e Spot habilitados, saques e transferências interna/universal
+desabilitados. Executor atribuído02; SOLBRL **INACTIVE**, R$275, 25 slots e
+R$11 por slot. Nenhum UID, fingerprint ou hash é registrado neste documento.
+Essa validação não é um Preview ou uma ativação. **Ativação não executada.**
+
+## Pendências neste checkpoint — NÃO TESTADO / A CONFIRMAR
+
+- Monitoramento com Executor02 offline: **NÃO TESTADO**.
+- Entrega física de push nesta etapa multi-shard: **NÃO TESTADO**.
+- TestnetE2E no Executor02 com exchange real: **NÃO TESTADO**. Fixtures não substituem
   prova BUY→fill→TP→NEXTBUY→gain→reset→novo ciclo contra Binance Testnet.
-- Cadastro e credencial Diogo no Executor02, preview/capacityfinal.
+- Preview e Capacity Check final de Diogo; eventual ativação somente pelo
+  usuário após os gates normais. Credential PASS já conferida na UI autenticada.
 
-Gates não verificados não recebem PASS. Não houve ordem artificial, alteração
+O checkpoint não declara todos os gates READY. Gates não verificados não
+recebem PASS. Não houve ordem artificial, alteração
 de estratégia, gain, spacing, TP, NEXTBUY ou ledger financeiro nesta tarefa.
