@@ -309,9 +309,15 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           writeJson(response, status, cached.value);
           return;
         }
+        const healthReader = new BinanceSpotAdapter({ apiKey: resolved.apiKey,
+          apiSecret: resolved.apiSecret }, { fetcher, now, maxReadRetries: 0 });
+        const accountPromise = sharedAccountRead(pendingAccountReads,
+          engine.exchange_account_id, resolved.apiKey,
+          () => healthReader.getAccount(), now);
         const [market, permission, ip] = await Promise.all([
           getPublicMarket(fetcher, now, [engine.symbol]),
-          getProductionRestrictedSpotStatus({ apiKey: resolved.apiKey, apiSecret: resolved.apiSecret, fetcher }),
+          getProductionRestrictedSpotStatus({ apiKey: resolved.apiKey, apiSecret: resolved.apiSecret,
+            fetcher, adapter: healthReader, accountPromise }),
           observeEgressIp(fetcher),
         ]);
         const healthy = permission === "SPOT_RESTRICTED" && Boolean(ip && ip === expectedEgressIp);

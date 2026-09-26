@@ -209,3 +209,37 @@ de auditoria**; esses números não são teste ponta a ponta de 100 ciclos de
 `advanceLiveRun` com Supabase, fills e recovery. O gate final continua
 **REPROVADO** até throughput, backlog, RLS, Realtime e recuperação completa
 serem medidos sem risco para Production.
+
+### Harness expandido no VPS: health, ordens e snapshots
+
+O harness anterior subestimava a carga por não chamar `/v1/health` e
+`/v1/query-order`. A continuação na branch de auditoria incluiu uma health,
+duas consultas de ordem e dois snapshots por engine, Binance completamente
+fictícia com 100 ms por endpoint, pool de 12, limites de peso ativos,
+`tradingEnabled=false` e `killSwitch=true`, em `/tmp/coinops-scale.TRj0Zt`.
+Nenhuma credencial ou ordem real foi usada.
+
+| Fixture | Resultado | Parede | p50/p95/p99 por engine | CPU | RSS final |
+| --- | --- | ---: | --- | ---: | ---: |
+| 40 contas/80 engines/2.000 slots | 80/80 | 8,87 s | 1.231/1.627/1.643 ms | 2,57 s | 149 MB |
+| 50 contas/100 engines/2.500 slots | 100/100 | 10,35 s | 1.155/1.209/1.210 ms | 2,04 s | 140 MB |
+| 100 contas/200 engines/5.000 slots | 108/200 | 11,35 s | 1.110/1.165/1.179 ms por tentativa | 2,81 s | 139 MB |
+
+No cenário 50/100, o simulador contou 1.003 chamadas fictícias, incluindo
+300 `apiRestrictions`, 50 `account`, 200 `order` e 200 `openOrders`;
+aproximadamente 4.209 unidades de peso pelos pesos codificados no harness.
+Isso representa 87,7% do orçamento preventivo de 4.800/min e não inclui
+fills/TPs/retries/cancelamentos reais. Em 100/200, 92 engines foram afetados
+pelo orçamento; portanto a margem de 100 contas **não passou**. Em 50/100,
+falhas simuladas de 1 engine, 5 engines e uma credencial afetaram exatamente
+1, 5 e 2 engines; os demais concluíram.
+
+Uma fixture adicional de 40/80 fez 160 snapshots, 160 consultas de ordem e
+80 health em 8,87 s, com aproximadamente 3.470 unidades de peso (72,3% do
+orçamento preventivo). Assim, **40 contas/80 engines são somente a capacidade
+com margem do transporte HTTP sintético**, não a capacidade operacional
+aprovada do servidor. Production comprovada ainda tem três contas/seis
+engines; a cadência, Supabase, fills e recuperação a 40/50 contas reais não
+foram validados. Gatilho objetivo para escalar: peso IP p95 ≥ 4.800/min,
+cron p99 ≥ 45 s, ou idade de reconciliação ≥ 120 s. Não adicionar conta a
+Production sob a premissa de que este benchmark sozinho aprovou o gate.
