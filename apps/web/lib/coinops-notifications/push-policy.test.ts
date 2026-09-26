@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { alertDeepLink, publicPushReason, pushIncidentKey, shouldPush, validPushEndpoint } from "./push-policy.ts";
+import { alertDeepLink, publicPushReason, pushDeliveryErrorCode, pushIncidentKey, shouldPush, validPushEndpoint } from "./push-policy.ts";
+
+test("classifies provider failures without exposing endpoint or response content", () => {
+  assert.equal(pushDeliveryErrorCode(410), "COINOPS_PUSH_SUBSCRIPTION_EXPIRED");
+  assert.equal(pushDeliveryErrorCode(403), "COINOPS_PUSH_PROVIDER_AUTH_FAILED");
+  assert.equal(pushDeliveryErrorCode(429), "COINOPS_PUSH_PROVIDER_THROTTLED");
+  assert.equal(pushDeliveryErrorCode(503), "COINOPS_PUSH_PROVIDER_UNAVAILABLE");
+});
 
 test("push only for operational warning/critical, not info", () => {
   assert.equal(shouldPush("CRITICAL", false), true);

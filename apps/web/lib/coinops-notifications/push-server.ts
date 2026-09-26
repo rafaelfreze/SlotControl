@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import webpush from "web-push";
 
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { alertDeepLink, publicPushReason, shouldPush, validPushEndpoint } from "./push-policy";
+import { alertDeepLink, publicPushReason, pushDeliveryErrorCode, shouldPush, validPushEndpoint } from "./push-policy";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Subscription = { id: string; operator_id: string; user_id: string; endpoint: string;
@@ -18,6 +18,15 @@ function configuredWebPush() {
   if (!publicKey || !privateKey) throw new Error("COINOPS_PUSH_VAPID_UNCONFIGURED");
   if (!/^[A-Za-z0-9_-]{87}$/.test(publicKey)) throw new Error("COINOPS_PUSH_VAPID_PUBLIC_FORMAT_INVALID");
   if (!/^[A-Za-z0-9_-]{43}$/.test(privateKey)) throw new Error("COINOPS_PUSH_VAPID_PRIVATE_FORMAT_INVALID");
+  try {
+    const derived = createECDH("prime256v1");
+    derived.setPrivateKey(Buffer.from(privateKey, "base64url"));
+    if (derived.getPublicKey("base64url", "uncompressed") !== publicKey)
+      throw new Error("COINOPS_PUSH_VAPID_PAIR_MISMATCH");
+  } catch (error) {
+    if (error instanceof Error && error.message === "COINOPS_PUSH_VAPID_PAIR_MISMATCH") throw error;
+    throw new Error("COINOPS_PUSH_VAPID_INVALID");
+  }
   try {
     webpush.setVapidDetails(process.env.VAPID_SUBJECT?.trim() || "mailto:onplaymkt@gmail.com", publicKey, privateKey);
   } catch { throw new Error("COINOPS_PUSH_VAPID_INVALID"); }
@@ -34,10 +43,15 @@ export function endpointHash(endpoint: string) {
 export async function sendToDevice(subscription: Pick<Subscription, "endpoint" | "p256dh" | "auth_secret">,
   message: { title: string; body: string; url: string; tag: string }) {
   configuredWebPush();
-  await webpush.sendNotification({ endpoint: subscription.endpoint,
-    keys: { p256dh: subscription.p256dh, auth: subscription.auth_secret } },
-  JSON.stringify(message), { TTL: 3600, timeout: 5000, urgency: "high",
-    topic: createHash("sha256").update(message.tag).digest("base64url").slice(0, 32) });
+  try {
+    await webpush.sendNotification({ endpoint: subscription.endpoint,
+      keys: { p256dh: subscription.p256dh, auth: subscription.auth_secret } },
+    JSON.stringify(message), { TTL: 3600, timeout: 5000, urgency: "high",
+      topic: createHash("sha256").update(message.tag).digest("base64url").slice(0, 32) });
+  } catch (error) {
+    const status = (error as { statusCode?: number })?.statusCode;
+    throw new Error(pushDeliveryErrorCode(status));
+  }
 }
 
 async function discoverHeartbeatAlerts(service: Service) {

@@ -1,5 +1,12 @@
 export type AlertSeverity = "INFO" | "WARNING" | "CRITICAL";
 
+export function pushDeliveryErrorCode(status?: number) {
+  if (status === 404 || status === 410) return "COINOPS_PUSH_SUBSCRIPTION_EXPIRED";
+  if (status === 401 || status === 403) return "COINOPS_PUSH_PROVIDER_AUTH_FAILED";
+  if (status === 429) return "COINOPS_PUSH_PROVIDER_THROTTLED";
+  return "COINOPS_PUSH_PROVIDER_UNAVAILABLE";
+}
+
 export function shouldPush(severity: AlertSeverity, warningEnabled: boolean) {
   return severity === "CRITICAL" || severity === "WARNING" && warningEnabled;
 }

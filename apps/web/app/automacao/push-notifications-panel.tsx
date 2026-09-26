@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { applicationKey, subscriptionUsesKey } from "./push-subscription-key";
 
 type Status = { active: boolean; warningEnabled: boolean; lastSuccessAt: string | null; lastFailureCode: string | null };
 
-function applicationKey(value: string) {
-  const padded = `${value.replaceAll("-", "+").replaceAll("_", "/")}${"=".repeat((4 - value.length % 4) % 4)}`;
-  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
-}
+const pushErrors: Record<string, string> = {
+  COINOPS_PUSH_SUBSCRIPTION_EXPIRED: "A assinatura anterior expirou. Tente ativar novamente para criar uma nova neste iPhone.",
+  COINOPS_PUSH_PROVIDER_AUTH_FAILED: "O serviço de notificações recusou a autenticação do CoinOps. Nenhum dispositivo foi ativado; avise o suporte.",
+  COINOPS_PUSH_PROVIDER_THROTTLED: "O serviço de notificações está limitando pedidos. Aguarde alguns minutos e tente novamente.",
+  COINOPS_PUSH_PROVIDER_UNAVAILABLE: "O serviço de notificações não confirmou o dispositivo. Tente novamente em instantes.",
+  COINOPS_PUSH_VAPID_PAIR_MISMATCH: "A configuração de notificações do servidor está inconsistente. Avise o suporte; nenhum dispositivo foi ativado.",
+};
 
 export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines?: Array<{ id: string; label: string }> }) {
   const [publicKey, setPublicKey] = useState("");
@@ -26,7 +30,7 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
       headers: { "content-type": "application/json", "x-coinops-admin-intent": "push-device" },
       body: JSON.stringify({ action, subscription: subscription.toJSON(), ...extra }) });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? "Falha na configuração push");
+    if (!response.ok) throw new Error(pushErrors[result.error] ?? result.error ?? "Falha na configuração push");
     return result;
   }
 
@@ -41,7 +45,7 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
     void (async () => {
       const response = await fetch("/api/coinops-push", { credentials: "same-origin", cache: "no-store" });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Configuração indisponível");
+      if (!response.ok) throw new Error(pushErrors[result.error] ?? result.error ?? "Configuração indisponível");
       const subscription = await currentSubscription();
       const local = subscription ? await request("STATUS", subscription) : null;
       if (!cancelled) { setPublicKey(result.publicKey); setDeviceCount(result.activeDeviceCount ?? 0);
@@ -58,8 +62,13 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
       const permission = await Notification.requestPermission();
       if (permission !== "granted") throw new Error("Permissão de notificações não concedida neste dispositivo.");
       const registration = await navigator.serviceWorker.register("/coinops-sw.js", { scope: "/" });
-      const subscription = await registration.pushManager.getSubscription()
-        ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationKey(publicKey) });
+      let subscription = await registration.pushManager.getSubscription();
+      if (subscription && !subscriptionUsesKey(subscription, publicKey)) {
+        if (!await subscription.unsubscribe()) throw new Error("Não foi possível substituir a assinatura antiga neste iPhone.");
+        subscription = null;
+      }
+      subscription ??= await registration.pushManager.subscribe({ userVisibleOnly: true,
+        applicationServerKey: applicationKey(publicKey) });
       const result = await request("REGISTER", subscription);
       setStatus({ active: true, warningEnabled: true, lastSuccessAt: new Date().toISOString(), lastFailureCode: null });
       setDeviceCount((count) => count + (result.alreadyRegistered ? 0 : 1));
