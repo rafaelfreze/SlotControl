@@ -281,3 +281,16 @@ suficiente; `COINOPS_50_ACCOUNTS_READY` segue **REPROVADO** até provar o
 fluxo completo com banco gerenciado isolado, cron, Realtime e recovery sob
 carga. A implantação segura desta otimização no fluxo LIVE, se ocorrer,
 precisa de smoke pós-deploy sem provocar ordens.
+
+### Reinício real de processo com claim pendente
+
+Um harness adicional mata o **processo** após a aceitação de um TP fictício
+e antes do ACK. Ao reiniciar no mesmo diretório de claims, a evidência da
+exchange fictícia resolve o resultado e nenhum segundo envio ocorre; um
+terceiro processo faz replay integral sem novas ordens. No VPS, 50/100/2.500
+slots de fixture recuperaram 300 ordens únicas em 376 ms (p50/p95/p99 por
+engine 4,21/6,17/8,08 ms, RSS 60 MB); 100/200/5.000 recuperaram 600 em
+941 ms (4,95/7,38/10,27 ms, RSS 61 MB). Ambos tiveram zero duplicação;
+o replay também manteve zero novos envios. Não é recuperação completa de
+RPCs do ledger, TP real ou cron/Vercel sob restart simultâneo; o gate
+`RECOVERY_AT_SCALE_PASS` continua sem prova ponta a ponta.
