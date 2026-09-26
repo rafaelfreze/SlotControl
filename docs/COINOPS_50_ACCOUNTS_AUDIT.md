@@ -34,8 +34,11 @@ Regressão sintética: 10/30/50/100 contas com 2 engines por conta, mais
 2 engines estáticos, verificando roteamento da conta saudável final. O
 cenário de 100 contas rejeita corretamente cinco contas com credencial
 ausente e mantém os 95 grupos saudáveis. A carga corresponde a
-500/1.500/2.500/5.000 **slots lógicos**, não a slots persistidos, fills,
-TPs ou ciclos executados. Os 35 testes do pacote `live-executor` passaram.
+500/1.500/2.500/5.000 **slots lógicos** no teste de registro. Um segundo
+teste percorre 2.500 e 5.000 slots sintéticos pelas funções reais de preço
+de BUY, TP, reentrada e identidade idempotente de ordem; não cria slots
+persistidos, fills reais, ordens Binance ou ciclos executados. Os 36 testes
+do pacote `live-executor` passaram.
 
 O arquivo JSON dinâmico continua sendo um ponto único: se estiver ilegível
 ou não puder ser decodificado, todas as contas dinâmicas falham fechadas.
