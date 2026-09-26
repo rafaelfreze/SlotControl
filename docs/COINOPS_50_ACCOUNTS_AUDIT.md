@@ -39,6 +39,19 @@ nenhuma ordem foi criada ou cancelada nesta auditoria.
   O teste SQL de RLS local mediu 9.000 linhas em 13,033 ms com allowed-set
   contra 73,306 ms na variante per-row. Nada disso aplica carga ao Supabase
   Production nem aprova o gate de banco gerenciado.
+  Após o deploy `b22c373`, os crons de 16:51 a 16:54 UTC completaram com
+  sete reports; nova leitura às 16:54 mostrou os sete runs ACTIVE, idades
+  de reconciliação de 18–31 s, erro nulo, kill switches desligados, uma BUY
+  residente por engine e os nove TPs anteriores. O painel autenticado exibiu
+  o SHA publicado e voltou a `AO VIVO`. Isso valida regressão nos sete
+  engines atuais, não os cenários 100/200.
+- Realtime: a tela agora usa **uma inscrição por contexto visível**, em vez
+  de um binding por engine. Em 100 engines sintéticos, `REAL/Todos` produz
+  um filtro `environment=eq.REAL`; uma conta selecionada produz um filtro
+  de conta; um motor selecionado produz um filtro de engine. A policy RLS
+  do sinal continua obrigatória e o callback confere a tupla exata antes
+  de atualizar. Teste direcionado, typecheck, lint e build passaram. Ainda
+  falta prova de carga de 100/200 engines no serviço Realtime gerenciado.
 - VPS executor: amostra 16:24:25–16:26:07 UTC, processo ~145,6→146,9 MB;
   CPU acumulada +4,95 s em 102 s de parede (~4,9% de um núcleo). Host de
   961 MB, 479 MB disponíveis e load médio 0,21 no primeiro instante. O
@@ -108,7 +121,7 @@ aumenta throughput nem prova segurança sob o limite de peso atual.
 | SCHEDULER_CONCURRENCY_PASS | Parcial | Sete runs completam em Production com pool 4; rotação estreita passou em fixture 7/100/200, cron real 100/200 não medido |
 | RECOVERY_AT_SCALE_PASS | Parcial | Claims fictícias passaram em 100/200; falta recuperação simultânea do ledger/cron/RLS após crash |
 | DATABASE_SCALE_PASS | BLOCKED_EXTERNAL_RESOURCE | Postgres local e leitura Production não provam escrita PostgREST/RLS gerenciada a 2.500 slots; não criar branch paga |
-| REALTIME_SCALE_PASS | Parcial | Contexto/filtro e RLS examinados; falta 100/200 engines em navegador com reconexão e sem vazamento |
+| REALTIME_SCALE_PASS | Parcial | Binding limitado a um por contexto e RLS conferida; falta 100/200 engines em navegador/serviço gerenciado com reconexão e sem vazamento |
 
 Capacidade operacional **comprovada** permanece em 4 contas/7 engines LIVE;
 o teste HTTP isolado de 40 contas/80 engines com 72,3% do orçamento
