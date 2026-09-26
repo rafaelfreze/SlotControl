@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runFairPool } from "./live-cron-scheduler.ts";
+import { fairPoolOffset, runFairPool } from "./live-cron-scheduler.ts";
 
 test("100 engines run once, retain results and never exceed six active jobs", async () => {
   const items = Array.from({ length: 100 }, (_, index) => index);
@@ -41,4 +41,22 @@ test("rotation prevents the same engine from always starting last", async () => 
     assert.equal(new Set(order).size, 100);
   }
   assert.deepEqual(first, [0, 1, 99]);
+});
+
+test("partial cron deadlines do not starve the same engines for dozens of minutes", () => {
+  for (const [engines, served, maximumMisses] of [[100, 80, 1], [200, 80, 2], [200, 120, 2]]) {
+    const missed = Array<number>(engines).fill(0);
+    let worst = 0;
+    for (let minute = 0; minute < engines * 2; minute++) {
+      const first = fairPoolOffset(engines, minute);
+      for (let engine = 0; engine < engines; engine++) {
+        const rank = (engine - first + engines) % engines;
+        missed[engine] = rank < served ? 0 : missed[engine] + 1;
+        worst = Math.max(worst, missed[engine]);
+      }
+    }
+    assert.ok(worst <= maximumMisses, `${engines} engines: ${worst} missed rounds`);
+  }
+  assert.equal(fairPoolOffset(0, 100), 0);
+  assert.throws(() => fairPoolOffset(100, -1), /COINOPS_LIVE_POOL_CONFIG_INVALID/);
 });

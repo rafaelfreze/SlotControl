@@ -321,3 +321,32 @@ fila 4,17/7,70/8,24 s, CPU 2,80 s, RSS 161 MB, 200/200 saudáveis.
 São medições HTTP do executor com Binance fictícia, não duração do cron
 Vercel nem latência dos RPCs Supabase; não extrapolar diretamente o p99
 para o fluxo operacional completo.
+
+### Justiça da fila quando o cron perde o prazo
+
+O pool limitado original iniciava cada minuto um índice adiante. Uma
+simulação determinística de deadline parcial mostrou que, com 100 motores e
+apenas 80 concluídos por minuto, um motor poderia perder 20 rodadas seguidas;
+com 200 motores e 80 concluídos, até 120 rodadas. A branch de auditoria agora
+usa um deslocamento sem estado com passo coprimo próximo de 38,2% da lista.
+Na mesma simulação por duas voltas completas, o máximo caiu para 1 rodada
+perdida em 100/80 e 2 em 200/80 ou 200/120. O teste direcionado passou,
+assim como typecheck e lint dos três arquivos afetados. Essa correção só
+distribui oportunidades sob deadline; não aumenta throughput, não assegura
+que todo engine reconcilie dentro de 60 segundos e não foi implantada LIVE.
+
+Em 26/09 14:36 UTC, uma checagem GET-only direta na Binance Production de
+Caixeta/BTCBRL mostrou um TP SELL `NEW` de 0,00004 BTC a 442.030 BRL e uma
+BUY `NEW` de 0,00004 BTC a 428.052 BRL, sem fill parcial, com IDs e preços
+iguais aos do ledger. Às 14:34 UTC, os seis runs ACTIVE tinham `last_error`
+nulo e kill switches da conta e engine desligados. Isto valida o estado desse
+motor no instante da consulta, não os gates de 50 contas nem todas as ordens
+dos demais motores.
+
+A suíte web completa passou 606/606 após sincronizar dois testes antigos com
+o contrato vigente: o mock de Strategy Decision agora injeta o resolvedor
+visível já usado pelo módulo, e o teste da rota `/dashboard` espera o redirect
+do middleware para Automação. Nenhuma lógica operacional foi alterada nesses
+dois reparos de teste. A suíte SQL foi executada com PostgreSQL local efêmero
+fora do sandbox de processos (22/22 testes de multi-account/RLS passaram);
+o sandbox impedira o `pg_ctl` de subir, não houve falha do banco Production.

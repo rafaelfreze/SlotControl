@@ -17,3 +17,16 @@ export async function runFairPool<T, R>(items: readonly T[], concurrency: number
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
   return results;
 }
+
+/** A stateless cron cannot persist its cursor if the platform stops a run at
+ * its deadline. A near-golden-ratio, coprime stride spreads the first jobs
+ * across the list instead of starving the same tail on adjacent minutes. */
+export function fairPoolOffset(length: number, minute: number): number {
+  if (!Number.isInteger(length) || length < 0 || !Number.isSafeInteger(minute) || minute < 0)
+    throw new Error("COINOPS_LIVE_POOL_CONFIG_INVALID");
+  if (length < 2) return 0;
+  const gcd = (left: number, right: number): number => right ? gcd(right, left % right) : left;
+  let stride = Math.max(1, Math.round(length * 0.382));
+  while (gcd(stride, length) !== 1) stride++;
+  return (minute * stride) % length;
+}

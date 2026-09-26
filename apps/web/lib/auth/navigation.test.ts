@@ -137,8 +137,9 @@ test("middleware preserva retornos internos validados e rejeita externos", async
   assert.equal((await runMiddleware("/login?next=https%3A%2F%2Fevil.example", true)).location, "https://coinops.example/automacao");
 });
 
-test("rota legada mantém guard e redireciona pelo componente", async () => {
-  assert.equal((await runMiddleware("/dashboard", true)).passthrough, true);
+test("rota legada mantém guard e redireciona para Automação", async () => {
+  assert.equal((await runMiddleware("/dashboard", true)).location,
+    "https://coinops.example/automacao?view=live");
   assert.equal((await runMiddleware("/dashboard", false)).location, "https://coinops.example/login?redirectTo=%2Fdashboard");
   const page = compile("../../app/dashboard/page.tsx", {
     "next/navigation": { redirect: (path: string) => { throw new Error(`redirect:${path}`); } }

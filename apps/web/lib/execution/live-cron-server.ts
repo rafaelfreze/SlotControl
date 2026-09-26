@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { advanceLiveRun, auditLiveRun } from "./robot-v1-live-server";
-import { runFairPool } from "./live-cron-scheduler";
+import { fairPoolOffset, runFairPool } from "./live-cron-scheduler";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 
@@ -43,7 +43,8 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
     // returned as one failure, never promoted to another account's credential.
     if (new Set(result.data.map((run) => run.trading_engine_id)).size !== result.data.length)
       throw new Error("COINOPS_LIVE_DUPLICATE_ENGINE_RUN");
-    const reports = await runFairPool(result.data, 12, Math.floor(Date.now() / 60_000), async (run) => {
+    const reports = await runFairPool(result.data, 12,
+      fairPoolOffset(result.data.length, Math.floor(Date.now() / 60_000)), async (run) => {
       const runStartedAt = performance.now();
       try {
         const outcome = mode === "EXECUTION" ? await advanceLiveRun(run.id) : await auditLiveRun(run.id);
