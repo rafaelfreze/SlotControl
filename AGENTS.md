@@ -127,7 +127,7 @@ Os exemplos de ambiente divergem: o exemplo raiz omite SUPABASE_DATA_SCHEMA e CO
 - Preserve histórico e trilha de origem; não sobrescreva resultado anterior para simplificar UI.
 - Em timeout ou resposta incerta, consulte estado/idempotência antes de repetir.
 - Nunca crie operação real para smoke, teste visual ou screenshot.
-- Binance fornece somente market data e CoinGecko é fallback de preço. A arquitetura atual não envia ordens a exchange; não adicione execução de trade sem decisão de produto explícita e revisão separada.
+- O CoinOps REAL atual envia ordens Spot pela Strategy Engine, ledger e executor de IP fixo. Nenhum smoke ou teste cria ordem real; toda alteração nesse caminho exige reconciliação, proteção de TP, escopo e idempotência. Dados públicos de mercado e backtests não autorizam execução.
 - Notificações e PWA devem preservar escopo por usuário/tenant, action URL, sessão, safe-area e ausência de dados financeiros sensíveis em cache/log.
 
 ## Backtests e Local
@@ -146,6 +146,14 @@ Os exemplos de ambiente divergem: o exemplo raiz omite SUPABASE_DATA_SCHEMA e CO
 - Chrome/Computer Use local está pré-autorizado quando a tarefa depende de sessão autenticada. Preserve perfil, extensão e Native Messaging; não limpe/reinstale por rotina.
 - Nenhum clique em Gain, Open, confirmação de redistribuição ou outra ação financeira serve como smoke.
 - Logs devem ser estruturados, sanitizados e sem token, secret, PII ou payload financeiro desnecessário. Não adicione plataforma paga sem lacuna comprovada.
+
+## Multi-account, isolamento e capacidade
+
+- O CoinOps é multi-account. Toda ação deve carregar explicitamente `operator_id`, `exchange_account_id`, `trading_engine_id`, ambiente e símbolo ao atravessar account → engine → job → lease/lock → reconciliação → alerta → kill switch. Falha local bloqueia somente o engine afetado; kill switch global exige causa sistêmica comprovada.
+- Cada conta tem exatamente um executor/shard primário de IP fixo. Não rotacione IP para contornar rate limit Binance. Novo shard/IP serve capacidade, disponibilidade e isolamento; migração de conta LIVE exige procedimento explícito e revisão da whitelist Binance, nunca rebalanceamento automático.
+- Capacidade é medida, não deduzida do número de usuários. Antes de admitir nova carga, exigir telemetria fresca do shard, estimativa incremental medida e headroom para recovery: peso Binance/IP, CPU, RAM, backlog, reconciliação, heartbeat e retries. Se a evidência estiver ausente, a decisão é `CAPACITY_REQUIRED`, jamais um SIM inventado.
+- Planeje SCALE_OUT/novo IP antes da saturação de peso Binance; SCALE_UP somente se CPU/RAM forem o gargalo medido. Nenhuma conta pode consumir o headroom de recuperação das demais. Não crie VPS/IP/recurso cobrável sem autorização.
+- O modelo de decisão fica em `apps/web/lib/coinops-capacity/capacity-manager.ts`; ainda não é um gate ativo no fluxo de ativação nem telemetria server-side. Não declare admissão automática ou alertas de capacidade ativos antes dessa integração ser comprovada.
 
 ## Variáveis — nomes, nunca valores
 
