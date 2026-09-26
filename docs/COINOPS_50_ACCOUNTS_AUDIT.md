@@ -176,3 +176,36 @@ desatualizado depois de fill/order write; medir peso real/minuto, p99 e idade de
 reconciliação sob 100 engines em ambiente isolado. Somente se a cadência não
 couber após essa redução, dividir a execução em workers/IPs com filas e
 leases por engine. Não usar Production como gerador de carga.
+
+### Continuação: no-op resident e duas leituras sintéticas
+
+Em 26/09, o IP do executor consumiu 3.755 unidades de `REQUEST_WEIGHT`
+num minuto observado com seis engines LIVE; o cron produziu 44 `READ_STATE`,
+14 `READ_TRADES` e 14 `QUERY_ORDER`. O header da Binance agrega todo o tráfego
+do IP e não atribui sozinho o peso ao CoinOps. As contagens do executor
+demonstraram leituras redundantes: ordens `NEW` intactas eram sincronizadas
+com histórico de trades a cada minuto.
+
+O commit `6bfac1a` foi integrado em main, mas a primeira condição de atalho
+não funcionou porque o ledger mantém `trades_reconciled=false` em ordens
+residentes `NEW`. A correção `64802c4` usa identidade, símbolo, lado, preço,
+status `NEW`, guard de submissão e quantidade/quote executadas zero; qualquer
+fill ou divergência segue a reconciliação completa. Testes, lint, typecheck e
+build passaram, e o deploy Vercel `dpl_DAaDNbtRj3Uu4hkg7D9jXFjvHVHq`
+ficou READY. No minuto pós-deploy, seis motores tiveram 14 `QUERY_ORDER`,
+zero `READ_TRADES` e 30 `READ_STATE`; o peso observado às 13:34:16 UTC foi
+2.469, contra a amostra prévia de 3.755. O cron 13:34 completou e o ledger
+mostrou seis runs ACTIVE reconciliados, sem `last_error`, cada um com uma BUY
+e 1/1/2/2/1/1 TPs. Isso valida a redução de leituras, não capacidade de 50
+contas nem a corretude matemática de todas as ordens.
+
+No harness HTTP sintético de duas leituras por engine, 50 contas/100 engines/
+2.500 slots lógicos completaram 200 snapshots em 4,29–4,39 s, sem afetados;
+falhas de 1 engine, 5 engines e uma credencial afetaram somente 1, 5 e 2
+engines, respectivamente. Em 100 contas/200 engines, 20 engines foram
+bloqueados pelo orçamento experimental de leitura por IP. A otimização de
+snapshots do fluxo web e o cache privado de 1 s permanecem **somente na branch
+de auditoria**; esses números não são teste ponta a ponta de 100 ciclos de
+`advanceLiveRun` com Supabase, fills e recovery. O gate final continua
+**REPROVADO** até throughput, backlog, RLS, Realtime e recuperação completa
+serem medidos sem risco para Production.

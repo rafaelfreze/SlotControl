@@ -297,7 +297,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       scope = responseContext(engine);
       const transport = new BinanceLiveTransport({ apiKey: resolved.apiKey, apiSecret: resolved.apiSecret,
         fetcher, now, engine, sharedAccountRead: path === "/v1/state"
-          ? (read) => sharedAccountRead(pendingAccountReads, engine.exchange_account_id, resolved.apiKey, read)
+          ? (read) => sharedAccountRead(pendingAccountReads, engine.exchange_account_id, resolved.apiKey, read, now)
           : null });
       const flags = { tradingEnabled: tradingEnabled && engine.execution_allowed,
         killSwitch: killSwitch || engine.kill_switch || engine.account_kill_switch || engine.global_kill_switch };
@@ -355,6 +355,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           return;
         }
         if (path === "/v1/create-order") {
+          pendingAccountReads.clear();
           if (key !== input.clientOrderId) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_KEY_INVALID", 400);
           // Account permission is checked by this engine's complete snapshot;
           // another account's health must never authorize or block this one.
@@ -371,6 +372,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           return;
         }
         if (path === "/v1/cancel-order") {
+          pendingAccountReads.clear();
           if (key !== `CANCEL:${input.clientOrderId}`) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_KEY_INVALID", 400);
           if (!flags.tradingEnabled) throw new ExecutorRejection("EXECUTOR_TRADING_DISABLED", 403);
           if (!expectedEgressIp || await observeEgressIp(fetcher) !== expectedEgressIp)

@@ -23,6 +23,7 @@ import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
+import { canReuseLiveState, mayCancelPartialBuy, needsResidentPreflight } from "./live-snapshot-policy";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -843,32 +844,54 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
     let ledger = await runRows(service, run);
     stage = "RECONCILE_ORDERS";
-    assertLiveResidentPrices(run, ledger, await readLiveExecutorState(run));
+    // An unguarded PREPARED order may be dispatched by reconciliation. Verify
+    // every existing resident price before that write; the ordinary resident
+    // path only queries orders and can validate against the fresh snapshot
+    // immediately afterwards.
+    if (needsResidentPreflight(ledger.orders))
+      assertLiveResidentPrices(run, ledger, await readLiveExecutorState(run));
     for (const order of ledger.orders) await reconcileOrder(service, run, order);
     ledger = await runRows(service, run);
     stage = "READ_STATE";
     let state = await readLiveExecutorState(run);
+    let stateObservedAtMs = Date.now();
     assertLiveResidentPrices(run, ledger, state);
     stage = "PROTECT_TP";
+    const orderCountBeforeProtection = ledger.orders.length;
+    const partialBuyMayCancel = mayCancelPartialBuy(ledger.orders);
     await ensureTakeProfits(service, run, ledger, state);
     stage = "CREDIT_SLOTS";
-    state = await readLiveExecutorState(run);
+    // TP creation or partial-BUY cancellation changes exchange state. In the
+    // no-write path, reusing this recent snapshot avoids redundant Binance
+    // account/permission/filter reads without hiding any reconciled fill.
+    if (ledger.orders.length !== orderCountBeforeProtection || partialBuyMayCancel) {
+      state = await readLiveExecutorState(run);
+      stateObservedAtMs = Date.now();
+    }
     await creditClosedSlots(service, run, ledger, state);
     const refreshed = await runRows(service, run);
     stage = "RECYCLE_SLOTS";
     await recycleClosedSlots(service, run, refreshed);
     const current = await runRows(service, run);
     stage = "ASSERT_PROTECTION";
-    state = await readLiveExecutorState(run);
+    if (!canReuseLiveState(stateObservedAtMs, Date.now(), false)) {
+      state = await readLiveExecutorState(run);
+      stateObservedAtMs = Date.now();
+    }
     await assertAllPositionsProtected(run, current, state);
     stage = "RESTART_CYCLE";
     const successor = await restartClosedCycle(service, run, current, state);
     if (successor) return { status: "RESTARTED", nextRunId: successor };
     stage = "ATH_TRANSITION";
-    await applyAthTransition(service, run, current, state);
+    const transitioned = await applyAthTransition(service, run, current, state);
     const entered = await runRows(service, run);
     stage = "ARM_ENTRY";
-    state = await readLiveExecutorState(run);
+    // A transition may cancel a resident BUY and change the ladder; otherwise
+    // the same bounded-age snapshot already checked exchange ownership and TP.
+    if (!canReuseLiveState(stateObservedAtMs, Date.now(), transitioned)) {
+      state = await readLiveExecutorState(run);
+      stateObservedAtMs = Date.now();
+    }
     const next = await armNextEntry(service, run, entered, state);
     // A MARKET can fill in the same invocation. Protect it before returning.
     if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED") {

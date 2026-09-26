@@ -36,15 +36,23 @@ export function createSharedPublicFetcher(fetcher, now = Date.now) {
   };
 }
 
-/** Account snapshots may be shared only across simultaneous read-only engine states
- * for the same CoinOps account and key. Write paths never use this map. */
-export function sharedAccountRead(pending, accountId, apiKey, read) {
+/** A read-only account balance may be reused for at most one second for the
+ * same account and key. Write paths never use this map and always perform a
+ * fresh safety snapshot before dispatch. Failures are never cached. */
+export function sharedAccountRead(pending, accountId, apiKey, read, now = Date.now) {
   const key = `${accountId}|${createHash("sha256").update(apiKey).digest("hex")}`;
-  let request = pending.get(key);
-  if (!request) {
-    request = Promise.resolve().then(read);
-    pending.set(key, request);
-    request.then(() => pending.delete(key), () => pending.delete(key));
-  }
+  const existing = pending.get(key);
+  if (existing?.request) return existing.request;
+  if (existing?.until > now()) return Promise.resolve(existing.value);
+  if (existing) pending.delete(key);
+  if (pending.size >= 256) pending.delete(pending.keys().next().value);
+  const request = Promise.resolve().then(read);
+  pending.set(key, { request });
+  request.then((value) => {
+    if (pending.get(key)?.request === request)
+      pending.set(key, { value, until: now() + 1_000 });
+  }, () => {
+    if (pending.get(key)?.request === request) pending.delete(key);
+  });
   return request;
 }

@@ -82,8 +82,9 @@ test("failed public request is removed so a later GET can retry", async () => {
   assert.equal(calls, 2);
 });
 
-test("account reads share only the same account and credential while pending", async () => {
+test("account reads share one-second fresh result only within the same account and key", async () => {
   const pending = new Map();
+  let clock = 10_000;
   const counts = new Map();
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -93,10 +94,10 @@ test("account reads share only the same account and credential while pending", a
     return { key };
   };
   const reads = [
-    sharedAccountRead(pending, "A", "key-1", read("A1")),
-    sharedAccountRead(pending, "A", "key-1", read("duplicate")),
-    sharedAccountRead(pending, "B", "key-1", read("B1")),
-    sharedAccountRead(pending, "A", "key-2", read("A2")),
+    sharedAccountRead(pending, "A", "key-1", read("A1"), () => clock),
+    sharedAccountRead(pending, "A", "key-1", read("duplicate"), () => clock),
+    sharedAccountRead(pending, "B", "key-1", read("B1"), () => clock),
+    sharedAccountRead(pending, "A", "key-2", read("A2"), () => clock),
   ];
   await tick();
   assert.equal(counts.size, 3);
@@ -104,6 +105,18 @@ test("account reads share only the same account and credential while pending", a
   assert.deepEqual(await Promise.all(reads), [
     { key: "A1" }, { key: "A1" }, { key: "B1" }, { key: "A2" },
   ]);
-  await sharedAccountRead(pending, "A", "key-1", read("fresh"));
+  await sharedAccountRead(pending, "A", "key-1", read("cached"), () => clock);
+  assert.equal(counts.has("cached"), false);
+  clock += 1_001;
+  await sharedAccountRead(pending, "A", "key-1", read("fresh"), () => clock);
   assert.equal(counts.get("fresh"), 1);
+});
+
+test("failed account read is not reused", async () => {
+  const pending = new Map();
+  await assert.rejects(sharedAccountRead(pending, "A", "key", async () => {
+    throw new Error("failed");
+  }));
+  assert.deepEqual(await sharedAccountRead(pending, "A", "key", async () => ({ ok: true })),
+    { ok: true });
 });
