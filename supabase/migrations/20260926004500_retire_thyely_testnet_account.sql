@@ -2,14 +2,18 @@
 -- evidence and credentials for audit; never touch Thyely Production or Rafael.
 do $$
 declare
-  v_account constant uuid := 'b8807ec1-dd07-49ad-9e29-46de55be65ce';
+  v_account uuid;
   v_operator uuid;
   v_user uuid;
 begin
-  select a.operator_id, o.user_id into v_operator, v_user
+  if (select count(*) from coinops.exchange_accounts
+      where display_name = 'Thyely-TestNet' and is_legacy_default = false) <> 1 then
+    raise exception 'COINOPS_TESTNET_RETIRE_ACCOUNT_AMBIGUOUS';
+  end if;
+  select a.id, a.operator_id, o.user_id into strict v_account, v_operator, v_user
   from coinops.exchange_accounts a
   join coinops.operators o on o.id = a.operator_id
-  where a.id = v_account and a.display_name = 'Thyely-TestNet'
+  where a.display_name = 'Thyely-TestNet'
     and a.is_legacy_default = false and a.status in ('ACTIVE', 'DISABLED')
   for update of a;
   if v_operator is null then
@@ -36,6 +40,6 @@ begin
     (v_operator, v_account, 'TESTNET_RETIRED', 'PASS',
       jsonb_build_object('reason', 'operator_requested_panel_retirement',
         'history_preserved', true, 'orders_cancelled', false),
-      v_user, 'testnet-retired-b8807ec1-dd07-49ad-9e29-46de55be65ce')
+      v_user, 'testnet-retired-' || v_account::text)
   on conflict (exchange_account_id, idempotency_key) do nothing;
 end $$;
