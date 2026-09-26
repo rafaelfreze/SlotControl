@@ -136,15 +136,51 @@ export async function loadCombinedRegistry(staticRegistry, directory, onFailure 
   if (!staticRegistry) deny("EXECUTOR_REGISTRY_REQUIRED");
   try {
     const dynamic = await readDynamic(directory);
-    return validateExecutorRegistry({ ...staticRegistry,
-      engines: [...staticRegistry.engines, ...dynamic.engines],
-      credentials: { ...staticRegistry.credentials, ...dynamic.credentials } });
+    return mergeDynamicRegistry(staticRegistry, dynamic, onFailure);
   } catch (error) {
-    // A damaged dynamic registry must fail closed for new accounts, never stop
-    // Rafael's separately owned/static LIVE engines.
+    // An unreadable file still fails closed. A single invalid account should
+    // not remove healthy siblings from the active routing table.
     onFailure(error instanceof ExecutorRejection ? error.code : "EXECUTOR_DYNAMIC_REGISTRY_UNAVAILABLE");
     return staticRegistry;
   }
+}
+
+/** Validate dynamic entries account by account, preserving healthy siblings. */
+export function mergeDynamicRegistry(staticRegistry, dynamic, onFailure = () => {}) {
+  const groups = new Map();
+  for (const row of dynamic.engines) {
+    if (!UUID.test(row?.exchange_account_id ?? "")) {
+      onFailure("EXECUTOR_DYNAMIC_ACCOUNT_INVALID");
+      continue;
+    }
+    const rows = groups.get(row.exchange_account_id) ?? [];
+    rows.push(row);
+    groups.set(row.exchange_account_id, rows);
+  }
+  const combined = { ...staticRegistry, engines: [...staticRegistry.engines],
+    credentials: { ...staticRegistry.credentials } };
+  const ids = new Set(staticRegistry.engines.map((row) => row.trading_engine_id));
+  for (const [accountId, rows] of groups) {
+    const reference = `account_${accountId.replaceAll("-", "")}`;
+    if (staticRegistry.credentials[reference] || dynamic.credentials?.[reference]?.vault !== true
+      || rows.some((row) => row.credential_ref !== reference || ids.has(row.trading_engine_id))) {
+      onFailure("EXECUTOR_DYNAMIC_ACCOUNT_REJECTED");
+      continue;
+    }
+    try {
+      // Validate only this account against the fixed static registry. Rechecking
+      // every previously accepted account per request would grow cubically.
+      validateExecutorRegistry({ ...staticRegistry,
+        engines: [...staticRegistry.engines, ...rows],
+        credentials: { ...staticRegistry.credentials, [reference]: dynamic.credentials[reference] } });
+      combined.engines.push(...rows);
+      combined.credentials[reference] = dynamic.credentials[reference];
+      for (const row of rows) ids.add(row.trading_engine_id);
+    } catch {
+      onFailure("EXECUTOR_DYNAMIC_ACCOUNT_REJECTED");
+    }
+  }
+  return validateExecutorRegistry(combined);
 }
 
 /** Admin sync is preparation-only. It can never activate trading or mutate a legacy row. */

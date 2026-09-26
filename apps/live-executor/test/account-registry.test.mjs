@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { validateExecutorRegistry, resolveExecutorContext, assertEngineOrder, engineOrderPrefix,
   durableIntent, saveInactiveRegistryAccount, promotePreparedRegistryAccount, promoteRegistryEngine,
   changeRegistryCapital,
-  loadCombinedRegistry, canReadDynamicRegistry } from "../src/account-registry.mjs";
+  loadCombinedRegistry, mergeDynamicRegistry, canReadDynamicRegistry } from "../src/account-registry.mjs";
 import { sha256, requestSignature, withWriteIdempotency } from "../src/security.mjs";
 import { createExecutorHandler } from "../src/server.mjs";
 import { liveClientOrderId } from "../../web/lib/execution/robot-v1-live-cycle.ts";
@@ -52,6 +52,56 @@ test("A/B and four native markets resolve exact credentials, never fallback", ()
   const unsafe = structuredClone(registry);
   unsafe.engines[4].credential_ref = "legacy-binance-production";
   assert.throws(() => validateExecutorRegistry(unsafe), /CREDENTIAL_ACCOUNT_MISMATCH/);
+});
+
+test("invalid dynamic accounts stay isolated at 10/30/50/100-account scale", async () => {
+  const staticRegistry = validateExecutorRegistry(registryFixture(engines.slice(0, 2)));
+  const dynamic = { version: 1, engines: [], credentials: {} };
+  for (let index = 1; index <= 100; index++) {
+    const accountId = `00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`;
+    const credentialRef = `account_${accountId.replaceAll("-", "")}`;
+    dynamic.credentials[credentialRef] = { vault: true };
+    for (const [offset, symbol] of ["BTCUSDT", "SOLUSDT"].entries()) {
+      dynamic.engines.push({ ...engineFixture(symbol, accountId, 1000 + index * 2 + offset, false),
+        credential_ref: credentialRef, is_legacy_default: false, legacy_ownership: false,
+        hard_cap_quote: 419, account_cap_quote: 838, max_order_quote: 419 });
+    }
+  }
+  const badAccount = dynamic.engines[0].exchange_account_id;
+  delete dynamic.credentials[`account_${badAccount.replaceAll("-", "")}`];
+  for (const accountCount of [10, 30, 50, 100]) {
+    const scoped = { ...dynamic, engines: dynamic.engines.slice(0, accountCount * 2) };
+    const failures = [];
+    const merged = mergeDynamicRegistry(staticRegistry, scoped, (code) => failures.push(code));
+    assert.equal(scoped.engines.length * 25, accountCount * 50);
+    assert.equal(merged.engines.length, 2 + (accountCount - 1) * 2);
+    assert.equal(merged.engines.filter((row) => row.exchange_account_id === badAccount).length, 0);
+    assert.deepEqual(failures, ["EXECUTOR_DYNAMIC_ACCOUNT_REJECTED"]);
+    const healthy = merged.engines.at(-1);
+    assert.equal(resolveExecutorContext(merged, intentContext(healthy), "fixture-read-key-1",
+      {}, { path: "/v1/state" }).engine.trading_engine_id, healthy.trading_engine_id);
+  }
+  const fiveBroken = structuredClone(dynamic);
+  const brokenAccounts = new Set(fiveBroken.engines.slice(0, 10).map((row) => row.exchange_account_id));
+  for (const accountId of brokenAccounts)
+    delete fiveBroken.credentials[`account_${accountId.replaceAll("-", "")}`];
+  const fiveFailures = [];
+  const withFiveBroken = mergeDynamicRegistry(staticRegistry, fiveBroken,
+    (code) => fiveFailures.push(code));
+  assert.equal(brokenAccounts.size, 5);
+  assert.equal(fiveFailures.length, 5);
+  assert.equal(withFiveBroken.engines.length, 2 + 95 * 2);
+  assert.equal(withFiveBroken.engines.filter((row) => brokenAccounts.has(row.exchange_account_id)).length, 0);
+  assert.equal(withFiveBroken.engines.at(-1).trading_engine_id, dynamic.engines.at(-1).trading_engine_id);
+  const directory = await mkdtemp(join(tmpdir(), "coinops-scale-registry-"));
+  try {
+    await writeFile(join(directory, "dynamic-registry.json"), JSON.stringify(dynamic));
+    const loaded = await loadCombinedRegistry(staticRegistry, directory);
+    assert.equal(loaded.engines.length, 200);
+    assert.equal(loaded.engines.some((row) => row.exchange_account_id === badAccount), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("inactive killed account permits only preparation reads", () => {
