@@ -24,7 +24,10 @@ if [[ ! -d $repo ]]; then
   git --git-dir="$repo" remote add origin https://github.com/rafaelfreze/SlotControl.git
 fi
 [[ $(git --git-dir="$repo" remote get-url origin) == https://github.com/rafaelfreze/SlotControl.git ]] || fail 'ORIGIN_MISMATCH'
-git --git-dir="$repo" fetch --prune origin main:refs/remotes/origin/main
+# Fetch the fully qualified branch without pruning the single tracking ref.
+# The previous abbreviated/pruned fetch deleted this ref on the initial VPS.
+# Avoid that ambiguous combination; no other refs are needed or deployed.
+git --git-dir="$repo" fetch origin refs/heads/main:refs/remotes/origin/main
 [[ $(git --git-dir="$repo" rev-parse "$revision^{commit}") == "$revision" ]] || fail 'COMMIT_NOT_FOUND'
 git --git-dir="$repo" merge-base --is-ancestor "$revision" refs/remotes/origin/main || fail 'SHA_NOT_IN_MAIN'
 release=/opt/coinops/releases/$revision
