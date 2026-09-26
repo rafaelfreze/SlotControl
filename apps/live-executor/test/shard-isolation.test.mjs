@@ -103,8 +103,34 @@ test("empty Executor02 proves infrastructure health and measured weight without 
     assert.deepEqual(sample.engine_ids, []); assert.deepEqual(sample.account_ids, []);
     assert.equal(sample.binance_weight_current, 2);
     assert.equal(sample.binance_weight_samples, 1);
+    assert.equal(sample.environments.TESTNET.shard_id, "executor-02");
+    assert.equal(sample.environments.TESTNET.binance_weight_current, 2);
+    assert.equal(sample.environments.TESTNET.binance_weight_samples, 1);
+    assert.equal(sample.environments.TESTNET.weight_observed_at, new Date(NOW).toISOString());
+    assert.equal(sample.environments.TESTNET.cpu_percent, sample.cpu_percent);
+    assert.equal(sample.environments.TESTNET.registry_scope, "CREDENTIAL_BOUND_TRANSPORT");
+    assert.deepEqual(sample.environments.TESTNET.credential_account_ids, []);
+    assert.equal(sample.environments.TESTNET.engine_count, undefined);
     assert.ok(calls.every((call) => call.method === "GET"));
     assert.ok(calls.every((call) => !call.url.includes("account") && !call.url.includes("order")));
+  } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
+});
+
+test("Testnet telemetry outage does not invalidate Production capacity and never fabricates zero weight", async () => {
+  const normal = marketFetcher([]), running = await serve({ fetcher: async (url, init) => {
+    if (new URL(url).hostname === "testnet.binance.vision") throw new Error("FIXTURE_TESTNET_OFFLINE");
+    return normal(url, init);
+  } });
+  try {
+    const request_id = randomUUID();
+    const response = await post(running.url, "/v1/capacity", { request_id, executor_shard_id: "executor-02" }, `CAPACITY:${request_id}`);
+    const sample = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(sample.binance_weight_current, 2);
+    assert.equal(sample.environments.TESTNET.binance_weight_current, null);
+    assert.equal(sample.environments.TESTNET.weight_observed_at, null);
+    assert.equal(sample.environments.TESTNET.request_errors_last_5m, 1);
+    assert.equal(sample.request_errors_last_5m, 0);
   } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
 });
 
@@ -208,6 +234,13 @@ test("Testnet forwarding needs own-shard signature and locally bound account cre
     const denied = await post(running.url, "/v1/testnet/transport", other, `TESTNET:${other.request_id}`);
     assert.equal(denied.status, 503); assert.equal((await denied.json()).error, "EXECUTOR_BINANCE_CREDENTIALS_MISSING");
     assert.equal(calls.length, 2);
+    const capacityId = randomUUID();
+    const capacityResponse = await post(running.url, "/v1/capacity",
+      { executor_shard_id: "executor-02", request_id: capacityId }, `CAPACITY:${capacityId}`);
+    const capacity = await capacityResponse.json();
+    assert.equal(capacityResponse.status, 200);
+    assert.deepEqual(capacity.environments.TESTNET.credential_account_ids, [ACCOUNT_B]);
+    assert.deepEqual(capacity.account_ids, []);
   } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
 });
 

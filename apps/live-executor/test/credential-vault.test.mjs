@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createExecutorHandler } from "../src/server.mjs";
-import { assertNoExchangeOpenOrders, inspectBinanceCredential, loadCredential, saveCredential } from "../src/credential-vault.mjs";
+import { assertNoExchangeOpenOrders, credentialAccountIds, inspectBinanceCredential, loadCredential, saveCredential } from "../src/credential-vault.mjs";
 import { requestSignature, sha256 } from "../src/security.mjs";
 import { loadCombinedRegistry, resolveExecutorContext, saveInactiveRegistryAccount, validateExecutorRegistry } from "../src/account-registry.mjs";
 import { ACCOUNT_A, engineFixture, registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
@@ -67,6 +67,23 @@ test("Spot Testnet credential passes authenticated read without claiming Product
   assert.equal(observed.whitelistAccepted, null);
   assert.ok(fixture.calls.every((call) => call.method === "GET"));
   assert.ok(fixture.calls.every((call) => !call.url.includes("apiRestrictions")));
+});
+
+test("capacity inventory exposes only environment-scoped account IDs and fails closed on corrupt metadata", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-vault-inventory-"));
+  const testnetId = randomUUID(), testnetScope = { ...scope, exchange_account_id: testnetId,
+    credential_ref: `account_${testnetId.replaceAll("-", "")}`, environment: "TESTNET" };
+  try {
+    assert.deepEqual(await credentialAccountIds(directory, "TESTNET"), []);
+    const observation = { status: "PASS", validatedAt: new Date(now).toISOString() };
+    await saveCredential({ directory, masterSecret, scope, apiKey, apiSecret, observation });
+    await saveCredential({ directory, masterSecret, scope: testnetScope,
+      apiKey: "C".repeat(64), apiSecret: "D".repeat(64), observation });
+    assert.deepEqual(await credentialAccountIds(directory, "TESTNET"), [testnetId]);
+    assert.deepEqual(await credentialAccountIds(directory, "REAL"), [scope.exchange_account_id]);
+    await writeFile(join(directory, `${testnetId}.json`), "{broken", { mode: 0o600 });
+    await assert.rejects(credentialAccountIds(directory, "TESTNET"));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("new inactive account is isolated from Rafael and cannot authorize an order", async () => {

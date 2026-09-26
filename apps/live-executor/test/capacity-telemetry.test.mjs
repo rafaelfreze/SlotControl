@@ -45,3 +45,28 @@ test("Binance failure and probable retry pressure are observed without changing 
   assert.equal(telemetry.snapshot().request_errors_last_5m, 0);
   assert.equal(telemetry.snapshot().probable_retries_last_5m, 0);
 });
+
+test("Production and Testnet IP-weight, errors, retries and bounded probes are independent", async () => {
+  let at = Date.parse("2026-09-26T18:00:00Z");
+  const calls = [], fetcher = async (url) => {
+    calls.push(String(url));
+    const testnet = new URL(url).hostname === "testnet.binance.vision";
+    return Response.json({ serverTime: at }, { status: testnet ? 429 : 200,
+      headers: { "x-mbx-used-weight-1m": testnet ? "5900" : "1200" } });
+  };
+  const testnet = createCapacityTelemetry({ now: () => at, fetcher, environment: "TESTNET" });
+  const live = createCapacityTelemetry({ now: () => at, fetcher: testnet.trackedFetch });
+  await live.trackedFetch("https://api.binance.com/api/v3/account");
+  await live.trackedFetch("https://testnet.binance.vision/api/v3/account");
+  assert.equal(live.snapshot().binance_weight_current, 1200);
+  assert.equal(live.snapshot().request_errors_last_5m, 0);
+  assert.equal(testnet.snapshot().binance_weight_current, 5900);
+  assert.equal(testnet.snapshot().request_errors_last_5m, 1);
+  at += 60_000;
+  await Promise.allSettled(Array.from({ length: 5 }, () => Promise.all([live.sampleIfIdle(), testnet.sampleIfIdle()])));
+  assert.equal(calls.filter((url) => url === "https://api.binance.com/api/v3/time").length, 1);
+  assert.equal(calls.filter((url) => url === "https://testnet.binance.vision/api/v3/time").length, 1);
+  assert.equal(live.snapshot().binance_weight_peak, 1200);
+  assert.equal(testnet.snapshot().binance_weight_peak, 5900);
+  assert.throws(() => createCapacityTelemetry({ environment: "OTHER" }), /ENVIRONMENT_INVALID/);
+});

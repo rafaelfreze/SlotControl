@@ -91,6 +91,23 @@ export async function credentialMetadata(directory, scope) {
     status: document.status, validated_at: document.validated_at, environment: document.environment };
 }
 
+/** Inventory for signed server-to-server capacity checks. Reads metadata only:
+ * never decrypts or exposes keys, UID hashes, fingerprints or credential refs.
+ * A corrupt document rejects the inventory instead of pretending it is empty. */
+export async function credentialAccountIds(directory, environment) {
+  if (!HOSTS[environment]) fail("EXECUTOR_CREDENTIAL_SCOPE_INVALID", 403);
+  await assertPrivateDirectory(directory);
+  const ids = [];
+  for (const name of await readdir(directory)) {
+    if (!name.endsWith(".json") || !UUID.test(name.slice(0, -5))) continue;
+    const document = await readDocument(directory, name.slice(0, -5));
+    if (!document) continue; // Credential removal won the race.
+    assertCredentialScope(document);
+    if (document.environment === environment) ids.push(document.exchange_account_id);
+  }
+  return ids.sort();
+}
+
 async function signedGet(fetcher, host, path, apiKey, apiSecret, time) {
   const query = new URLSearchParams({ recvWindow: "5000", timestamp: String(time) });
   query.set("signature", createHmac("sha256", apiSecret).update(query.toString()).digest("hex"));

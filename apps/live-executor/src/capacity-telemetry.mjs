@@ -1,21 +1,24 @@
-import { cpus, totalmem } from "node:os";
+import { totalmem } from "node:os";
 
 const MB = 1024 * 1024;
 const WINDOW_MS = 15 * 60_000;
+const BINANCE_HOSTS = { REAL: "api.binance.com", TESTNET: "testnet.binance.vision" };
 
 /** IP-wide Binance header. Observing a response never changes its body or retry policy. */
 export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
   cpuUsage = () => process.cpuUsage(), rss = () => process.memoryUsage().rss,
-  memoryLimit = () => totalmem(), shardId = "executor-01" } = {}) {
+  memoryLimit = () => totalmem(), shardId = "executor-01", environment = "REAL" } = {}) {
+  const host = BINANCE_HOSTS[environment];
+  if (!host) throw new Error("EXECUTOR_CAPACITY_ENVIRONMENT_INVALID");
   const samples = [];
   const failedRequests = [], probableRetries = [];
   const recentFailures = new Map();
   let previousCpu = cpuUsage(), previousAt = now(), cpuPercent = null;
   let lastIdleProbeAt = -Infinity, idleProbe = null;
   function observe(url, response) {
-    let host;
-    try { host = new URL(String(url)).hostname; } catch { return; }
-    if (host !== "api.binance.com") return;
+    let responseHost;
+    try { responseHost = new URL(String(url)).hostname; } catch { return; }
+    if (responseHost !== host) return;
     const value = Number(response.headers?.get("x-mbx-used-weight-1m"));
     if (!Number.isFinite(value) || value < 0 || !response.headers?.has("x-mbx-used-weight-1m")) return;
     const at = now();
@@ -26,7 +29,7 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
     let route = null;
     try {
       const parsed = new URL(String(url));
-      if (parsed.hostname === "api.binance.com")
+      if (parsed.hostname === host)
         route = `${String(options?.method ?? "GET").toUpperCase()}:${parsed.pathname}`;
     } catch { /* The underlying fetcher reports an invalid URL unchanged. */ }
     const startedAt = now();
@@ -56,7 +59,7 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
       return idleProbe;
     lastIdleProbeAt = at;
     idleProbe = (async () => {
-      const response = await trackedFetch("https://api.binance.com/api/v3/time", {
+      const response = await trackedFetch(`https://${host}/api/v3/time`, {
         method: "GET", cache: "no-store", signal: AbortSignal.timeout(4_000),
       });
       const clock = await response.json();

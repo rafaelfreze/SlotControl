@@ -49,6 +49,10 @@ systemctl restart coinops-live-executor
 
 Validar health novamente após restart. Nunca exibir o env, vault, headers assinados ou key files. O monitor deve confirmar telemetria assinada recente e IDs de engines/contas exatos, não apenas HTTP 200. O bootstrap não ativa admissão no control plane: registrar endpoint/HMAC em configuração server-side autorizada e shard no banco via migration/fluxo versionado separado, mantendo admissão fail-closed até validação.
 
+`/v1/capacity` preserva o contrato REAL no nível superior e publica `environments.TESTNET` separadamente. Cada ambiente observa exclusivamente o header de peso de seu próprio host Binance; quando o tráfego está ocioso, consulta pública `/api/v3/time` no máximo uma vez por minuto/ambiente, sem credenciais nem ordens. CPU/RAM são recursos compartilhados do servidor, não duplicação de orçamento Binance. Falha da amostra Testnet não invalida a amostra LIVE e ausência de header permanece desconhecida.
+
+O registry de ordens do executor é REAL. Testnet usa `registry_scope=CREDENTIAL_BOUND_TRANSPORT`: informa somente `credential_account_ids` lidos dos metadados locais, sem decriptação, UID, fingerprint ou secret. O control plane cruza a atribuição única de cada conta e calcula engines/contas ativos pelo ledger/run Testnet; credenciais staged/inativas podem ser um superset. Não inventar `engine_ids` ou contagem local Testnet. Inventário corrompido/ausente bloqueia nova admissão Testnet, não os motores LIVE existentes.
+
 ## Rollback
 
 Executar o mesmo script de deploy com o SHA anterior compatível, registrado na evidência de release. Isso preserva registry, vault, nonces e claims de idempotência. Não restaurar snapshots antigos de estado financeiro. Após rollback, confirmar health/versão, reconciliação de cada conta do shard, ausência de duplicação, logs e que outros shards permaneceram operacionais.

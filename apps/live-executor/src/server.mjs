@@ -10,7 +10,7 @@ import { buildExecutorDryRun, EXECUTOR_CAPS } from "./preparation.mjs";
 import { BinanceLiveTransport } from "./binance-live.mjs";
 import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableIntent,
   assertExecutorShardContext, assertRegistryShard } from "./account-registry.mjs";
-import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCredential, loadCredential, refreshCredential,
+import { assertCredentialScope, assertNoExchangeOpenOrders, credentialAccountIds, inspectBinanceCredential, loadCredential, refreshCredential,
   removeCredential, saveCredential } from "./credential-vault.mjs";
 import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
 import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
@@ -49,7 +49,10 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
   allowLegacyClients = false, legacyVersion = null,
   shardId = process.env.COINOPS_EXECUTOR_SHARD_ID || "executor-01" }) {
   if (registry || shardId !== "executor-01") assertRegistryShard(registry, shardId);
-  const capacity = createCapacityTelemetry({ fetcher: rawFetcher, now, shardId });
+  // Each host owns its independent IP budget; both observe the same transport
+  // without changing requests, bodies, retries, or financial execution rules.
+  const testnetCapacity = createCapacityTelemetry({ fetcher: rawFetcher, now, shardId, environment: "TESTNET" });
+  const capacity = createCapacityTelemetry({ fetcher: testnetCapacity.trackedFetch, now, shardId });
   const fetcher = capacity.trackedFetch;
   let cachedHealth = null;
   const engineHealthCache = new Map();
@@ -141,14 +144,30 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code }));
         const live = active.engines.filter((row) => row.environment === "REAL" && row.status === "ACTIVE");
         // Server-side collection remains truthful even before the first account.
-        await capacity.sampleIfIdle();
+        const probes = await Promise.allSettled([capacity.sampleIfIdle(), testnetCapacity.sampleIfIdle()]);
+        for (const [index, probe] of probes.entries())
+          if (probe.status === "rejected") logger({ action: "CAPACITY_PUBLIC_PROBE_UNAVAILABLE",
+            executor_shard_id: shardId, environment: index ? "TESTNET" : "REAL" });
         const sample = capacity.snapshot();
+        const testnetSample = testnetCapacity.snapshot();
+        const testnetAccountIds = await credentialAccountIds(join(stateDirectory, "credentials"), "TESTNET")
+          .catch(() => {
+            logger({ action: "CAPACITY_CREDENTIAL_INVENTORY_UNAVAILABLE", executor_shard_id: shardId, environment: "TESTNET" });
+            return null;
+          });
         status = 200; outcome = "READ_ONLY_CAPACITY";
         writeJson(response, 200, { ...sample, executor_shard_id: shardId, egress_ipv4: expectedEgressIp,
           account_count: new Set(live.map((row) => row.exchange_account_id)).size,
           account_ids: [...new Set(live.map((row) => row.exchange_account_id))].sort(),
           engine_ids: live.map((row) => row.trading_engine_id).sort(),
-          engine_count: live.length, executor_version: version });
+          engine_count: live.length, executor_version: version,
+          environments: { TESTNET: { ...testnetSample, executor_shard_id: shardId,
+            egress_ipv4: expectedEgressIp, executor_version: version,
+            cpu_percent: sample.cpu_percent, ram_used_mb: sample.ram_used_mb, ram_limit_mb: sample.ram_limit_mb,
+            // Testnet transport is credential-bound; its engine inventory is
+            // authoritative in the control plane, not the REAL order registry.
+            registry_scope: "CREDENTIAL_BOUND_TRANSPORT",
+            ...(testnetAccountIds ? { credential_account_ids: testnetAccountIds } : {}) } } });
         return;
       }
       if (path === "/v1/testnet/transport") {
