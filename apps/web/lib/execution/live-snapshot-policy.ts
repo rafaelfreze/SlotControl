@@ -7,12 +7,6 @@ type ResidentOrder = {
 
 const MAX_REUSE_MS = 5_000;
 
-/** Reconciliation can dispatch only an unguarded PREPARED order. */
-export function needsResidentPreflight(orders: readonly ResidentOrder[]): boolean {
-  return orders.some((order) => order.status === "PREPARED"
-    && order.submission_guarded_at === null);
-}
-
 /** A partial BUY can be canceled while covering it with a TP. */
 export function mayCancelPartialBuy(orders: readonly ResidentOrder[]): boolean {
   return orders.some((order) => order.side === "BUY"

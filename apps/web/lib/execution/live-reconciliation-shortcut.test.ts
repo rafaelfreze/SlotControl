@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut.ts";
+import { unchangedUnfilledOpenOrder, unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut.ts";
 
 const ledger = { status: "NEW", side: "BUY" as const, purpose: "ENTRY",
   client_order_id: "C2-account-engine-1-B", exchange_order_id: "1001",
@@ -35,4 +35,26 @@ test("every fill, terminal status, uncertain claim or identity/price change requ
   ] as const;
   for (const [stored, observed] of cases)
     assert.equal(unchangedUnfilledResidentOrder(stored, observed, "BTCUSDT"), false);
+});
+
+test("fresh open-orders snapshot skips individual query only for an exact unfilled resident", () => {
+  const now = Date.parse("2026-09-26T14:00:00.000Z");
+  const observedAt = "2026-09-26T13:59:59.000Z";
+  const open = { id: "1001", symbol: "BTCUSDT", side: "BUY", status: "NEW",
+    clientOrderId: ledger.client_order_id, executedQuantity: 0, price: 42000.01 };
+  assert.equal(unchangedUnfilledOpenOrder(ledger, open, "BTCUSDT", observedAt, now), true);
+  for (const changed of [
+    { ...open, id: "1002" }, { ...open, clientOrderId: "other" },
+    { ...open, symbol: "SOLUSDT" }, { ...open, side: "SELL" },
+    { ...open, status: "PARTIALLY_FILLED" }, { ...open, executedQuantity: 0.00001 },
+    { ...open, price: 42000.02 },
+  ]) assert.equal(unchangedUnfilledOpenOrder(ledger, changed, "BTCUSDT", observedAt, now), false);
+  assert.equal(unchangedUnfilledOpenOrder({ ...ledger, cumulative_quote: "1" }, open,
+    "BTCUSDT", observedAt, now), false);
+  assert.equal(unchangedUnfilledOpenOrder({ ...ledger, submission_guarded_at: null }, open,
+    "BTCUSDT", observedAt, now), false);
+  assert.equal(unchangedUnfilledOpenOrder(ledger, open, "BTCUSDT",
+    "2026-09-26T13:59:29.000Z", now), false);
+  assert.equal(unchangedUnfilledOpenOrder(ledger, open, "BTCUSDT",
+    "2026-09-26T14:00:01.000Z", now), false);
 });

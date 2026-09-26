@@ -243,3 +243,41 @@ engines; a cadência, Supabase, fills e recuperação a 40/50 contas reais não
 foram validados. Gatilho objetivo para escalar: peso IP p95 ≥ 4.800/min,
 cron p99 ≥ 45 s, ou idade de reconciliação ≥ 120 s. Não adicionar conta a
 Production sob a premissa de que este benchmark sozinho aprovou o gate.
+
+### Continuação: snapshot completo e ordens residentes sem fill
+
+Uma otimização adicional, ainda **somente na branch de auditoria**, usa o
+`open_orders` de um snapshot completo e recente para evitar `QUERY_ORDER`
+individual quando a ordem `NEW` no ledger coincide em client ID, exchange ID,
+símbolo, lado, preço e quantidade executada zero. Snapshot ausente ou com mais
+de 30 s, ID duplicado, divergência, fill e resultado incerto seguem para
+`reconcileOrder`, incluindo trades/fees. A proteção TP e a validação de
+preços estratégicos permanecem fail-closed. Testes direcionados, typecheck,
+lint e build passaram; isso não simula uma corrida real de fill durante o cron.
+
+No VPS, o harness isolado de HTTP/Binance fictícia a 100 ms por endpoint,
+pool de 12, health por engine e orçamento preventivo de 4.800 unidades/min
+mediu o caminho de **uma** leitura de estado por motor (sem consulta de ordem):
+
+| Fixture | Saúde | Parede | p50/p95/p99 por engine | CPU | RSS final |
+| --- | ---: | ---: | --- | ---: | ---: |
+| 50 contas/100 engines/2.500 slots lógicos | 100/100 | 4,60 s | 497/639/653 ms | 1,65 s | 135 MB |
+| 100/200/5.000 | 200/200 | 8,11 s | 473/556/574 ms | 2,26 s | 146 MB |
+
+Com **duas** leituras de estado e health: 50/100 teve 100/100 em 7,16 s,
+p50/p95/p99 760/920/921 ms, CPU 2,72 s e RSS 152 MB; 100/200 teve
+156/200, com 44 afetados pelo orçamento do IP. Uma nova rodada de 50/100
+com uma leitura e falhas isoladas de 1 engine, 5 engines ou uma credencial
+teve respectivamente 99, 95 e 98 saudáveis, exatamente o blast radius
+esperado. Esses testes exercitam HTTP assinado e executor real com fixtures,
+mas **não** cron web, PostgREST, RLS, fills, ciclo ou recuperação completa.
+Em Production, 26/09 14:07 UTC, os seis runs ainda estavam ACTIVE com
+reconciliação recente, uma BUY por engine, TP 1/1/2/2/1/1 e zero alertas
+abertos no ledger; não é prova individual contra Binance.
+
+O caminho nominal de 100/200 usa grande parte do orçamento mesmo com uma
+leitura. O cenário com dois snapshots, retries ou fills não tem margem
+suficiente; `COINOPS_50_ACCOUNTS_READY` segue **REPROVADO** até provar o
+fluxo completo com banco gerenciado isolado, cron, Realtime e recovery sob
+carga. A implantação segura desta otimização no fluxo LIVE, se ocorrer,
+precisa de smoke pós-deploy sem provocar ordens.

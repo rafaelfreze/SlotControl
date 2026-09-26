@@ -22,8 +22,8 @@ import type { V1Asset } from "./robot-v1";
 import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
-import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
-import { canReuseLiveState, mayCancelPartialBuy, needsResidentPreflight } from "./live-snapshot-policy";
+import { unchangedUnfilledOpenOrder, unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
+import { canReuseLiveState, mayCancelPartialBuy } from "./live-snapshot-policy";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -844,17 +844,24 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
     let ledger = await runRows(service, run);
     stage = "RECONCILE_ORDERS";
-    // An unguarded PREPARED order may be dispatched by reconciliation. Verify
-    // every existing resident price before that write; the ordinary resident
-    // path only queries orders and can validate against the fresh snapshot
-    // immediately afterwards.
-    if (needsResidentPreflight(ledger.orders))
-      assertLiveResidentPrices(run, ledger, await readLiveExecutorState(run));
-    for (const order of ledger.orders) await reconcileOrder(service, run, order);
-    ledger = await runRows(service, run);
-    stage = "READ_STATE";
     let state = await readLiveExecutorState(run);
     let stateObservedAtMs = Date.now();
+    assertLiveResidentPrices(run, ledger, state);
+    let queriedOrder = false;
+    for (const order of ledger.orders) {
+      if (order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)) continue;
+      const matching = state.open_orders.filter((item) => item.clientOrderId === order.client_order_id);
+      if (matching.length === 1 && unchangedUnfilledOpenOrder(order, matching[0], run.symbol,
+        state.observed_at)) continue;
+      queriedOrder = true;
+      await reconcileOrder(service, run, order);
+    }
+    ledger = await runRows(service, run);
+    stage = "READ_STATE";
+    if (queriedOrder || !canReuseLiveState(stateObservedAtMs, Date.now(), false)) {
+      state = await readLiveExecutorState(run);
+      stateObservedAtMs = Date.now();
+    }
     assertLiveResidentPrices(run, ledger, state);
     stage = "PROTECT_TP";
     const orderCountBeforeProtection = ledger.orders.length;

@@ -1,17 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canReuseLiveState, mayCancelPartialBuy, needsResidentPreflight } from "./live-snapshot-policy.ts";
+import { canReuseLiveState, mayCancelPartialBuy } from "./live-snapshot-policy.ts";
 
 const resident = { status: "NEW", side: "BUY" as const,
   submission_guarded_at: "2026-09-26T12:00:00Z", executed_quantity: "0" };
-
-test("only an unguarded PREPARED order requires resident-price preflight before dispatch", () => {
-  assert.equal(needsResidentPreflight([resident]), false);
-  assert.equal(needsResidentPreflight([{ ...resident, status: "PREPARED" }]), false);
-  assert.equal(needsResidentPreflight([{ ...resident, status: "PREPARED",
-    submission_guarded_at: null }]), true);
-});
 
 test("partial BUY invalidates state after TP protection; unchanged resident does not", () => {
   assert.equal(mayCancelPartialBuy([resident]), false);
