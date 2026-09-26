@@ -26,3 +26,19 @@ test("rejects unsafe concurrency and handles no engines", async () => {
     /COINOPS_LIVE_CRON_CONCURRENCY_INVALID/);
   assert.deepEqual(await boundedEngineMap([], 2, async () => 1), []);
 });
+
+test("four Production accounts and seven engines keep Pedro isolated", async () => {
+  const engines = ["Rafael/BTCBRL", "Rafael/SOLBRL", "Thyely/BTCUSDT",
+    "Thyely/SOLUSDT", "Caixeta/BTCBRL", "Caixeta/SOLBRL", "Pedro/SOLBRL"];
+  for (const failed of [new Set(["Pedro/SOLBRL"]),
+    new Set(engines.slice(0, 5)), new Set(["Caixeta/BTCBRL", "Caixeta/SOLBRL"])]) {
+    const result = await boundedEngineMap(engines, 4, async (engine) => ({
+      engine, status: failed.has(engine) ? "FAILED" : "OK",
+    }));
+    assert.deepEqual(result.map((item) => item.engine), engines);
+    assert.deepEqual(result.filter((item) => item.status === "FAILED").map((item) => item.engine),
+      engines.filter((engine) => failed.has(engine)));
+    assert.deepEqual(result.filter((item) => item.status === "OK").map((item) => item.engine),
+      engines.filter((engine) => !failed.has(engine)));
+  }
+});
