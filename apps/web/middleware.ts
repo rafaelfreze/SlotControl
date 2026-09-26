@@ -3,7 +3,8 @@ import { type NextRequest, NextResponse } from "next/server";
 import { getAuthDestination } from "@/lib/auth/navigation";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
 
-const protectedRoutes = ["/dashboard", "/slots", "/historico", "/config", "/meu-coinops"];
+const legacyOperatorRoutes = ["/dashboard", "/slots", "/plano-crescimento", "/historico", "/ciclos", "/alertas", "/config", "/mais"];
+const protectedRoutes = [...legacyOperatorRoutes, "/meu-coinops"];
 const authRoutes = ["/login", "/cadastro"];
 
 type CookieToSet = {
@@ -101,6 +102,10 @@ export async function middleware(request: NextRequest) {
     });
     const url = new URL(target, request.url);
     return NextResponse.redirect(url);
+  }
+
+  if (user && isRoute(pathname, legacyOperatorRoutes)) {
+    return NextResponse.redirect(new URL("/automacao?view=live", request.url));
   }
 
   return response;

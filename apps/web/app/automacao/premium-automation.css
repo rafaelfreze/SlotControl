@@ -177,6 +177,22 @@
 .px-loading-grid>.px-panel{height:135px;background:linear-gradient(110deg,#071522,#10283a,#071522);background-size:200% 100%;animation:px-loading-pulse 1.6s ease-in-out infinite}
 @keyframes px-loading-pulse{to{background-position-x:-200%}}
 @media(max-width:760px){.px-loading .px-topbar{min-height:76px}.px-loading-grid{grid-template-columns:1fr 1fr}.px-loading-grid>.px-panel{height:105px}.px-loading-grid>.px-panel:last-child{display:none}.px-loading-hero{height:115px;padding:20px}}
+
+/* Every Automation dialog keeps its own brand and close control above the
+   scrolling content. Reserve the iPhone status-bar safe area inside the dialog. */
+.px-drawer>.px-drawer-header{display:block;position:sticky;top:0;z-index:20;background:#081a29;padding:14px 24px 12px}
+.px-drawer-header-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.px-drawer-header .px-brand{margin:0;min-width:0;color:#eff6ff}
+.px-drawer-header .px-brand>svg{width:34px;height:34px;flex:none}
+.px-drawer-header .px-brand strong{font-size:20px;letter-spacing:-.5px}
+.px-drawer-header .px-brand small{display:none}
+.px-drawer-header .px-icon-button{width:44px;height:44px;flex:none}
+.px-drawer>.px-drawer-header h2{margin-top:8px;font-size:18px}
+@media(max-width:760px){
+  .px-drawer>.px-drawer-header{padding:calc(env(safe-area-inset-top) + 12px) max(16px,env(safe-area-inset-right)) 12px max(16px,env(safe-area-inset-left))}
+  .px-drawer-header .px-brand>svg{width:31px;height:31px}
+  .px-drawer-header .px-brand strong{font-size:19px}
+}
 @media(prefers-reduced-motion:reduce){.px-loading-grid>.px-panel{animation:none}}
 .px-account-permissions,.px-account-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
 .px-account-permissions span{padding:6px 10px;border:1px solid var(--px-border,#314455);border-radius:8px;font-size:.82rem}
