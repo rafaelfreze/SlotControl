@@ -86,3 +86,19 @@ check("RLS and grants deny authenticated clients capacity writes and reservation
   assert.equal(grants, "false:false");
   assert.equal(psql("select relforcerowsecurity from pg_class where oid='coinops.executor_capacity_samples'::regclass"), "t");
 });
+check("resolved capacity incident reopens with a fresh fingerprint, while repeat observations do not", () => {
+  const first = psql(`insert into coinops.executor_capacity_alerts(shard_id,code,severity)
+    values('executor-01','BINANCE_WEIGHT_WARNING','WARNING') returning first_seen_at`)
+    .split("\n")[0];
+  psql(`update coinops.executor_capacity_alerts set last_seen_at=now()
+    where shard_id='executor-01' and code='BINANCE_WEIGHT_WARNING'`);
+  assert.equal(psql(`select first_seen_at from coinops.executor_capacity_alerts
+    where shard_id='executor-01' and code='BINANCE_WEIGHT_WARNING'`), first);
+  psql(`update coinops.executor_capacity_alerts set resolved_at=now()
+    where shard_id='executor-01' and code='BINANCE_WEIGHT_WARNING'`);
+  psql("select pg_sleep(0.02)");
+  psql(`update coinops.executor_capacity_alerts set resolved_at=null
+    where shard_id='executor-01' and code='BINANCE_WEIGHT_WARNING'`);
+  assert.notEqual(psql(`select first_seen_at from coinops.executor_capacity_alerts
+    where shard_id='executor-01' and code='BINANCE_WEIGHT_WARNING'`), first);
+});

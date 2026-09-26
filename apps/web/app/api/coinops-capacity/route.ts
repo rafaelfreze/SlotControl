@@ -37,6 +37,8 @@ export async function GET() {
       const metrics = sample && shard.enabled ? asShardMetrics(sample) : null;
       const assessment = assessShardCapacity(metrics, policy);
       const admission = decideShardAdmission(metrics, Number(shard.incremental_engine_weight), policy);
+      const dualEngineAdmission = decideShardAdmission(metrics,
+        Number(shard.incremental_engine_weight) * 2, policy);
       return { id: shard.id, state: assessment.state, action: assessment.action,
         binanceWeightCurrent: sample?.binance_weight_current ?? null,
         binanceWeightAverage: sample?.binance_weight_average ?? null,
@@ -49,6 +51,7 @@ export async function GET() {
         accountCount: assessment.accountCount, engineCount: assessment.engineCount,
         observedAt: sample?.observed_at ?? null,
         canAddEngine: admission.allowed, admissionReason: admission.reason,
+        canAddTwoEngineAccount: dualEngineAdmission.allowed,
         alerts: (alerts.data ?? []).filter((item) => item.shard_id === shard.id) };
     }) }, { headers });
   } catch {

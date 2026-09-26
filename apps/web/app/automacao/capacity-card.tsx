@@ -6,6 +6,7 @@ type Shard = { id: string; state: string; binanceWeightCurrent: number | null;
   binanceLimit: number; binancePercent: number | null; cpuPercent: number | null;
   ramUsedMb: number | null; schedulerBacklog: number | null; reconciliationAgeMs: number | null;
   accountCount: number; engineCount: number; canAddEngine: boolean; admissionReason: string;
+  canAddTwoEngineAccount: boolean;
   alerts: Array<{ code: string }> };
 
 export function CapacityCard() {
@@ -30,7 +31,8 @@ export function CapacityCard() {
         <span>CPU: {shard.cpuPercent?.toFixed(1) ?? "—"}% · RAM: {shard.ramUsedMb?.toFixed(0) ?? "—"} MB</span>
         <span>Fila: {shard.schedulerBacklog === null ? "—" : shard.schedulerBacklog === 0 ? "normal" : shard.schedulerBacklog}
           {` · Reconciliação: ${shard.reconciliationAgeMs === null ? "—" : Math.round(shard.reconciliationAgeMs / 1000) + "s"}`}</span>
-        <strong>Pode adicionar motor: {shard.canAddEngine ? "SIM" : "NÃO"}</strong>
+        <strong>Nova conta com 1 motor: {shard.canAddEngine ? "SIM" : "NÃO"}</strong>
+        <span>Nova conta com 2 motores: {shard.canAddTwoEngineAccount ? "SIM" : "NÃO"}</span>
         {shard.state === "WARNING" ? <small>Preparar novo executor/IP.</small> : null}
         {shard.state === "CAPACITY_LIMIT" ? <small>Capacidade atingida — provisionar novo executor antes de ativar novas contas.</small> : null}
         {!shard.canAddEngine && shard.state !== "CAPACITY_LIMIT" ? <small>{shard.state === "OFFLINE"
