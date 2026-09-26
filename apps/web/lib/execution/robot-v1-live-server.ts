@@ -22,6 +22,7 @@ import type { V1Asset } from "./robot-v1";
 import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
+import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -338,6 +339,7 @@ function assertLiveResidentPrices(run: Run, ledger: Ledger, state: LiveExecutorS
 async function reconcileOrder(service: Service, run: Run, order: Order) {
   if (order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)) return order;
   let observed = (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
+  if (observed && unchangedUnfilledResidentOrder(order, observed, run.symbol)) return order;
   if (!observed) {
     if (order.submission_guarded_at !== null || order.status !== "PREPARED")
       throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
