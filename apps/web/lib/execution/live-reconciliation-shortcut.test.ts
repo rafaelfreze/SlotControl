@@ -5,7 +5,7 @@ import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut.t
 
 const ledger = { status: "NEW", side: "BUY" as const, purpose: "ENTRY",
   client_order_id: "C2-account-engine-1-B", exchange_order_id: "1001",
-  submission_guarded_at: "2026-09-26T12:00:00Z", trades_reconciled: true, price: "42000.01",
+  submission_guarded_at: "2026-09-26T12:00:00Z", trades_reconciled: false, price: "42000.01",
   executed_quantity: "0", cumulative_quote: "0" };
 const exchange = { status: "NEW", symbol: "BTCUSDT", side: "BUY" as const,
   clientOrderId: "C2-account-engine-1-B", orderId: "1001", price: 42000.01,
@@ -26,7 +26,6 @@ test("every fill, terminal status, uncertain claim or identity/price change requ
     [{ ...ledger, cumulative_quote: "1" }, exchange],
     [{ ...ledger, status: "PARTIALLY_FILLED" }, exchange],
     [{ ...ledger, submission_guarded_at: null }, exchange],
-    [{ ...ledger, trades_reconciled: false }, exchange],
     [{ ...ledger, exchange_order_id: null }, exchange],
     [ledger, { ...exchange, orderId: "1002" }],
     [ledger, { ...exchange, clientOrderId: "other-account" }],

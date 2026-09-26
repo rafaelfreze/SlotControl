@@ -1,7 +1,7 @@
 type LedgerOrder = {
   status: string; side: "BUY" | "SELL"; purpose: string;
   client_order_id: string; exchange_order_id: string | null;
-  submission_guarded_at: string | null; trades_reconciled: boolean;
+  submission_guarded_at: string | null;
   price: number | string | null;
   executed_quantity: number | string; cumulative_quote: number | string;
 };
@@ -17,7 +17,6 @@ type ExchangeOrder = {
 export function unchangedUnfilledResidentOrder(ledger: LedgerOrder,
   observed: ExchangeOrder, symbol: string): boolean {
   return ledger.status === "NEW" && observed.status === "NEW"
-    && ledger.trades_reconciled === true
     && ledger.submission_guarded_at !== null
     && ledger.exchange_order_id !== null
     && observed.orderId === ledger.exchange_order_id
