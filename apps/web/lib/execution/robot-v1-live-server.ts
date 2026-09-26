@@ -215,6 +215,32 @@ async function preventNewBuys(service: Service, run: Run, code: string) {
   if (alert.error) throw new Error("COINOPS_LIVE_ALERT_PERSIST_FAILED");
 }
 
+const TRANSIENT_EXECUTOR_READ_CODES = new Set([
+  "EXECUTOR_UNAVAILABLE", "EXECUTOR_BINANCE_READ_UNAVAILABLE", "EXECUTOR_BINANCE_RATE_LIMITED",
+  "EXECUTOR_HTTP_502", "EXECUTOR_HTTP_503", "EXECUTOR_HTTP_504",
+]);
+
+/** A failed observation never authorizes a new order. Keep the run retryable
+ * while the exchange is briefly unavailable; only a prolonged outage locks
+ * this engine. Neither path changes a sibling engine or an existing TP. */
+async function holdTransientExecutorRead(service: Service, run: Run) {
+  const alertKey = `LIVE_RUN:${run.id}:TRANSIENT_EXECUTOR_READ`;
+  const previous = await service.from("robot_v1_live_alerts").select("first_seen_at")
+    .eq("trading_engine_id", run.trading_engine_id).eq("alert_key", alertKey)
+    .is("resolved_at", null).maybeSingle();
+  if (previous.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_READ_FAILED");
+  if (previous.data && Date.now() - Date.parse(previous.data.first_seen_at) > 5 * 60_000) {
+    await preventNewBuys(service, run, "COINOPS_LIVE_EXECUTOR_READ_STALE");
+    return false;
+  }
+  const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
+    alert_key: alertKey, severity: "WARNING", code: "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ",
+    details: { run_id: run.id }, last_seen_at: new Date().toISOString(), resolved_at: null },
+  { onConflict: "trading_engine_id,alert_key" });
+  if (alert.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_PERSIST_FAILED");
+  return true;
+}
+
 async function updateSlot(service: Service, run: Run, slot: Slot, values: Record<string, unknown>) {
   const result = await service.from("robot_v1_live_slots").update(values)
     .eq("id", slot.id).eq("run_id", run.id).eq("tenant_id", run.tenant_id).select("*").single();
@@ -902,8 +928,22 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
             resident_buy_count: residentBuys.length });
       }
     }
+    const held = await service.from("robot_v1_live_alerts")
+      .update({ resolved_at: new Date().toISOString() })
+      .eq("trading_engine_id", run.trading_engine_id)
+      .eq("alert_key", `LIVE_RUN:${run.id}:TRANSIENT_EXECUTOR_READ`)
+      .is("resolved_at", null);
+    if (held.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_RESOLUTION_FAILED");
     return { status: "OK", next };
   } catch (error) {
+    if (["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
+      && error instanceof Error && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
+      errorCode = "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
+      if (await holdTransientExecutorRead(service, run))
+        return { status: "RETRY", code: errorCode };
+      errorCode = "COINOPS_LIVE_EXECUTOR_READ_STALE";
+      throw new Error(errorCode);
+    }
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : `COINOPS_LIVE_${stage}_FAILED`;
     await preventNewBuys(service, run, errorCode);
@@ -1035,7 +1075,8 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
 
 /** Operator recovery is read-only against Binance. The SQL BUY gate opens only
  * after a fresh exchange/ledger match, protected positions and hard caps. */
-export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset) {
+export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
+  source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
   const service = createServiceRoleClient();
   const run = await claim(service, runId);
@@ -1094,7 +1135,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
         throw new Error("COINOPS_LIVE_RESUME_STATE_FAILED");
     }
     await event(service, run, `RESUMED:${new Date().toISOString()}`, "LIVE_RESUMED",
-      null, { executor_version: health.health?.version, source: "OPERATOR_CONTROL" });
+      null, { executor_version: health.health?.version, source });
     const alert = await service.from("robot_v1_live_alerts")
       .update({ resolved_at: new Date().toISOString() })
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)

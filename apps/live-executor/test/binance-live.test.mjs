@@ -6,7 +6,8 @@ import { BinanceLiveTransport } from "../src/binance-live.mjs";
 const NOW = Date.parse("2026-09-24T03:00:00.000Z");
 const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
 
-function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false } = {}) {
+function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false,
+  restrictionsStatus = 200 } = {}) {
   const calls = [];
   let order = existingOrder;
   let openOrderFailures = 0;
@@ -28,7 +29,9 @@ function fixture({ openOrders = [], existingOrder = null, trades = [], failFirst
     if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [
       { asset: "BRL", free: "730", locked: "0" }, { asset: "BTC", free: "0", locked: "0" },
       { asset: "BNB", free: "0.005", locked: "0" }] });
-    if (parsed.pathname === "/sapi/v1/account/apiRestrictions") return Response.json(restrictions);
+    if (parsed.pathname === "/sapi/v1/account/apiRestrictions")
+      return Response.json(restrictionsStatus === 200 ? restrictions : { code: -1003 },
+        { status: restrictionsStatus });
     if (parsed.pathname === "/api/v3/exchangeInfo") {
       const symbol = parsed.searchParams.get("symbol") ?? "BTCBRL";
       return Response.json({ symbols: [{ ...filters, symbol,
@@ -84,6 +87,16 @@ test("complete safety snapshot retries one transient GET failure without any wri
   const snapshot = await transport.safetySnapshot("BTCBRL");
   assert.deepEqual(snapshot.openOrders, []);
   assert.equal(calls.filter((call) => call.path === "/api/v3/openOrders").length, 2);
+  assert.ok(calls.every((call) => call.method === "GET"));
+  assert.equal(calls.filter((call) => call.path === "/api/v3/account").length, 2,
+    "one account read per snapshot attempt");
+});
+
+test("Binance rate limit fails closed without retry storm or order write", async () => {
+  const { transport, calls } = fixture({ restrictionsStatus: 429 });
+  await assert.rejects(transport.safetySnapshot("BTCBRL"), /EXECUTOR_BINANCE_RATE_LIMITED/);
+  assert.equal(calls.filter((call) => call.path === "/sapi/v1/account/apiRestrictions").length, 1);
+  assert.equal(calls.filter((call) => call.path === "/api/v3/account").length, 1);
   assert.ok(calls.every((call) => call.method === "GET"));
 });
 

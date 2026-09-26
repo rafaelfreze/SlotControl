@@ -55,19 +55,20 @@ export async function getPublicMarket(fetcher = fetch, now = Date.now, symbols =
   return { markets, observedAt, driftMs };
 }
 
-export async function getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher = fetch }) {
+export async function getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher = fetch, account: observedAccount }) {
   if (!apiKey || !apiSecret) return "UNVERIFIED";
   try {
     const adapter = new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, maxReadRetries: 0 });
     const query = new URLSearchParams({ recvWindow: "5000", timestamp: String(await adapter.getServerTime()) });
     query.set("signature", createHmac("sha256", apiSecret).update(query.toString()).digest("hex"));
     const [account, response] = await Promise.all([
-      adapter.getAccount(),
+      observedAccount ?? adapter.getAccount(),
       fetcher(`${BINANCE_SPOT}/sapi/v1/account/apiRestrictions?${query}`, {
         method: "GET", cache: "no-store", signal: AbortSignal.timeout(8000),
         headers: { accept: "application/json", "X-MBX-APIKEY": apiKey },
       }),
     ]);
+    if (response.status === 429 || response.status === 418) return "RATE_LIMITED";
     if (!response.ok) return "UNVERIFIED";
     const flags = await response.json();
     return account.canTrade && flags.enableReading === true
@@ -77,7 +78,9 @@ export async function getProductionRestrictedSpotStatus({ apiKey, apiSecret, fet
       && flags.enableFutures === false && flags.enableVanillaOptions === false
       && flags.enablePortfolioMarginTrading === false && flags.enableFixApiTrade === false
       ? "SPOT_RESTRICTED" : "UNSAFE";
-  } catch { return "UNVERIFIED"; }
+  } catch (error) {
+    return error?.code === "BINANCE_RATE_LIMITED" ? "RATE_LIMITED" : "UNVERIFIED";
+  }
 }
 
 export async function observeEgressIp(fetcher = fetch) {

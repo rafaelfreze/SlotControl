@@ -12,7 +12,7 @@ import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCreden
   removeCredential, saveCredential } from "./credential-vault.mjs";
 import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
 import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
-import { BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
+import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { forwardTestnetRequest } from "./testnet-transport.mjs";
 
 const BODY_LIMIT_BYTES = 16_384;
@@ -394,7 +394,11 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       writeJson(response, 200, { ...result, ...scope, request_id: requestId, replayed });
     } catch (error) {
       status = error instanceof ExecutorRejection ? error.status : 503;
-      outcome = error instanceof ExecutorRejection ? error.code : "EXECUTOR_UNAVAILABLE";
+      outcome = error instanceof ExecutorRejection ? error.code
+        : error instanceof BinanceReadOnlyError && ["BINANCE_RATE_LIMITED", "BINANCE_HTTP_418"].includes(error.code)
+          ? "EXECUTOR_BINANCE_RATE_LIMITED"
+          : error instanceof BinanceReadOnlyError && error.code === "BINANCE_NETWORK_UNAVAILABLE"
+            ? "EXECUTOR_BINANCE_READ_UNAVAILABLE" : "EXECUTOR_UNAVAILABLE";
       writeJson(response, status, { error: outcome, request_id: requestId });
     } finally {
       logger({ request_id: requestId, decision_id: decisionId, idempotency_key_hash: keyHash,

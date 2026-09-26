@@ -80,12 +80,16 @@ export class BinanceLiveTransport {
     // partially observed snapshot is never reused for an order decision.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        const accountRead = this.reads.getAccount();
         const [permission, account, filters, price, openOrders, bnbBrlPrice] = await Promise.all([
-          getProductionRestrictedSpotStatus({ apiKey: this.apiKey, apiSecret: this.apiSecret, fetcher: this.fetcher }),
-          this.reads.getAccount(), this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
+          accountRead.then((account) => getProductionRestrictedSpotStatus({ apiKey: this.apiKey,
+            apiSecret: this.apiSecret, fetcher: this.fetcher, account })),
+          accountRead, this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
           this.reads.getOpenOrders(symbol),
           this.reads.getMarketPrice(`BNB${this.engine?.quote_asset ?? "BRL"}`).catch(() => null),
         ]);
+        if (permission === "RATE_LIMITED")
+          throw new ExecutorRejection("EXECUTOR_BINANCE_RATE_LIMITED", 503);
         if (permission === "UNVERIFIED" && attempt === 0) continue;
         if (permission !== "SPOT_RESTRICTED" || !account.canTrade)
           throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
@@ -93,7 +97,8 @@ export class BinanceLiveTransport {
           throw new ExecutorRejection("EXECUTOR_MARKET_IDENTITY_MISMATCH", 503);
         return { account, filters, price, openOrders, bnbBrlPrice };
       } catch (error) {
-        if (attempt === 0 && error instanceof BinanceReadOnlyError && error.retryable) continue;
+        if (attempt === 0 && error instanceof BinanceReadOnlyError && error.retryable
+          && error.code !== "BINANCE_RATE_LIMITED") continue;
         throw error;
       }
     }
