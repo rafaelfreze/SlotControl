@@ -70,7 +70,7 @@ function transientReadError(error: unknown) {
     || error instanceof TypeError
     || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
 }
-async function readWithRetry<T>(path: "/v1/state" | "/v1/query-order" | "/v1/trades",
+async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades",
   input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -86,8 +86,10 @@ async function readWithRetry<T>(path: "/v1/state" | "/v1/query-order" | "/v1/tra
   throw new Error("EXECUTOR_READ_UNAVAILABLE");
 }
 export async function readLiveExecutorHealth(engine: ExecutorEngineScope, fetcher?: typeof fetch) {
-  const key = readKey();
-  return request<import("./live-executor-health").LiveExecutorHealth>("/v1/health", executorContext(engine, key, key), key, fetcher);
+  // A single failed observation (e.g. transient Binance read/egress timeout) must not
+  // irreversibly kill-switch an otherwise protected engine. Only GET-equivalent reads retry.
+  return readWithRetry<import("./live-executor-health").LiveExecutorHealth>("/v1/health",
+    (key) => executorContext(engine, key, key), fetcher);
 }
 export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher?: typeof fetch) {
   // Retry only an observation. Never retry create/cancel after an uncertain result.

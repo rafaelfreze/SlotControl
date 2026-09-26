@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readLiveExecutorOrder, readLiveExecutorState, readLiveExecutorTrades } from "./live-executor-transport.ts";
+import { readLiveExecutorHealth, readLiveExecutorOrder, readLiveExecutorState, readLiveExecutorTrades } from "./live-executor-transport.ts";
 
 const engine = { operator_id: "00000000-0000-4000-8000-000000000001",
   exchange_account_id: "00000000-0000-4000-8000-000000000002",
@@ -14,6 +14,65 @@ const state = { ...engine, environment: "REAL",
   price: { symbol: "BTCBRL", price: 430000, observedAt: "2026-09-24T10:00:00Z" },
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
+
+test("LIVE monitor health retries transient scoped 503 without retrying writes or crossing engines", async () => {
+  const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,
+    base: process.env.LIVE_EXECUTOR_BASE_URL, secret: process.env.COINOPS_EXECUTOR_HMAC_SECRET };
+  process.env.LIVE_EXECUTOR_EGRESS_IP = "46.101.104.48";
+  process.env.LIVE_EXECUTOR_BASE_URL = "https://46.101.104.48";
+  process.env.COINOPS_EXECUTOR_HMAC_SECRET = "x".repeat(32);
+  try {
+    const requests: Array<{ path: string; method: string | undefined; body: Record<string, string> }> = [];
+    const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ path: new URL(String(url)).pathname, method: init?.method,
+        body: JSON.parse(String(init?.body)) });
+      return requests.length === 1
+        ? Response.json({ error: "EXECUTOR_UNAVAILABLE" }, { status: 503 })
+        : Response.json({ ...engine, environment: "REAL", healthy: true });
+    }) as typeof fetch;
+    assert.equal((await readLiveExecutorHealth(engine, fetcher)).healthy, true);
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every((request) => request.path === "/v1/health"
+      && request.method === "POST" && request.body.trading_engine_id === engine.trading_engine_id));
+    assert.notEqual(requests[0].body.idempotency_key, requests[1].body.idempotency_key);
+  } finally {
+    if (previous.ip === undefined) delete process.env.LIVE_EXECUTOR_EGRESS_IP;
+    else process.env.LIVE_EXECUTOR_EGRESS_IP = previous.ip;
+    if (previous.base === undefined) delete process.env.LIVE_EXECUTOR_BASE_URL;
+    else process.env.LIVE_EXECUTOR_BASE_URL = previous.base;
+    if (previous.secret === undefined) delete process.env.COINOPS_EXECUTOR_HMAC_SECRET;
+    else process.env.COINOPS_EXECUTOR_HMAC_SECRET = previous.secret;
+  }
+});
+
+test("LIVE monitor health fails closed after persistent 503 and never retries authorization errors", async () => {
+  const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,
+    base: process.env.LIVE_EXECUTOR_BASE_URL, secret: process.env.COINOPS_EXECUTOR_HMAC_SECRET };
+  process.env.LIVE_EXECUTOR_EGRESS_IP = "46.101.104.48";
+  process.env.LIVE_EXECUTOR_BASE_URL = "https://46.101.104.48";
+  process.env.COINOPS_EXECUTOR_HMAC_SECRET = "x".repeat(32);
+  try {
+    let attempts = 0;
+    await assert.rejects(readLiveExecutorHealth(engine, (async () => {
+      attempts++;
+      return Response.json({ error: "EXECUTOR_UNAVAILABLE" }, { status: 503 });
+    }) as typeof fetch), /EXECUTOR_UNAVAILABLE/);
+    assert.equal(attempts, 4);
+    attempts = 0;
+    await assert.rejects(readLiveExecutorHealth(engine, (async () => {
+      attempts++;
+      return Response.json({ error: "EXECUTOR_SCOPE_DENIED" }, { status: 403 });
+    }) as typeof fetch), /EXECUTOR_SCOPE_DENIED/);
+    assert.equal(attempts, 1);
+  } finally {
+    if (previous.ip === undefined) delete process.env.LIVE_EXECUTOR_EGRESS_IP;
+    else process.env.LIVE_EXECUTOR_EGRESS_IP = previous.ip;
+    if (previous.base === undefined) delete process.env.LIVE_EXECUTOR_BASE_URL;
+    else process.env.LIVE_EXECUTOR_BASE_URL = previous.base;
+    if (previous.secret === undefined) delete process.env.COINOPS_EXECUTOR_HMAC_SECRET;
+    else process.env.COINOPS_EXECUTOR_HMAC_SECRET = previous.secret;
+  }
+});
 
 test("LIVE state retries an invalid successful GET once, without any exchange write", async () => {
   const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,
