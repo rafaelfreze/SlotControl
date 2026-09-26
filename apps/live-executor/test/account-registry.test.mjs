@@ -95,7 +95,7 @@ test("invalid dynamic accounts stay isolated at 10/30/50/100-account scale", asy
   assert.equal(withFiveBroken.engines.at(-1).trading_engine_id, dynamic.engines.at(-1).trading_engine_id);
   const directory = await mkdtemp(join(tmpdir(), "coinops-scale-registry-"));
   try {
-    await writeFile(join(directory, "dynamic-registry.json"), JSON.stringify(dynamic));
+    await writeFile(join(directory, "dynamic-registry.json"), JSON.stringify(dynamic), { mode: 0o600 });
     const loaded = await loadCombinedRegistry(staticRegistry, directory);
     assert.equal(loaded.engines.length, 200);
     assert.equal(loaded.engines.some((row) => row.exchange_account_id === badAccount), false);
