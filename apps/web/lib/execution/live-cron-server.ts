@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { advanceLiveRun, auditLiveRun, resumeLiveRun } from "./robot-v1-live-server";
-import { boundedEngineMap } from "./bounded-engine-map";
+import { boundedEngineMap, fairPoolOffset } from "./bounded-engine-map";
 import { mayRecoverReadOutage } from "./live-read-recovery";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
@@ -40,6 +40,7 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
       throw new Error("COINOPS_LIVE_DUPLICATE_ENGINE_RUN");
     // Four keeps seven current engines within the 60s cron window while
     // preventing an all-account Binance burst from one scheduler tick.
+    const offset = fairPoolOffset(result.data.length, Math.floor(Date.now() / 60_000));
     const reports = await boundedEngineMap(result.data, 4, async (run) => {
       try {
         const reconciled = mode === "EXECUTION" ? await advanceLiveRun(run.id) : await auditLiveRun(run.id);
@@ -63,7 +64,7 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
           ? error.message : "COINOPS_LIVE_CRON_FAILED";
         return { ...run, run_id: run.id, status: "FAILED", code };
       }
-    });
+    }, offset);
     const failed = reports.some((item) => item.status === "FAILED" || item.status === "CRITICAL");
     const status = failed ? "PARTIAL_FAILURE" : reports.length ? "COMPLETED" : "NO_ACTIVE_RUNS";
     const summary = { event: "COINOPS_LIVE_CRON", mode, status, reports,

@@ -29,6 +29,16 @@ nenhuma ordem foi criada ou cancelada nesta auditoria.
   completo a 100 engines ainda não estão aprovados. Um teste de regressão
   cobre nominalmente os sete motores atuais e a falha de Pedro, cinco engines
   ou uma conta inteira, sem atingir Binance.
+  Somente o deslocamento coprimo da fila foi adaptado à `boundedEngineMap`
+  da main, preservando concorrência 4, captura por run, `resumeLiveRun`,
+  leitura do alerta e ordem original dos reports. Os testes com 7, 100 e
+  200 motores passaram; o build passou. Isto trata justiça sob deadline,
+  não throughput nem orçamento de requisições. Após sincronizar dois testes
+  antigos com os contratos vigentes, a suíte web completa passou **606/606**
+  com PostgreSQL 17 descartável em loopback; lint, typecheck e build passaram.
+  O teste SQL de RLS local mediu 9.000 linhas em 13,033 ms com allowed-set
+  contra 73,306 ms na variante per-row. Nada disso aplica carga ao Supabase
+  Production nem aprova o gate de banco gerenciado.
 - VPS executor: amostra 16:24:25–16:26:07 UTC, processo ~145,6→146,9 MB;
   CPU acumulada +4,95 s em 102 s de parede (~4,9% de um núcleo). Host de
   961 MB, 479 MB disponíveis e load médio 0,21 no primeiro instante. O
@@ -95,7 +105,7 @@ aumenta throughput nem prova segurança sob o limite de peso atual.
 | MULTI_ACCOUNT_ISOLATION_PASS | Parcial | Isolamento genérico e dos sete nomes no pool; falta fluxo completo de falha simultânea com DB/cron |
 | ENGINE_BLAST_RADIUS_PASS | Parcial | HTTP/registro sintético 1/5/credencial; falta confirmação de recovery/push no pipeline completo |
 | BINANCE_RATE_LIMIT_PASS | Não comprovado | Dois minutos reais ~3,6k/6k; budget experimental falha em 100/200 e 50/100 não tem folga para fills/retries |
-| SCHEDULER_CONCURRENCY_PASS | Parcial | Sete runs completam em Production com pool 4; fairness `fbae657` só sintético, cron real 100/200 não medido |
+| SCHEDULER_CONCURRENCY_PASS | Parcial | Sete runs completam em Production com pool 4; rotação estreita passou em fixture 7/100/200, cron real 100/200 não medido |
 | RECOVERY_AT_SCALE_PASS | Parcial | Claims fictícias passaram em 100/200; falta recuperação simultânea do ledger/cron/RLS após crash |
 | DATABASE_SCALE_PASS | BLOCKED_EXTERNAL_RESOURCE | Postgres local e leitura Production não provam escrita PostgREST/RLS gerenciada a 2.500 slots; não criar branch paga |
 | REALTIME_SCALE_PASS | Parcial | Contexto/filtro e RLS examinados; falta 100/200 engines em navegador com reconexão e sem vazamento |

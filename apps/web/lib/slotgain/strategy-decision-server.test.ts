@@ -3,7 +3,8 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import type * as DecisionServer from "../execution/strategy-decision-server.ts";
-import { assertDomainRegistry, isIdentity, resolveEngineContext, type DomainRegistry } from "../execution/operator-context.ts";
+import { assertDomainRegistry, isIdentity, resolveEngineContext, visibleOperatorRegistry,
+  type DomainRegistry } from "../execution/operator-context.ts";
 import { planStrategyInitialEntry } from "../execution/strategy-engine.ts";
 
 type Row = Record<string, unknown>;
@@ -28,7 +29,8 @@ function compile(relative: string, dependencies: Record<string, unknown>) {
   return exports;
 }
 const registryServer = compile("../execution/operator-context-server.ts", {
-  "server-only": {}, "./operator-context": { assertDomainRegistry, resolveEngineContext },
+  "server-only": {}, "./operator-context": { assertDomainRegistry, resolveEngineContext,
+    visibleOperatorRegistry },
 });
 const { persistStrategyDecision, dispatchStrategyDecision, completeStrategyDecision, failStrategyDecision } = compile(
   "../execution/strategy-decision-server.ts", { "./operator-context-server": registryServer, "./operator-context": { isIdentity } },
