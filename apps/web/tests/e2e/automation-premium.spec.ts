@@ -63,6 +63,9 @@ async function mount(page: Page, view: View, width: number, height = 960, data: 
   await page.clock.setFixedTime(new Date(AUTOMATION_FIXTURE_NOW));
   const css = styles.filter((file) => existsSync(resolve(appRoot, file))).map((file) => readFileSync(resolve(appRoot, file), "utf8")).join("\n");
   await page.setContent(`<!doctype html><html lang="pt-BR"><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>${css}</style></head><body><div id="premium-fixture-root"></div></body></html>`);
+  // setContent runs on about:blank, where Web Crypto may omit randomUUID.
+  await page.evaluate(() => { if (!crypto.randomUUID) Object.defineProperty(crypto, "randomUUID", {
+    value: () => "00000000-0000-4000-8000-000000000001" }); });
   await page.addScriptTag({ path: resolve(appRoot, "node_modules/react/umd/react.production.min.js") });
   await page.addScriptTag({ path: resolve(appRoot, "node_modules/react-dom/umd/react-dom.production.min.js") });
   const bundle = clientModules();
@@ -107,6 +110,8 @@ async function mount(page: Page, view: View, width: number, height = 960, data: 
       strategyPanel:panel('Estratégia e parâmetros'),adjustmentsPanel:panel('Ajustes manuais')
     }));
   })();` });
+  await page.waitForTimeout(100);
+  expect(browserErrors).toEqual([]);
   await expect(page.locator("#premium-fixture-root")).toContainText("CoinOps");
   return { browserErrors, requests };
 }
@@ -425,9 +430,12 @@ test("ciclo ACTIVE não apresenta LIVE verde quando o executor está sem saúde"
 for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${width}px`, async ({ page }, testInfo) => {
   const audit = await mount(page, "live", width, 900, automationOperatorFixture());
   await expect(page.locator("[data-engine-id]")).toHaveCount(8);
+  await expect(page.locator(".px-market-chart")).toHaveCount(4);
+  await expect(page.locator(".px-engine-row")).toHaveCount(8);
+  await expect(page.locator(".px-asset")).toHaveCount(0);
   await expect(page.locator(".px-kpis")).toContainText("USDT");
   await expect(page.locator(".px-kpis")).toContainText("R$");
-  for (const viewport of [360, 390, 430, 1024, 1440]) {
+  for (const viewport of [320, 360, 375, 390, 430, 1024, 1440]) {
     await page.setViewportSize({ width: viewport, height: 900 });
     expect((await geometry(page)).overflow).toBe(0);
   }
@@ -435,6 +443,8 @@ for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${w
   await screenshot(page, testInfo, `operator-all-${width}`);
   await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_A);
   await expect(page.locator("[data-engine-id]")).toHaveCount(4);
+  await expect(page.locator(".px-market-chart")).toHaveCount(0);
+  await expect(page.locator(".px-asset")).toHaveCount(4);
   await page.getByLabel("Mercado", { exact: true }).selectOption("BTCUSDT");
   await expect(page.locator("[data-engine-id]")).toHaveCount(1);
   await expect(page.locator(".px-engine-owner")).toHaveText("Rafael Demo · BTCUSDT");
@@ -454,6 +464,26 @@ for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${w
   await expect(page.locator(".px-engine-owner")).not.toContainText("Rafael");
   await page.evaluate(() => window.scrollTo(0, 0));
   await screenshot(page, testInfo, `operator-b-btcbrl-${width}`);
+  await noSideEffects(page, audit);
+});
+
+test("visão Todos pagina motores a cada 10 sem duplicar gráficos de moeda", async ({ page }) => {
+  const fixture = automationOperatorFixture();
+  const originals = fixture.operator!.engines.slice(0, 4);
+  for (let index = 0; index < 4; index++) {
+    const engineId = `20000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`;
+    const clone = { ...originals[index], engineId };
+    fixture.operator!.engines.push(clone);
+    fixture.operator!.engineData[engineId] = fixture.operator!.engineData[originals[index].engineId];
+  }
+  const audit = await mount(page, "live", 390, 844, fixture);
+  await expect(page.locator(".px-market-chart")).toHaveCount(4);
+  await expect(page.locator(".px-engine-row")).toHaveCount(10);
+  await page.getByRole("button", { name: /Ver mais motores/ }).click();
+  await expect(page.locator(".px-engine-row")).toHaveCount(12);
+  await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_B);
+  await expect(page.locator(".px-market-chart")).toHaveCount(0);
+  await expect(page.locator(".px-asset")).toHaveCount(4);
   await noSideEffects(page, audit);
 });
 

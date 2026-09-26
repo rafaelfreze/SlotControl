@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
 import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
+import { rankViewerMarkets } from "@/lib/coinops-viewer/gain-ranking";
 import { ViewerSignOut } from "./sign-out";
 import { ViewerLiveBalances } from "./live-balances";
 import { ViewerGainSimulator } from "./gain-simulator";
@@ -66,7 +67,7 @@ export default async function MeuCoinOps() {
     const [run, accounts, gains, marketData] = await Promise.all([
       scoped("robot_v1_live_runs", "id,status,last_reconciled_at,last_error,gain_rate")
         .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle(),
-      scoped("robot_v1_live_slot_accounts", "slot_number,balance_quote,market_pnl_quote,gain_count").order("slot_number"),
+      scoped("robot_v1_live_slot_accounts", "slot_number,balance_quote,market_pnl_quote,fees_quote,gain_count").order("slot_number"),
       scoped("robot_v1_slot_gain_totals", "slot_number,period_key,monthly_gain_count,lifetime_gain_count")
         .eq("period_key", month),
       publicMarket(engine.symbol),
@@ -104,7 +105,7 @@ export default async function MeuCoinOps() {
         open: quantity > 0, quantity, entry, tp: tp ? asNumber(tp.price) : null,
         nextBuy: next ? asNumber(next.price) : null,
         openPnl: quantity > 0 && marketData.price !== null && entry !== null ? (marketData.price - entry) * quantity : null,
-        realized: asNumber(slot.market_pnl_quote) };
+        realized: asNumber(slot.market_pnl_quote) - asNumber(slot.fees_quote) };
     });
     const historyRows = [...(history?.data ?? [])].reverse().map((event) => ({ at: event.observed_at,
       slot: event.slot_number, result: asNumber(event.details?.net_pnl_quote ?? event.details?.net_pnl_brl) }));
@@ -121,6 +122,7 @@ export default async function MeuCoinOps() {
       operationalBalance: slotRows.reduce((sum, slot) => sum + slot.balance, 0), history: historyRows };
   }));
   const currencies = [...new Set(marketRows.map((row) => row.currency))];
+  const gainRanking = rankViewerMarkets(marketRows);
   const balanceEvidence = credential.data?.[0];
   const observedBalances: Array<{ asset: string; free: number; locked: number }> = balanceEvidence?.status === "PASS" && Array.isArray(balanceEvidence.evidence?.balances)
     ? balanceEvidence.evidence.balances.filter((item: unknown): item is { asset: string; free: number; locked: number } =>
@@ -142,6 +144,18 @@ export default async function MeuCoinOps() {
       <div className="viewer-health-group"><span className={allHealthy ? "viewer-health is-ok" : "viewer-health"}>{allHealthy ? "● OPERANDO" : "● ATENÇÃO"}</span><small>Atualizado {latest ? new Date(latest).toLocaleString("pt-BR") : "sem reconciliação confirmada"}</small></div></section>
     <ViewerLiveBalances fallback={{ balances: observedBalances.map((row) => ({ ...row, total: row.free + row.locked })),
       observedAt: balanceEvidence?.checked_at ?? null }} summaries={currencySummaries} />
+    {gainRanking.length ? <section className="viewer-panel viewer-gain-ranking" aria-label="Ranking de ganhos por mercado e slot">
+      <div className="viewer-section-title"><div><h2>Ranking de ganhos</h2><p>Mercados da sua conta · P&amp;L realizado líquido de taxas por slot</p></div></div>
+      <div className="viewer-gain-markets">{gainRanking.map((market, index) => <details className="viewer-gain-market" key={market.symbol}>
+        <summary><span className="viewer-gain-rank">#{index + 1}</span><strong>{market.symbol.replace(market.currency, `/${market.currency}`)}</strong>
+          <span>{market.gains} gains <small>{market.monthlyGains} no mês</small></span>
+          <span>P&amp;L realizado <b className={market.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(market.realized, market.currency)}</b></span>
+          <span className="viewer-gain-more">Slots ▾</span></summary>
+        <div className="viewer-gain-slots"><div className="viewer-gain-slot viewer-gain-slot--heading"><span>Slot físico</span><span>Gains</span><span>No mês</span><span>P&amp;L líquido</span></div>
+          {market.rankedSlots.map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}
+        </div>
+      </details>)}</div>
+    </section> : null}
     {!currencies.length ? <section className="viewer-panel viewer-empty"><h2>Conta em preparação</h2><p>Nenhum mercado Real ativado para esta conta.</p></section> : null}
     <section className="viewer-market-grid">{marketRows.map((market) => {
       const trend = market.trend;

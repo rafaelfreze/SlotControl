@@ -8,11 +8,29 @@ type Shard = { id: string; state: string; action: string; binanceWeightCurrent: 
   binanceLimit: number; binancePercent: number | null; cpuPercent: number | null;
   ramUsedMb: number | null; schedulerBacklog: number | null; reconciliationAgeMs: number | null;
   accountCount: number; engineCount: number; canAddEngine: boolean; admissionReason: string;
-  canAddTwoEngineAccount: boolean;
+  canAddTwoEngineAccount: boolean; warningsMuted: boolean;
   alerts: Array<{ code: string }> };
 
 export function CapacityCard() {
   const [shards, setShards] = useState<Shard[] | null>(null);
+  const [mutating, setMutating] = useState<string | null>(null);
+  const [muteError, setMuteError] = useState<string | null>(null);
+  async function toggleWarnings(shard: Shard) {
+    setMutating(shard.id);
+    setMuteError(null);
+    try {
+      const response = await fetch("/api/coinops-capacity", { method: "POST", credentials: "same-origin",
+        headers: { "content-type": "application/json", "x-coinops-admin-intent": "capacity-warning-mute" },
+        body: JSON.stringify({ action: shard.warningsMuted ? "UNMUTE_WARNINGS" : "MUTE_WARNINGS", shardId: shard.id }) });
+      if (!response.ok) throw new Error("Falha ao salvar preferência; os avisos não foram alterados.");
+      const result = await response.json();
+      setShards((current) => current?.map((item) => item.id === shard.id
+        ? { ...item, warningsMuted: result.warningsMuted,
+          alerts: result.warningsMuted ? item.alerts.filter((alert) => !["BINANCE_WEIGHT_WARNING", "EXECUTOR_CAPACITY_WARNING"].includes(alert.code)) : item.alerts }
+        : item) ?? null);
+    } catch { setMuteError("Não foi possível salvar a preferência. Tente novamente."); }
+    finally { setMutating(null); }
+  }
   useEffect(() => {
     const abort = new AbortController();
     const refresh = () => fetch("/api/coinops-capacity", { cache: "no-store", signal: abort.signal })
@@ -30,6 +48,10 @@ export function CapacityCard() {
       : shards.map((shard) => <div key={shard.id} className="px-capacity-shard" id={`infra-${shard.id}`}>
         <strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
         <span>{shard.accountCount} contas · {shard.engineCount} motores</span>
+        <button type="button" className="px-button px-capacity-mute" disabled={mutating === shard.id}
+          onClick={() => void toggleWarnings(shard)}>{shard.warningsMuted
+            ? "Reativar avisos de capacidade" : "Ocultar avisos de capacidade"}</button>
+        {shard.warningsMuted ? <small>Avisos repetitivos de Binance weight/capacidade ocultos para você. Incidentes operacionais e admissão permanecem ativos.</small> : null}
         <span>IP fixo / whitelist: <code>{shard.egressIp}</code></span>
         <span>Binance atual: {shard.binanceWeightCurrent?.toFixed(0) ?? "—"} / {shard.binanceLimit} weight/min
           {shard.binanceWeightCurrent !== null && shard.binanceLimit > 0
@@ -43,7 +65,7 @@ export function CapacityCard() {
         <small>Heartbeat: {shard.heartbeatAt ? new Date(shard.heartbeatAt).toLocaleString("pt-BR") : "sem amostra"}</small>
         <strong>Nova conta com 1 motor: {shard.canAddEngine ? "SIM" : "NÃO"}</strong>
         <span>Nova conta com 2 motores: {shard.canAddTwoEngineAccount ? "SIM" : "NÃO"}</span>
-        {shard.state === "WARNING" ? <small>{shard.action === "SCALE_UP"
+        {shard.state === "WARNING" && !shard.warningsMuted ? <small>{shard.action === "SCALE_UP"
           ? "CPU/RAM com pouca margem: preparar SCALE_UP." : shard.action === "SCALE_OUT"
             ? "Preparar novo executor/IP." : "Verificar fila e reconciliação antes de admitir novas contas."}</small> : null}
         {shard.state === "CAPACITY_LIMIT" ? <small>{shard.action === "SCALE_UP"
@@ -53,5 +75,6 @@ export function CapacityCard() {
           ? "Telemetria insuficiente; admissão indisponível." : "Headroom de recuperação reservado; não ativar novo motor neste shard."}</small> : null}
         {shard.alerts.map((alert) => <small key={alert.code} role="status">{alert.code}</small>)}
       </div>)}
+    {muteError ? <p role="alert">{muteError}</p> : null}
   </section>;
 }

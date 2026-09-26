@@ -3,6 +3,7 @@ import { shouldPush } from "@/lib/coinops-notifications/push-policy";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { capacityScope } from "./capacity-server";
 import { capacityAlertMessage } from "./capacity-alert-policy";
+import { capacityWarningMuted } from "./capacity-warning-mute";
 
 type Alert = { id: string; shard_id: string; code: string; severity: "WARNING" | "CRITICAL";
   first_seen_at: string };
@@ -14,12 +15,13 @@ export async function dispatchCapacityPush() {
   const service = capacityScope();
   const tenantId = getCoinOpsServiceTenantId();
   if (!tenantId) throw new Error("COINOPS_CAPACITY_SCOPE_INVALID");
-  const [alertsResult, operatorsResult] = await Promise.all([
+  const [alertsResult, operatorsResult, mutesResult] = await Promise.all([
     service.from("executor_capacity_alerts")
       .select("id,shard_id,code,severity,first_seen_at").is("resolved_at", null),
     service.from("operators").select("id").eq("tenant_id", tenantId).eq("status", "ACTIVE"),
+    service.from("executor_capacity_warning_mutes").select("operator_id,shard_id"),
   ]);
-  if (alertsResult.error || operatorsResult.error)
+  if (alertsResult.error || operatorsResult.error || mutesResult.error)
     throw new Error("COINOPS_CAPACITY_PUSH_READ_FAILED");
   const alerts = (alertsResult.data ?? []) as Alert[];
   const operatorIds = (operatorsResult.data ?? []).map((item) => item.id);
@@ -29,8 +31,10 @@ export async function dispatchCapacityPush() {
     .in("operator_id", operatorIds).eq("enabled", true);
   if (devicesResult.error) throw new Error("COINOPS_CAPACITY_PUSH_DEVICE_READ_FAILED");
   const devices = (devicesResult.data ?? []) as Device[];
+  const mutedPairs = new Set((mutesResult.data ?? []).map((item) => `${item.operator_id}:${item.shard_id}`));
   const candidates = alerts.flatMap((alert) => devices.filter((device) =>
-    shouldPush(alert.severity, device.warning_enabled)).map((device) => ({
+    shouldPush(alert.severity, device.warning_enabled)
+      && !capacityWarningMuted(alert, device.operator_id, mutedPairs)).map((device) => ({
     alert_id: alert.id, opened_at: alert.first_seen_at, subscription_id: device.id,
   })));
   if (candidates.length) {
@@ -53,7 +57,7 @@ export async function dispatchCapacityPush() {
   for (const item of pending.data ?? []) {
     const alert = alertById.get(`${item.alert_id}:${item.opened_at}`);
     const device = deviceById.get(item.subscription_id);
-    if (!alert || !device) {
+    if (!alert || !device || capacityWarningMuted(alert, device.operator_id, mutedPairs)) {
       await service.from("executor_capacity_deliveries").update({ status: "EXPIRED",
         error_code: "INCIDENT_CLOSED_OR_DEVICE_DISABLED" }).eq("id", item.id).eq("status", "PENDING");
       continue;
@@ -73,6 +77,16 @@ export async function dispatchCapacityPush() {
         await service.from("executor_capacity_deliveries").update({ status: "EXPIRED",
           lease_until: null, error_code: "INCIDENT_CLOSED" }).eq("id", item.id);
         continue;
+      }
+      if (alert.severity === "WARNING") {
+        const mute = await service.from("executor_capacity_warning_mutes").select("operator_id")
+          .eq("operator_id", device.operator_id).eq("shard_id", alert.shard_id).maybeSingle();
+        if (mute.error) throw new Error("COINOPS_CAPACITY_PUSH_MUTE_READ_FAILED");
+        if (mute.data) {
+          await service.from("executor_capacity_deliveries").update({ status: "EXPIRED",
+            lease_until: null, error_code: "WARNING_MUTED" }).eq("id", item.id);
+          continue;
+        }
       }
       await sendToDevice(device, capacityAlertMessage(alert));
       const saved = await service.from("executor_capacity_deliveries").update({ status: "SENT",

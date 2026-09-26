@@ -64,6 +64,17 @@ ADMIN vê o card de infraestrutura; VIEWER não acessa a rota. Alertas por shard
 reutilizam subscriptions de operador, com incidente e entrega deduplicados.
 Push nunca contém segredo/credential_ref nem cria operação.
 
+O ADMIN pode ocultar os avisos repetitivos de weight/capacidade de um shard
+específico no card Infraestrutura (por exemplo, Executor 01 quando não recebe
+mais contas). A preferência é persistida por operador e shard em
+`executor_capacity_warning_mutes`; o dispatcher deixa de enfileirar e expira
+entregas WARNING de `BINANCE_WEIGHT_WARNING` e `EXECUTOR_CAPACITY_WARNING`
+pendentes para esse par. Alertas CRITICAL, fila, stale e recursos continuam chegando.
+O estado WARNING, métricas, histórico de incidentes e gate de admissão não são
+alterados. “Reativar avisos de capacidade” remove apenas essa preferência.
+Esta é uma preferência de notificação, não um kill switch nem autorização para
+admitir um motor sem headroom.
+
 ## Multi-shard
 
 Cada registro `executor_shards` tem IP e limites próprios. A coleta assina a
