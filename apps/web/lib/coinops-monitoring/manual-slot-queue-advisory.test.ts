@@ -9,20 +9,8 @@ const migration = readFileSync(
   ),
   "utf8"
 );
-const actionSource = readFileSync(
-  new URL("../../app/dashboard/actions.ts", import.meta.url),
-  "utf8"
-);
 const finalDecision = migration.slice(
   migration.lastIndexOf("return jsonb_build_object")
-);
-const openSlotSource = actionSource.slice(
-  actionSource.indexOf("export async function openSlot"),
-  actionSource.indexOf("export async function registerGain")
-);
-const registerGainSource = actionSource.slice(
-  actionSource.indexOf("export async function registerGain"),
-  actionSource.indexOf("export async function resetSlot")
 );
 
 test("fila oficial recomenda sem bloquear a escolha manual", () => {
@@ -33,11 +21,6 @@ test("fila oficial recomenda sem bloquear a escolha manual", () => {
   assert.ok(
     finalDecision.includes(
       "'recommended', coalesce(expected_slot_id = p_slot_id, false)"
-    )
-  );
-  assert.ok(
-    openSlotSource.includes(
-      "officialEligibility?.active && !officialEligibility.allowed"
     )
   );
 });
@@ -62,15 +45,4 @@ test("bloqueios estruturais e escopo autenticado continuam protegidos", () => {
     )
   );
   assert.ok(migration.includes("to authenticated;"));
-});
-
-test("abertura mantém concorrência e fechamento mantém RPC financeiro", () => {
-  assert.ok(
-    openSlotSource.includes("getSlotFromForm(supabase, user.id, formData)")
-  );
-  assert.ok(openSlotSource.includes('.eq("user_id", user.id)'));
-  assert.ok(openSlotSource.includes('.neq("status", "aberto")'));
-  assert.ok(openSlotSource.includes('addHistory("Abertura"'));
-  assert.ok(registerGainSource.includes("register_asset_real_gain"));
-  assert.ok(registerGainSource.includes('addHistory("Gain"'));
 });

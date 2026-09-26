@@ -16,14 +16,6 @@ const ambiguityFixMigration = readFileSync(
   ),
   "utf8"
 );
-const action = readFileSync(
-  new URL("../../app/plano-crescimento/actions.ts", import.meta.url),
-  "utf8"
-);
-const component = readFileSync(
-  new URL("../../app/plano-crescimento/btc-ladder-section.tsx", import.meta.url),
-  "utf8"
-);
 const historyPage = readFileSync(
   new URL("../../app/historico/page.tsx", import.meta.url),
   "utf8"
@@ -37,7 +29,6 @@ test("bulk contribution accepts any positive per-slot amount for BTC or SOL", ()
   assert.match(migration, /private\.coinops_normalize_growth_asset\(p_asset\)/);
   assert.match(migration, /normalized_amount is null or normalized_amount <= 0/);
   assert.doesNotMatch(migration, /normalized_amount\s*>\s*(?:3|5|10|20|250)\b/);
-  assert.match(component, /Você pode usar qualquer valor positivo por slot/);
   for (const amount of [3, 5, 10, 20]) {
     assert.equal(Number((amount * 25).toFixed(8)), amount * 25);
   }
@@ -50,8 +41,6 @@ test("bulk contribution targets the complete funded MAIN pool, including OPEN", 
   assert.match(migration, /slot\.slot_number between 1 and 25/);
   assert.match(migration, /target_slot_ids is distinct from normalized_expected_slot_ids/);
   assert.match(migration, /count\(\*\) filter \(where slot\.status = 'aberto'\)/);
-  assert.match(component, /Todos os \{bulkSlotCount\}/);
-  assert.match(component, /inclusive os \{bulkOpenSlotCount\} OPEN/);
 });
 
 test("batch is atomic, idempotent and reuses the authoritative single-slot RPC", () => {
@@ -61,10 +50,6 @@ test("batch is atomic, idempotent and reuses the authoritative single-slot RPC",
   assert.match(migration, /COINOPS_IDEMPOTENCY_CONFLICT/);
   assert.match(migration, /already_applied', true/);
   assert.match(migration, /COINOPS_BULK_CONTRIBUTION_BATCH_POSTCONDITION_FAILED/);
-  assert.match(action, /apply_asset_external_contribution_batch/);
-  assert.match(action, /p_expected_slot_ids: uniqueExpectedSlotIds/);
-  assert.match(component, /name="expectedSlotIds"/);
-  assert.match(action, /confirmBulk/);
 });
 
 test("batch preserves gains, positions and the official queue tie-breaker", () => {

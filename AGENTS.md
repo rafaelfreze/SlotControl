@@ -119,7 +119,9 @@ migration = nome, se houver
 - Revise índices, constraints, FKs, concorrência, locks, idempotência, auditoria e rollback conforme o risco.
 - Advisors e queries caras são diagnósticos dirigidos, não ritual.
 
-Os exemplos de ambiente divergem: o exemplo raiz omite SUPABASE_DATA_SCHEMA e COINOPS_SERVICE_TENANT_ID; o exemplo do app ainda ensina public. Runtime/código e a identidade oficial acima vencem esses exemplos até sua correção em tarefa própria.
+Os exemplos de ambiente usam `SUPABASE_DATA_SCHEMA=coinops`; nunca troque para
+`public` por instrução histórica. Confirme o project ref e o tenant de serviço
+no ambiente de destino antes de operação remota.
 
 ## Semântica financeira invariável
 

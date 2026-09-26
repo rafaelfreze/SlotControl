@@ -31,7 +31,7 @@ export function DesktopAlerts({ userLabel, workspace }: { userLabel: string; wor
       livePrices={livePrices}
       monitoring={workspace.overview}
       userLabel={userLabel}
-      actions={<Link className="desktop-row-action" href="/plano-crescimento">Abrir Plano</Link>}
+      actions={<Link className="desktop-row-action" href="/automacao?view=live">Automação LIVE</Link>}
     >
       <section className="desktop-report-kpis desktop-plan-kpis" aria-label="Resumo dos alertas">
         <article className="desktop-kpi"><span>Total</span><strong>{workspace.alerts.length}</strong><small>Desde o baseline</small></article>

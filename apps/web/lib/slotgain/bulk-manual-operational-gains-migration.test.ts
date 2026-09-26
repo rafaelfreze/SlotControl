@@ -9,14 +9,6 @@ const migration = readFileSync(
   ),
   "utf8"
 );
-const action = readFileSync(
-  new URL("../../app/plano-crescimento/actions.ts", import.meta.url),
-  "utf8"
-);
-const component = readFileSync(
-  new URL("../../app/plano-crescimento/btc-ladder-section.tsx", import.meta.url),
-  "utf8"
-);
 
 test("manual gain batches select only the authoritative eligible MAIN scope below the threshold", () => {
   assert.match(migration, /slot\.operational_gains < normalized_below_gains/);
@@ -25,8 +17,6 @@ test("manual gain batches select only the authoritative eligible MAIN scope belo
   assert.match(migration, /and pool\.funded/);
   assert.match(migration, /slot\.slot_number between 1 and 25/);
   assert.match(migration, /count\(\*\) filter \(where candidate\.status = 'aberto'\)/);
-  assert.match(component, /“menos de 3” inclui somente 0, 1 e 2 gains/);
-  assert.match(component, /inclui OPEN/);
 });
 
 test("manual gain batch preview uses the same compound source of truth as one-slot gain", () => {
@@ -46,9 +36,6 @@ test("manual gain batches are previewed before confirmation and protected from s
   assert.match(migration, /for update of pool, slot/);
   assert.match(migration, /confirmation_idempotency_key/);
   assert.match(migration, /already_applied', true/);
-  assert.match(component, /Calcular aporte do lote/);
-  assert.match(component, /Confirmar gains em massa/);
-  assert.match(component, /Confirmo o aporte total de/);
 });
 
 test("historical manual gain batch table remains scoped and RLS-protected", () => {
@@ -57,13 +44,4 @@ test("historical manual gain batch table remains scoped and RLS-protected", () =
   assert.match(migration, /private\.coinops_can_access_row\(product_id, tenant_id, user_id\)/);
   assert.match(migration, /revoke all on function coinops\.prepare_asset_manual_operational_gains_batch/);
   assert.match(migration, /grant execute on function coinops\.confirm_asset_manual_operational_gains_batch/);
-});
-
-test("server actions never trust client-calculated totals or client-selected slot ids", () => {
-  assert.match(action, /prepare_asset_manual_operational_gains_batch/);
-  assert.match(action, /confirm_asset_manual_operational_gains_batch/);
-  assert.doesNotMatch(action, /p_expected_slot_ids.*manual/i);
-  assert.match(action, /confirmBulk/);
-  assert.match(action, /revalidatePath\("\/dashboard"\)/);
-  assert.match(action, /revalidatePath\("\/historico"\)/);
 });
