@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertPrivateDirectory, ExecutorRejection, sha256, verifySignedRequest,
@@ -477,5 +478,13 @@ export async function startExecutor(env = process.env) {
   return server;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+// Node canonicalizes import.meta.url but keeps the /current symlink in argv[1].
+// Resolve both to the same release so CLI startup does not silently exit 0.
+function isDirectExecution() {
+  try {
+    return Boolean(process.argv[1])
+      && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href;
+  } catch { return false; } // stdin/eval importers need not have a file in argv[1].
+}
+if (isDirectExecution())
   startExecutor().catch((error) => { console.error(error.message); process.exitCode = 1; });
