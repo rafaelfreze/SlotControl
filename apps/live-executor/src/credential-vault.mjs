@@ -56,7 +56,8 @@ function seal(input, secret, masterSecret, observation) {
   cipher.setAAD(Buffer.from(aad));
   const encrypted = Buffer.concat([cipher.update(JSON.stringify({ apiKey: secret.apiKey, apiSecret: secret.apiSecret })), cipher.final()]);
   return { version: 1, ...JSON.parse(aad), fingerprint: hash(secret.apiKey).slice(0, 12),
-    uid_hash: observation.uidHash, status: observation.status, validated_at: observation.validatedAt,
+    uid_hash: observation.uidHash, credential_hash: observation.credentialHash ?? null,
+    status: observation.status, validated_at: observation.validatedAt,
     iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: encrypted.toString("base64") };
 }
 
@@ -86,6 +87,7 @@ export async function credentialMetadata(directory, scope) {
   if (document.operator_id !== scope.operator_id || document.credential_ref !== scope.credential_ref
     || document.environment !== scope.environment) fail("EXECUTOR_CREDENTIAL_SCOPE_INVALID", 403);
   return { credential_ref: document.credential_ref, fingerprint: document.fingerprint,
+    uidHash: document.uid_hash ?? null, credentialHash: document.credential_hash ?? null,
     status: document.status, validated_at: document.validated_at, environment: document.environment };
 }
 
@@ -146,7 +148,8 @@ export async function inspectBinanceCredential({ apiKey, apiSecret, environment,
     .filter((row) => Number.isFinite(row.free) && Number.isFinite(row.locked) && row.free >= 0 && row.locked >= 0);
   const uid = account.uid === undefined || account.uid === null ? null : String(account.uid);
   return { status: safe ? "PASS" : "WARNING", valid: true, accountIdentity: uid ? `UID ••••${uid.slice(-4)}` : "Conta Spot autenticada",
-    uidHash: uid ? hash(`${environment}:${uid}`) : null, executorIp: observedIp, whitelistAccepted,
+    uidHash: uid ? hash(`${environment}:${uid}`) : null,
+    credentialHash: hash(`${environment}:API:${apiKey}`), executorIp: observedIp, whitelistAccepted,
     permission, balances, validatedAt: new Date(now()).toISOString() };
 }
 

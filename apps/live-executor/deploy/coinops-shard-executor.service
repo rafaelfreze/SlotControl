@@ -1,0 +1,29 @@
+[Unit]
+Description=CoinOps isolated shard executor
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=coinops-executor
+Group=coinops-executor
+WorkingDirectory=/opt/coinops/current/apps/live-executor
+EnvironmentFile=/etc/coinops/live-executor.env
+ExecStart=/usr/local/bin/node --experimental-strip-types /opt/coinops/current/apps/live-executor/src/server.mjs
+Restart=always
+RestartSec=5
+TimeoutStopSec=50
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/coinops-live-executor
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

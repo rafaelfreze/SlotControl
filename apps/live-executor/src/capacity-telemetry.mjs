@@ -11,6 +11,7 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
   const failedRequests = [], probableRetries = [];
   const recentFailures = new Map();
   let previousCpu = cpuUsage(), previousAt = now(), cpuPercent = null;
+  let lastIdleProbeAt = -Infinity, idleProbe = null;
   function observe(url, response) {
     let host;
     try { host = new URL(String(url)).hostname; } catch { return; }
@@ -47,6 +48,23 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
       throw error;
     }
   }
+  /** An empty shard has no signed Binance traffic. A bounded public GET supplies
+   * measured IP-weight evidence; absence of a header is never fabricated as 0. */
+  async function sampleIfIdle() {
+    const at = now();
+    if (at - (samples.at(-1)?.at ?? -Infinity) < 60_000 || at - lastIdleProbeAt < 60_000)
+      return idleProbe;
+    lastIdleProbeAt = at;
+    idleProbe = (async () => {
+      const response = await trackedFetch("https://api.binance.com/api/v3/time", {
+        method: "GET", cache: "no-store", signal: AbortSignal.timeout(4_000),
+      });
+      const clock = await response.json();
+      if (!response.ok || !Number.isFinite(Number(clock.serverTime)))
+        throw new Error("EXECUTOR_CAPACITY_PROBE_UNAVAILABLE");
+    })();
+    try { await idleProbe; } finally { idleProbe = null; }
+  }
   function snapshot() {
     const at = now(), currentCpu = cpuUsage();
     const elapsedMs = at - previousAt;
@@ -75,5 +93,5 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
       request_errors_last_5m: failedRequests.length,
       probable_retries_last_5m: probableRetries.length };
   }
-  return { trackedFetch, snapshot, observe };
+  return { trackedFetch, snapshot, observe, sampleIfIdle };
 }

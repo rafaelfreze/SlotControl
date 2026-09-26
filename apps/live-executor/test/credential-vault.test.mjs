@@ -41,6 +41,7 @@ test("credential validation is GET-only and fails closed on unknown or dangerous
   const safe = await inspectBinanceCredential({ apiKey, apiSecret, environment: "REAL",
     expectedEgressIp: "203.0.113.10", fetcher: fixture.fetcher, now: () => now });
   assert.equal(safe.status, "PASS");
+  assert.equal(safe.credentialHash, sha256(`REAL:API:${apiKey}`));
   assert.equal(safe.permission.withdrawals, false);
   assert.ok(fixture.calls.every((call) => call.method === "GET"));
   assert.ok(!JSON.stringify(safe).includes(apiKey)); assert.ok(!JSON.stringify(safe).includes(apiSecret));
@@ -59,6 +60,8 @@ test("Spot Testnet credential passes authenticated read without claiming Product
   const observed = await inspectBinanceCredential({ apiKey, apiSecret, environment: "TESTNET",
     expectedEgressIp: "203.0.113.10", fetcher: fixture.fetcher, now: () => now });
   assert.equal(observed.status, "PASS");
+  assert.equal(observed.credentialHash, sha256(`TESTNET:API:${apiKey}`));
+  assert.notEqual(observed.credentialHash, sha256(`REAL:API:${apiKey}`));
   assert.equal(observed.permission.spotTrading, true);
   assert.equal(observed.permission.withdrawals, null);
   assert.equal(observed.whitelistAccepted, null);
@@ -100,7 +103,7 @@ test("signed admin route encrypts at rest, binds operator/account, rejects repla
   const stateDirectory = await mkdtemp(join(tmpdir(), "coinops-vault-test-"));
   const fixture = binanceFixture(), logs = [];
   const server = createServer(createExecutorHandler({ secret: masterSecret, stateDirectory,
-    expectedEgressIp: "203.0.113.10", registry: { credentials: {} },
+    expectedEgressIp: "203.0.113.10", registry: registryFixture(),
     fetcher: fixture.fetcher, now: () => now, logger: (entry) => logs.push(entry) }));
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   const endpoint = `http://127.0.0.1:${server.address().port}/v1/admin/credentials`;

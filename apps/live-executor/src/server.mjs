@@ -7,7 +7,8 @@ import { assertPrivateDirectory, ExecutorRejection, sha256, verifySignedRequest,
 import { getProductionRestrictedSpotStatus, getPublicMarket, observeEgressIp } from "./binance-readonly.mjs";
 import { buildExecutorDryRun, EXECUTOR_CAPS } from "./preparation.mjs";
 import { BinanceLiveTransport } from "./binance-live.mjs";
-import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableIntent } from "./account-registry.mjs";
+import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableIntent,
+  assertExecutorShardContext, assertRegistryShard } from "./account-registry.mjs";
 import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCredential, loadCredential, refreshCredential,
   removeCredential, saveCredential } from "./credential-vault.mjs";
 import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
@@ -46,6 +47,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
   tradingEnabled = false, killSwitch = true, registry = null, credentialEnvironment = process.env,
   allowLegacyClients = false, legacyVersion = null,
   shardId = process.env.COINOPS_EXECUTOR_SHARD_ID || "executor-01" }) {
+  if (registry || shardId !== "executor-01") assertRegistryShard(registry, shardId);
   const capacity = createCapacityTelemetry({ fetcher: rawFetcher, now, shardId });
   const fetcher = capacity.trackedFetch;
   let cachedHealth = null;
@@ -53,16 +55,22 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
   async function health() {
     if (cachedHealth && now() - cachedHealth.at < healthCacheMs) return cachedHealth.value;
     const started = now();
+    const infrastructureHealth = shardId !== "executor-01";
     const [market, permission, egress] = await Promise.allSettled([
       getPublicMarket(fetcher, now),
-      getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher }),
+      infrastructureHealth ? Promise.resolve("ENGINE_SCOPED")
+        : getProductionRestrictedSpotStatus({ apiKey, apiSecret, fetcher }),
       observeEgressIp(fetcher),
     ]);
+    const activeRegistry = infrastructureHealth
+      ? await loadCombinedRegistry(registry, stateDirectory, (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code })) : registry;
     const connected = market.status === "fulfilled";
-    const permissionStatus = permission.status === "fulfilled" ? permission.value : "UNVERIFIED";
+    const permissionStatus = infrastructureHealth && !activeRegistry.engines.length ? "NOT_ASSIGNED"
+      : permission.status === "fulfilled" ? permission.value : "UNVERIFIED";
     const observedIp = egress.status === "fulfilled" ? egress.value : null;
     const egressVerified = Boolean(expectedEgressIp && observedIp && expectedEgressIp === observedIp);
-    const value = { healthy: connected && permissionStatus === "SPOT_RESTRICTED" && egressVerified,
+    const value = { healthy: connected && (infrastructureHealth || permissionStatus === "SPOT_RESTRICTED") && egressVerified,
+      executor_shard_id: shardId, health_scope: infrastructureHealth ? "SHARD_INFRASTRUCTURE" : "LEGACY_ACCOUNT",
       version: allowLegacyClients && legacyVersion ? legacyVersion : version,
       actual_executor_version: version, legacy_contract_version: allowLegacyClients ? legacyVersion : null,
       legacy_compatibility_enabled: allowLegacyClients,
@@ -118,6 +126,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         nonceDirectory: join(stateDirectory, "nonces"), now: now() });
       let input;
       try { input = JSON.parse(body); } catch { throw new ExecutorRejection("EXECUTOR_BODY_INVALID"); }
+      assertExecutorShardContext(shardId, input);
       decisionId = typeof input.decision_id === "string" && /^[a-zA-Z0-9:_-]{8,160}$/.test(input.decision_id)
         ? input.decision_id : null;
       symbol = typeof input.symbol === "string" && /^[A-Z0-9]{4,40}$/.test(input.symbol) ? input.symbol : null;
@@ -130,10 +139,14 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         const active = await loadCombinedRegistry(registry, stateDirectory,
           (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code }));
         const live = active.engines.filter((row) => row.environment === "REAL" && row.status === "ACTIVE");
+        // Server-side collection remains truthful even before the first account.
+        await capacity.sampleIfIdle();
         const sample = capacity.snapshot();
         status = 200; outcome = "READ_ONLY_CAPACITY";
-        writeJson(response, 200, { ...sample, egress_ipv4: expectedEgressIp,
+        writeJson(response, 200, { ...sample, executor_shard_id: shardId, egress_ipv4: expectedEgressIp,
           account_count: new Set(live.map((row) => row.exchange_account_id)).size,
+          account_ids: [...new Set(live.map((row) => row.exchange_account_id))].sort(),
+          engine_ids: live.map((row) => row.trading_engine_id).sort(),
           engine_count: live.length, executor_version: version });
         return;
       }
@@ -145,7 +158,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         const credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
         const result = await forwardTestnetRequest(input, credential, fetcher);
         status = 200; outcome = result.binance_status < 400 ? "TESTNET_FORWARDED" : "TESTNET_BINANCE_REJECTED";
-        scope = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+        scope = { executor_shard_id: shardId, operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
           trading_engine_id: input.trading_engine_id, environment: "TESTNET" };
         writeJson(response, 200, { ...scope, ...result });
         return;
@@ -193,7 +206,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         const adapter = new BinanceSpotAdapter(credential, { fetcher, now, maxReadRetries: 0,
           ...(host ? { baseUrl: host, marketDataBaseUrl: host } : {}) });
         const orders = await Promise.all(input.symbols.map((item) => adapter.getOpenOrders(item)));
-        const result = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+        const result = { executor_shard_id: shardId, operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
           environment: input.environment, quote_asset: input.quote_asset,
           observed_at: observation.validatedAt, executor_ip: observation.executorIp,
           permission: observation.permission, whitelist_accepted: observation.whitelistAccepted,
@@ -228,7 +241,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         const promoted = await promoteRegistryEngine(registry, stateDirectory, input);
         engineHealthCache.delete(input.trading_engine_id);
         status = 200; outcome = promoted.replayed ? "REPLAYED" : "PROMOTED";
-        writeJson(response, 200, { ...promoted, operator_id: input.operator_id,
+        writeJson(response, 200, { ...promoted, executor_shard_id: shardId, operator_id: input.operator_id,
           exchange_account_id: input.exchange_account_id, environment: input.environment });
         return;
       }
@@ -241,7 +254,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         const changed = await changeRegistryCapital(registry, stateDirectory, input);
         for (const engine of input.engines) engineHealthCache.delete(engine.trading_engine_id);
         status = 200; outcome = changed.replayed ? "REPLAYED" : "CAP_CHANGED";
-        writeJson(response, 200, { ...changed, operator_id: input.operator_id,
+        writeJson(response, 200, { ...changed, executor_shard_id: shardId, operator_id: input.operator_id,
           exchange_account_id: input.exchange_account_id, quote_asset: input.quote_asset });
         return;
       }
@@ -250,9 +263,11 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         if (key !== `REGISTRY:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? ""))
           throw new ExecutorRejection("EXECUTOR_REGISTRY_SYNC_DENIED", 403);
         await loadCredential(join(stateDirectory, "credentials"), secret, input);
-        const result = await saveInactiveRegistryAccount(registry, stateDirectory, input, input.engines);
+        const result = await saveInactiveRegistryAccount(registry, stateDirectory, input,
+          Array.isArray(input.engines) ? input.engines.map((row) => ({ ...row,
+            executor_shard_id: row.executor_shard_id ?? shardId })) : input.engines);
         status = 200; outcome = "INACTIVE_SYNC";
-        scope = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+        scope = { executor_shard_id: shardId, operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
           environment: input.environment };
         writeJson(response, 200, { ...result, ...scope });
         return;
@@ -268,7 +283,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         if (["CONNECT", "REPLACE"].includes(input.operation) && Object.values(registry?.credentials ?? {})
           .some((reference) => credentialEnvironment[reference.api_key_env] === input.apiKey))
           throw new ExecutorRejection("EXECUTOR_CREDENTIAL_ALREADY_BOUND", 409);
-        scope = { operator_id: safeInput.operator_id, exchange_account_id: safeInput.exchange_account_id,
+        scope = { executor_shard_id: shardId, operator_id: safeInput.operator_id, exchange_account_id: safeInput.exchange_account_id,
           environment: safeInput.environment };
         const { result, replayed } = await withDryRunIdempotency({
           directory: join(stateDirectory, "credential-intents"), key, bodyHash: verified.bodyHash,
@@ -309,7 +324,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       input = resolved.input;
       legacyClient = resolved.legacyClient;
       const engine = resolved.engine;
-      scope = responseContext(engine);
+      scope = { ...responseContext(engine), executor_shard_id: shardId };
       const transport = new BinanceLiveTransport({ apiKey: resolved.apiKey, apiSecret: resolved.apiSecret,
         fetcher, now, engine });
       const flags = { tradingEnabled: tradingEnabled && engine.execution_allowed,
@@ -421,7 +436,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       writeJson(response, status, { error: outcome, request_id: requestId });
     } finally {
       logger({ request_id: requestId, decision_id: decisionId, idempotency_key_hash: keyHash,
-        ...scope, symbol, action, legacy_client: legacyClient, result: outcome, http_status: status, latency_ms: now() - started,
+        ...scope, executor_shard_id: shardId, symbol, action, legacy_client: legacyClient, result: outcome, http_status: status, latency_ms: now() - started,
         trading_enabled: tradingEnabled, kill_switch: killSwitch, timestamp: new Date(now()).toISOString() });
     }
   };

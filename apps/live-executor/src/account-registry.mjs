@@ -5,8 +5,24 @@ import { ExecutorRejection, sha256 } from "./security.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEY = /^[a-zA-Z0-9:_-]{8,160}$/;
-export const CONTEXT_FIELDS = ["operator_id", "exchange_account_id", "trading_engine_id", "environment", "quote_asset", "idempotency_key"];
+export const CONTEXT_FIELDS = ["operator_id", "exchange_account_id", "trading_engine_id", "environment", "quote_asset", "idempotency_key", "executor_shard_id"];
 const deny = (code = "EXECUTOR_ENGINE_SCOPE_DENIED") => { throw new ExecutorRejection(code, 403); };
+const SHARD = /^executor-[0-9]{2,4}$/;
+
+/** The installed identity is authoritative; signed routing metadata must agree.
+ * Only executor-01 accepts omitted metadata during the non-disruptive rollout. */
+export function assertExecutorShardContext(shardId, input) {
+  if (!SHARD.test(shardId ?? "") || !input || typeof input !== "object" || Array.isArray(input)
+    || (input.executor_shard_id ?? (shardId === "executor-01" ? "executor-01" : null)) !== shardId)
+    deny("EXECUTOR_SHARD_SCOPE_DENIED");
+}
+
+export function assertRegistryShard(registry, shardId) {
+  if (!SHARD.test(shardId ?? "") || !registry
+    || (registry.executor_shard_id ?? "executor-01") !== shardId)
+    deny("EXECUTOR_REGISTRY_SHARD_MISMATCH");
+  validateExecutorRegistry(registry);
+}
 
 /** The file is installed by the operator, never accepted from a web request.
  * It contains references to environment secrets, not credential values. */
@@ -21,10 +37,18 @@ export async function loadExecutorRegistry(path) {
 
 export function validateExecutorRegistry(registry) {
   if (registry?.version !== 1 || !Array.isArray(registry.engines) || !registry.credentials
-    || !registry.engines.length) deny("EXECUTOR_REGISTRY_INVALID");
+    || typeof registry.credentials !== "object" || Array.isArray(registry.credentials))
+    deny("EXECUTOR_REGISTRY_INVALID");
+  const shardId = registry.executor_shard_id ?? "executor-01";
+  if (!SHARD.test(shardId) || (!registry.engines.length && (!registry.executor_shard_id
+    || shardId === "executor-01" || registry.legacy_account_id
+    || Object.keys(registry.credentials).length))) deny("EXECUTOR_REGISTRY_INVALID");
   const ids = new Set(), markets = new Set(), accounts = new Map(), credentials = new Map();
   const quoteCaps = new Map();
   for (const row of registry.engines) {
+    if ((row.executor_shard_id ?? shardId) !== shardId
+      || shardId !== "executor-01" && (row.is_legacy_default || row.legacy_ownership))
+      deny("EXECUTOR_REGISTRY_SHARD_MISMATCH");
     const market = `${row.exchange_account_id}:${row.environment}:${row.symbol}`;
     if (![row.operator_id, row.exchange_account_id, row.trading_engine_id].every((id) => UUID.test(id ?? ""))
       || ids.has(row.trading_engine_id) || markets.has(market) || row.environment !== "REAL"
@@ -70,6 +94,7 @@ export function validateExecutorRegistry(registry) {
 export function resolveExecutorContext(registry, input, key, env = process.env,
   { allowLegacy = false, path = "" } = {}) {
   if (!registry) deny("EXECUTOR_REGISTRY_REQUIRED");
+  assertExecutorShardContext(registry.executor_shard_id ?? "executor-01", input);
   if (!input || typeof input !== "object" || Array.isArray(input)) deny("EXECUTOR_BODY_INVALID");
   let legacyClient = false;
   // Rolling deployment bridge, explicitly pinned to the installed legacy
@@ -147,6 +172,11 @@ export async function loadCombinedRegistry(staticRegistry, directory, onFailure 
 
 /** Validate dynamic entries account by account, preserving healthy siblings. */
 export function mergeDynamicRegistry(staticRegistry, dynamic, onFailure = () => {}) {
+  if (dynamic.executor_shard_id !== undefined
+    && dynamic.executor_shard_id !== (staticRegistry.executor_shard_id ?? "executor-01")) {
+    onFailure("EXECUTOR_DYNAMIC_SHARD_MISMATCH");
+    return staticRegistry;
+  }
   const groups = new Map();
   for (const row of dynamic.engines) {
     if (!UUID.test(row?.exchange_account_id ?? "")) {
@@ -185,6 +215,7 @@ export function mergeDynamicRegistry(staticRegistry, dynamic, onFailure = () => 
 
 /** Admin sync is preparation-only. It can never activate trading or mutate a legacy row. */
 export async function saveInactiveRegistryAccount(staticRegistry, directory, scope, rows) {
+  assertExecutorShardContext(staticRegistry.executor_shard_id ?? "executor-01", scope);
   if (![scope.operator_id, scope.exchange_account_id].every((id) => UUID.test(id ?? ""))
     || scope.credential_ref !== `account_${scope.exchange_account_id.replaceAll("-", "")}`
     || !Array.isArray(rows) || rows.length > 8
@@ -203,7 +234,8 @@ export async function saveInactiveRegistryAccount(staticRegistry, directory, sco
     const existing = dynamic.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id);
     if (existing.some((row) => row.operator_id !== scope.operator_id || row.status !== "INACTIVE"
       || row.execution_allowed || !row.kill_switch)) deny("EXECUTOR_REGISTRY_SYNC_DENIED");
-    const next = { version: 1,
+    const next = { version: 1, ...(staticRegistry.executor_shard_id
+      ? { executor_shard_id: staticRegistry.executor_shard_id } : {}),
       engines: [...dynamic.engines.filter((row) => row.exchange_account_id !== scope.exchange_account_id), ...rows],
       credentials: { ...dynamic.credentials, [scope.credential_ref]: { vault: true } } };
     validateExecutorRegistry({ ...staticRegistry, engines: [...staticRegistry.engines, ...next.engines],
@@ -219,6 +251,7 @@ export async function saveInactiveRegistryAccount(staticRegistry, directory, sco
 /** Promote one pre-registered nonlegacy engine after the web ledger has staged
  * its 25 slots and verified a fresh Binance snapshot. Never touch siblings. */
 export async function promoteRegistryEngine(staticRegistry, directory, scope) {
+  assertExecutorShardContext(staticRegistry.executor_shard_id ?? "executor-01", scope);
   if (![scope.operator_id, scope.exchange_account_id, scope.trading_engine_id]
     .every((id) => UUID.test(id ?? ""))
     || scope.environment !== "REAL"
@@ -271,6 +304,7 @@ export async function promoteRegistryEngine(staticRegistry, directory, scope) {
  * touches Binance orders, a position or a sibling account. The caller must
  * prove the matching ledger intent and a fresh exchange balance separately. */
 export async function changeRegistryCapital(staticRegistry, directory, scope) {
+  assertExecutorShardContext(staticRegistry.executor_shard_id ?? "executor-01", scope);
   if (![scope.operator_id, scope.exchange_account_id].every((id) => UUID.test(id ?? ""))
     || scope.environment !== "REAL" || !["BRL", "USDT"].includes(scope.quote_asset)
     || scope.credential_ref !== `account_${scope.exchange_account_id.replaceAll("-", "")}`
@@ -412,7 +446,12 @@ export function assertEngineOrder(engine, symbol, id, side) {
 /** Existing COR1 claims keep exactly their original key and original payload
  * digest. Added routing fields must not invalidate a crash-recovery claim. */
 export function durableIntent(engine, input, key, bodyHash, action) {
-  if (!engine.legacy_ownership) return { key: `ENGINE:${sha256(`${engine.exchange_account_id}|${engine.trading_engine_id}|${key}`)}`, bodyHash };
+  // Adding a transport route must not invalidate a claim already persisted
+  // before sharding. Order identity and all financial fields remain unchanged.
+  const routedHash = Object.prototype.hasOwnProperty.call(input, "executor_shard_id")
+    ? sha256(JSON.stringify(Object.fromEntries(Object.entries(input).filter(([name]) => name !== "executor_shard_id"))))
+    : bodyHash;
+  if (!engine.legacy_ownership) return { key: `ENGINE:${sha256(`${engine.exchange_account_id}|${engine.trading_engine_id}|${key}`)}`, bodyHash: routedHash };
   const legacy = Object.fromEntries(Object.entries(input).filter(([name]) => !CONTEXT_FIELDS.includes(name)
     && name !== "decision_id"));
   return { key, bodyHash: sha256(JSON.stringify(legacy)) };
