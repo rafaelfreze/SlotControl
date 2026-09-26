@@ -20,6 +20,7 @@ type EnginePreview = { symbol: string; asset: "BTC" | "SOL"; capital: number;
   firstTp: number | null; nextBuy: number | null; planned: number; strategyVersion: string };
 type Preview = { account: string; quote: string; capital: number; free: number;
   outsideCoinOps: number; observedAt: string; executorIp: string;
+  capacity: { code: "CAPACITY_OK" | "CAPACITY_REQUIRED" | "CAPACITY_UNKNOWN"; shardId: string | null };
   engines: EnginePreview[]; status: "PREVIEW_NO_WRITE" | "NOT_EXECUTABLE" };
 type MarketAsset = "BTC" | "SOL";
 type Rules = Record<MarketAsset, { gainPercent: string; spacingPercent: string;
@@ -227,7 +228,9 @@ export function EngineControlCenter({ initialAccountId, environment, onEditEngin
           Slot #2 próxima BUY {price(engine.nextBuy, preview.quote)} · Slots #3–25 PLANNED.</p>
         <p>Gain {(engine.gain * 100).toLocaleString("pt-BR")}% · spacing {(engine.spacing * 100).toLocaleString("pt-BR")}% ·
           pós-ATH {(engine.postAth * 100).toLocaleString("pt-BR")}% · meta {engine.monthlyTarget}/slot/mês · compounding ON.</p>
-      </article>)}<small>Estimativas não são ordens. Os filtros, saldos e caps são verificados novamente antes da ativação.</small>
+      </article>)}{environment === "REAL" ? <p role="status">Capacidade do executor: {preview.capacity.code}.
+        {preview.capacity.code !== "CAPACITY_OK" ? " Novos motores podem ser salvos INACTIVE, mas a ativação ficará bloqueada até haver telemetria e margem confirmadas." : " A capacidade será verificada novamente antes de ativar cada motor."}</p> : null}
+      <small>Estimativas não são ordens. Os filtros, saldos e caps são verificados novamente antes da ativação.</small>
     </section> : null}
     {message ? <p role="status" className="px-engine-message">{message}</p> : null}
     <p className="px-caption">Pausar bloqueia novas entradas; no Testnet, ordens próprias são canceladas de forma auditável e TPs são restaurados ao retomar. Retomar exige reconciliação recente;

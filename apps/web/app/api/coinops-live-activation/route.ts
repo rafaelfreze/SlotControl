@@ -7,6 +7,7 @@ import { prepareLiveCycle } from "@/lib/execution/robot-v1-live-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
+import { reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -64,6 +65,9 @@ export async function POST(request: NextRequest) {
       .in("status", ["PREPARING", "ACTIVE"]).maybeSingle();
     if (run.error || !run.data || run.data.product_id !== scope.data.product_id)
       throw new Error("COINOPS_LIVE_ACTIVATION_RUN_UNAVAILABLE");
+    if (run.data.status === "ACTIVE")
+      return NextResponse.json({ status: "ALREADY_ACTIVE", asset, cycle_id: run.data.id }, { headers: responseHeaders });
+    await reserveEngineCapacity(service, engine.trading_engine_id, engine.exchange_account_id);
     const activated = await service.rpc("activate_robot_v1_live_cycle", { p_run_id: run.data.id });
     if (activated.error || !activated.data || activated.data.id !== run.data.id
       || activated.data.status !== "ACTIVE")

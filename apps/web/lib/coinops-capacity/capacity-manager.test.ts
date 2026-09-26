@@ -7,6 +7,8 @@ const now = Date.parse("2026-09-26T17:00:00Z");
 const metrics = (changes: Partial<ShardMetrics> = {}): ShardMetrics => ({
   shardId: "executor-01", observedAt: new Date(now - 10_000).toISOString(),
   heartbeatAt: new Date(now - 10_000).toISOString(),
+  weightObservedAt: new Date(now - 10_000).toISOString(), weightSampleCount: 4,
+  registryMatch: true,
   accountIds: ["rafael", "thyely", "caixeta", "pedro"],
   engineIds: Array.from({ length: 7 }, (_, i) => `engine-${i}`),
   binanceWeightCurrent: 2258, binanceWeightAverage: 3614, binanceWeightPeak: 3628,
@@ -31,6 +33,10 @@ test("admission preserves recovery reserve and fails closed on stale metrics", (
   assert.equal(decideShardAdmission(metrics({ observedAt: new Date(now - 121_000).toISOString() }),
     1, undefined, now).allowed, false);
   assert.equal(decideShardAdmission(null, 1, undefined, now).allowed, false);
+  assert.equal(decideShardAdmission(metrics({ weightObservedAt: new Date(now - 121_000).toISOString() }),
+    1, undefined, now).allowed, false);
+  assert.equal(decideShardAdmission(metrics({ registryMatch: false }), 1, undefined, now).allowed, false);
+  assert.equal(decideShardAdmission(metrics({ weightObservedAt: "not-a-date" }), 1, undefined, now).allowed, false);
 });
 test("weight, resources, backlog and heartbeat suggest distinct actions", () => {
   assert.equal(assessShardCapacity(metrics({ binanceWeightPeak: 4000 }), undefined, now).action,

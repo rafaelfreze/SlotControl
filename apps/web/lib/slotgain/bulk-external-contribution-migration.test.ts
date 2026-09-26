@@ -24,10 +24,6 @@ const component = readFileSync(
   new URL("../../app/plano-crescimento/btc-ladder-section.tsx", import.meta.url),
   "utf8"
 );
-const planPage = readFileSync(
-  new URL("../../app/plano-crescimento/page.tsx", import.meta.url),
-  "utf8"
-);
 const historyPage = readFileSync(
   new URL("../../app/historico/page.tsx", import.meta.url),
   "utf8"
@@ -56,7 +52,6 @@ test("bulk contribution targets the complete funded MAIN pool, including OPEN", 
   assert.match(migration, /count\(\*\) filter \(where slot\.status = 'aberto'\)/);
   assert.match(component, /Todos os \{bulkSlotCount\}/);
   assert.match(component, /inclusive os \{bulkOpenSlotCount\} OPEN/);
-  assert.match(planPage, /slot\.baseline_id === activeBaselineId/);
 });
 
 test("batch is atomic, idempotent and reuses the authoritative single-slot RPC", () => {
@@ -105,9 +100,7 @@ test("batch header and child rows remain owner-scoped and auditable", () => {
   assert.match(migration, /to authenticated/);
 });
 
-test("bulk contribution is represented once in plan and global history", () => {
-  assert.match(planPage, /asset_external_contribution_batches/);
-  assert.match(planPage, /bulk_total_amount_usdt: batch\?\.total_amount_usdt/);
+test("historical bulk contribution remains represented once in global history", () => {
   assert.match(historyPage, /loadCapitalReportingEntries\(supabase, \{ includeIncorporated: true \}\)/);
   assert.match(historyPage, /const individualContributions = contributionsResponse\.data\.filter\([\s\S]*?contribution\.bulk_batch_id === null/);
   assert.match(historyPage, /const contributionEvents: HistoryEvent\[\] = individualContributions\.map/);

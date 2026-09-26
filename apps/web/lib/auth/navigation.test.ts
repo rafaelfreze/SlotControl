@@ -12,6 +12,15 @@ test("entrada sem destino usa Automação, sem transformar Resumo em redirect", 
   assert.equal(getAuthDestination({ redirectTo: "/dashboard" }), "/automacao");
 });
 
+test("menus legados não voltam à navegação principal; bookmarks vão à Automação LIVE", () => {
+  const navigationUi = readFileSync(new URL("../../components/app/mobile-ui.tsx", import.meta.url), "utf8");
+  const more = readFileSync(new URL("../../app/mais/page.tsx", import.meta.url), "utf8");
+  const dashboard = readFileSync(new URL("../../app/dashboard/page.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(navigationUi, /href: "\/(?:slots|plano-crescimento|mais)"/);
+  assert.match(more, /redirect\("\/automacao\?view=live"\)/);
+  assert.match(dashboard, /redirect\("\/automacao\?view=live"\)/);
+});
+
 test("retornos internos explícitos preservam rota, filtros e fragmento", () => {
   for (const key of ["redirectTo", "returnTo", "next"]) {
     assert.equal(getAuthDestination({ [key]: "/automacao?view=testnet&market=BTCUSDC#slots" }),

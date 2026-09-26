@@ -8,6 +8,7 @@ import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
 import { prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -70,6 +71,7 @@ export async function POST(request: NextRequest) {
     if (Date.now() - Date.parse(state.observed_at) > 30_000
       || state.open_orders.some((order) => order.clientOrderId?.startsWith(liveEngineOrderPrefix(engine))))
       throw new Error("COINOPS_LIVE_EXCHANGE_GATE_DENIED");
+    await reserveEngineCapacity(service, engine.trading_engine_id, engine.exchange_account_id);
     const run = await service.rpc("activate_robot_v1_live_cycle", { p_run_id: runs.data[0].id });
     if (run.error || !run.data || run.data.id !== runs.data[0].id || run.data.status !== "ACTIVE")
       throw new Error("COINOPS_LIVE_ACTIVATION_FAILED");

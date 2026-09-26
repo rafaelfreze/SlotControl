@@ -13,6 +13,7 @@ import { pauseTestnetRun, resumeTestnetRun, startTestnetRun } from "@/lib/execut
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
+import { previewAccountCapacity, reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -120,10 +121,13 @@ async function planPreview(scope: Scope, input: EnginePlanInput) {
       nextBuy: sizing.slots.find((slot) => slot.operationalRank === 2)?.entryPriceBrl,
       planned: sizing.dryRun.planned, strategyVersion: sizing.dryRun.strategyVersion };
   });
+  const capacity = environment === "REAL"
+    ? await previewAccountCapacity(scope.service, plan.accountId, plan.engines.length)
+    : { code: "CAPACITY_OK", shardId: null };
   return { account: account.display_name, accountId: account.id, environment, quote: plan.quote,
     capital: plan.capital, free, outsideCoinOps: Number((free - plan.capital).toFixed(2)),
     observedAt: snapshot.observed_at, executorIp: snapshot.executor_ip,
-    engines, status: engines.every((item) => item.validSlots === 25)
+    capacity, engines, status: engines.every((item) => item.validSlots === 25)
       ? "PREVIEW_NO_WRITE" as const : "NOT_EXECUTABLE" as const };
 }
 
@@ -446,6 +450,7 @@ export async function POST(request: NextRequest) {
       || snapshot.markets[0]?.open_orders.some((order) => order.clientOrderId?.startsWith(ownPrefix))
       || Number(engine.hard_cap_quote) > Number(capRead.data.hard_cap_quote))
       throw new Error("COINOPS_ENGINE_ACTIVATION_SNAPSHOT_DENIED");
+    await reserveEngineCapacity(scope.service, engine.trading_engine_id, engine.exchange_account_id);
     if (account.data.status === "INACTIVE") {
       const opened = await scope.service.from("exchange_accounts")
         .update({ status: "ACTIVE", kill_switch: false })

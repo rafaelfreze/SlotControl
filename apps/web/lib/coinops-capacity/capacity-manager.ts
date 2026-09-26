@@ -2,8 +2,9 @@
 export type ShardState = "HEALTHY" | "OBSERVE" | "WARNING" | "CAPACITY_LIMIT" | "OFFLINE";
 export type ScaleAction = "NONE" | "SCALE_UP" | "SCALE_OUT" | "INVESTIGATE";
 export type ShardMetrics = {
-  shardId: string; observedAt: string; heartbeatAt: string;
+  shardId: string; observedAt: string; heartbeatAt: string; weightObservedAt: string;
   accountIds: string[]; engineIds: string[];
+  weightSampleCount: number; registryMatch: boolean;
   binanceWeightCurrent: number; binanceWeightAverage: number; binanceWeightPeak: number;
   cpuPercent: number; ramUsedMb: number; ramLimitMb: number;
   reconciliationP95Ms: number; schedulerBacklog: number;
@@ -21,7 +22,7 @@ export const DEFAULT_CAPACITY_POLICY: CapacityPolicy = {
   binanceLimitPerMinute: 6000, observeRatio: .50, warningRatio: .65,
   capacityRatio: .75, admissionRatio: .65, maxMetricAgeMs: 120_000,
   maxHeartbeatAgeMs: 120_000, cpuWarningPercent: 70, cpuCapacityPercent: 85,
-  ramWarningPercent: 75, ramCapacityPercent: 85, reconciliationWarningMs: 45_000,
+  ramWarningPercent: 75, ramCapacityPercent: 85, reconciliationWarningMs: 120_000,
   backlogWarning: 1,
 };
 export type CapacityAssessment = {
@@ -30,7 +31,10 @@ export type CapacityAssessment = {
   accountCount: number; engineCount: number;
 };
 const valid = (value: number) => Number.isFinite(value) && value >= 0;
-const age = (value: string, now: number) => now - Date.parse(value);
+const age = (value: string, now: number) => {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? now - parsed : Number.POSITIVE_INFINITY;
+};
 export function assessShardCapacity(metrics: ShardMetrics | null,
   policy: CapacityPolicy = DEFAULT_CAPACITY_POLICY, now = Date.now()): CapacityAssessment {
   const base = { shardId: metrics?.shardId ?? "UNASSIGNED",
@@ -39,10 +43,12 @@ export function assessShardCapacity(metrics: ShardMetrics | null,
     || !valid(policy.binanceLimitPerMinute) || !policy.binanceLimitPerMinute
     || ![metrics.binanceWeightCurrent, metrics.binanceWeightAverage, metrics.binanceWeightPeak,
       metrics.cpuPercent, metrics.ramUsedMb, metrics.ramLimitMb,
-      metrics.reconciliationP95Ms, metrics.schedulerBacklog, metrics.errorsLast5m,
+      metrics.reconciliationP95Ms, metrics.schedulerBacklog, metrics.weightSampleCount, metrics.errorsLast5m,
       metrics.retriesLast5m].every(valid)
-    || !metrics.ramLimitMb || metrics.cpuPercent > 100
+    || !metrics.ramLimitMb || metrics.cpuPercent > 100 || metrics.weightSampleCount < 2
+    || !metrics.registryMatch
     || age(metrics.observedAt, now) < 0 || age(metrics.observedAt, now) > policy.maxMetricAgeMs
+    || age(metrics.weightObservedAt, now) < 0 || age(metrics.weightObservedAt, now) > policy.maxMetricAgeMs
     || age(metrics.heartbeatAt, now) < 0 || age(metrics.heartbeatAt, now) > policy.maxHeartbeatAgeMs)
     return { ...base, state: "OFFLINE", action: "INVESTIGATE",
       reasons: ["CAPACITY_TELEMETRY_MISSING_OR_STALE"],

@@ -17,10 +17,6 @@ const component = readFileSync(
   new URL("../../app/plano-crescimento/btc-ladder-section.tsx", import.meta.url),
   "utf8"
 );
-const planPage = readFileSync(
-  new URL("../../app/plano-crescimento/page.tsx", import.meta.url),
-  "utf8"
-);
 
 test("manual gain batches select only the authoritative eligible MAIN scope below the threshold", () => {
   assert.match(migration, /slot\.operational_gains < normalized_below_gains/);
@@ -55,15 +51,12 @@ test("manual gain batches are previewed before confirmation and protected from s
   assert.match(component, /Confirmo o aporte total de/);
 });
 
-test("manual gain batch table is scoped, RLS-protected and visible to the plan only as a prepared preview", () => {
+test("historical manual gain batch table remains scoped and RLS-protected", () => {
   assert.match(migration, /force row level security/);
   assert.match(migration, /asset_manual_operational_gain_batches_owner_select/);
   assert.match(migration, /private\.coinops_can_access_row\(product_id, tenant_id, user_id\)/);
   assert.match(migration, /revoke all on function coinops\.prepare_asset_manual_operational_gains_batch/);
   assert.match(migration, /grant execute on function coinops\.confirm_asset_manual_operational_gains_batch/);
-  assert.match(planPage, /asset_manual_operational_gain_batches/);
-  assert.match(planPage, /\.eq\("status", "PREPARED"\)/);
-  assert.match(planPage, /manual_gain_batch_preview/);
 });
 
 test("server actions never trust client-calculated totals or client-selected slot ids", () => {

@@ -15,14 +15,7 @@ type DesktopIconName = "dashboard" | "slots" | "plan" | "history" | "reports" | 
 type DesktopNavigationItem = { href: string; label: string; icon: DesktopIconName };
 
 export const desktopNavigation: readonly DesktopNavigationItem[] = [
-  { href: "/slots", label: "Slots", icon: "slots" },
-  { href: "/plano-crescimento", label: "Plano", icon: "plan" },
-  { href: "/historico", label: "Histórico", icon: "history" },
-  { href: "/relatorios", label: "Relatórios", icon: "reports" },
-  { href: "/ciclos", label: "Ciclos", icon: "cycles" },
-  { href: "/alertas", label: "Alertas", icon: "alerts" },
-  { href: "/automacao", label: "Automação", icon: "automation" },
-  { href: "/config", label: "Configurações", icon: "settings" }
+  { href: "/automacao?view=live", label: "Automação LIVE", icon: "automation" }
 ] as const;
 
 export type DesktopWorkspaceProps = {
@@ -176,7 +169,8 @@ export function DesktopEmptyState({ title, children }: { title: string; children
 
 function getActiveNavigationHref(pathname: string) {
   return desktopNavigation
-    .filter((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))
+    .filter((item) => pathname === item.href.split("?")[0]
+      || pathname.startsWith(`${item.href.split("?")[0]}/`))
     .sort((left, right) => right.href.length - left.href.length)[0]?.href;
 }
 

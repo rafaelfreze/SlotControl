@@ -151,7 +151,7 @@ export function AutomationMobile(props: Props & { initialAsset?: Asset; detailSe
   const detailEvents = events.filter((item) => item.slot_id === detail?.id);
 
   return <div className={`coinops-automation ${props.embedded ? "ac-shadow" : ""}`} data-detail-section={props.detailSection}>
-    <header className="av2-mobile-header"><Image src="/icon-96x96.png" alt="" width={36} height={36} priority /><div><strong>COINOPS</strong><small>AUTOMAÇÃO CRIPTO</small></div><a href="/mais" aria-label="Abrir menu">☰</a></header>
+    <header className="av2-mobile-header"><Image src="/icon-96x96.png" alt="" width={36} height={36} priority /><div><strong>COINOPS</strong><small>AUTOMAÇÃO CRIPTO</small></div><a href="/automacao?view=live" aria-label="Voltar à Automação LIVE">↗</a></header>
     <div className="av2-intro"><div><span className="av2-eyebrow">AUTOMAÇÃO</span><h1>Seu robô CoinOps</h1><p>Disciplina hoje. Resultado amanhã.</p></div><span className="av2-mode"><i /> SHADOW {props.configs.some((item) => !item.kill_switch && !item.pause_new_entries) ? "ATIVO" : "PAUSADO"}<small>Mercado real · dinheiro virtual</small></span></div>
     <div className="av2-asset-grid">{(["BTC", "SOL"] as const).map((asset) => {
       const item = props.configs.find((row) => row.asset === asset);

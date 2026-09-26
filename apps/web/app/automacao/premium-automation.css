@@ -197,3 +197,9 @@
 .px-account-permissions,.px-account-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
 .px-account-permissions span{padding:6px 10px;border:1px solid var(--px-border,#314455);border-radius:8px;font-size:.82rem}
 .px-account-actions .px-button{min-height:40px}
+.px-capacity { display: grid; gap: .55rem; }
+.px-capacity h2 { margin: 0; font-size: .95rem; }
+.px-capacity-shard { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1rem;
+  padding: .65rem; border: 1px solid #244257; border-radius: .6rem; font-size: .82rem; }
+.px-capacity-shard strong:first-child { color: #58d7b4; }
+.px-capacity-shard small { color: #e7b85e; }

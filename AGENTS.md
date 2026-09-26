@@ -21,6 +21,7 @@ Descubra no Git, código, configuração e documentação tudo que for tecnicame
 ## Identidade e limites oficiais
 
 - Repositório: github.com/rafaelfreze/SlotControl; branch de produção: main.
+- CoinOps é uma plataforma de automação Binance multi-conta. Production/LIVE é o produto principal; Testnet valida operações. Painéis ativos: ADMIN da Automação e VIEWER de cada conta. O modelo manual anterior está descontinuado e não orienta arquitetura, navegação, novas features ou testes. Histórico financeiro e compatibilidade de leitura permanecem preservados.
 - Monorepo: a aplicação Next.js fica em apps/web. Execute scripts Node nessa pasta; no Windows, prefira npm.cmd.
 - Stack atual: Next.js 14.2.35, React 18, TypeScript, Supabase JS/SSR, npm e apps/web/package-lock.json. Node ainda não está declarado; não invente versão nem aplique regra do Next 16. Use a versão comprovada por Vercel/ambiente até uma tarefa específica declarar o runtime.
 - Backend: OnPlay Platform otdfpmsegjxpqrzisfmi; schema operacional coinops.
@@ -49,7 +50,7 @@ Uma tarefa de mudança autoriza, dentro do escopo, leitura, comandos, dependênc
 
 Sem autorização explícita da tarefa, pare antes de:
 
-- registrar gain real/manual, aporte, débito, redistribuição, mudança de saldo ou movimentação de slot em produção;
+- registrar gain, aporte, débito, redistribuição ou mudança de saldo em produção fora dos fluxos administrativos atuais da Automação;
 - confirmar uma operação financeira preparada apenas como preview;
 - efetuar pagamento, estorno, transferência, saque, compra, venda, trade ou ordem em exchange;
 - apagar dados, executar DROP/TRUNCATE, migration destrutiva ou desfazer histórico;
@@ -122,7 +123,7 @@ Os exemplos de ambiente divergem: o exemplo raiz omite SUPABASE_DATA_SCHEMA e CO
 
 ## Semântica financeira invariável
 
-- real_gains, operational_gains, ganhos manuais, aportes, débitos, slots, saldos e redistribuições são conceitos distintos. Não renomeie, agregue ou converta sem compreender o contrato.
+- Tabelas de ganhos manuais, aportes, débitos e redistribuições legadas são histórico/compatibilidade, não autorização para recriar operação manual. Preserve seus significados e dados para auditoria; ajustes/aportes administrativos atuais da Automação continuam válidos.
 - Toda mutação financeira usa resolução server-side de escopo, validação de valor, snapshot/hash, preview quando previsto, confirmação explícita, lock, transação, idempotência e auditoria.
 - Preserve histórico e trilha de origem; não sobrescreva resultado anterior para simplificar UI.
 - Em timeout ou resposta incerta, consulte estado/idempotência antes de repetir.
@@ -151,9 +152,9 @@ Os exemplos de ambiente divergem: o exemplo raiz omite SUPABASE_DATA_SCHEMA e CO
 
 - O CoinOps é multi-account. Toda ação deve carregar explicitamente `operator_id`, `exchange_account_id`, `trading_engine_id`, ambiente e símbolo ao atravessar account → engine → job → lease/lock → reconciliação → alerta → kill switch. Falha local bloqueia somente o engine afetado; kill switch global exige causa sistêmica comprovada.
 - Cada conta tem exatamente um executor/shard primário de IP fixo. Não rotacione IP para contornar rate limit Binance. Novo shard/IP serve capacidade, disponibilidade e isolamento; migração de conta LIVE exige procedimento explícito e revisão da whitelist Binance, nunca rebalanceamento automático.
-- Capacidade é medida, não deduzida do número de usuários. Antes de admitir nova carga, exigir telemetria fresca do shard, estimativa incremental medida e headroom para recovery: peso Binance/IP, CPU, RAM, backlog, reconciliação, heartbeat e retries. Se a evidência estiver ausente, a decisão é `CAPACITY_REQUIRED`, jamais um SIM inventado.
+- Capacidade é medida, não deduzida do número de usuários. Antes de admitir nova carga, exigir telemetria fresca do shard, custo incremental conservador e headroom para recovery: peso Binance/IP, CPU, RAM, backlog, reconciliação, heartbeat e retries. Se a evidência estiver ausente, a decisão é `CAPACITY_UNKNOWN`, nunca um SIM inventado.
 - Planeje SCALE_OUT/novo IP antes da saturação de peso Binance; SCALE_UP somente se CPU/RAM forem o gargalo medido. Nenhuma conta pode consumir o headroom de recuperação das demais. Não crie VPS/IP/recurso cobrável sem autorização.
-- O modelo de decisão fica em `apps/web/lib/coinops-capacity/capacity-manager.ts`; ainda não é um gate ativo no fluxo de ativação nem telemetria server-side. Não declare admissão automática ou alertas de capacidade ativos antes dessa integração ser comprovada.
+- O modelo de decisão fica em `apps/web/lib/coinops-capacity/capacity-manager.ts`. O gate de admissão somente é considerado ativo após migration, coleta contínua, publicação do executor e web, e smoke comprovados. Motores existentes não dependem do Capacity Manager para operar; indisponibilidade dele bloqueia apenas novas ativações.
 
 ## Variáveis — nomes, nunca valores
 

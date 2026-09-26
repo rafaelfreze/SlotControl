@@ -1,3 +1,15 @@
+# CoinOps Automation
+
+Arquitetura vigente: automação Binance multi-conta. Production/LIVE é o
+produto principal; Testnet é validação. ADMIN controla contas, motores,
+Strategy Engine, ledger, Capacity Manager e alertas; VIEWER acompanha apenas
+sua conta. Operação manual legada está descontinuada. O conteúdo antigo abaixo
+permanece apenas como histórico e não deve orientar novas features, deploys
+ou regras financeiras. Consulte [AGENTS.md](AGENTS.md) e
+[índice operacional](docs/INDICE.md) para o contrato atual.
+
+## Descrição histórica (não normativa)
+
 # SlotGain Control
 
 SlotGain Control e um SaaS simples para controle pessoal de operacoes cripto por slots. A versao atual usa Next.js, Supabase Auth, Supabase Database com RLS e deploy preparado para Vercel.

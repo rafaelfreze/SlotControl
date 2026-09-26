@@ -1,5 +1,15 @@
 # Índice da documentação
 
+**Arquitetura vigente: CoinOps Automation.** Production/LIVE é o produto;
+Testnet é validação. O antigo controle manual de slots/gains foi descontinuado.
+Documentos sobre esse modelo são histórico/auditoria, não instruções para
+novas funcionalidades. Preserve migrations e ledger para leitura histórica.
+
+- [Capacity Manager e isolamento](./COINOPS_CAPACITY_MANAGER.md) — telemetria,
+  admissão, headroom, sharding e condições de publicação.
+- [Auditoria de escala](./COINOPS_50_ACCOUNTS_AUDIT.md) — evidências e gates
+  ainda não comprovados, sem extrapolação de capacidade.
+
 ## Regras oficiais do CoinOps
 
 - [Meu CoinOps — acesso de cliente](./COINOPS_VIEWER_PORTAL.md) — vínculo de uma conta por VIEWER, Auth, RLS, fronteira somente leitura e semântica dos saldos.

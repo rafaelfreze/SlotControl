@@ -32,6 +32,10 @@
     "app/api/cron/coinops-push/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 60
+    },
+    "app/api/cron/coinops-capacity/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 60
     }
   },
   "crons": [
@@ -57,6 +61,10 @@
     },
     {
       "path": "/api/cron/coinops-push",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/coinops-capacity",
       "schedule": "* * * * *"
     }
   ]

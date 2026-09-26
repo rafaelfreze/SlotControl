@@ -35,7 +35,6 @@ export function MobileScreen({ children, desktop }: { children: ReactNode; deskt
     <div className={`app-frame${desktop ? " has-desktop-workspace" : ""}`}>
       <DesktopSidebar />
       <main className="mobile-dashboard-shell app-screen">{children}</main>
-      <BottomNavigation />
       {desktop ? <div className="desktop-workspace-slot">{desktop}</div> : null}
     </div>
   );
@@ -77,19 +76,11 @@ function TickerCell({ label, value, online = false }: { label: string; value: st
 }
 
 const navigation = [
-  { href: "/slots", label: "Slots", icon: "▦" },
-  { href: "/plano-crescimento", label: "Plano", icon: "↗" },
-  { href: "/automacao", label: "Automação", icon: "ϟ" },
-  { href: "/mais", label: "Mais", icon: "☰" }
+  { href: "/automacao", label: "Automação", icon: "ϟ" }
 ];
 
 function isCurrent(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(href);
-}
-
-export function BottomNavigation() {
-  const pathname = usePathname();
-  return <nav className="bottom-navigation" aria-label="Navegacao principal">{navigation.map((item) => <Link key={item.href} href={item.href} className={isCurrent(pathname, item.href) ? "active" : ""}><span aria-hidden="true">{item.icon}</span><small>{item.label}</small></Link>)}</nav>;
 }
 
 export function DesktopSidebar() {

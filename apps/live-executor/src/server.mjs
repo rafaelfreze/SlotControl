@@ -14,6 +14,7 @@ import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-reg
 import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
 import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { forwardTestnetRequest } from "./testnet-transport.mjs";
+import { createCapacityTelemetry } from "./capacity-telemetry.mjs";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -40,10 +41,13 @@ function safeLog(event) {
 }
 
 export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp,
-  apiKey = null, apiSecret = null, fetcher = fetch, now = Date.now,
+  apiKey = null, apiSecret = null, fetcher: rawFetcher = fetch, now = Date.now,
   version = "unversioned", region = "UNSPECIFIED", logger = safeLog,
   tradingEnabled = false, killSwitch = true, registry = null, credentialEnvironment = process.env,
-  allowLegacyClients = false, legacyVersion = null }) {
+  allowLegacyClients = false, legacyVersion = null,
+  shardId = process.env.COINOPS_EXECUTOR_SHARD_ID || "executor-01" }) {
+  const capacity = createCapacityTelemetry({ fetcher: rawFetcher, now, shardId });
+  const fetcher = capacity.trackedFetch;
   let cachedHealth = null;
   const engineHealthCache = new Map();
   async function health() {
@@ -77,6 +81,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
     const requestId = randomUUID();
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
     const action = path === "/health" ? "HEALTH" : path === "/v1/dry-run" ? "DRY_RUN"
+      : path === "/v1/capacity" ? "CAPACITY_READ"
       : path === "/v1/admin/credentials" ? "CREDENTIAL_ADMIN"
       : path === "/v1/admin/registry" ? "REGISTRY_ADMIN"
       : path === "/v1/admin/snapshot" ? "ACCOUNT_SNAPSHOT"
@@ -100,7 +105,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         writeJson(response, status, result);
         return;
       }
-      if (request.method !== "POST" || !["/v1/health", "/v1/dry-run", "/v1/state", "/v1/query-order",
+      if (request.method !== "POST" || !["/v1/health", "/v1/capacity", "/v1/dry-run", "/v1/state", "/v1/query-order",
         "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
         "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/promote",
         "/v1/admin/capital", "/v1/testnet/transport"].includes(path))
@@ -118,6 +123,20 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       symbol = typeof input.symbol === "string" && /^[A-Z0-9]{4,40}$/.test(input.symbol) ? input.symbol : null;
       const key = request.headers["x-coinops-idempotency-key"];
       keyHash = typeof key === "string" ? sha256(key).slice(0, 12) : null;
+      if (path === "/v1/capacity") {
+        if (!/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || key !== `CAPACITY:${input.request_id}`)
+          throw new ExecutorRejection("EXECUTOR_CAPACITY_SCOPE_DENIED", 403);
+        const active = await loadCombinedRegistry(registry, stateDirectory,
+          (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code }));
+        const live = active.engines.filter((row) => row.environment === "REAL" && row.status === "ACTIVE");
+        const sample = capacity.snapshot();
+        status = 200; outcome = "READ_ONLY_CAPACITY";
+        writeJson(response, 200, { ...sample, egress_ipv4: expectedEgressIp,
+          account_count: new Set(live.map((row) => row.exchange_account_id)).size,
+          engine_count: live.length, executor_version: version });
+        return;
+      }
       if (path === "/v1/testnet/transport") {
         assertCredentialScope(input);
         if (key !== `TESTNET:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
@@ -434,6 +453,7 @@ export async function startExecutor(env = process.env) {
     allowLegacyClients: env.COINOPS_EXECUTOR_LEGACY_COMPAT === "true",
     legacyVersion: env.COINOPS_EXECUTOR_LEGACY_VERSION ?? null,
     version: env.COINOPS_EXECUTOR_VERSION || "unversioned",
+    shardId: env.COINOPS_EXECUTOR_SHARD_ID || "executor-01",
     region: env.COINOPS_EXECUTOR_REGION || "UNSPECIFIED",
     tradingEnabled: env.TRADING_ENABLED === "true", killSwitch: env.KILL_SWITCH === "ON" }));
   server.requestTimeout = 45_000;

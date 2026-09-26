@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -15,8 +14,6 @@ const slots = [
   { id: "two", gains: 5, slot_number: 2, sort_order: 2 },
   { id: "three", gains: 5, slot_number: 1, sort_order: 3 }
 ];
-const slotsPageSource = readFileSync(new URL("../../app/slots/page.tsx", import.meta.url), "utf8");
-const desktopSlotsSource = readFileSync(new URL("../../app/slots/desktop-slots.tsx", import.meta.url), "utf8");
 
 test("slots são ordenados por gains e desempate estável", () => {
   assert.deepEqual(sortSlotsByGains(slots).map((slot) => slot.id), ["three", "two", "one"]);
@@ -71,11 +68,7 @@ test("lista operacional mantém abertos em FIFO e fechados por gains decrescente
   );
 });
 
-test("consulta da página carrega o timestamp autoritativo de abertura", () => {
-  assert.match(slotsPageSource, /position_gain_unit_usdt,position_opened_at,accounting_version/);
-});
-
-test("desktop e mobile usam o mesmo seletor para a lista operacional", () => {
+test("ordenação histórica mantém slots antigos legíveis", () => {
   const regimes = ["normal", "post-ath", "zero", "gains", "open", "closed", "redistribution"];
   const representativeSlots = [
     { id: "btc-open", status: "aberto", gains: 0, operational_gains: 0, slot_number: 5, sort_order: 5, position_opened_at: "2026-09-20T10:00:00.000Z" },
@@ -89,5 +82,4 @@ test("desktop e mobile usam o mesmo seletor para a lista operacional", () => {
   for (const regime of regimes) {
     assert.deepEqual(sortSlotsForOperationalList(representativeSlots).map((slot) => slot.id), expected, regime);
   }
-  assert.match(desktopSlotsSource, /sortSlotsForOperationalList\(slots\)/);
 });
