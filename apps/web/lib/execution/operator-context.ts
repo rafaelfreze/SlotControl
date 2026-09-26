@@ -30,6 +30,14 @@ export type EngineSelection = {
 export const isIdentity = (value: unknown): value is string => typeof value === "string"
   && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
+/** Retired accounts remain in the database but are never an operational UI scope. */
+export function visibleOperatorRegistry(registry: DomainRegistry): DomainRegistry {
+  const accounts = registry.accounts.filter((account) => !["DISABLED", "REVOKED"].includes(account.status));
+  const accountIds = new Set(accounts.map((account) => account.id));
+  return { ...registry, accounts,
+    engines: registry.engines.filter((engine) => accountIds.has(engine.exchange_account_id)) };
+}
+
 export function assertNativeMarket(base: string, quote: string, symbol: string) {
   if (!/^[A-Z0-9]{2,20}$/.test(base) || !/^[A-Z0-9]{2,20}$/.test(quote)
     || base === quote || symbol !== `${base}${quote}`) throw new Error("COINOPS_ENGINE_MARKET_INVALID");

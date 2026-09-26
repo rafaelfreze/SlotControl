@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { createServiceRoleClient } from "../supabase/service-role";
-import { assertDomainRegistry, resolveEngineContext, type DomainRegistry, type EngineSelection,
+import { assertDomainRegistry, resolveEngineContext, visibleOperatorRegistry, type DomainRegistry, type EngineSelection,
   type OperatorScope } from "./operator-context";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
@@ -19,7 +19,10 @@ export async function loadOperatorRegistry(client: Client, scope: OperatorScope)
       .eq("operator_id", op.data.id).order("id"),
   ]);
   if (accounts.error || engines.error || !accounts.data || !engines.data) throw new Error("COINOPS_OPERATOR_REGISTRY_UNAVAILABLE");
-  const registry = { operator: op.data, accounts: accounts.data, engines: engines.data } as DomainRegistry;
+  // Disabled/revoked accounts remain in the ledger for audit, but must not
+  // reappear in operational selectors or be resolved through a stale URL.
+  const registry = visibleOperatorRegistry({ operator: op.data, accounts: accounts.data,
+    engines: engines.data } as DomainRegistry);
   assertDomainRegistry(registry, scope);
   return registry;
 }

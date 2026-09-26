@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertDomainRegistry, assertRowEngine, resolveEngineContext, sumNativeAmounts,
+import { assertDomainRegistry, assertRowEngine, resolveEngineContext, sumNativeAmounts, visibleOperatorRegistry,
   type DomainRegistry } from "./operator-context.ts";
 
 export const identity = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -59,4 +59,18 @@ test("inactive account cannot admit new entries even when its engine is active",
   const context = resolveEngineContext(registry, { environment: "REAL", asset: "BTC" });
   assert.equal(context.status, "ACTIVE"); assert.equal(context.account_kill_switch, true);
   assert.equal(context.engine_kill_switch, false);
+});
+
+test("retired Testnet account and engines disappear without hiding active Production", () => {
+  const registry = fixtureRegistry();
+  registry.accounts[1]!.status = "DISABLED";
+  registry.engines.filter((engine) => engine.exchange_account_id === registry.accounts[1]!.id)
+    .forEach((engine) => { engine.environment = "TESTNET"; engine.status = "DISABLED"; engine.kill_switch = true; });
+  const visible = visibleOperatorRegistry(registry);
+  assert.deepEqual(visible.accounts.map((account) => account.id), [identity(5)]);
+  assert.equal(visible.engines.length, 4);
+  assert.equal(resolveEngineContext(visible, { environment: "REAL", asset: "BTC" }).exchange_account_id, identity(5));
+  assert.throws(() => resolveEngineContext(visible, { environment: "TESTNET",
+    exchange_account_id: identity(6), trading_engine_id: identity(14) }), /DENIED/);
+  assert.equal(registry.accounts.length, 2); // Ledger source is not deleted or mutated.
 });

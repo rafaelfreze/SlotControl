@@ -133,7 +133,7 @@ export async function GET() {
     const [accounts, engines, caps, runs, testnetRuns, profiles, checks, readyChecks, preparations, alerts] = await Promise.all([
       service.from("exchange_accounts")
         .select("id,display_name,status,kill_switch,is_legacy_default")
-        .eq("operator_id", operator.id).order("created_at"),
+        .eq("operator_id", operator.id).in("status", ["ACTIVE", "INACTIVE"]).order("created_at"),
       service.from("trading_engines")
         .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config")
         .eq("operator_id", operator.id).in("environment", ["REAL", "TESTNET"]).order("symbol"),
@@ -189,7 +189,7 @@ export async function GET() {
     return json({ accounts: (accounts.data ?? []).map((item) => ({ ...item,
       credentialValidated: validation.get(item.id)?.valid ?? false,
       environment: validation.get(item.id)?.environment ?? null })),
-      engines: (engines.data ?? []).map((item) => {
+      engines: (engines.data ?? []).filter((item) => accountById.has(item.exchange_account_id)).map((item) => {
         const isTestnet = item.environment === "TESTNET";
         const run = (isTestnet ? testnetRuns.data : runs.data)?.find((row) => row.trading_engine_id === item.id) ?? null;
         const runSlots = (isTestnet ? testnetSlots.data : slots.data ?? [])?.filter((row) => row.run_id === run?.id) ?? [];
@@ -212,7 +212,7 @@ export async function GET() {
           evidence: { physicalSlots: runSlots.length, open, residentTp: tp, nextBuy, recent, clean },
           profile: profiles.data?.find((profile) => profile.trading_engine_id === item.id) ?? null };
       }),
-      caps: caps.data ?? [] });
+      caps: (caps.data ?? []).filter((item) => accountById.has(item.exchange_account_id)) });
   } catch { return json({ error: "COINOPS_ENGINE_ADMIN_UNAVAILABLE" }, 403); }
 }
 

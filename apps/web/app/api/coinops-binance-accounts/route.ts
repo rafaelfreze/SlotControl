@@ -49,7 +49,7 @@ export async function GET() {
     const { operator, service } = await adminScope();
     const [accounts, checks, engines] = await Promise.all([
       service.from("exchange_accounts").select("id,display_name,status,kill_switch,is_legacy_default,credential_ref")
-        .eq("operator_id", operator.id).order("created_at"),
+        .eq("operator_id", operator.id).in("status", ["ACTIVE", "INACTIVE"]).order("created_at"),
       service.from("account_onboarding_checks").select("exchange_account_id,status,evidence,checked_at")
         .eq("operator_id", operator.id).eq("check_key", "BINANCE_CREDENTIAL").order("checked_at", { ascending: false }).limit(100),
       service.from("trading_engines").select("id,exchange_account_id,environment,symbol,quote_asset,status,hard_cap_quote,config")
@@ -63,7 +63,8 @@ export async function GET() {
       status: account.status, killSwitch: account.kill_switch, legacy: account.is_legacy_default,
       credentialRef: account.is_legacy_default ? null : account.credential_ref,
       validation: latest.get(account.id) ?? null })),
-      engines: (engines.data ?? []).map((engine) => ({ id: engine.id,
+      engines: (engines.data ?? []).filter((engine) => (accounts.data ?? []).some((account) =>
+        account.id === engine.exchange_account_id)).map((engine) => ({ id: engine.id,
         accountId: engine.exchange_account_id, environment: engine.environment,
         symbol: engine.symbol, quoteAsset: engine.quote_asset, status: engine.status, hardCap: engine.hard_cap_quote,
         slotCount: engine.config?.slot_count ?? null,
