@@ -15,6 +15,7 @@ export function CapacityCard() {
   const [shards, setShards] = useState<Shard[] | null>(null);
   const [mutating, setMutating] = useState<string | null>(null);
   const [muteError, setMuteError] = useState<string | null>(null);
+  const [expandedShard, setExpandedShard] = useState<string | null>(null);
   async function toggleWarnings(shard: Shard) {
     setMutating(shard.id);
     setMuteError(null);
@@ -46,8 +47,13 @@ export function CapacityCard() {
     {shards === null ? <p>Consultando capacidade do executor…</p> : shards.length === 0
       ? <p role="status">Capacidade indisponível. Novas ativações ficam bloqueadas; motores existentes continuam operando.</p>
       : shards.map((shard) => <div key={shard.id} className="px-capacity-shard" id={`infra-${shard.id}`}>
-        <strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
-        <span>{shard.accountCount} contas · {shard.engineCount} motores</span>
+        <div className="px-capacity-heading"><strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
+          <span>{shard.accountCount} contas · {shard.engineCount} motores</span></div>
+        <button type="button" className="px-capacity-expand" aria-expanded={expandedShard === shard.id}
+          aria-controls={`infra-details-${shard.id}`}
+          onClick={() => setExpandedShard((current) => current === shard.id ? null : shard.id)}>
+          {expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</button>
+        <div className={`px-capacity-details${expandedShard === shard.id ? " is-expanded" : ""}`} id={`infra-details-${shard.id}`}>
         <button type="button" className="px-button px-capacity-mute" disabled={mutating === shard.id}
           onClick={() => void toggleWarnings(shard)}>{shard.warningsMuted
             ? "Reativar avisos de capacidade" : "Ocultar avisos de capacidade"}</button>
@@ -74,6 +80,7 @@ export function CapacityCard() {
         {!shard.canAddEngine && shard.state !== "CAPACITY_LIMIT" ? <small>{shard.state === "OFFLINE"
           ? "Telemetria insuficiente; admissão indisponível." : "Headroom de recuperação reservado; não ativar novo motor neste shard."}</small> : null}
         {shard.alerts.map((alert) => <small key={alert.code} role="status">{alert.code}</small>)}
+        </div>
       </div>)}
     {muteError ? <p role="alert">{muteError}</p> : null}
   </section>;

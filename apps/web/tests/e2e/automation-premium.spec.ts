@@ -54,7 +54,8 @@ function clientModules() {
   return { entryId, code: [...modules].map(([id, code]) => `${JSON.stringify(id)}:function(require,module,exports){\n${code}\n}`).join(",\n") };
 }
 
-async function mount(page: Page, view: View, width: number, height = 960, data: Presentation = automationPremiumFixture()) {
+async function mount(page: Page, view: View, width: number, height = 960,
+  data: Presentation = automationPremiumFixture(), capacityData: unknown = null) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
@@ -71,7 +72,9 @@ async function mount(page: Page, view: View, width: number, height = 960, data: 
   const bundle = clientModules();
   await page.addScriptTag({ content: `(() => {
     const React = window.React;
-    window.fetch = async () => ({ ok: false, json: async () => ({}) });
+    const capacityFixture = ${JSON.stringify(capacityData)};
+    window.fetch = async (url) => ({ ok: String(url) === '/api/coinops-capacity' && Boolean(capacityFixture),
+      json: async () => capacityFixture ?? {} });
     window.WebSocket = class { static OPEN = 1; readyState = 1; close() {} };
     const modules = {${bundle.code}};
     const cache = {};
@@ -431,7 +434,7 @@ for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${w
   const audit = await mount(page, "live", width, 900, automationOperatorFixture());
   await expect(page.locator("[data-engine-id]")).toHaveCount(8);
   await expect(page.locator(".px-market-chart")).toHaveCount(4);
-  await expect(page.locator(".px-engine-row")).toHaveCount(8);
+  await expect(page.locator(".px-account-engine-row")).toHaveCount(8);
   await expect(page.locator(".px-asset")).toHaveCount(0);
   await expect(page.locator(".px-kpis")).toContainText("USDT");
   await expect(page.locator(".px-kpis")).toContainText("R$");
@@ -478,12 +481,47 @@ test("visão Todos pagina motores a cada 10 sem duplicar gráficos de moeda", as
   }
   const audit = await mount(page, "live", 390, 844, fixture);
   await expect(page.locator(".px-market-chart")).toHaveCount(4);
-  await expect(page.locator(".px-engine-row")).toHaveCount(10);
+  await expect(page.locator(".px-account-engine-row")).toHaveCount(10);
+  const mobileRow = page.locator(".px-account-engine-row").first();
+  await expect(mobileRow).toContainText("Rafael Demo · BTC/BRL");
+  expect((await mobileRow.boundingBox())?.height ?? Infinity).toBeLessThan(80);
   await page.getByRole("button", { name: /Ver mais motores/ }).click();
-  await expect(page.locator(".px-engine-row")).toHaveCount(12);
+  await expect(page.locator(".px-account-engine-row")).toHaveCount(12);
   await page.getByLabel("Conta", { exact: true }).selectOption(ACCOUNT_B);
   await expect(page.locator(".px-market-chart")).toHaveCount(0);
   await expect(page.locator(".px-asset")).toHaveCount(4);
+  await noSideEffects(page, audit);
+});
+
+test("infraestrutura mobile resume executores em duas linhas expansíveis", async ({ page }) => {
+  const base = { action: "SCALE_OUT", binanceWeightCurrent: 2679, binanceWeightAverage: 3190,
+    binanceWeightPeak: 4555, binanceLimit: 6000, binancePercent: 75.9,
+    cpuPercent: 2.6, ramUsedMb: 180, schedulerBacklog: 0, reconciliationAgeMs: 27000,
+    heartbeatAt: "2026-09-26T22:48:42Z", reservedWeight: 0, canAddEngine: false,
+    canAddTwoEngineAccount: false, warningsMuted: true, alerts: [] };
+  const audit = await mount(page, "live", 320, 844, automationOperatorFixture(), { shards: [
+    { ...base, id: "executor-01", state: "CAPACITY_LIMIT", egressIp: "46.101.104.48",
+      accountCount: 4, engineCount: 7 },
+    { ...base, id: "executor-02", state: "HEALTHY", egressIp: "164.90.223.159",
+      accountCount: 2, engineCount: 2, canAddEngine: true, warningsMuted: false },
+  ] });
+  await expect(page.locator(".px-capacity-shard")).toHaveCount(2);
+  for (const width of [320, 360, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(page.locator(".px-capacity-details").first()).toBeHidden();
+    await expect(page.locator(".px-capacity-details").last()).toBeHidden();
+    expect((await page.locator(".px-capacity-shard").first().boundingBox())?.height ?? Infinity).toBeLessThan(100);
+    expect((await geometry(page)).overflow).toBe(0);
+  }
+  await page.locator("#infra-executor-01 .px-capacity-expand").click();
+  await expect(page.locator("#infra-details-executor-01")).toBeVisible();
+  await expect(page.locator("#infra-details-executor-02")).toBeHidden();
+  await page.locator("#infra-executor-02 .px-capacity-expand").click();
+  await expect(page.locator("#infra-details-executor-01")).toBeHidden();
+  await expect(page.locator("#infra-details-executor-02")).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(page.locator(".px-capacity-details").first()).toBeVisible();
+  await expect(page.locator(".px-capacity-details").last()).toBeVisible();
   await noSideEffects(page, audit);
 });
 

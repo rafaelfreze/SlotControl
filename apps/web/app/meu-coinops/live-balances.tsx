@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 type Balance = { asset: string; free: number; locked: number; total: number };
 type Snapshot = { balances: Balance[]; observedAt: string | null };
@@ -9,7 +9,7 @@ const fmt = (value: number, asset: string) => asset === "BRL"
   ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value)
   : `${new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 8 }).format(value)} ${asset}`;
 
-export function ViewerLiveBalances({ fallback, summaries }: { fallback: Snapshot; summaries: Summary[] }) {
+export function ViewerLiveBalances({ fallback, summaries, children }: { fallback: Snapshot; summaries: Summary[]; children?: ReactNode }) {
   const [snapshot, setSnapshot] = useState(fallback);
   const [fresh, setFresh] = useState(false);
   const [busy, setBusy] = useState(true);
@@ -37,6 +37,7 @@ export function ViewerLiveBalances({ fallback, summaries }: { fallback: Snapshot
       </article>;
     })}
     {!summaries.length ? <article className="viewer-panel viewer-balance"><p>Saldo disponível quando houver um motor ativo.</p></article> : null}
+    {children}
     {snapshot.balances.some((row) => !summaries.some((summary) => summary.currency === row.asset)) ? <details className="viewer-extra-balances"><summary>Outros ativos na Binance</summary>{snapshot.balances.filter((row) => !summaries.some((summary) => summary.currency === row.asset)).map((row) => <p key={row.asset}>{row.asset}: {fmt(row.total, row.asset)} · livre {fmt(row.free, row.asset)}</p>)}</details> : null}
   </section>;
 }
