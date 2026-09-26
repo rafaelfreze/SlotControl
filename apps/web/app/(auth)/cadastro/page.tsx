@@ -19,7 +19,7 @@ export default function CadastroPage() {
       <section className="auth-card">
         <p className="eyebrow">Cadastro</p>
         <h1>Criar sua conta</h1>
-        <p className="muted-text">Cada usuario tera seus proprios slots, historico e configuracoes.</p>
+        <p className="muted-text">Seu acesso será vinculado às permissões da Automação CoinOps.</p>
 
         <AuthForm mode="signup" redirectTo={AUTHENTICATED_HOME} />
 

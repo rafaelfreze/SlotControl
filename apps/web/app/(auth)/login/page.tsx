@@ -23,7 +23,7 @@ export default function LoginPage({
       <section className="auth-card">
         <p className="eyebrow">Login</p>
         <h1>Entrar no painel</h1>
-        <p className="muted-text">Acesse seus slots, historico e configuracoes privadas.</p>
+        <p className="muted-text">Acesse a Automação CoinOps, seus motores e alertas.</p>
 
         {searchParams?.setup === "missing-env" ? (
           <div className="inline-alert">
