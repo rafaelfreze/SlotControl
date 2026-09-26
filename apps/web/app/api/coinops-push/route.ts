@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { endpointHash, pushPublicKey, sendToDevice } from "@/lib/coinops-notifications/push-server";
-import { publicPushReason } from "@/lib/coinops-notifications/push-policy";
+import { alertDeepLink, publicPushReason } from "@/lib/coinops-notifications/push-policy";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
@@ -73,23 +73,58 @@ export async function POST(request: NextRequest) {
       if (typeof input.engineId !== "string" || !/^[0-9a-f-]{36}$/i.test(input.engineId))
         throw new Error("COINOPS_PUSH_TESTNET_SCOPE_INVALID");
       const engine = await service.from("trading_engines")
-        .select("id,operator_id,exchange_account_id,base_asset,environment")
+        .select("id,operator_id,exchange_account_id,base_asset,symbol,environment,quote_asset")
         .eq("id", input.engineId).eq("operator_id", operator.id).eq("environment", "TESTNET").single();
       if (engine.error || !engine.data) throw new Error("COINOPS_PUSH_TESTNET_SCOPE_INVALID");
-      const key = `TESTNET_PUSH_PROBE:${engine.data.id}:${Math.floor(Date.now() / 60_000)}`;
-      const previous = await service.from("robot_v1_live_alerts").select("id")
-        .eq("trading_engine_id", engine.data.id).eq("alert_key", key).maybeSingle();
+      const account = await service.from("exchange_accounts").select("display_name,status")
+        .eq("id", engine.data.exchange_account_id).eq("operator_id", operator.id).single();
+      if (account.error || !account.data || account.data.status !== "ACTIVE")
+        throw new Error("COINOPS_PUSH_TESTNET_SCOPE_INVALID");
+      const key = `testnet-push-probe:${engine.data.id}:${Math.floor(Date.now() / 60_000)}`;
+      const previous = await service.from("account_onboarding_checks").select("id,status")
+        .eq("exchange_account_id", engine.data.exchange_account_id).eq("idempotency_key", key).maybeSingle();
       if (previous.error) throw new Error("COINOPS_PUSH_TESTNET_PROBE_FAILED");
-      if (previous.data) return json({ queued: true, source: "TESTNET", alreadyQueued: true });
-      const alert = await service.from("robot_v1_live_alerts").upsert({
-        product_id: operator.product_id, tenant_id: operator.tenant_id, user_id: operator.user_id,
+      if (previous.data) return json({ delivered: false, source: "TESTNET", alreadyQueued: true });
+      const devices = await service.from("operator_push_subscriptions")
+        .select("id,endpoint,p256dh,auth_secret").eq("operator_id", operator.id)
+        .eq("user_id", operator.user_id).eq("enabled", true).limit(10);
+      if (devices.error || !devices.data?.length) throw new Error("COINOPS_PUSH_DEVICE_NOT_REGISTERED");
+      // A controlled Testnet probe is not a LIVE alert. The LIVE alert table
+      // enforces REAL engine context; recording the probe there always fails.
+      const probe = await service.from("account_onboarding_checks").insert({
         operator_id: operator.id, exchange_account_id: engine.data.exchange_account_id,
-        trading_engine_id: engine.data.id, asset: engine.data.base_asset,
-        alert_key: key, severity: "WARNING", code: "TESTNET_PUSH_PROBE",
-        details: { controlled: true }, last_seen_at: new Date().toISOString(), resolved_at: null,
-      }, { onConflict: "trading_engine_id,alert_key", ignoreDuplicates: true });
-      if (alert.error) throw new Error("COINOPS_PUSH_TESTNET_PROBE_FAILED");
-      return json({ queued: true, source: "TESTNET" });
+        trading_engine_id: engine.data.id, check_key: "TESTNET_PUSH_PROBE", status: "PENDING",
+        evidence: { controlled: true, environment: "TESTNET", symbol: engine.data.symbol,
+          device_count: devices.data.length }, created_by: operator.user_id, idempotency_key: key,
+      }).select("id").single();
+      if (probe.error || !probe.data) {
+        if (probe.error?.code === "23505") return json({ source: "TESTNET", alreadySent: true });
+        throw new Error("COINOPS_PUSH_TESTNET_PROBE_FAILED");
+      }
+      let sent = 0;
+      const recordResult = (status: "PASS" | "FAIL", reason?: string) =>
+        service.from("account_onboarding_checks").insert({
+          operator_id: operator.id, exchange_account_id: engine.data.exchange_account_id,
+          trading_engine_id: engine.data.id, check_key: "TESTNET_PUSH_RESULT", status,
+          evidence: { controlled: true, environment: "TESTNET", symbol: engine.data.symbol,
+            device_count: devices.data.length, sent, ...(reason ? { reason } : {}) },
+          created_by: operator.user_id, idempotency_key: `${key}:result`,
+        });
+      try {
+        for (const device of devices.data) {
+          await sendToDevice(device, { title: "CoinOps — teste Testnet",
+            body: `${account.data.display_name} · ${engine.data.symbol} · ${publicPushReason("TESTNET_PUSH_PROBE")}`,
+            url: alertDeepLink(engine.data.exchange_account_id, engine.data.symbol, "TESTNET"),
+            tag: `testnet-probe:${probe.data.id}` });
+          sent++;
+        }
+      } catch (error) {
+        await recordResult("FAIL", "DELIVERY_FAILED");
+        throw error;
+      }
+      const recorded = await recordResult("PASS");
+      if (recorded.error) throw new Error("COINOPS_PUSH_TESTNET_PROBE_AUDIT_FAILED");
+      return json({ delivered: true, source: "TESTNET", deviceCount: sent });
     }
     const endpoint = input?.subscription?.endpoint;
     if (typeof endpoint !== "string") throw new Error("COINOPS_PUSH_ENDPOINT_INVALID");

@@ -87,7 +87,9 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
         lastSuccessAt: null, lastFailureCode: null }); setDeviceCount((count) => Math.max(0, count - 1));
         setMessage("Notificações desativadas neste dispositivo."); }
       else if (action === "TEST") setMessage("Notificação de teste enviada. Confira as notificações do dispositivo.");
-      else if (action === "TESTNET_PROBE") setMessage("Alerta controlado Testnet registrado; envio pelo servidor no próximo minuto. Nenhuma ordem foi alterada.");
+      else if (action === "TESTNET_PROBE") setMessage(result.alreadyQueued
+        ? "Este motor já teve um teste solicitado neste minuto. Aguarde antes de repetir."
+        : "Alerta controlado Testnet enviado aos dispositivos ativos. Nenhuma ordem foi alterada.");
       else { setStatus((current) => current ? { ...current, warningEnabled: result.warningEnabled } : current);
         setMessage("Preferência salva."); }
     } catch (error) { setMessage(error instanceof Error ? error.message : "Operação indisponível."); }
