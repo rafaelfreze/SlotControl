@@ -5,6 +5,11 @@ import { useEffect, useState, type FormEvent } from "react";
 type Viewer = { user_id: string; exchange_account_id: string; display_name: string;
   email: string; status: string; created_at: string };
 type Account = { id: string; display_name: string; status: string };
+const viewerErrorMessage: Record<string, string> = {
+  COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED: "Este e-mail já possui cadastro. Use outro e-mail para o acesso exclusivo desta conta; nenhum vínculo novo foi criado.",
+  COINOPS_VIEWER_ALREADY_EXISTS: "Este e-mail já tem acesso nesta operação. Confira a lista abaixo antes de criar outro convite.",
+  COINOPS_VIEWER_INVITE_FAILED: "Não foi possível enviar o convite. Nenhum acesso novo foi criado; tente novamente mais tarde.",
+};
 
 export function ViewerUsersPanel() {
   const [users, setUsers] = useState<Viewer[]>([]);
@@ -25,21 +30,23 @@ export function ViewerUsersPanel() {
         headers: { "content-type": "application/json", "x-coinops-admin-intent": "viewer-access" },
         body: JSON.stringify({ operation, requestId: crypto.randomUUID(), ...extra }) });
       const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Ação não concluída");
+      if (!response.ok) throw new Error(viewerErrorMessage[body.error] ?? body.error ?? "Ação não concluída");
       setMessage(operation === "CREATE" ? "Convite enviado. O acesso é somente leitura e restrito à conta selecionada."
         : operation === "RESET" ? "Instruções de nova senha enviadas por e-mail."
           : operation === "ENABLE" ? "Acesso reativado." : "Acesso bloqueado imediatamente no CoinOps.");
       await refresh();
+      return true;
     } catch (error) { setMessage(error instanceof Error ? error.message : "Ação não concluída"); }
     finally { setBusy(false); }
+    return false;
   };
   const create = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     void perform("CREATE", { displayName: String(data.get("displayName") ?? ""),
-      email: String(data.get("email") ?? ""), accountId: String(data.get("accountId") ?? "") });
-    form.reset();
+      email: String(data.get("email") ?? ""), accountId: String(data.get("accountId") ?? "") })
+      .then((created) => { if (created) form.reset(); });
   };
   return <section className="px-onboarding" aria-label="Usuários e acessos">
     <h2>Usuários / Acessos</h2>

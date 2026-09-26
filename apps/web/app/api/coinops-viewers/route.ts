@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
-import { assertViewerAccount, assertViewerIntent, assertViewerOrigin, type ViewerIntent } from "./policy";
+import { assertViewerAccount, assertViewerIntent, assertViewerOrigin, viewerInviteFailureCode, type ViewerIntent } from "./policy";
 
 export const dynamic = "force-dynamic";
 const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
       if (prior.error || prior.data) throw new Error("COINOPS_VIEWER_ALREADY_EXISTS");
       const redirectTo = viewerPasswordRedirect(request.nextUrl.origin);
       const invited = await service.auth.admin.inviteUserByEmail(email, { redirectTo });
-      if (invited.error || !invited.data.user) throw new Error("COINOPS_VIEWER_INVITE_FAILED");
+      if (invited.error || !invited.data.user) throw new Error(viewerInviteFailureCode(invited.error));
       const userId = invited.data.user.id;
       const stored = await service.from("viewer_access").insert({ user_id: userId,
         operator_id: operator.id, exchange_account_id: input.accountId!, role: "VIEWER",
@@ -103,6 +103,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const code = error instanceof Error && /^COINOPS_VIEWER_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "COINOPS_VIEWER_UNAVAILABLE";
-    return json({ error: code }, code.includes("UNAVAILABLE") ? 503 : 403);
+    return json({ error: code }, code === "COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED" ? 409
+      : code.includes("UNAVAILABLE") ? 503 : 403);
   }
 }

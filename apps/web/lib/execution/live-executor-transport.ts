@@ -66,7 +66,7 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
 function transientReadError(error: unknown) {
   const code = error instanceof Error ? error.message : "";
-  return ["EXECUTOR_HTTP_502", "EXECUTOR_HTTP_503", "EXECUTOR_HTTP_504"].includes(code)
+  return ["EXECUTOR_HTTP_502", "EXECUTOR_HTTP_503", "EXECUTOR_HTTP_504", "EXECUTOR_UNAVAILABLE"].includes(code)
     || error instanceof TypeError
     || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
 }

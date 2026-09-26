@@ -83,3 +83,29 @@ test("LIVE read-only transport survives a brief executor restart without retryin
     else process.env.COINOPS_EXECUTOR_HMAC_SECRET = previous.secret;
   }
 });
+
+test("LIVE state retries a transient sanitized executor error after TP creation", async () => {
+  const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,
+    base: process.env.LIVE_EXECUTOR_BASE_URL, secret: process.env.COINOPS_EXECUTOR_HMAC_SECRET };
+  process.env.LIVE_EXECUTOR_EGRESS_IP = "46.101.104.48";
+  process.env.LIVE_EXECUTOR_BASE_URL = "https://46.101.104.48";
+  process.env.COINOPS_EXECUTOR_HMAC_SECRET = "x".repeat(32);
+  try {
+    const paths: string[] = [];
+    const fetcher = (async (url: string | URL | Request) => {
+      paths.push(new URL(String(url)).pathname);
+      return paths.length === 1
+        ? Response.json({ error: "EXECUTOR_UNAVAILABLE" }, { status: 503 })
+        : Response.json(state);
+    }) as typeof fetch;
+    assert.deepEqual(await readLiveExecutorState(engine, fetcher), state);
+    assert.deepEqual(paths, ["/v1/state", "/v1/state"]);
+  } finally {
+    if (previous.ip === undefined) delete process.env.LIVE_EXECUTOR_EGRESS_IP;
+    else process.env.LIVE_EXECUTOR_EGRESS_IP = previous.ip;
+    if (previous.base === undefined) delete process.env.LIVE_EXECUTOR_BASE_URL;
+    else process.env.LIVE_EXECUTOR_BASE_URL = previous.base;
+    if (previous.secret === undefined) delete process.env.COINOPS_EXECUTOR_HMAC_SECRET;
+    else process.env.COINOPS_EXECUTOR_HMAC_SECRET = previous.secret;
+  }
+});

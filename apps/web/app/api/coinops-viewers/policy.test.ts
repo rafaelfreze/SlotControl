@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertViewerAccount, assertViewerIntent, assertViewerOrigin } from "./policy.ts";
+import { assertViewerAccount, assertViewerIntent, assertViewerOrigin, viewerInviteFailureCode } from "./policy.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -20,6 +20,17 @@ test("foreign, disabled and missing accounts are denied before Auth invite", () 
   for (const account of [null, { operator_id: id(2), status: "ACTIVE" },
     { operator_id: id(1), status: "DISABLED" }])
     assert.throws(() => assertViewerAccount(account, id(1)), /ACCOUNT_DENIED/);
+});
+
+test("existing Auth identity is a safe conflict, never silently rebound to another account", () => {
+  assert.equal(viewerInviteFailureCode({ code: "email_exists", status: 422 }),
+    "COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED");
+  assert.equal(viewerInviteFailureCode({ code: "unexpected_failure", status: 503 }),
+    "COINOPS_VIEWER_INVITE_FAILED");
+  const route = readFileSync(resolve(process.cwd(), "app/api/coinops-viewers/route.ts"), "utf8");
+  const panel = readFileSync(resolve(process.cwd(), "app/automacao/viewer-users-panel.tsx"), "utf8");
+  assert.match(route, /viewerInviteFailureCode\(invited\.error\)/);
+  assert.match(panel, /if \(created\) form\.reset\(\)/);
 });
 
 test("admin writes require same origin and explicit JSON intent", () => {

@@ -25,3 +25,8 @@ export function assertViewerAccount(account: { operator_id: string; status: stri
   if (!account || account.operator_id !== operatorId || !["ACTIVE", "INACTIVE"].includes(account.status))
     throw new Error("COINOPS_VIEWER_ACCOUNT_DENIED");
 }
+
+export function viewerInviteFailureCode(error: { code?: string; status?: number } | null) {
+  return error?.code === "email_exists"
+    ? "COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED" : "COINOPS_VIEWER_INVITE_FAILED";
+}
