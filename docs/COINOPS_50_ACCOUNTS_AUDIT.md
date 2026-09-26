@@ -294,3 +294,19 @@ engine 4,21/6,17/8,08 ms, RSS 60 MB); 100/200/5.000 recuperaram 600 em
 o replay também manteve zero novos envios. Não é recuperação completa de
 RPCs do ledger, TP real ou cron/Vercel sob restart simultâneo; o gate
 `RECOVERY_AT_SCALE_PASS` continua sem prova ponta a ponta.
+
+### Realtime e isolamento observados
+
+O Chrome autenticado em `/automacao` estava `DESATUALIZADO` após ficar
+em background; uma recarga recuperou o snapshot (SHA publicado `64802c4`),
+passou por `RECONECTANDO` e chegou a `AO VIVO`. A troca visual Todos →
+Rafael → Thyely → Todos mostrou somente os motores, posições, métricas e
+eventos da conta selecionada, sem ação de trading. No Supabase, a tabela
+`coinops.automation_refresh_signals` tem RLS habilitada e forçada, policy
+SELECT para `authenticated` via
+`private.coinops_can_read_automation_signal(operator_id,exchange_account_id)`;
+a função só aceita vínculo VIEWER ativo da própria conta ou propriedade do
+operador. A tabela expõe apenas escopo/revisão/horário, não credenciais.
+Isso comprova o desenho de isolamento e um smoke real de reconexão, mas não
+prova 100/200 engines em navegador, longa duração sem sockets órfãos, nem
+VIEWER real logado em carga. `REALTIME_SCALE_PASS` permanece aberto.
