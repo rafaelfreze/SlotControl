@@ -134,6 +134,7 @@ async function run(accountCount, fault) {
     const results = await runFairPool(engines.map((row, index) => ({ row, index })),
       CONCURRENCY, 0, async ({ row, index }) => {
       const requestStart = performance.now();
+      const queueDelayMs = requestStart - started;
       let status = 200, completed = 0, lastError = null;
       const signedRead = async (path, key, extra = {}) => {
         const input = { ...intentContext(row, key), ...extra }, body = JSON.stringify(input);
@@ -151,7 +152,7 @@ async function run(accountCount, fault) {
         status = health.status;
         if (status !== 200) return { status, completed,
           error: health.payload?.error ?? health.payload?.account_permission ?? null,
-          latencyMs: performance.now() - requestStart,
+          latencyMs: performance.now() - requestStart, queueDelayMs,
           id: row.trading_engine_id, account: row.exchange_account_id };
       }
       for (let order = 0; order < ORDER_QUERIES; order++) {
@@ -161,7 +162,7 @@ async function run(accountCount, fault) {
           `scale-order-${String(index).padStart(8, "0")}-${order}`, { clientOrderId });
         status = observed.status;
         if (status !== 200) return { status, completed, error: observed.payload?.error,
-          latencyMs: performance.now() - requestStart,
+          latencyMs: performance.now() - requestStart, queueDelayMs,
           id: row.trading_engine_id, account: row.exchange_account_id };
       }
       for (let round = 0; round < ROUNDS; round++) {
@@ -175,6 +176,7 @@ async function run(accountCount, fault) {
         completed++;
       }
       return { status, completed, error: lastError, latencyMs: performance.now() - requestStart,
+        queueDelayMs,
         id: row.trading_engine_id, account: row.exchange_account_id };
     });
     const affected = new Set(fault === "ONE_CREDENTIAL" ? engines.slice(0, 2).map((row) => row.trading_engine_id)
@@ -194,6 +196,9 @@ async function run(accountCount, fault) {
       latencyMs: { p50: percentile(results.map((item) => item.latencyMs), 50),
         p95: percentile(results.map((item) => item.latencyMs), 95),
         p99: percentile(results.map((item) => item.latencyMs), 99) },
+      queueDelayMs: { p50: percentile(results.map((item) => item.queueDelayMs), 50),
+        p95: percentile(results.map((item) => item.queueDelayMs), 95),
+        p99: percentile(results.map((item) => item.queueDelayMs), 99) },
       cpuMs: Number(((cpu.user + cpu.system) / 1000).toFixed(2)),
       rssBeforeMb: Number((rssBefore / 1048576).toFixed(2)),
       rssAfterMb: Number((process.memoryUsage().rss / 1048576).toFixed(2)),

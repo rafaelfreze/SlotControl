@@ -310,3 +310,14 @@ operador. A tabela expõe apenas escopo/revisão/horário, não credenciais.
 Isso comprova o desenho de isolamento e um smoke real de reconexão, mas não
 prova 100/200 engines em navegador, longa duração sem sockets órfãos, nem
 VIEWER real logado em carga. `REALTIME_SCALE_PASS` permanece aberto.
+
+### Fila do executor sob carga HTTP sintética
+
+Com o pool de 12, uma health e um snapshot por engine, o VPS mediu
+50/100/2.500 em 5,15 s: latência p50/p95/p99 558/785/788 ms por motor,
+atraso de fila p50/p95/p99 2,60/4,38/4,70 s, CPU 2,36 s, RSS 150 MB,
+100/100 saudáveis. Em 100/200/5.000: 8,71 s, 509/579/590 ms,
+fila 4,17/7,70/8,24 s, CPU 2,80 s, RSS 161 MB, 200/200 saudáveis.
+São medições HTTP do executor com Binance fictícia, não duração do cron
+Vercel nem latência dos RPCs Supabase; não extrapolar diretamente o p99
+para o fluxo operacional completo.
