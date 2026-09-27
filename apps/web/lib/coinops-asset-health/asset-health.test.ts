@@ -19,8 +19,26 @@ const assess = (asset: AssetHealthAsset, metrics = fixtures(asset), at = now, pr
 for (const asset of ["BTC", "SOL"] as const) test(`${asset}: sufficient recent independent coverage is healthy`, () => {
   assert.equal(assess(asset).status, "HEALTHY");
 });
-test("one degraded metric and temporary outage yield attention, never structural risk", () => {
-  const metrics = fixtures("SOL"); metrics[0].status = "CRITICAL";
+test("one isolated primary deviation does not immediately downgrade global structural health", () => {
+  const metrics = fixtures("SOL"); metrics[0].status = "WARNING";
+  assert.equal(assess("SOL", metrics).status, "HEALTHY");
+  assert.equal(assess("SOL", metrics).categories.find((category) => category.category === "NETWORK")?.status, "ATTENTION");
+});
+test("twelve healthy indicators plus one degraded proxy remain globally healthy and observable", () => {
+  const metrics = [...fixtures("SOL"), ...fixtures("SOL").slice(0, 3).map((metric, index) => ({ ...metric,
+    key: `extra_${index}`, source: { ...metric.source, id: `extra-source-${index}` } }))];
+  metrics[12].status = "WARNING"; metrics[12].indicatorClass = "COMPLEMENTARY_PROXY";
+  const result = assess("SOL", metrics);
+  assert.equal(result.healthyIndicators, 12); assert.equal(result.totalIndicators, 13);
+  assert.equal(result.status, "HEALTHY"); assert.match(result.trigger, /OBSERVE:extra_2/);
+  assert.equal(result.categories.find((category) => category.category === metrics[12].category)?.status, "OBSERVE");
+});
+test("two independently sourced primary degradations justify attention", () => {
+  const metrics = fixtures("SOL"); metrics[0].status = "WARNING"; metrics[2].status = "WARNING";
+  assert.equal(assess("SOL", metrics).status, "ATTENTION");
+});
+test("one confirmed high-confidence critical indicator can justify attention", () => {
+  const metrics = fixtures("SOL"); metrics[0].status = "CRITICAL"; metrics[0].indicatorClass = "CRITICAL";
   assert.equal(assess("SOL", metrics).status, "ATTENTION");
 });
 test("critical multi-source evidence must persist through fresh observations for six hours", () => {
@@ -41,7 +59,7 @@ test("critical categories from one underlying organization cannot claim independ
   const start = assess("BTC", metrics);
   const later = new Date(now.getTime() + STRUCTURAL_PERSISTENCE_MS);
   const recent = metrics.map((metric) => ({ ...metric, observedAt: later.toISOString(), fetchedAt: later.toISOString() }));
-  assert.equal(assess("BTC", recent, later, { ...start, evaluatedAt: new Date(later.getTime() - 3600_000).toISOString() }).status, "ATTENTION");
+  assert.equal(assess("BTC", recent, later, { ...start, evaluatedAt: new Date(later.getTime() - 3600_000).toISOString() }).status, "HEALTHY");
 });
 test("contradictory independent observations of same network metric prevent structural escalation", () => {
   const metrics = fixtures("BTC"); metrics[0].status = metrics[2].status = "CRITICAL";
@@ -140,6 +158,12 @@ test("collector uses official Solana sample method and excludes vote traffic", a
   assert.equal(metrics.find((metric) => metric.key === "finalized_block_age")?.value, .25);
   assert.equal(metrics.find((metric) => metric.key === "official_network_status")?.status, "HEALTHY");
   assert.equal(metrics.find((metric) => metric.key === "market_quote_volume_24h")?.status, "HEALTHY");
+});
+test("vote-account superminority is explicitly a proxy, never an official Nakamoto coefficient", () => {
+  const source = readFileSync(new URL("sources.ts", import.meta.url), "utf8");
+  assert.match(source, /key: "vote_account_superminority_proxy"/);
+  assert.match(source, /indicatorClass: "COMPLEMENTARY_PROXY"/);
+  assert.doesNotMatch(source, /key: "nakamoto_coefficient"/);
 });
 test("null market volume is unavailable rather than zero or a structural alarm", async () => {
   const metrics = await collectAssetHealthMetrics(["FAST"], now, mockFetcher(null));

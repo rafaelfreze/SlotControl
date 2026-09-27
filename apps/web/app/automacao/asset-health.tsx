@@ -13,6 +13,8 @@ const statusLabels: Record<AssetHealthStatus, string> = {
 const categoryLabels = { NETWORK: "Rede", SECURITY: "Segurança", DEVELOPMENT: "Desenvolvimento", LIQUIDITY: "Liquidez", ECOSYSTEM: "Ecossistema" };
 const metricLabels = { HEALTHY: "Saudável", WARNING: "Atenção", CRITICAL: "Deteriorado", SOURCE_UNAVAILABLE: "Fonte indisponível", DATA_STALE: "Dado desatualizado" };
 const confidenceLabels = { HIGH: "Alta", MEDIUM: "Média", LOW: "Baixa" };
+const indicatorClassLabels = { CRITICAL: "Crítico", PRIMARY: "Principal", COMPLEMENTARY_PROXY: "Complementar / proxy" };
+const categoryStatusLabels = { HEALTHY: "SAUDÁVEL", OBSERVE: "OBSERVAR", ATTENTION: "ATENÇÃO", RISK: "RISCO", INSUFFICIENT_DATA: "DADOS INSUFICIENTES" };
 const names = { BTC: "Bitcoin", SOL: "Solana" };
 const cache = new Map<Days, { at: number; data: AssetHealthDashboard }>();
 const pending = new Map<Days, Promise<AssetHealthDashboard>>();
@@ -115,6 +117,7 @@ function SourceLink({ url, children }: { url: string; children: ReactNode }) {
 function TechnicalMetric({ metric }: { metric: AssetMetric }) {
   return <details className="ah-metric"><summary><span>{metric.label}</span><small>{metricLabels[metric.status]}</small></summary>
     <p>{metric.reason}</p><dl><div><dt>Valor medido</dt><dd><pre>{typeof metric.value === "number" ? metric.value.toLocaleString("pt-BR", { maximumFractionDigits: 8 }) : typeof metric.value === "string" ? metric.value : JSON.stringify(metric.value, null, 2) ?? "Indisponível"}{metric.unit ? ` ${metric.unit}` : ""}</pre></dd></div>
+      <div><dt>Classe do indicador</dt><dd>{indicatorClassLabels[metric.indicatorClass ?? (metric.key === "nakamoto_coefficient" ? "COMPLEMENTARY_PROXY" : "PRIMARY")]}</dd></div>
       <div><dt>Confiança da fonte</dt><dd>{confidenceLabels[metric.confidence]}</dd></div><div><dt>Data da métrica</dt><dd>{displayTime(metric.metricAt)}</dd></div>
       {metric.observedAt ? <div><dt>Última observação válida</dt><dd>{displayTime(metric.observedAt)}</dd></div> : null}
       <div><dt>Coletado em</dt><dd>{displayTime(metric.fetchedAt)}</dd></div><div><dt>Fonte</dt><dd><SourceLink url={metric.source.url}>{metric.source.name}</SourceLink></dd></div>
@@ -148,7 +151,7 @@ export function AssetHealthDetails({ asset, snapshot, now, loading, readError, d
       <p className="ah-disclaimer">Avaliação informativa da estrutura do ativo. Queda de preço, sozinha, não representa risco estrutural. Este status não envia ordens nem altera seus motores.</p>
     </section>
     {snapshot ? <section className="ah-categories" aria-label="Indicadores por área">{snapshot.categories.map((category) => <article key={category.category}>
-      <header><h3>{categoryLabels[category.category]}</h3><span className={`ah-category-label ah-tone-${stale ? "insufficient_data" : category.status === "RISK" ? "structural_risk" : category.status.toLowerCase()}`}>{stale ? "Dado desatualizado" : category.status === "RISK" ? "Risco" : statusLabels[category.status]}</span></header><p>{category.summary}</p>
+      <header><h3>{categoryLabels[category.category]}</h3><span className={`ah-category-label ah-tone-${stale ? "insufficient_data" : category.status === "RISK" ? "structural_risk" : category.status.toLowerCase()}`}>{stale ? "Dado desatualizado" : categoryStatusLabels[category.status]}</span></header><p>{category.summary}</p>
     </article>)}</section> : null}
     <details className="ah-disclosure"><summary>Riscos acompanhados</summary><p>Estas são condições monitoradas quando há fontes confiáveis; não são previsões.</p><ul>{risks.map((risk) => <li key={risk}>{risk}</li>)}</ul></details>
     <details className="ah-disclosure"><summary>O que pode mudar este status?</summary><h4>O que poderia piorar?</h4><p>Deterioração persistente em várias métricas estruturais, confirmada por fontes independentes. Uma notícia isolada, volatilidade ou falha de API não bastam para risco estrutural.</p><h4>O que faria voltar para saudável?</h4><p>Dados recentes e suficientes mostrando normalização da rede, segurança, desenvolvimento e liquidez, segundo os critérios monitorados. Ausência de dados não confirma recuperação.</p></details>

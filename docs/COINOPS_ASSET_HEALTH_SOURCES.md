@@ -26,6 +26,7 @@ Falha de coleta preserva o último valor válido somente até seu TTL original, 
 ### Solana
 
 - [Solana RPC oficial](https://solana.com/docs/rpc): `POST https://api.mainnet-beta.solana.com`, somente métodos de leitura `getHealth`, `getEpochInfo` com commitment finalized, [`getRecentPerformanceSamples`](https://solana.com/docs/rpc/http/getrecentperformancesamples) (5 amostras), `getBlockTime` para slot finalizado e [`getVoteAccounts`](https://solana.com/docs/rpc/http/getvoteaccounts). `getPerformanceSamples` não existe e não é usado.
+- [Terminologia oficial Solana](https://solana.com/docs/references/terminology): define Nakamoto Coefficient pela quantidade mínima de entidades independentes. `getVoteAccounts` retorna contas de voto, não o agrupamento confiável dessas entidades; portanto a derivação local é sempre `COMPLEMENTARY_PROXY`, nunca “Nakamoto Coefficient”. O [Network Health Report de junho de 2025](https://solana.com/news/network-health-report-june-2025) é referência histórica oficial, não métrica atual em 2026 e não entra no status corrente.
 - [Status oficial](https://status.solana.com): `GET https://status.solana.com/api/v2/summary.json`, status e incidentes ativos. Status e RPC pertencem ao grupo de independência `solana-official`; não contam como duas organizações independentes para risco estrutural.
 - [Agave/Anza](https://github.com/anza-xyz/agave) e [Firedancer](https://github.com/firedancer-io/firedancer): GitHub `/repos/{owner}/{repo}/commits?per_page=1` e `/releases/latest`.
 - [DefiLlama e metodologia](https://docs.llama.fi/): `GET https://api.llama.fi/v2/chains`; `GET https://stablecoins.llama.fi/stablecoincharts/Solana`; `GET https://api.llama.fi/overview/dexs/Solana?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`.
@@ -35,7 +36,7 @@ Os endpoints acima responderam durante as verificações públicas de 27/09/2026
 
 ## Métricas e thresholds determinísticos
 
-Todos os limiares são heurísticas internas conservadoras de acompanhamento, não probabilidades científicas nem recomendações de investimento. Alterá-los exige revisão do código/testes. `CRITICAL` em uma métrica isolada não equivale a `STRUCTURAL_RISK` do ativo.
+Todos os limiares são heurísticas internas conservadoras de acompanhamento, não probabilidades científicas nem recomendações de investimento. Alterá-los exige revisão do código/testes. A classe do indicador (`CRITICAL`, `PRIMARY`, `COMPLEMENTARY_PROXY`) é diferente do estado medido (`HEALTHY`, `WARNING`, `CRITICAL`). Não existe média cega: classe, confiança, independência e persistência determinam o quórum.
 
 | Métrica | Medida | Atenção | Crítico |
 |---|---|---|---|
@@ -53,7 +54,7 @@ Todos os limiares são heurísticas internas conservadoras de acompanhamento, n�
 | SOL status oficial | Indicador público oficial | minor | major/critical |
 | SOL contas de voto ativas | Número em `getVoteAccounts.current` | <500 | <200 |
 | SOL stake delinquent | Stake delinquent / stake total observado | >10% | >25% |
-| SOL concentração de stake | Contas de voto necessárias para somar 1/3 do stake observado | <20 | <10 |
+| SOL concentração de stake (proxy) | Contas de voto necessárias para somar 1/3 do stake observado, sem agrupamento por operador | <20 = OBSERVAR | <10 = OBSERVAR com maior desvio; isoladamente não rebaixa o global |
 | SOL stablecoin supply | Total USD atual / total de 30 dias antes | <70% | <40% |
 | Desenvolvimento Core/Agave/Firedancer | Dias desde último commit no repositório | >90 dias | >180 dias |
 
@@ -72,9 +73,9 @@ Ressalvas de medida:
 
 - BTC exige pelo menos 6 indicadores disponíveis nas categorias rede, segurança, desenvolvimento e liquidez; SOL exige pelo menos 8 nas cinco categorias, incluindo ecossistema. Ambos exigem pelo menos 3 grupos de fontes independentes na cobertura. As contagens reais podem exceder o mínimo.
 - Sem cobertura suficiente: `INSUFFICIENT_DATA` (DADOS INSUFICIENTES). API ausente/stale jamais vira risco do ativo.
-- Cobertura suficiente e nenhum indicador degradado: `HEALTHY` dentro da cobertura declarada.
-- Um ou mais indicadores warning/critical: `ATTENTION`.
-- `STRUCTURAL_RISK` exige métricas críticas persistentes em pelo menos 2 categorias e 2 grupos independentes de fontes por pelo menos 6 horas. A data de início fica persistida por `source.id:key` em `criticalSinceByMetric`.
+- Cobertura suficiente sem quórum de deterioração: `HEALTHY` dentro da cobertura declarada. Um `COMPLEMENTARY_PROXY` degradado fica `OBSERVE` na categoria e visível no drawer, mas não rebaixa o global sozinho.
+- `ATTENTION`: pelo menos 2 indicadores `PRIMARY` deteriorados em grupos independentes, ou 1 indicador de classe `CRITICAL` com estado crítico, fonte de alta confiança e coleta válida. Um pequeno desvio isolado não muda imediatamente a saúde estrutural.
+- `STRUCTURAL_RISK` exige métricas críticas não-proxy, materiais e persistentes em pelo menos 2 categorias e 2 grupos independentes de fontes por pelo menos 6 horas. A data de início fica persistida por `source.id:key` em `criticalSinceByMetric`.
 - A confirmação precisa ter `observedAt >= criticalSince + 6h`: passagem do relógio ou GET da página não promove status. Uma amostra crítica antiga, sem nova coleta, não comprova persistência.
 - Uma fonte independente saudável para a mesma métrica crítica impede sua contribuição para escalada estrutural; a divergência continua em atenção e fica visível nas métricas.
 - Intervalo de mais de 2 horas entre avaliações quebra continuidade. Uma leitura saudável limpa o início crítico. Falha transitória de fonte pode preservar risco já comprovado dentro do TTL, mas não iniciar ou ampliar persistência usando cache.
@@ -84,7 +85,7 @@ Ressalvas de medida:
 
 - Participação por stake de Agave/Firedancer/outros clientes: `SOURCE_UNAVAILABLE`, opcional. Não inferida de `getVersion` ou do número de releases. Desenvolvimento dos clientes é acompanhado, diversidade instalada não é.
 - Feed completo de vulnerabilidades críticas confirmadas: `SOURCE_UNAVAILABLE`, opcional. A ausência de feed não atesta ausência de vulnerabilidade.
-- Nakamoto por operador, concentração geográfica/datacenter, regulação e disponibilidade de todas as grandes exchanges não possuem coleta automática nesta versão.
+- Nakamoto atual por operador, concentração geográfica/datacenter, regulação e disponibilidade de todas as grandes exchanges não possuem coleta automática nesta versão. O último valor oficial localizado é histórico (junho de 2025) e não é reutilizado como fato atual.
 - Não há baseline histórico local anterior à primeira implantação. O histórico começa com os snapshots reais do módulo; nada é retroativamente inventado.
 - Fontes grátis, nenhuma contratação/API key adicional. Limites públicos podem mudar; falhas são mostradas e não afetam trading.
 
@@ -93,11 +94,11 @@ Ressalvas de medida:
 Coleta em `2026-09-27T10:57:15.381Z`, duração aproximada de 2,4 segundos, antes da última inclusão de idade do bloco Solana:
 
 - BTC: regra derivada `HEALTHY`, 9 indicadores core disponíveis. Fatos: intervalo médio de blocos 9,38 min; tip em ambas fontes 22,69 min; hashrate ~957,94 EH/s, 102,99% da referência mensal; maior pool 25,48%; volume Binance ~833,29 milhões USDT/24h. Bitcoin Core último commit `2026-09-25T23:24:00Z`, release v31.1.
-- SOL: regra derivada `ATTENTION`, decorrente exclusivamente do proxy de concentração de 18 contas de voto para 1/3 do stake, abaixo do limiar interno 20. Não indica outage, trade recomendado ou risco estrutural. Fatos: 676 contas de voto ativas; stake delinquent 0,0083%; 0,267 s/slot; ~1684 tx não-voto/s; status oficial operacional; stablecoins ~16,804 bilhões USD, 103,44% de 30 dias antes. Agave release v4.3.0; Firedancer v26.09.4.
+- SOL antes da correção de quórum: regra derivada `ATTENTION`, decorrente exclusivamente do proxy de concentração de 18 contas de voto para 1/3 do stake. Após a correção, esse fato é `OBSERVE`/`COMPLEMENTARY_PROXY` e não rebaixa sozinho o global. O valor atual de Production deve ser lido no snapshot mais recente; os demais fatos desta coleta datada permanecem apenas evidência histórica.
 - Confirmação adicional em `2026-09-27T10:59:33.067Z`: bloco finalizado Solana com 7,1 segundos de idade, RPC e status oficial saudáveis. Essa métrica eleva a cobertura core disponível para 13.
 
 Esses valores são evidência datada do desenvolvimento, não o estado permanente mostrado pela aplicação. Production consulta apenas snapshots atuais persistidos.
 
 ## Regressões
 
-`apps/web/lib/coinops-asset-health/asset-health.test.ts`: BTC/SOL saudáveis, degradação única, persistência multifonte, recuperação, origem comum, fontes conflitantes, lacuna de coleta, GET sem promoção por relógio, risco comprovado com falha transitória de fonte, último valor dentro/fora do TTL, data antiga de evento, cobertura insuficiente, lacunas opcionais, preço extremo, dedupe de transições, formato RPC correto/TPS sem votos, null indisponível, todas APIs offline e isolamento de imports/chamadas de trading.
+`apps/web/lib/coinops-asset-health/asset-health.test.ts`: BTC/SOL saudáveis, 12 saudáveis + 1 proxy degradado, dois PRIMARY independentes, CRITICAL confirmado, persistência multifonte, recuperação, origem comum, fontes conflitantes, lacuna de coleta, GET sem promoção por relógio, risco comprovado com falha transitória de fonte, último valor dentro/fora do TTL, data antiga de evento, cobertura insuficiente, lacunas opcionais, preço extremo, dedupe de transições, formato RPC correto/TPS sem votos, null indisponível, todas APIs offline e isolamento de imports/chamadas de trading.

@@ -1,6 +1,7 @@
 export type AssetHealthAsset = "BTC" | "SOL";
 export type AssetHealthStatus = "HEALTHY" | "ATTENTION" | "STRUCTURAL_RISK" | "INSUFFICIENT_DATA";
 export type AssetMetricStatus = "HEALTHY" | "WARNING" | "CRITICAL" | "SOURCE_UNAVAILABLE" | "DATA_STALE";
+export type AssetMetricClass = "CRITICAL" | "PRIMARY" | "COMPLEMENTARY_PROXY";
 export type AssetHealthCategory = "NETWORK" | "SECURITY" | "DEVELOPMENT" | "LIQUIDITY" | "ECOSYSTEM";
 export type AssetHealthCadence = "FAST" | "STRUCTURAL" | "DEVELOPMENT";
 
@@ -11,6 +12,8 @@ export type AssetMetric = {
   category: AssetHealthCategory;
   cadence: AssetHealthCadence;
   status: AssetMetricStatus;
+  /** Evidence tier used by the deterministic global-status quorum. */
+  indicatorClass?: AssetMetricClass;
   value: unknown;
   unit: string | null;
   reason: string;
@@ -30,7 +33,7 @@ export type AssetMetric = {
 
 export type AssetCategoryAssessment = {
   category: AssetHealthCategory;
-  status: "HEALTHY" | "ATTENTION" | "RISK" | "INSUFFICIENT_DATA";
+  status: "HEALTHY" | "OBSERVE" | "ATTENTION" | "RISK" | "INSUFFICIENT_DATA";
   healthy: number;
   total: number;
   summary: string;

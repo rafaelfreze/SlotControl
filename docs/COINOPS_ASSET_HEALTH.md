@@ -20,7 +20,7 @@ Fontes públicas → coletor Vercel → normalização/última evidência válid
 
 Detalhamento completo em [Fontes e regras](./COINOPS_ASSET_HEALTH_SOURCES.md). Cada métrica guarda origem/URL, fetchedAt, observedAt, metricAt, value, status, confidence e erro quando disponível. Confiança não é probabilidade de perda.
 
-HEALTHY exige cobertura mínima por categoria e fontes independentes. ATTENTION identifica métricas degradadas. STRUCTURAL_RISK exige deterioração crítica em2categorias e2fontes independentes, confirmada por novas observações por6h. Ausência/stale é INSUFFICIENT_DATA. GET pode degradar validade, nunca renovar evidência ou criar nova escalada estrutural. Preço/candle/retorno não é entrada permitida; TVL e volume DEX não são sinais de risco.
+HEALTHY exige cobertura mínima por categoria e fontes independentes. Indicadores são classificados como `CRITICAL`, `PRIMARY` ou `COMPLEMENTARY_PROXY`. Um proxy isolado pode aparecer como `OBSERVE`, mas não rebaixa o status global. ATTENTION exige ao menos dois sinais PRIMARY deteriorados de grupos independentes, ou um CRITICAL confirmado, de alta confiança. STRUCTURAL_RISK exige deterioração crítica não-proxy em2categorias e2fontes independentes, confirmada por novas observações por6h. Ausência/stale é INSUFFICIENT_DATA. GET pode degradar validade, nunca renovar evidência ou criar nova escalada estrutural. Preço/candle/retorno não é entrada permitida; TVL e volume DEX não são sinais de risco.
 
 ## Persistência e segurança
 
@@ -59,7 +59,7 @@ Entrega física é at-least-once: crash entre send e registro SENT pode reenviar
 
 ## Validação
 
-- Regras/fontes:19testes incluindo preço extremo, fontes conflitantes, persistência, APIs fora e stale.
+- Regras/fontes:24testes incluindo proxy isolado, quórum PRIMARY, CRITICAL confirmado, preço extremo, fontes conflitantes, persistência, APIs fora e stale.
 - Serviço/auth/cron:11testes; push:8testes; UI:6testes. Total44 direcionados sem SQL.
 - SQL:10/10 em PostgreSQL17 descartável real; concorrência, fencing, rollback, imutabilidade, RLS/grants e delivery dedupe. No Windows o start PostgreSQL exigiu permissão do sandbox; não foi falha da migration.
 - UI:12cenários Chromium/WebKit em320/360/375/390/430/1280px; close após scroll, Escape, sem overflow, história/dedupe. WebKit é emulação, não iPhone físico.
@@ -71,4 +71,4 @@ Reverter apenas commit do módulo ou restaurar deployment anterior `1c40e4a` (in
 
 ## Limitações deliberadas
 
-Diversidade instalada por stake/cliente e feed completo de vulnerabilidades ainda indisponíveis. Proxy de concentração por conta de voto não equivale ao Nakamoto por operador. Liquidez de uma exchange não é liquidez global. Dados externos não garantem inexistência de risco, segurança econômica, preço futuro ou retorno. Observação temporal real de30/90/365dias só existirá após o respectivo período.
+Diversidade instalada por stake/cliente, Nakamoto atual agrupado por operador e feed completo de vulnerabilidades ainda indisponíveis. A coleta por conta de voto permanece rotulada `COMPLEMENTARY_PROXY`; não equivale ao Nakamoto por operador e não participa sozinha do quórum global. Liquidez de uma exchange não é liquidez global. Dados externos não garantem inexistência de risco, segurança econômica, preço futuro ou retorno. Observação temporal real de30/90/365dias só existirá após o respectivo período.

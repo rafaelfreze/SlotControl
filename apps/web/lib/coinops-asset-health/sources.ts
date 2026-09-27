@@ -29,7 +29,7 @@ async function json(fetcher: FetchLike, url: string, init?: RequestInit) {
 function metric(asset: AssetHealthAsset, cadence: AssetHealthCadence, source: Source, now: Date, input: MetricInput): AssetMetric {
   return { ...input, asset, cadence, source, fetchedAt: now.toISOString(), observedAt: now.toISOString(),
     metricAt: input.metricAt === undefined ? now.toISOString() : input.metricAt,
-    ttlSeconds: GROUP_TTL[cadence], confidence: input.confidence ?? "HIGH" };
+    ttlSeconds: GROUP_TTL[cadence], confidence: input.confidence ?? "HIGH", indicatorClass: input.indicatorClass ?? "PRIMARY" };
 }
 function unavailable(asset: AssetHealthAsset, cadence: AssetHealthCadence, source: Source, now: Date,
   key: string, label: string, category: AssetHealthCategory, error: unknown): AssetMetric {
@@ -94,7 +94,7 @@ async function btcFast(now: Date, fetcher: FetchLike): Promise<AssetMetric[]> {
       metric("BTC", cadence, source, now, { key: "tip_age", label: "Produção do bloco mais recente", category: "NETWORK",
         value: tipAgeMinutes, unit: "min", status: status(tipAgeMinutes, (v) => v > 30, (v) => v > 60),
         reason: tipAgeMinutes <= 30 ? `Bloco mais recente observado há ${tipAgeMinutes.toFixed(1)} min.` : `Nenhum novo bloco observado há ${tipAgeMinutes.toFixed(1)} min.`, metricAt: new Date(timestamps[0] * 1000).toISOString() }),
-      metric("BTC", cadence, source, now, { key: "mempool_backlog", label: "Mempool", category: "NETWORK",
+      metric("BTC", cadence, source, now, { key: "mempool_backlog", label: "Mempool", category: "NETWORK", indicatorClass: "COMPLEMENTARY_PROXY",
         value: { transactions: finite(mempool.count), vsize: finite(mempool.vsize) }, unit: null, status: "HEALTHY",
         contextOnly: true, reason: "Mempool observada como contexto; congestionamento isolado não é risco estrutural." }),
     ];
@@ -128,7 +128,7 @@ async function btcStructural(now: Date, fetcher: FetchLike): Promise<AssetMetric
       metric("BTC", cadence, source, now, { key: "difficulty", label: "Dificuldade de mineração", category: "SECURITY", value: difficulty, unit: null,
         status: difficulty > 0 ? "HEALTHY" : "CRITICAL", reason: difficulty > 0 ? "Dificuldade de mineração válida e ativa." : "Dificuldade de mineração inválida." }),
       topShare === null ? unavailable("BTC", cadence, source, now, "mining_concentration", "Concentração de mineração", "SECURITY", new Error("POOL_SHARE_UNAVAILABLE"))
-        : metric("BTC", cadence, source, now, { key: "mining_concentration", label: "Concentração de mineração", category: "SECURITY", value: topShare * 100, unit: "%",
+        : metric("BTC", cadence, source, now, { key: "mining_concentration", label: "Concentração de mineração (proxy)", category: "SECURITY", value: topShare * 100, unit: "%", indicatorClass: "COMPLEMENTARY_PROXY",
           status: status(topShare, (v) => v > .5, (v) => v > .65), reason: `Maior pool responde por ${(topShare * 100).toFixed(1)}% dos blocos identificados no mês; aproximação de concentração, não controle dos mineradores.`, confidence: "MEDIUM" }),
     ];
   } catch (error) {
@@ -197,7 +197,7 @@ async function solanaRpc(now: Date, fetcher: FetchLike, cadence: "FAST" | "STRUC
           status: "HEALTHY", reason: "O nó RPC oficial está sincronizado com o cluster; isso não prova sozinho disponibilidade de toda a rede." }),
         metric("SOL", cadence, source, now, { key: "slot_performance", label: "Produção de slots", category: "NETWORK", value: secondsPerSlot, unit: "s/slot",
           status: status(secondsPerSlot, (v) => v > 1, (v) => v > 3), reason: secondsPerSlot <= 1 ? `Produção recente em ${secondsPerSlot.toFixed(2)} s/slot.` : `Produção recente desacelerou para ${secondsPerSlot.toFixed(2)} s/slot.` }),
-        metric("SOL", cadence, source, now, { key: "network_activity", label: "Atividade processada", category: "ECOSYSTEM", value: tps, unit: "tx/s",
+      metric("SOL", cadence, source, now, { key: "network_activity", label: "Atividade processada", category: "ECOSYSTEM", value: tps, unit: "tx/s", indicatorClass: "COMPLEMENTARY_PROXY",
           status: tps > 0 ? "HEALTHY" : "WARNING", reason: tps > 0 ? `Amostras RPC registraram ${tps.toFixed(0)} transações não-voto/s; atividade não equivale a usuários ou valor econômico.` : "Amostras RPC não registraram atividade não-voto." }),
         tipAgeMinutes === null ? unavailable("SOL", cadence, source, now, "finalized_block_age", "Bloco finalizado mais recente", "NETWORK", new Error("BLOCK_TIME_UNAVAILABLE"))
           : metric("SOL", cadence, source, now, { key: "finalized_block_age", label: "Bloco finalizado mais recente", category: "NETWORK", value: tipAgeMinutes,
@@ -219,13 +219,14 @@ async function solanaRpc(now: Date, fetcher: FetchLike, cadence: "FAST" | "STRUC
         status: status(current.length, (v) => v < 500, (v) => v < 200), reason: `${current.length} contas de voto ativas observadas; limiares de acompanhamento: 500 (atenção) e 200 (crítico).` }),
       metric("SOL", cadence, source, now, { key: "delinquent_stake", label: "Stake delinquent", category: "SECURITY", value: delinquentRatio * 100, unit: "%",
         status: status(delinquentRatio, (v) => v > .1, (v) => v > .25), reason: delinquentRatio <= .1 ? `Stake delinquent em ${(delinquentRatio * 100).toFixed(2)}%.` : `Stake delinquent subiu para ${(delinquentRatio * 100).toFixed(2)}%.` }),
-      metric("SOL", cadence, source, now, { key: "nakamoto_coefficient", label: "Concentração por contas de voto (proxy)", category: "SECURITY", value: nakamoto, unit: "contas de voto",
+      metric("SOL", cadence, source, now, { key: "vote_account_superminority_proxy", label: "Concentração por contas de voto (proxy)", category: "SECURITY", value: nakamoto, unit: "contas de voto", indicatorClass: "COMPLEMENTARY_PROXY",
         status: status(nakamoto, (v) => v < 20, (v) => v < 10), reason: `${nakamoto} contas de voto acumulam 1/3 do stake observado. Proxy sem agrupamento por operador; não é coeficiente Nakamoto oficial.`, confidence: "MEDIUM" }),
     ];
   } catch (error) {
     return cadence === "FAST"
       ? [unavailable("SOL", cadence, source, now, "rpc_health", "Saúde RPC da rede", "NETWORK", error), unavailable("SOL", cadence, source, now, "slot_performance", "Produção de slots", "NETWORK", error), unavailable("SOL", cadence, source, now, "network_activity", "Atividade processada", "ECOSYSTEM", error), unavailable("SOL", cadence, source, now, "finalized_block_age", "Bloco finalizado mais recente", "NETWORK", error)]
-      : [unavailable("SOL", cadence, source, now, "active_validators", "Validadores ativos", "SECURITY", error), unavailable("SOL", cadence, source, now, "delinquent_stake", "Stake delinquent", "SECURITY", error), unavailable("SOL", cadence, source, now, "nakamoto_coefficient", "Coeficiente Nakamoto de stake", "SECURITY", error)];
+      : [unavailable("SOL", cadence, source, now, "active_validators", "Validadores ativos", "SECURITY", error), unavailable("SOL", cadence, source, now, "delinquent_stake", "Stake delinquent", "SECURITY", error),
+        { ...unavailable("SOL", cadence, source, now, "vote_account_superminority_proxy", "Concentração por contas de voto (proxy)", "SECURITY", error), indicatorClass: "COMPLEMENTARY_PROXY" }];
   }
 }
 
@@ -236,7 +237,7 @@ async function solanaStatus(now: Date, fetcher: FetchLike): Promise<AssetMetric[
     const indicator = raw.status?.indicator ?? "unknown", incidents = raw.incidents?.length ?? 0;
     if (!["none", "minor", "major", "critical"].includes(indicator)) throw new Error("UNKNOWN_STATUS_INDICATOR");
     const metricStatus: AssetMetricStatus = indicator === "none" ? "HEALTHY" : ["major", "critical"].includes(indicator) ? "CRITICAL" : "WARNING";
-    return [metric("SOL", cadence, source, now, { key: "official_network_status", label: "Status oficial da rede", category: "NETWORK",
+    return [metric("SOL", cadence, source, now, { key: "official_network_status", label: "Status oficial da rede", category: "NETWORK", indicatorClass: "CRITICAL",
       value: { indicator, incidents, description: raw.status?.description ?? null,
         events: (raw.incidents ?? []).slice(0, 8).map((item) => ({ title: item.name, url: item.shortlink, startedAt: item.started_at, impact: item.impact })) }, unit: null, status: metricStatus,
       metricAt: raw.page?.updated_at ?? now.toISOString(), reason: indicator === "none" ? "Status oficial informa operação normal." : `Status oficial informa ${indicator}; outage isolado gera atenção, não risco estrutural automático.` })];
@@ -272,7 +273,7 @@ async function solanaEconomicActivity(now: Date, fetcher: FetchLike): Promise<As
     if (finite(dex.total24h) === null) throw new Error("DEX_VOLUME_INCOMPLETE");
     result.push(metric("SOL", cadence, source, now, { key: "dex_volume", label: "Volume DEX", category: "ECOSYSTEM",
       value: { total24hUsd: finite(dex.total24h), total30dUsd: finite(dex.total30d), previous30dUsd: finite(dex.total60dto30d) },
-      unit: "USD", contextOnly: true, status: "HEALTHY", confidence: "MEDIUM",
+      unit: "USD", contextOnly: true, indicatorClass: "COMPLEMENTARY_PROXY", status: "HEALTHY", confidence: "MEDIUM",
       reason: "Volume DEX em USD exibido como contexto; atividade pode incluir bots, volume artificial e efeito de preço. Não classifica risco isoladamente." }));
   } catch (error) { result.push({ ...unavailable("SOL", cadence, source, now, "dex_volume", "Volume DEX", "ECOSYSTEM", error), contextOnly: true }); }
   return result;
@@ -296,7 +297,7 @@ async function solanaEcosystem(now: Date, fetcher: FetchLike): Promise<AssetMetr
     const tvl = finite(solana?.tvl);
     if (tvl === null) throw new Error("SOLANA_TVL_UNAVAILABLE");
     return [metric("SOL", cadence, source, now, { key: "ecosystem_tvl", label: "TVL do ecossistema", category: "ECOSYSTEM", value: tvl, unit: "USD",
-      status: "HEALTHY", contextOnly: true, confidence: "MEDIUM", reason: "TVL em USD é contexto, não sinal de risco: variação de preço e dupla contagem metodológica podem afetá-la. Tendência ajustada por preço ainda indisponível." })];
+      status: "HEALTHY", contextOnly: true, indicatorClass: "COMPLEMENTARY_PROXY", confidence: "MEDIUM", reason: "TVL em USD é contexto, não sinal de risco: variação de preço e dupla contagem metodológica podem afetá-la. Tendência ajustada por preço ainda indisponível." })];
   } catch (error) { return [unavailable("SOL", cadence, source, now, "ecosystem_tvl", "TVL do ecossistema", "ECOSYSTEM", error)]; }
 }
 

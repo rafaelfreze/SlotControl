@@ -70,6 +70,23 @@ test("details keep source failure distinct from structural risk and avoid stale 
   assert.doesNotMatch(html, /<details open/);
 });
 
+test("drawer labels proxy-only category as OBSERVAR and exposes the evidence class", () => {
+  const { AssetHealthDetails } = load();
+  const proxySnapshot = { ...snapshot,
+    categories: [{ category: "SECURITY", status: "OBSERVE", healthy: 2, total: 3, summary: "Proxy em observação" }],
+    metrics: [{ asset: "SOL", key: "vote_account_superminority_proxy", label: "Concentração por contas de voto (proxy)", category: "SECURITY",
+      cadence: "STRUCTURAL", status: "WARNING", indicatorClass: "COMPLEMENTARY_PROXY", value: 18, unit: "contas de voto",
+      reason: "Proxy sem agrupamento por operador; não é coeficiente Nakamoto oficial.", confidence: "MEDIUM",
+      source: { id: "solana-mainnet-rpc", name: "Solana Mainnet RPC", url: "https://solana.com/docs/rpc" },
+      fetchedAt: "2026-09-27T11:45:00Z", observedAt: "2026-09-27T11:45:00Z", metricAt: "2026-09-27T11:45:00Z", ttlSeconds: 43_200 }],
+  } as NonNullable<AssetHealthDashboard["assets"]["SOL"]>;
+  const html = renderToStaticMarkup(React.createElement(AssetHealthDetails, {
+    asset: "SOL", snapshot: proxySnapshot, now, loading: false, readError: false, days: 30, setDays: () => undefined,
+  }));
+  assert.match(html, /OBSERVAR/); assert.match(html, /Complementar \/ proxy/);
+  assert.match(html, /não é coeficiente Nakamoto oficial/);
+});
+
 test("history shows status transitions, not repeated collector snapshots, in reverse date order", () => {
   const { assetHealthChanges, assetHealthAge } = load();
   const rows = [
