@@ -23,7 +23,7 @@ export async function requireAssetHealthAccess(adminOnly = false) {
       service.from("operators").select("id").eq("id", binding.data.operator_id)
         .eq("tenant_id", tenantId).eq("status", "ACTIVE").maybeSingle(),
       service.from("exchange_accounts").select("id").eq("id", binding.data.exchange_account_id)
-        .eq("operator_id", binding.data.operator_id).eq("tenant_id", tenantId)
+        .eq("operator_id", binding.data.operator_id)
         .neq("status", "DISABLED").maybeSingle(),
     ]);
     if (operator.error || account.error || !operator.data || !account.data) throw new Error("ACCESS_DENIED");

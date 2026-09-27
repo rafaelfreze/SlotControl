@@ -118,7 +118,11 @@ function access(options: { auth?: boolean; role?: string; operator?: boolean; bi
       const data = table === "operators" ? options.operator === false ? null : { id: "op" }
         : table === "viewer_access" ? options.binding === false ? null : { operator_id: "op", exchange_account_id: "account" }
           : options.account === false ? null : { id: "account" };
-      return query(data, null, (method, args) => calls.push({ table, method, args }));
+      return query(data, null, (method, args) => {
+        // Accounts inherit tenant scope through operator_id; this table has no tenant_id column.
+        if (table === "exchange_accounts" && args[0] === "tenant_id") throw new Error("UNDEFINED_COLUMN:exchange_accounts.tenant_id");
+        calls.push({ table, method, args });
+      });
     } }) } }) };
 }
 test("ADMIN requires authenticated active official-tenant operator, never metadata alone", async () => {
@@ -131,7 +135,11 @@ test("VIEWER can read public facts only after binding+tenant+account validation,
   const a = access({ role: "VIEWER" });
   assert.equal((await a.code.requireAssetHealthAccess()).role, "VIEWER");
   assert.ok(a.calls.some((item) => item.table === "exchange_accounts" && item.args[0] === "operator_id" && item.args[1] === "op"));
+  assert.ok(a.calls.some((item) => item.table === "exchange_accounts" && item.args[0] === "id" && item.args[1] === "account"));
+  assert.equal(a.calls.some((item) => item.table === "exchange_accounts" && item.args[0] === "tenant_id"), false);
   assert.ok(a.calls.some((item) => item.table === "operators" && item.args[0] === "tenant_id" && item.args[1] === "official-tenant"));
+  assert.ok(a.calls.some((item) => item.table === "operators" && item.args[0] === "id" && item.args[1] === "op"));
+  assert.ok(a.calls.some((item) => item.table === "operators" && item.args[0] === "status" && item.args[1] === "ACTIVE"));
   await assert.rejects(a.code.requireAssetHealthAccess(true), /ADMIN_REQUIRED/);
   await assert.rejects(access({ role: "VIEWER", binding: false }).code.requireAssetHealthAccess(), /ACCESS_DENIED/);
   await assert.rejects(access({ role: "VIEWER", operator: false }).code.requireAssetHealthAccess(), /ACCESS_DENIED/);

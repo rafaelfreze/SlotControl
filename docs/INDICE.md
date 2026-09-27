@@ -13,6 +13,8 @@ novas funcionalidades. Preserve migrations e ledger para leitura histórica.
   status informativo, drawer compacto, histórico, alertas e isolamento absoluto do trading.
 - [Fontes e regras de saúde](./COINOPS_ASSET_HEALTH_SOURCES.md) — endpoints,
   métricas, thresholds, cadências, metodologia e lacunas de cobertura.
+- [Entrega Saúde do Ativo](./COINOPS_ASSET_HEALTH_DELIVERY.md) — coleta real,
+  publicação, métricas BTC/SOL, gates comprovados e limites do smoke.
 - [Entrega e operação FinOps](./COINOPS_FINOPS_DELIVERY.md) — sincronização,
   segurança, testes, publicação, evidências e limites financeiros.
 - [Monitor Production de 2 horas](./COINOPS_PRODUCTION_MONITOR_2H.md) — supervisão
