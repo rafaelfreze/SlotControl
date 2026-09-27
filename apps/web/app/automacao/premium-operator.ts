@@ -59,6 +59,19 @@ export function premiumNativeTotal(engines: PremiumEngine[], field: MoneyField):
   return engines.reduce((sum, engine) => sum + (engine[field] ?? 0), 0);
 }
 
+/**
+ * Ranks accounts by their largest native exposure without adding unlike currencies.
+ * The returned engines are reused by the account cards to keep display and ranking aligned.
+ */
+export function rankPremiumAccountsByOperatedBalance(accounts: PremiumAccount[], engines: PremiumEngine[]) {
+  return accounts.map((account, index) => {
+    const accountEngines = engines.filter((engine) => engine.accountId === account.id);
+    const operatedBalance = premiumNativeGroups(accountEngines).reduce((largest, group) =>
+      Math.max(largest, premiumNativeTotal(group.engines, "exposure") ?? 0), 0);
+    return { account, accountEngines, operatedBalance, index };
+  }).sort((left, right) => right.operatedBalance - left.operatedBalance || left.index - right.index);
+}
+
 /** Compatibility for isolated 5.5 fixtures. Production always supplies registry IDs. */
 export function legacyPremiumEngines(data: Props): PremiumEngine[] {
   return (["REAL", "SHADOW", "TESTNET"] as const).flatMap((environment) =>

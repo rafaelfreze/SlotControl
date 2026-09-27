@@ -23,3 +23,19 @@ test('multi-shard freshness displays the oldest required check, not freshest sib
   assert.equal(result.engines.blocked, 1);
   assert.equal(result.executors.healthy, 1);
 });
+
+test('capacity pressure keeps an executor operationally healthy while admission stays separate', () => {
+  const capacityLimited = { ...check, shard_id: 'executor-01', shard_state: 'CAPACITY_LIMIT' };
+  const capacityWarning = { ...check, shard_id: 'executor-02', shard_state: 'CAPACITY_WARNING' };
+  const result = aggregateWatchdogStatus(['executor-01', 'executor-02'],
+    [capacityLimited, capacityWarning], 0, now);
+  assert.equal(result.status, 'HEALTHY');
+  assert.deepEqual(result.executors, { healthy: 2, total: 2 });
+});
+
+test('an operational shard failure still makes watchdog attention', () => {
+  const offline = { ...check, shard_state: 'OFFLINE' };
+  const result = aggregateWatchdogStatus(['executor-01'], [offline], 0, now);
+  assert.equal(result.status, 'ATTENTION');
+  assert.deepEqual(result.executors, { healthy: 0, total: 1 });
+});

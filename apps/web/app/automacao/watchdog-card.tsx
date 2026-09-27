@@ -28,16 +28,21 @@ export function WatchdogCard() {
       document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); };
   }, []);
   const stale = status?.checkedAt && now - Date.parse(status.checkedAt) >= 3 * 60_000;
+  const displayStatus = stale ? "STALE" : status?.status ?? "SEM TELEMETRIA";
   return <section className="px-panel px-watchdog" aria-label="Watchdog CoinOps">
-    <strong>Watchdog · {stale ? "STALE" : status?.status ?? "SEM TELEMETRIA"}</strong>
-    <span>Última checagem: {status?.checkedAt
-      ? new Date(status.checkedAt).toLocaleTimeString("pt-BR") : "—"}</span>
-    {status ? <><span>Motores: {status.engines.healthy} saudáveis · {status.engines.recovering} recuperando · {status.engines.blocked} bloqueados · {status.engines.stale} stale</span>
-      <span>Executores: {status.executors.healthy}/{status.executors.total} saudáveis</span>
-      <span>Auto-recuperações 24h: {status.autoRecoveries24h}</span>
-      {status.activeCriticalAlerts > 0 && <span>Alertas críticos pendentes: {status.activeCriticalAlerts}</span>}
-      <small>Último incidente: {status.lastIncident
-        ? `${status.lastIncident.detected_condition} · ${status.lastIncident.result}` : "nenhum"}</small></>
-      : <small>Sem confirmação server-side. Não interpretar a interface como saúde operacional.</small>}
+    <details>
+      <summary><strong>Watchdog · {displayStatus}</strong><span className="px-watchdog-action"><i>Ver detalhes</i><b>Ocultar</b></span></summary>
+      <div className="px-watchdog-details">
+        <span>Última checagem: {status?.checkedAt
+          ? new Date(status.checkedAt).toLocaleTimeString("pt-BR") : "—"}</span>
+        {status ? <><span>Motores: {status.engines.healthy} saudáveis · {status.engines.recovering} recuperando · {status.engines.blocked} bloqueados · {status.engines.stale} stale</span>
+          <span>Executores: {status.executors.healthy}/{status.executors.total} saudáveis</span>
+          <span>Auto-recuperações 24h: {status.autoRecoveries24h}</span>
+          {status.activeCriticalAlerts > 0 && <span>Alertas críticos pendentes: {status.activeCriticalAlerts}</span>}
+          <small>Último incidente: {status.lastIncident
+            ? `${status.lastIncident.detected_condition} · ${status.lastIncident.result}` : "nenhum"}</small></>
+          : <small>Sem confirmação server-side. Não interpretar a interface como saúde operacional.</small>}
+      </div>
+    </details>
   </section>;
 }

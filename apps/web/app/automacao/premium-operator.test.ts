@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { concretePremiumEngine, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, selectPremiumEngines, selectedLiveExecutorStatus, withLiveMarketPrice, type PremiumEngine } from "./premium-operator.ts";
+import { concretePremiumEngine, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, rankPremiumAccountsByOperatedBalance, selectPremiumEngines, selectedLiveExecutorStatus, withLiveMarketPrice, type PremiumEngine } from "./premium-operator.ts";
 import type { Props } from "./automation-mobile";
 
 const make = (account: string, symbol: string, quote: string, amount: number): PremiumEngine => ({
@@ -20,6 +20,15 @@ test("native presentation groups account/environment/quote and never sums BRL+US
   assert.equal(premiumNativeTotal(groups[1].engines, "capital"), 150);
   assert.equal(premiumNativeTotal(groups[2].engines, "capital"), 500);
   assert.equal(premiumNativeTotal([], "capital"), null);
+});
+test("account cards rank by operated exposure without adding unlike currencies", () => {
+  const ranked = rankPremiumAccountsByOperatedBalance([
+    { id: "A", displayName: "A", status: "ACTIVE", killSwitch: false },
+    { id: "B", displayName: "B", status: "ACTIVE", killSwitch: false },
+  ], engines);
+  assert.deepEqual(ranked.map((row) => row.account.id), ["A", "B"]);
+  assert.equal(ranked[0].operatedBalance, 145);
+  assert.equal(ranked[1].operatedBalance, 100);
 });
 test("Binance free balances stay separated by account and quote, including USDT", () => {
   const rows = premiumQuoteBalanceRows(premiumNativeGroups(engines), [

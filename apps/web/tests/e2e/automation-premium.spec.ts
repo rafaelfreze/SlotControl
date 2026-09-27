@@ -284,7 +284,7 @@ for (const width of [360, 390, 430, 1024, 1280, 1440, 1920]) {
     await expect(trigger).toBeFocused();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
     await trigger.click();
-    await page.getByRole("heading", { name: "Olá, Rafael!", exact: true }).click();
+    await page.getByRole("heading", { name: "Sistema Operacional", exact: true }).click();
     await expect(navigation).not.toBeVisible();
     await trigger.click();
     await links.filter({ hasText: "Automação" }).click();
