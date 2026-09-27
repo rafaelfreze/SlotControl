@@ -44,6 +44,13 @@
     "app/api/cron/coinops-finops/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 300
+    },
+    "app/api/coinops-finops/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 300
+    },
+    "app/custos-operacao/page.tsx": {
+      "regions": ["gru1"]
     }
   },
   "crons": [

@@ -41,12 +41,12 @@ export type FinopsMarketRow = { accountId: string; accountName: string; shardId:
   market: string; currency: string; positions: number | null; reserved: number | null;
   realizedPnl: number | null; openPnl: number | null };
 export type FinopsDashboard = {
-  capturedAt: string | null; period: string; syncStatus: string;
+  capturedAt: string | null; externalCapturedAt?: string | null; period: string; syncStatus: string;
   summary: { accounts: number; engines: number; executors: number;
     capitalBrl: number | null; capitalByCurrency: Record<string, number | null>;
     actualBrl: number | null; projectedBrl: number | null; knownActualBrl: number;
     knownProjectedBrl: number; costPerAccountBrl: number | null; costPerEngineBrl: number | null;
-    unavailableServices: number; capitalComplete: boolean; monthlyEstimatedBrl?: number | null;
+    unavailableServices: number; capitalComplete: boolean; nativeCapitalComplete?: boolean; monthlyEstimatedBrl?: number | null;
     knownRealBrl?: number | null; estimatedBrl?: number | null; allocatedBrl?: number | null;
     costTotalsByCurrency?: Record<string, number | null> };
   capital: { accounts: FinopsCapitalRow[]; markets: FinopsMarketRow[]; notes: string[] };

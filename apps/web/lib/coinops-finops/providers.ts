@@ -123,7 +123,7 @@ export async function fetchFinopsFx(now = new Date(), fetchImpl: Fetcher = fetch
   const ptaxRequest = new URL(ptax.href.replace(/\+/g, "%20"));
   const results = await Promise.allSettled([
     get(ptaxRequest, "FINOPS_FX_PTAX", fetchImpl).then(raw => parsePtaxQuote(json(raw, "FINOPS_FX_PTAX"), now)),
-    get(new URL("https://api.binance.com/api/v3/ticker/24hr?symbol=USDTBRL&type=MINI"), "FINOPS_FX_USDTBRL", fetchImpl)
+    get(new URL("https://data-api.binance.vision/api/v3/ticker/24hr?symbol=USDTBRL&type=MINI"), "FINOPS_FX_USDTBRL", fetchImpl)
       .then(raw => parseUsdtBrlQuote(json(raw, "FINOPS_FX_USDTBRL"), now)),
   ]);
   const quotes = results.flatMap(result => result.status === "fulfilled" ? [result.value] : []);

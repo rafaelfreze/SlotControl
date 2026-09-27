@@ -47,8 +47,22 @@ test("FX partial provider failure preserves successful quote; no network secret 
   }));
   assert.deepEqual(result.map(row => row.base), ["USD"]);
   assert.equal(requests.length, 2);
+  assert.equal(requests[1].hostname, "data-api.binance.vision");
   assert.equal(requests[1].searchParams.get("symbol"), "USDTBRL");
   await assert.rejects(fetchFinopsFx(now, fakeFetch(() => { throw new Error("private token detail"); })), /^Error: FINOPS_FX_UNAVAILABLE$/);
+});
+
+test("FX market-data-only endpoint supplies USDT independently when BCB is unavailable", async () => {
+  const quotes = await fetchFinopsFx(now, fakeFetch((url, init) => {
+    assert.equal(init?.method, "GET");
+    assert.equal(new Headers(init?.headers).has("authorization"), false);
+    if (url.hostname === "olinda.bcb.gov.br") throw new Error("provider internal response not to disclose");
+    assert.equal(url.hostname, "data-api.binance.vision");
+    assert.equal(url.pathname, "/api/v3/ticker/24hr");
+    assert.equal(url.searchParams.get("symbol"), "USDTBRL");
+    return { symbol: "USDTBRL", lastPrice: "5.19", closeTime: now.getTime() };
+  }));
+  assert.deepEqual(quotes.map((quote) => [quote.base, quote.rate]), [["USDT", 5.19]]);
 });
 
 test("DigitalOcean matches primary public IP exactly across pages and never follows next URL", async () => {

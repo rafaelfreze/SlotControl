@@ -36,6 +36,26 @@ test("rolling six-hour cooldown cannot be bypassed across a UTC bucket boundary"
   assert.equal(nextFinopsExternalSync("2026-09-15T18:00:00Z", now), null);
   assert.throws(() => nextFinopsExternalSync("invalid", now), /SYNC_TIME_INVALID/);
 });
+
+test("scheduled UTC window is not delayed by an earlier manual refresh", () => {
+  const last = "2026-09-27T01:05:00Z", scheduled = new Date("2026-09-27T06:17:00Z");
+  assert.equal(nextFinopsExternalSync(last, scheduled, "SCHEDULED"), null);
+  assert.equal(nextFinopsExternalSync(last, scheduled), "2026-09-27T07:05:00.000Z");
+});
+
+test("scheduled cron jitter never skips the next six-hour UTC window", () => {
+  assert.equal(nextFinopsExternalSync("2026-09-27T06:17:30Z",
+    new Date("2026-09-27T12:17:00Z"), "SCHEDULED"), null);
+  assert.equal(nextFinopsExternalSync("2026-09-27T12:17:00Z",
+    new Date("2026-09-27T12:18:00Z"), "SCHEDULED"), "2026-09-27T18:00:00.000Z");
+});
+
+test("manual observation inside the scheduled window satisfies that window only", () => {
+  assert.equal(nextFinopsExternalSync("2026-09-27T06:05:00Z",
+    new Date("2026-09-27T06:17:00Z"), "SCHEDULED"), "2026-09-27T12:00:00.000Z");
+  assert.equal(nextFinopsExternalSync("2026-09-27T06:05:00Z",
+    new Date("2026-09-27T12:17:00Z"), "SCHEDULED"), null);
+});
 test("real charges and estimated remainder reconcile without discarding variable-only project cost", () => {
   const row = { id:"v",provider:"Vercel",name:"Usage",currency:"USD",cost_period:"2026-09-01",
     actual_month_cost:4,recurring_monthly:null,allocation_percent:100,origin:"REAL",source_mode:"API",sync_status:"OK",enabled:true };

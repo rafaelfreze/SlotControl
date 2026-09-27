@@ -16,10 +16,17 @@ export const FINOPS_SOURCE_NOTES = [
 ];
 export const periodAt = (at: Date) => `${at.toISOString().slice(0, 7)}-01`;
 export const FINOPS_SYNC_INTERVAL_MS = 6 * 60 * 60_000;
-export function nextFinopsExternalSync(lastSyncedAt: string | null, now: Date): string | null {
+export function nextFinopsExternalSync(lastSyncedAt: string | null, now: Date,
+  trigger: "ADMIN" | "SCHEDULED" = "ADMIN"): string | null {
   if (!lastSyncedAt) return null;
   const observed = Date.parse(lastSyncedAt);
   if (!Number.isFinite(observed) || observed > now.getTime() + 60_000) throw new Error("COINOPS_FINOPS_SYNC_TIME_INVALID");
+  // Only the authenticated scheduler uses UTC buckets. A manual refresh or a
+  // few seconds of cron jitter must not skip the following scheduled window.
+  if (trigger === "SCHEDULED") {
+    const windowStart = Math.floor(now.getTime() / FINOPS_SYNC_INTERVAL_MS) * FINOPS_SYNC_INTERVAL_MS;
+    return observed >= windowStart ? new Date(windowStart + FINOPS_SYNC_INTERVAL_MS).toISOString() : null;
+  }
   const next = observed + FINOPS_SYNC_INTERVAL_MS;
   return next > now.getTime() ? new Date(next).toISOString() : null;
 }

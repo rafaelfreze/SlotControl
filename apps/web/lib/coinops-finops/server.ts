@@ -11,6 +11,7 @@ import { loadFinopsCapital } from "./capital-server";
 import { finopsCapitalRows } from "./capital";
 import { convertBrl, enrichService, FINOPS_SOURCE_NOTES, FINOPS_SYNC_INTERVAL_MS, knownNumber, money, nextFinopsExternalSync, periodAt, requireFinopsOwnership, sumKnown, validateManualService } from "./model";
 import { fetchDigitalOceanCosts, fetchFinopsFx, fetchVercelProjectCosts } from "./providers";
+import { missingFinopsFx, nextFinopsFxRepair, revalueFinopsFx } from "./fx-repair";
 import type { FinopsDashboard, FinopsExecutor, FinopsHistory, FinopsScope, FinopsService, FxQuote } from "./types";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
@@ -94,7 +95,8 @@ export async function loadFinopsDashboard(scope: FinopsScope): Promise<FinopsDas
   const data = latest.data?.payload as FinopsDashboard | undefined;
   const result = data && data.summary && Array.isArray(data.services) ? data : emptyDashboard(now);
   return { ...result, syncStatus: state.data?.last_status === "FAILED" ? "FAILED" : !result.capturedAt ? "UNAVAILABLE"
-    : now.getTime() - Date.parse(result.capturedAt) > SIX_HOURS + 30 * 60_000 ? "STALE" : result.syncStatus,
+    : now.getTime() - Date.parse(result.externalCapturedAt ?? result.capturedAt) > SIX_HOURS + 30 * 60_000 ? "STALE"
+      : missingFinopsFx(result.capital, result.services, result.fx).length ? "PARTIAL" : result.syncStatus,
     history: ((history.data ?? []) as Array<{ period: string; captured_at: string; payload: FinopsDashboard }>)
       .filter((row) => row.payload?.summary && Array.isArray(row.payload?.services)).map((row) => historyRow(row, periodAt(now))),
     alerts: (alerts.data ?? []).map((alert) => ({ id: alert.id, code: alert.code, serviceId: alert.service_id,
@@ -129,7 +131,10 @@ async function inventory(service: Service, scope: FinopsScope, shards: Shard[], 
   return saved;
 }
 
-type FinancialAlert = { code: string; serviceId: string | null; message: string };
+type FinancialAlert = { code: string; serviceId: string | null; message: string; key?: string };
+const financialAlertKey = (alert: FinancialAlert, now: Date) => alert.key ?? `${alert.code}:${alert.serviceId ?? "PLATFORM"}:${periodAt(now)}`;
+const missingFxAlert = (currencies: string[], now: Date): FinancialAlert => ({ code: "BILLING_SYNC_FAILED", serviceId: null,
+  key: `BILLING_SYNC_FAILED:FX:${periodAt(now)}`, message: `Cotação BRL ausente para: ${currencies.join(", ")}. Valores nativos preservados; consolidado indisponível.` });
 async function refreshProviders(service: Service, scope: FinopsScope, shards: Shard[], rows: DbRow[], now: Date) {
   const alerts: FinancialAlert[] = [];
   const save = async (row: DbRow, patch: DbRow) => {
@@ -191,19 +196,43 @@ async function refreshProviders(service: Service, scope: FinopsScope, shards: Sh
 async function persistAlerts(service: Service, scope: FinopsScope, alerts: FinancialAlert[], now: Date, resolveAbsent: boolean) {
   for (const alert of alerts) {
     const result = await service.from("finops_alerts").upsert({ tenant_id: scope.tenantId, operator_id: scope.operatorId,
-      alert_key: `${alert.code}:${alert.serviceId ?? "PLATFORM"}:${periodAt(now)}`, service_id: alert.serviceId,
+      alert_key: financialAlertKey(alert, now), service_id: alert.serviceId,
       code: alert.code, message: alert.message, last_seen_at: now.toISOString(), resolved_at: null }, { onConflict: "operator_id,alert_key" });
     if (result.error) throw new Error("COINOPS_FINOPS_ALERT_SAVE_FAILED");
   }
   if (resolveAbsent) {
     const open = await readAll<DbRow>(() => scoped(service, "finops_alerts", scope).is("resolved_at", null).order("id"));
-    const active = new Set(alerts.map((alert) => `${alert.code}:${alert.serviceId ?? "PLATFORM"}:${periodAt(now)}`));
+    const active = new Set(alerts.map((alert) => financialAlertKey(alert, now)));
     for (const prior of open.filter((row) => !active.has(String(row.alert_key)))) {
       const result = await service.from("finops_alerts").update({ resolved_at: now.toISOString() })
         .eq("id", prior.id).eq("tenant_id", scope.tenantId).eq("operator_id", scope.operatorId).is("resolved_at", null);
       if (result.error) throw new Error("COINOPS_FINOPS_ALERT_SAVE_FAILED");
     }
   }
+}
+
+/** Already holds the FinOps lease. This path never enters inventory, billing,
+ * wallet snapshot or trading code and does not advance last_external_synced_at. */
+async function repairPersistedFinopsFx(service: Service, scope: FinopsScope, owner: string, previous: FinopsDashboard, now: Date) {
+  const latest = await scoped(service, "finops_snapshots", scope).like("snapshot_key", "FX_REPAIR:%")
+    .order("captured_at", { ascending: false }).limit(1).maybeSingle();
+  if (latest.error) throw new Error("COINOPS_FINOPS_READ_FAILED");
+  const nextSyncAt = nextFinopsFxRepair(latest.data?.captured_at ?? previous.capturedAt!, now);
+  if (nextSyncAt) return { status: "FRESH", nextSyncAt };
+  let quotes: FxQuote[] = [];
+  try { quotes = await fetchFinopsFx(now); } catch { /* Append a partial attempt; the cooldown also covers provider outages. */ }
+  const payload = revalueFinopsFx(previous, quotes, now);
+  const missing = missingFinopsFx(payload.capital, payload.services, payload.fx);
+  if (missing.length) await persistAlerts(service, scope, [missingFxAlert(missing, now)], now, false);
+  else {
+    const resolved = await service.from("finops_alerts").update({ resolved_at: now.toISOString() })
+      .eq("tenant_id", scope.tenantId).eq("operator_id", scope.operatorId).eq("alert_key", missingFxAlert([], now).key!).is("resolved_at", null);
+    if (resolved.error) throw new Error("COINOPS_FINOPS_ALERT_SAVE_FAILED");
+  }
+  const saved = await service.rpc("finops_finish_sync", { p_tenant_id: scope.tenantId, p_operator_id: scope.operatorId,
+    p_owner: owner, p_snapshot_key: `FX_REPAIR:${owner}`, p_external: false, p_payload: payload });
+  if (saved.error) throw new Error("COINOPS_FINOPS_SNAPSHOT_SAVE_FAILED");
+  return { status: payload.syncStatus, services: payload.services.length, capturedAt: payload.capturedAt, repair: "FX_ONLY" };
 }
 
 function buildExecutors(shards: Shard[], samples: DbRow[], services: FinopsService[], capital: FinopsDashboard["capital"], now: Date): FinopsExecutor[] {
@@ -231,7 +260,8 @@ function buildExecutors(shards: Shard[], samples: DbRow[], services: FinopsServi
   });
 }
 
-export async function syncFinops(scope: FinopsScope, options: { refreshExternal?: boolean; force?: boolean } = {}) {
+export async function syncFinops(scope: FinopsScope, options: { refreshExternal?: boolean; force?: boolean;
+  trigger?: "SCHEDULED" } = {}) {
   assertScope(scope);
   const service = serviceClient(), owner = randomUUID(), now = new Date();
   const claim = await service.rpc("finops_claim_sync", { p_tenant_id: scope.tenantId, p_operator_id: scope.operatorId, p_owner: owner });
@@ -243,8 +273,14 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
     if (options.refreshExternal !== false) {
       const state = await scoped(service, "finops_sync_state", scope).maybeSingle();
       if (state.error) throw new Error("COINOPS_FINOPS_READ_FAILED");
-      const nextSyncAt = nextFinopsExternalSync(state.data?.last_external_synced_at ?? null, now);
-      if (nextSyncAt) return { status: "FRESH", nextSyncAt };
+      const nextSyncAt = nextFinopsExternalSync(state.data?.last_external_synced_at ?? null, now,
+        options.trigger ?? "ADMIN");
+      if (nextSyncAt) {
+        if (options.trigger !== "SCHEDULED" && previous.capturedAt && previous.period === periodAt(now)
+          && missingFinopsFx(previous.capital, previous.services, previous.fx).length)
+          return await repairPersistedFinopsFx(service, scope, owner, previous, now);
+        return { status: "FRESH", nextSyncAt };
+      }
     }
     const [shards, samples] = await Promise.all([
       readAll<Shard>(() => service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio").order("id")),
@@ -259,7 +295,8 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
     }
     const rows = await readAll<DbRow>(() => scoped(service, "finops_services", scope).order("id"));
     const services = rows.map((row) => enrichService(row, fx, now));
-    let capital = previous.capital, accounts = previous.summary.accounts, engines = previous.summary.engines, capitalComplete = previous.summary.capitalComplete;
+    let capital = previous.capital, accounts = previous.summary.accounts, engines = previous.summary.engines,
+      capitalComplete = previous.summary.nativeCapitalComplete ?? previous.summary.capitalComplete;
     if (options.refreshExternal !== false || !previous.capturedAt) {
       try {
         const raw = await loadFinopsCapital(service, { operatorId: scope.operatorId, tenantId: scope.tenantId, refreshWallets: options.refreshExternal !== false });
@@ -274,6 +311,9 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
     const capitalByCurrency: Record<string, number | null> = {};
     for (const currency of new Set(capital.accounts.map((row) => row.currency)))
       capitalByCurrency[currency] = sumKnown(capital.accounts.filter((row) => row.currency === currency).map((row) => row.monitored)).total;
+    const nativeCapitalComplete = capitalComplete;
+    const missingFx = missingFinopsFx(capital, services, fx);
+    if (missingFx.length) alerts.push(missingFxAlert(missingFx, now));
     const convertedCapital = sumKnown(Object.entries(capitalByCurrency).map(([currency, amount]) => convertBrl(amount, currency, fx)));
     capitalComplete = capitalComplete && convertedCapital.complete;
     const enabledServices = services.filter((row) => row.enabled);
@@ -294,9 +334,12 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
       if (row.actualMonthCost !== null && row.recurringMonthly !== null && row.recurringMonthly > 0 && row.actualMonthCost > row.recurringMonthly * 1.25)
         alerts.push({ code: "UNEXPECTED_COST", serviceId: row.id, message: "Cobrança conhecida ultrapassa a recorrência em mais de 25%; verificar consumo variável e extras." });
     }
-    const payload: FinopsDashboard = { capturedAt: now.toISOString(), period: periodAt(now), syncStatus: alerts.some((alert) => alert.code === "BILLING_SYNC_FAILED") ? "PARTIAL" : "OK",
+    const payload: FinopsDashboard = { capturedAt: now.toISOString(),
+      externalCapturedAt: options.refreshExternal === false ? previous.externalCapturedAt ?? previous.capturedAt : now.toISOString(),
+      period: periodAt(now), syncStatus: alerts.some((alert) => alert.code === "BILLING_SYNC_FAILED") || !capitalComplete
+        || enabledServices.some(row => row.projectedBrl === null) ? "PARTIAL" : "OK",
       summary: { accounts, engines, executors: shards.filter((row) => row.enabled).length,
-        capitalBrl: capitalComplete ? convertedCapital.total : null, capitalByCurrency, capitalComplete,
+        capitalBrl: capitalComplete ? convertedCapital.total : null, capitalByCurrency, capitalComplete, nativeCapitalComplete,
         actualBrl: actual.total, projectedBrl: projected.total, knownActualBrl: actual.known, knownProjectedBrl: projected.known,
         costPerAccountBrl: knownMonthly === null || accounts === 0 ? null : money(knownMonthly / accounts),
         costPerEngineBrl: knownMonthly === null || engines === 0 ? null : money(knownMonthly / engines),
@@ -348,7 +391,8 @@ export async function syncAllFinops() {
     .eq("tenant_id", tenantId).eq("status", "ACTIVE").order("id"));
   const results: Array<{ operatorId: string; status: string }> = [];
   for (const operator of operators) {
-    try { results.push({ operatorId: operator.id, ...(await syncFinops({ operatorId: operator.id, tenantId, userId: operator.user_id })) }); }
+    try { results.push({ operatorId: operator.id, ...(await syncFinops(
+      { operatorId: operator.id, tenantId, userId: operator.user_id }, { trigger: "SCHEDULED" })) }); }
     catch (error) { results.push({ operatorId: operator.id, status: safeCode(error) }); }
   }
   return { results };

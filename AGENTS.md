@@ -177,6 +177,7 @@ no ambiente de destino antes de operação remota.
 - `/custos-operacao` é exclusivamente ADMIN; VIEWER não acessa custos internos nem APIs FinOps. Tabelas `coinops.finops_*` são server-only, com RLS e escopo tenant/operator.
 - Capital Binance e P&L de estratégias nunca são receita da plataforma. Custos seguem `REAL > ESTIMADO > RATEIO_ESTIMADO > INDISPONIVEL`; `MANUAL` identifica entrada/evidência, não cobrança confirmada. Sem fatura não significa custo zero.
 - A tela lê snapshots persistidos; sincronização independente a cada seis horas. Não acoplar billing, câmbio ou FinOps a trading, watchdog, admissão ou reconciliação com escrita. Falha de billing não bloqueia nenhum motor.
+- Cron FinOps autenticado usa uma coleta por janela UTC de seis horas (`17 */6 * * *`), sob lease/fencing; sincronização ADMIN mantém cooldown móvel de seis horas. Somente `syncAllFinops` habilita o modo interno `SCHEDULED`: nunca aceitar esse modo/force do browser. Coleta manual anterior ou jitter do cron não devem pular a próxima janela; ajuste manual sem coleta externa não altera esse relógio.
 - Preservar moeda original, fonte/data, método de rateio, período do fornecedor e câmbio congelado em cada snapshot. USD não equivale a USDT. Tarifas documentadas são estimativas, nunca valores pagos.
 - Registry descobre executores automaticamente; preço de um novo recurso precisa de evidência/configuração, não herda US$6 cegamente. Regras e limites: `docs/COINOPS_FINOPS_PROVIDERS.md`.
 

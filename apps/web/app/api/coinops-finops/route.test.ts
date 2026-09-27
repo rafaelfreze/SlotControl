@@ -32,7 +32,8 @@ test("page API reads only persisted data; billing sync is explicit", async () =>
 });
 test("manual ADMIN sync uses server ownership and cannot forward a cooldown bypass", async () => {
   const api = route();
-  const response = await api.POST(request({ action: "SYNC", force: true, refreshExternal: true, operatorId: "attacker" }));
+  const response = await api.POST(request({ action: "SYNC", force: true, refreshExternal: true,
+    trigger: "SCHEDULED", operatorId: "attacker" }));
   assert.equal(response.status, 200);
   assert.deepEqual(api.calls, [{ name: "sync", args: [api.scope] }]);
   assert.deepEqual(await response.json(), { status: "FRESH", nextSyncAt: "2026-09-27T06:00:00Z" });
