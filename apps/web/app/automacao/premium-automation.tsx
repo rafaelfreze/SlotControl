@@ -139,7 +139,11 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const symbols = [...new Set(engines.filter((engine) => (view === "overview" || engine.environment === environment)
     && (selection.accountId === "ALL" || engine.accountId === selection.accountId)).map((engine) => engine.symbol))];
   const allAccounts = selection.accountId === "ALL";
-  const uniqueMarketCharts = [...new Map(assets.map((item) => [item.symbol, item])).values()].slice(0, 4);
+  const usdtMarketOrder = ["BTCUSDT", "SOLUSDT"];
+  const usdtMarketCharts = [...new Map(assets
+    .filter((item) => usdtMarketOrder.includes(item.symbol))
+    .map((item) => [item.symbol, item])).values()]
+    .sort((left, right) => usdtMarketOrder.indexOf(left.symbol) - usdtMarketOrder.indexOf(right.symbol));
   const liveStatus = selectedLiveExecutorStatus(assets, data.operator?.engineData
     ?? Object.fromEntries(assets.map((item) => [item.engineId, data])));
   const liveAssets = useMemo(() => selectPremiumEngines(engines, "REAL", selection), [engines, selection]);
@@ -176,8 +180,8 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     ] as Array<[IconName, string, () => void]>).map(([icon, label, action]) => <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button>)}{data.operator ? <a href="/custos-operacao"><PremiumIcon name="wallet" />Custos &amp; Operação</a> : null}</nav>
     {view === "live" ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={liveStatus.online ? "is-ok" : "is-warning"}>● Executor {liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={healthy ? "is-ok" : "is-warning"}>● Estratégia {healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
-      {allAccounts ? <section className="px-market-overview" aria-label="Cotações por mercado"><div className="px-section-heading"><h2>Cotações por moeda</h2><small>Até 4 mercados · selecione uma conta no topo para ver seus gráficos e detalhes</small></div>
-        <div className="px-market-chart-grid">{uniqueMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /></article>)}</div>
+      {allAccounts ? <section className="px-market-overview" aria-label="Cotações USDT">
+        <div className="px-market-chart-grid">{usdtMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /></article>)}</div>
       </section> : null}
       {data.operator && (view === "live" || view === "overview") ? <CapacityCard /> : null}
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard /> : null}

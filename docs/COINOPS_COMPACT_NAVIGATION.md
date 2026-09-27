@@ -11,8 +11,9 @@ Alteração visual de 27/09/2026, sem alteração de trading, dados, Auth/RLS ou
   Operações, Relatórios e Simulador saem da navegação principal. Rotas de relatório
   e simuladores continuam internas; posições, alertas, TP/NEXT BUY e auditoria
   contextual não são apagados.
-- Com conta **Todos**, as cotações por moeda vêm antes de Infraestrutura/Watchdog.
-  No máximo quatro mercados únicos, sem repetir gráfico por nome da pessoa.
+- Com conta **Todos**, somente os cards BTC/USDT e SOL/USDT vêm antes de
+  Infraestrutura/Watchdog, sem título nem texto auxiliar e sem repetir gráfico
+  por nome da pessoa. Os cards BRL não aparecem nesse resumo do topo.
   Selecionar uma conta mantém seus próprios gráficos e detalhes isolados.
 
 ## Meu CoinOps — VIEWER

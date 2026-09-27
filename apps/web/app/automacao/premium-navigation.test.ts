@@ -25,12 +25,15 @@ test("product toolbar hides internal operations, reports and simulators without 
   assert.ok(source.includes('id="premium-operations"'), "positions, next orders and alert evidence remain available");
 });
 
-test("shared quotes render once above infrastructure and keep four unique markets", () => {
+test("shared quotes render once above infrastructure with only two USDT markets and no heading copy", () => {
   const dashboard = source.indexOf('<main className="px-dashboard">');
   const quotes = source.indexOf('className="px-market-overview"');
   const capacity = source.indexOf('<CapacityCard />');
   assert.ok(dashboard >= 0 && quotes > dashboard && capacity > quotes);
   assert.equal(source.match(/className="px-market-overview"/g)?.length, 1);
-  assert.match(source, /new Map\(assets\.map\(\(item\) => \[item\.symbol, item\]\)\)\.values\(\)\]\.slice\(0, 4\)/);
+  assert.match(source, /const usdtMarketOrder = \["BTCUSDT", "SOLUSDT"\]/);
+  assert.match(source, /\.filter\(\(item\) => usdtMarketOrder\.includes\(item\.symbol\)\)/);
+  assert.doesNotMatch(source, /Cotações por moeda/);
+  assert.doesNotMatch(source, /Até 4 mercados/);
   assert.match(source, /\{allAccounts \? <section className="px-market-overview"/);
 });

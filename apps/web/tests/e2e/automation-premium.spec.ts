@@ -441,7 +441,9 @@ for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${w
   expect(await page.locator(".px-market-overview").evaluate((element) =>
     element.parentElement?.firstElementChild === element)).toBe(true);
   await expect(page.locator("[data-engine-id]")).toHaveCount(8);
-  await expect(page.locator(".px-market-chart")).toHaveCount(4);
+  await expect(page.locator(".px-market-chart")).toHaveCount(2);
+  await expect(page.locator(".px-market-chart h3")).toHaveText(["BTC/USDT", "SOL/USDT"]);
+  await expect(page.getByText("Cotações por moeda", { exact: true })).toHaveCount(0);
   await expect(page.locator(".px-account-engine-row")).toHaveCount(8);
   await expect(page.locator(".px-asset")).toHaveCount(0);
   await expect(page.locator(".px-kpis")).toContainText("USDT");
@@ -488,7 +490,8 @@ test("visão Todos pagina motores a cada 10 sem duplicar gráficos de moeda", as
     fixture.operator!.engineData[engineId] = fixture.operator!.engineData[originals[index].engineId];
   }
   const audit = await mount(page, "live", 390, 844, fixture);
-  await expect(page.locator(".px-market-chart")).toHaveCount(4);
+  await expect(page.locator(".px-market-chart")).toHaveCount(2);
+  await expect(page.locator(".px-market-chart h3")).toHaveText(["BTC/USDT", "SOL/USDT"]);
   await expect(page.locator(".px-account-engine-row")).toHaveCount(10);
   const mobileRow = page.locator(".px-account-engine-row").first();
   await expect(mobileRow).toContainText("Rafael Demo · BTC/BRL");
