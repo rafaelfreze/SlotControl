@@ -15,14 +15,17 @@ IDs and disabled execution; it is not a deployable production account.
 
 Populate UUIDs from the migrated authoritative `coinops` registry. Each engine
 binds operator, account, environment, symbol, base/quote, credential reference,
-executor profile, ownership namespace, immutable caps and three kill switches.
+executor profile, ownership namespace, baseline caps and three kill switches.
 `credentials` maps a reference to environment **names**, never values. Unknown
 accounts, symbols, references and missing credentials fail closed. There is no
 default-credential fallback. Multiple accounts cannot share one credential ref.
 
 The Rafael legacy engines alone retain COR1 ownership and the existing exact
-client IDs. Only BTCBRL and SOLBRL may be enabled there: engine caps 450/275 BRL,
-account BRL cap 725, per-order caps 18/11. A future engine uses the C2 namespace
+client IDs. Only BTCBRL and SOLBRL may be enabled there. Their installed baseline
+is 450/275 BRL, account BRL cap 725 and per-order caps 18/11. Audited capital
+contributions may increase the numeric caps through `/v1/admin/capital`; the
+executor persists a strict account/engine/quote-bound override in its private
+state and never edits the root-owned identity registry. A future engine uses the C2 namespace
 derived from account+engine, plus physical slot, side and operation hash. An
 inactive/new account must keep execution disabled and its kill switch on.
 

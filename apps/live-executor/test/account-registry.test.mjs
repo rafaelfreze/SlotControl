@@ -182,7 +182,7 @@ test("panel promotion activates only the selected staged engine and preserves si
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("native-quote capital update is exact, replayable and cannot alter Rafael or a sibling", async () => {
+test("native-quote capital update is exact, replayable and cannot alter a sibling", async () => {
   const directory = await mkdtemp(join(tmpdir(), "coinops-cap-change-"));
   const accountId = randomUUID(), operatorId = randomUUID();
   const scope = { operator_id: operatorId, exchange_account_id: accountId,
@@ -212,6 +212,29 @@ test("native-quote capital update is exact, replayable and cannot alter Rafael o
       engines[0].hard_cap_quote);
     await assert.rejects(changeRegistryCapital(staticRegistry, directory,
       { ...request, exchange_account_id: ACCOUNT_A }), /CAP_CHANGE_DENIED/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("Rafael legacy caps use a persistent identity-bound override and replay safely", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-legacy-cap-change-"));
+  const legacyRows = engines.filter((row) => row.exchange_account_id === ACCOUNT_A && row.quote_asset === "BRL");
+  const staticRegistry = validateExecutorRegistry({ ...registryFixture(legacyRows), legacy_account_id: ACCOUNT_A });
+  const request = { operator_id: legacyRows[0].operator_id, exchange_account_id: ACCOUNT_A,
+    credential_ref: "legacy-binance-production", environment: "REAL", quote_asset: "BRL",
+    expected_account_cap_quote: 725, target_account_cap_quote: 775,
+    engines: legacyRows.map((row) => ({ trading_engine_id: row.trading_engine_id, symbol: row.symbol,
+      expected_hard_cap_quote: row.hard_cap_quote,
+      target_hard_cap_quote: row.symbol === "SOLBRL" ? 325 : row.hard_cap_quote })) };
+  try {
+    assert.equal((await changeRegistryCapital(staticRegistry, directory, request)).replayed, false);
+    assert.equal((await changeRegistryCapital(staticRegistry, directory, request)).replayed, true);
+    const after = await loadCombinedRegistry(staticRegistry, directory);
+    assert.equal(after.engines.find((row) => row.symbol === "BTCBRL").hard_cap_quote, 450);
+    assert.equal(after.engines.find((row) => row.symbol === "SOLBRL").hard_cap_quote, 325);
+    assert.equal(after.engines.find((row) => row.symbol === "SOLBRL").max_order_quote, 61);
+    assert.ok(after.engines.every((row) => row.account_cap_quote === 775));
+    await assert.rejects(changeRegistryCapital(staticRegistry, directory,
+      { ...request, operator_id: randomUUID() }), /CAP_CHANGE_DENIED/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -370,6 +393,17 @@ test("signed executor observes only selected account and rejects cross-account r
     assert.equal(legacyResult.exchange_account_id, ACCOUNT_A);
     assert.equal(legacyResult.markets[0].symbol, "BTCBRL");
     assert.ok(!JSON.stringify(legacyResult).includes("fictional-secret"));
+    const capId = randomUUID();
+    const capital = await send({ operator_id: engines[0].operator_id, exchange_account_id: ACCOUNT_A,
+      credential_ref: "legacy-binance-production", environment: "REAL", quote_asset: "BRL",
+      expected_account_cap_quote: 725, target_account_cap_quote: 775,
+      engines: engines.filter((row) => row.exchange_account_id === ACCOUNT_A && row.quote_asset === "BRL")
+        .map((row) => ({ trading_engine_id: row.trading_engine_id, symbol: row.symbol,
+          expected_hard_cap_quote: row.hard_cap_quote,
+          target_hard_cap_quote: row.symbol === "SOLBRL" ? 325 : row.hard_cap_quote })),
+      request_id: capId, idempotency_key: `CAPITAL:${capId}` }, "/v1/admin/capital");
+    assert.equal(capital.status, 200, await capital.clone().text());
+    assert.equal((await capital.json()).status, "UPDATED");
     assert.ok(calls.length > before);
     const afterLegitimateSnapshot = calls.length;
     const tampered = await send({ operator_id: engines[0].operator_id,

@@ -271,11 +271,28 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         return;
       }
       if (path === "/v1/admin/capital") {
-        assertCredentialScope(input);
+        if (input.credential_ref === "legacy-binance-production") {
+          const reference = registry?.credentials?.[input.credential_ref];
+          const rows = registry?.engines?.filter((row) => row.operator_id === input.operator_id
+            && row.exchange_account_id === input.exchange_account_id
+            && row.credential_ref === input.credential_ref && row.is_legacy_default
+            && row.legacy_ownership && row.environment === "REAL"
+            && row.quote_asset === input.quote_asset) ?? [];
+          if (registry?.legacy_account_id !== input.exchange_account_id || !rows.length
+            || !reference?.api_key_env || !reference?.api_secret_env
+            || !credentialEnvironment[reference.api_key_env]
+            || !credentialEnvironment[reference.api_secret_env]
+            || !Array.isArray(input.engines) || input.engines.length !== rows.length
+            || input.engines.some((item) => !rows.some((row) => row.trading_engine_id === item.trading_engine_id
+              && row.symbol === item.symbol)))
+            throw new ExecutorRejection("EXECUTOR_CAP_CHANGE_DENIED", 403);
+        } else {
+          assertCredentialScope(input);
+          await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        }
         if (key !== `CAPITAL:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
           || input.environment !== "REAL")
           throw new ExecutorRejection("EXECUTOR_CAP_CHANGE_DENIED", 403);
-        await loadCredential(join(stateDirectory, "credentials"), secret, input);
         const changed = await changeRegistryCapital(registry, stateDirectory, input);
         for (const engine of input.engines) engineHealthCache.delete(engine.trading_engine_id);
         status = 200; outcome = changed.replayed ? "REPLAYED" : "CAP_CHANGED";

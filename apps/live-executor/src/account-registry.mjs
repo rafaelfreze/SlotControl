@@ -62,9 +62,8 @@ export function validateExecutorRegistry(registry) {
       || !registry.credentials[row.credential_ref]) deny("EXECUTOR_REGISTRY_INVALID");
     if (row.legacy_ownership && (!row.is_legacy_default || !["BTCBRL", "SOLBRL"].includes(row.symbol)
       || row.credential_ref !== "legacy-binance-production")) deny("EXECUTOR_LEGACY_SCOPE_DENIED");
-    if (row.is_legacy_default && (row.execution_allowed || row.legacy_ownership) && (!["BTCBRL", "SOLBRL"].includes(row.symbol)
-      || row.hard_cap_quote > (row.base_asset === "BTC" ? 450 : 275) || row.account_cap_quote > 725
-      || row.max_order_quote > (row.base_asset === "BTC" ? 18 : 11))) deny("EXECUTOR_HARD_CAP_DENIED");
+    if (row.is_legacy_default && (row.execution_allowed || row.legacy_ownership)
+      && !["BTCBRL", "SOLBRL"].includes(row.symbol)) deny("EXECUTOR_HARD_CAP_DENIED");
     const reference = registry.credentials[row.credential_ref];
     if (reference.vault === true ? row.credential_ref !== `account_${row.exchange_account_id.replaceAll("-", "")}`
       : ![reference.api_key_env, reference.api_secret_env].every((v) => /^[A-Z][A-Z0-9_]{2,100}$/.test(v ?? "")))
@@ -152,7 +151,8 @@ async function readDynamic(directory) {
     deny("EXECUTOR_REGISTRY_NOT_PRIVATE");
   const content = await readFile(path, "utf8");
   const dynamic = JSON.parse(content);
-  if (dynamic.version !== 1 || !Array.isArray(dynamic.engines) || !dynamic.credentials)
+  if (dynamic.version !== 1 || !Array.isArray(dynamic.engines) || !dynamic.credentials
+    || dynamic.capital_overrides !== undefined && !Array.isArray(dynamic.capital_overrides))
     deny("EXECUTOR_REGISTRY_INVALID");
   return dynamic;
 }
@@ -187,9 +187,39 @@ export function mergeDynamicRegistry(staticRegistry, dynamic, onFailure = () => 
     rows.push(row);
     groups.set(row.exchange_account_id, rows);
   }
-  const combined = { ...staticRegistry, engines: [...staticRegistry.engines],
+  let staticEngines = [...staticRegistry.engines];
+  for (const override of dynamic.capital_overrides ?? []) {
+    try {
+      const rows = staticEngines.filter((row) => row.exchange_account_id === override?.exchange_account_id
+        && row.quote_asset === override?.quote_asset);
+      if (!UUID.test(override?.operator_id ?? "") || override.exchange_account_id !== staticRegistry.legacy_account_id
+        || !["BRL", "USDT"].includes(override.quote_asset) || !Number.isFinite(override.account_cap_quote)
+        || override.account_cap_quote <= 0 || override.account_cap_quote > 1_000_000
+        || !Array.isArray(override.engines) || !rows.length || rows.length !== override.engines.length
+        || rows.some((row) => row.operator_id !== override.operator_id || !row.is_legacy_default || !row.legacy_ownership
+          || row.credential_ref !== "legacy-binance-production")
+        || override.engines.some((item) => !rows.some((row) => row.trading_engine_id === item.trading_engine_id
+          && row.symbol === item.symbol) || !Number.isFinite(item.hard_cap_quote) || item.hard_cap_quote <= 0
+          || !Number.isFinite(item.max_order_quote) || item.max_order_quote <= 0
+          || item.max_order_quote > item.hard_cap_quote)
+        || Math.abs(override.engines.reduce((sum, item) => sum + item.hard_cap_quote, 0)
+          - override.account_cap_quote) > 1e-8)
+        deny("EXECUTOR_LEGACY_CAP_OVERRIDE_INVALID");
+      const patched = staticEngines.map((row) => row.exchange_account_id !== override.exchange_account_id
+        || row.quote_asset !== override.quote_asset ? row : {
+          ...row, account_cap_quote: override.account_cap_quote,
+          hard_cap_quote: override.engines.find((item) => item.trading_engine_id === row.trading_engine_id).hard_cap_quote,
+          max_order_quote: override.engines.find((item) => item.trading_engine_id === row.trading_engine_id).max_order_quote,
+        });
+      validateExecutorRegistry({ ...staticRegistry, engines: patched });
+      staticEngines = patched;
+    } catch {
+      onFailure("EXECUTOR_LEGACY_CAP_OVERRIDE_REJECTED");
+    }
+  }
+  const combined = { ...staticRegistry, engines: [...staticEngines],
     credentials: { ...staticRegistry.credentials } };
-  const ids = new Set(staticRegistry.engines.map((row) => row.trading_engine_id));
+  const ids = new Set(staticEngines.map((row) => row.trading_engine_id));
   for (const [accountId, rows] of groups) {
     const reference = `account_${accountId.replaceAll("-", "")}`;
     if (staticRegistry.credentials[reference] || dynamic.credentials?.[reference]?.vault !== true
@@ -201,7 +231,7 @@ export function mergeDynamicRegistry(staticRegistry, dynamic, onFailure = () => 
       // Validate only this account against the fixed static registry. Rechecking
       // every previously accepted account per request would grow cubically.
       validateExecutorRegistry({ ...staticRegistry,
-        engines: [...staticRegistry.engines, ...rows],
+        engines: [...staticEngines, ...rows],
         credentials: { ...staticRegistry.credentials, [reference]: dynamic.credentials[reference] } });
       combined.engines.push(...rows);
       combined.credentials[reference] = dynamic.credentials[reference];
@@ -236,6 +266,7 @@ export async function saveInactiveRegistryAccount(staticRegistry, directory, sco
       || row.execution_allowed || !row.kill_switch)) deny("EXECUTOR_REGISTRY_SYNC_DENIED");
     const next = { version: 1, ...(staticRegistry.executor_shard_id
       ? { executor_shard_id: staticRegistry.executor_shard_id } : {}),
+      ...(dynamic.capital_overrides ? { capital_overrides: dynamic.capital_overrides } : {}),
       engines: [...dynamic.engines.filter((row) => row.exchange_account_id !== scope.exchange_account_id), ...rows],
       credentials: { ...dynamic.credentials, [scope.credential_ref]: { vault: true } } };
     validateExecutorRegistry({ ...staticRegistry, engines: [...staticRegistry.engines, ...next.engines],
@@ -300,14 +331,16 @@ export async function promoteRegistryEngine(staticRegistry, directory, scope) {
   } finally { await lock.close(); await unlink(lockPath).catch(() => {}); }
 }
 
-/** Adjust only a nonlegacy account's native-quote safety caps. This never
- * touches Binance orders, a position or a sibling account. The caller must
- * prove the matching ledger intent and a fresh exchange balance separately. */
+/** Adjust one account's native-quote safety caps. Legacy rows remain installed
+ * in the root-owned registry, so their numeric caps are persisted as a strict
+ * identity-bound override. This never touches Binance orders or positions. */
 export async function changeRegistryCapital(staticRegistry, directory, scope) {
   assertExecutorShardContext(staticRegistry.executor_shard_id ?? "executor-01", scope);
+  const legacy = scope.exchange_account_id === staticRegistry.legacy_account_id;
   if (![scope.operator_id, scope.exchange_account_id].every((id) => UUID.test(id ?? ""))
     || scope.environment !== "REAL" || !["BRL", "USDT"].includes(scope.quote_asset)
-    || scope.credential_ref !== `account_${scope.exchange_account_id.replaceAll("-", "")}`
+    || scope.credential_ref !== (legacy ? "legacy-binance-production"
+      : `account_${scope.exchange_account_id.replaceAll("-", "")}`)
     || !Array.isArray(scope.engines) || scope.engines.length < 1 || scope.engines.length > 2
     || new Set(scope.engines.map((item) => item.trading_engine_id)).size !== scope.engines.length
     || ![scope.expected_account_cap_quote, scope.target_account_cap_quote].every((value) =>
@@ -320,13 +353,13 @@ export async function changeRegistryCapital(staticRegistry, directory, scope) {
   });
   try {
     const dynamic = await readDynamic(directory);
-    const rows = dynamic.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id
+    const current = mergeDynamicRegistry(staticRegistry, dynamic);
+    const rows = current.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id
       && row.quote_asset === scope.quote_asset);
-    if (rows.length !== scope.engines.length || staticRegistry.engines.some((row) =>
-      row.exchange_account_id === scope.exchange_account_id)
+    if (rows.length !== scope.engines.length
       || rows.some((row) => row.operator_id !== scope.operator_id || row.environment !== "REAL"
         || row.credential_ref !== scope.credential_ref || row.status !== "ACTIVE"
-        || row.is_legacy_default || row.legacy_ownership
+        || legacy !== Boolean(row.is_legacy_default && row.legacy_ownership)
         || !scope.engines.some((item) => item.trading_engine_id === row.trading_engine_id
           && item.symbol === row.symbol
           && Number.isFinite(item.expected_hard_cap_quote) && Number.isFinite(item.target_hard_cap_quote)
@@ -341,17 +374,30 @@ export async function changeRegistryCapital(staticRegistry, directory, scope) {
       || Math.abs(scope.engines.reduce((sum, item) => sum + item.target_hard_cap_quote, 0)
         - scope.target_account_cap_quote) > 1e-8)
       deny("EXECUTOR_CAP_CHANGE_STALE");
-    const next = { ...dynamic, engines: dynamic.engines.map((row) => {
-      if (row.exchange_account_id !== scope.exchange_account_id || row.quote_asset !== scope.quote_asset) return row;
+    const targets = rows.map((row) => {
       const item = scope.engines.find((candidate) => candidate.trading_engine_id === row.trading_engine_id);
-      return { ...row, account_cap_quote: scope.target_account_cap_quote,
+      return { trading_engine_id: row.trading_engine_id, symbol: row.symbol,
         hard_cap_quote: item.target_hard_cap_quote,
         max_order_quote: Math.min(item.target_hard_cap_quote,
           row.max_order_quote + item.target_hard_cap_quote - item.expected_hard_cap_quote) };
+    });
+    const next = legacy ? { ...dynamic, capital_overrides: [
+      ...(dynamic.capital_overrides ?? []).filter((item) => item.exchange_account_id !== scope.exchange_account_id
+        || item.quote_asset !== scope.quote_asset),
+      { operator_id: scope.operator_id, exchange_account_id: scope.exchange_account_id,
+        quote_asset: scope.quote_asset, account_cap_quote: scope.target_account_cap_quote, engines: targets },
+    ] } : { ...dynamic, engines: dynamic.engines.map((row) => {
+      if (row.exchange_account_id !== scope.exchange_account_id || row.quote_asset !== scope.quote_asset) return row;
+      const target = targets.find((item) => item.trading_engine_id === row.trading_engine_id);
+      return { ...row, account_cap_quote: scope.target_account_cap_quote,
+        hard_cap_quote: target.hard_cap_quote, max_order_quote: target.max_order_quote };
     }) };
-    validateExecutorRegistry({ ...staticRegistry,
-      engines: [...staticRegistry.engines, ...next.engines],
-      credentials: { ...staticRegistry.credentials, ...next.credentials } });
+    const failures = [];
+    const validated = mergeDynamicRegistry(staticRegistry, next, (code) => failures.push(code));
+    if (failures.length || validated.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id
+      && row.quote_asset === scope.quote_asset).some((row) => row.account_cap_quote !== scope.target_account_cap_quote
+        || row.hard_cap_quote !== targets.find((item) => item.trading_engine_id === row.trading_engine_id)?.hard_cap_quote))
+      deny("EXECUTOR_CAP_CHANGE_DENIED");
     const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }

@@ -44,6 +44,14 @@ requisições concorrentes convergem para um único batch. O RPC é exclusivo de
 operador. Conta, motor, moeda, slot, saldo e `operation_sequence` são validados
 novamente sob lock no banco.
 
+Depois do commit do ledger, o web sincroniza os novos caps lógicos com o
+executor do shard. O cap numérico da conta legada também é persistido no estado
+privado do Executor 01, vinculado às identidades já instaladas; isso não altera
+o namespace COR1 nem credenciais. Se a confirmação do executor se perder por
+timeout, o backend relê o batch pelo mesmo `request_id` e repete somente a
+sincronização idempotente do cap. O batch e suas allocations nunca são criados
+novamente.
+
 O fluxo funciona por identidade oficial de conta/motor, sem nomes de usuário,
 ativos ou shards hardcoded. A aplicação após fechamento reutiliza a função
 oficial de liquidação do TP; não existe uma segunda implementação de gain ou

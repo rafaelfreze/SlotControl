@@ -8,6 +8,8 @@ const migration = readFileSync(resolve(root,
   "supabase/migrations/20260927133000_add_selective_slot_contributions.sql"), "utf8");
 const presetsMigration = readFileSync(resolve(root,
   "supabase/migrations/20260927201831_add_selective_contribution_presets.sql"), "utf8");
+const legacyGrowthMigration = readFileSync(resolve(root,
+  "supabase/migrations/20260927215500_allow_legacy_selective_cap_growth.sql"), "utf8");
 const route = readFileSync(resolve(root, "apps/web/app/api/coinops-live-adjustments/route.ts"), "utf8");
 const ui = readFileSync(resolve(root, "apps/web/app/automacao/live-adjustments-center.tsx"), "utf8");
 
@@ -33,6 +35,19 @@ test("OPEN allocation is pending and official TP settlement applies it once", ()
   assert.match(migration, /where trading_engine_id=v_run\.trading_engine_id and slot_number=v_slot\.slot_number and status='PENDING'/);
   assert.match(migration, /SELECTIVE_CONTRIBUTION_APPLIED/);
   assert.match(migration, /if v_slot\.last_credited_sell_client_order_id=p_tp_client_order_id then return v_account/);
+});
+
+test("a lost executor acknowledgement retries only cap synchronization, never the ledger batch", () => {
+  assert.match(route, /const batchId = \(saved\.data as \{ id\?: unknown \}\)\.id/);
+  assert.match(route, /if \(input\.kind === "SELECTIVE_CAPITAL"\)[\s\S]+syncSelectiveRecordedCaps/);
+  assert.equal((route.match(/apply_live_selective_contribution/g) ?? []).length, 1);
+});
+
+test("legacy selective growth uses persisted caps instead of immutable bootstrap constants", () => {
+  assert.match(legacyGrowthMigration, /configured_live_capital_brl > v_engine\.hard_cap_quote/);
+  assert.match(legacyGrowthMigration, /v_engine\.hard_cap_quote > v_global\.hard_cap_quote/);
+  assert.doesNotMatch(legacyGrowthMigration, /v_global\.hard_cap_quote > 725/);
+  assert.doesNotMatch(legacyGrowthMigration, /when 'BTC' then 450 else 275/);
 });
 
 test("admin UI exposes explicit selection, filters, custom split and preview", () => {

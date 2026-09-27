@@ -581,7 +581,15 @@ export async function POST(request: NextRequest) {
         try {
           const changed = await changeCaps(scope, state, result.allocations, result.afterCap);
           if (changed.status !== "UPDATED") throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
-        } catch { throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING"); }
+        } catch {
+          const batchId = (saved.data as { id?: unknown }).id;
+          if (!isIdentity(batchId)) throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
+          try {
+            if (input.kind === "SELECTIVE_CAPITAL")
+              await syncSelectiveRecordedCaps(scope, input.accountId, input.quote, batchId);
+            else await syncRecordedCaps(scope, input.accountId, input.quote, batchId, false);
+          } catch { throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING"); }
+        }
       }
       revalidatePath("/automacao"); revalidatePath("/relatorios");
       return json(saved.data);
