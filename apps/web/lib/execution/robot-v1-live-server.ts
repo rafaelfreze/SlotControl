@@ -24,6 +24,7 @@ import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
+import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -857,7 +858,7 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
 }
 
 /** Reconcile first, protect every OPEN fill, then consider exactly one BUY. */
-export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
+async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAdvanceResult> {
   assertScope();
   const service = createServiceRoleClient();
   const run = await claim(service, runId);
@@ -940,8 +941,13 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
     if (["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
       && error instanceof Error && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
       errorCode = "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
-      if (await holdTransientExecutorRead(service, run))
-        return { status: "RETRY", code: errorCode };
+      if (await holdTransientExecutorRead(service, run)) {
+        // The warning row is the durable retry checkpoint. A short 502/503 is
+        // not a failed run and must not be promoted by the watchdog through
+        // last_error while the official reconciler remains retryable.
+        errorCode = null;
+        return { status: "RETRY", code: "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ" };
+      }
       errorCode = "COINOPS_LIVE_EXECUTOR_READ_STALE";
       throw new Error(errorCode);
     }
@@ -952,6 +958,13 @@ export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
   } finally {
     await release(service, run, errorCode);
   }
+}
+
+/** Advance through a gain rollover until the successor has a protected MARKET
+ * fill and its single NEXT BUY. Each step owns a fresh lease and all financial
+ * writes remain inside advanceLiveRunOnce's existing reconciler. */
+export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
+  return continueLiveAdvance(runId, source, advanceLiveRunOnce);
 }
 
 /** Six-hour audit reuses the same ledger/reconciliation invariants. It never

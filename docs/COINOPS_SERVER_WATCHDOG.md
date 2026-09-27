@@ -32,6 +32,29 @@ ficam `BLOCKED_SAFE`; não há MARKET direta, cancelamento de ordem saudável,
 troca de shard/IP nem limpeza de kill switch pelo watchdog. O incidente só
 é resolvido após uma reconciliação bem-sucedida refletida no ledger.
 
+## TP preenchido e continuação do ciclo
+
+`SLOT_PROFIT_CREDITED` é um evento operacional normal, não um incidente. O
+worker LIVE continua o mesmo fluxo oficial até um estado estável: crédito
+idempotente do gain, reciclagem local ou criação atômica do run sucessor,
+MARKET inicial quando a Strategy Engine determinar, TP protetor e uma única
+NEXT BUY. O coordenador apenas segue `nextRunId` e `INITIAL_SUBMITTED`; ele não
+replica decisões da Strategy Engine nem autoriza ordens por conta própria.
+
+O reset global permanece recuperável por checkpoints persistidos. A RPC usa
+um único sucessor por `previous_run_id`, `reset_idempotency_key` estável e lock;
+ordens usam `clientOrderId`, decisão e submission guard determinísticos. Se a
+invocação cair depois do crédito, criação do sucessor, MARKET ou TP, a próxima
+execução retoma o run persistido e reconcilia Binance antes de qualquer novo
+write. Resultado financeiro ambíguo continua fail-closed no engine afetado.
+
+O sucessor é avançado pelo cron que concluiu o ciclo, com lease próprio. Enquanto
+esse lease está ativo o watchdog exibe `RECOVERING` sem código/alerta. Se o cron
+cair antes de reivindicá-lo, o watchdog chama o mesmo `advanceLiveRun`; nunca
+uma segunda implementação. Falha breve 502/503 mantém apenas o alerta WARNING
+transitório e não grava `last_error`; persistência superior à janela segura
+promove a falha real e bloqueia somente o engine.
+
 Os registros ficam em `coinops.watchdog_checks` (última checagem por shard) e
 `coinops.watchdog_incidents` (um registro por episódio, índice único parcial
 para incidente aberto). Alertas críticos por engine usam

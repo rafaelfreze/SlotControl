@@ -52,6 +52,9 @@ test("account or shard mismatch cannot target another engine's credential", () =
 test("active lease is left to its current owner", () => {
   assert.deepEqual(check({ run: { ...run, lease_until: new Date(now + 60_000).toISOString() } }),
     { state: "RECOVERING", code: null, recoverable: false });
+  assert.deepEqual(check({ run: { ...run, last_reconciled_at: null,
+    lease_until: new Date(now + 60_000).toISOString() } }),
+  { state: "RECOVERING", code: null, recoverable: false });
 });
 
 const monitorAlert: FastAlert = { trading_engine_id: run.trading_engine_id,
