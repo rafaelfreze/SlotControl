@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateFastRun, type FastRun, type FastSlot, type FastOrder } from "./watchdog-policy.ts";
+import { evaluateFastRun, type FastRun, type FastSlot, type FastOrder, type FastAlert } from "./watchdog-policy.ts";
 
 const now = Date.parse("2026-09-26T23:00:00Z");
 const run: FastRun = { id: "run-a", trading_engine_id: "engine-a",
@@ -52,6 +52,36 @@ test("account or shard mismatch cannot target another engine's credential", () =
 test("active lease is left to its current owner", () => {
   assert.deepEqual(check({ run: { ...run, lease_until: new Date(now + 60_000).toISOString() } }),
     { state: "RECOVERING", code: null, recoverable: false });
+});
+
+const monitorAlert: FastAlert = { trading_engine_id: run.trading_engine_id,
+  exchange_account_id: run.exchange_account_id, alert_key: `LIVE_RUN:${run.id}:CRITICAL`,
+  severity: "CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY", details: { run_id: run.id } };
+
+test("monitor incident retains its real cause instead of generic local gate", () => {
+  assert.deepEqual(check({ engine: { ...engine, kill_switch: true }, alerts: [monitorAlert] }), {
+    state: "BLOCKED", code: monitorAlert.code, recoverable: false });
+});
+
+test("fresh reconciliation cannot mark an unresolved critical incident healthy", () => {
+  assert.deepEqual(check({ alerts: [monitorAlert] }), {
+    state: "BLOCKED", code: monitorAlert.code, recoverable: false });
+  assert.equal(check({ alerts: [{ ...monitorAlert, code: "unsafe private error text" }] }).code,
+    "WATCHDOG_CRITICAL_ALERT_OPEN");
+  assert.equal(check({ alerts: [] }).state, "HEALTHY");
+});
+
+test("critical causes remain account, engine and cycle scoped; watchdog does not self-latch", () => {
+  for (const unrelated of [
+    { ...monitorAlert, exchange_account_id: "account-b" },
+    { ...monitorAlert, trading_engine_id: "engine-b" },
+    { ...monitorAlert, alert_key: "LIVE_RUN:run-b:CRITICAL" },
+    { ...monitorAlert, details: { run_id: "run-b" } },
+    { ...monitorAlert, alert_key: `WATCHDOG:${run.id}` },
+    { ...monitorAlert, severity: "WARNING" },
+  ]) assert.equal(check({ alerts: [unrelated] }).state, "HEALTHY");
+  assert.equal(check({ alerts: [{ ...monitorAlert, alert_key: "ENGINE_CRITICAL", details: {} }] }).state,
+    "BLOCKED");
 });
 test("one and five failed engines have exactly local blast radius in synthetic multi-shard inventory", () => {
   const inventory = Array.from({ length: 10 }, (_, index) => {

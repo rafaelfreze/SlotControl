@@ -33,6 +33,21 @@ para incidente aberto). Alertas críticos por engine usam
 shard OFFLINE/capacidade continuam no pipeline `executor_capacity_alerts`.
 O card Watchdog só é consultado por ADMIN autenticado; VIEWER não o recebe.
 
+Falhas conhecidas de leitura, inclusive `COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY`,
+podem ser retomadas pelo cron LIVE após reconciliação OK, nunca por um write
+direto do watchdog. A retomada exige lease, único alerta crítico allowlisted
+inalterado, health verificado, TP protegido, Binance/ledger/clientOrderId coerentes,
+parent gates e limites. O alerta é resolvido por compare-and-set; causa trocada
+falha fechada. O cron registra VERIFIED_READ_RECOVERY no incidente e o watchdog
+seguinte confirma HEALTHY independentemente. Alertas críticos de outros motores
+ou ciclos não autorizam nem bloqueiam essa recuperação.
+
+A API do card considera críticos pendentes além da amostra dos shards; uma
+amostra HEALTHY anterior não vence um incidente conhecido. Checagem por minuto
+não significa detecção instantânea. Aba reaberta atualiza a leitura e telemetria
+expirada não continua exibida como saudável. Evidência real e limitações do
+incidente Diogo: `COINOPS_WATCHDOG_DIOGO_20260927.md`.
+
 ## Limites e escalonamento
 
 - TP `NEW` no ledger não prova, isoladamente, proteção na Binance. A validação

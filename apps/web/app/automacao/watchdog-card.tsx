@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 type Watchdog = { status: string; checkedAt: string | null;
+  activeCriticalAlerts: number;
   engines: { healthy: number; recovering: number; blocked: number; stale: number };
   executors: { healthy: number; total: number };
   lastIncident: { detected_condition: string; opened_at: string; result: string } | null;
@@ -10,6 +11,7 @@ type Watchdog = { status: string; checkedAt: string | null;
 
 export function WatchdogCard() {
   const [status, setStatus] = useState<Watchdog | null>(null);
+  const [now, setNow] = useState(Date.now);
   useEffect(() => {
     let active = true;
     const refresh = () => fetch("/api/coinops-watchdog", { cache: "no-store", credentials: "same-origin" })
@@ -17,16 +19,23 @@ export function WatchdogCard() {
       .then((value) => { if (active) setStatus(value); })
       .catch(() => { if (active) setStatus(null); });
     void refresh();
-    const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 60_000);
-    return () => { active = false; clearInterval(timer); };
+    const onVisible = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    const timer = setInterval(onVisible, 60_000);
+    const clock = setInterval(() => setNow(Date.now()), 30_000);
+    return () => { active = false; clearInterval(timer); clearInterval(clock);
+      document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); };
   }, []);
+  const stale = status?.checkedAt && now - Date.parse(status.checkedAt) >= 3 * 60_000;
   return <section className="px-panel px-watchdog" aria-label="Watchdog CoinOps">
-    <strong>Watchdog · {status?.status ?? "SEM TELEMETRIA"}</strong>
+    <strong>Watchdog · {stale ? "STALE" : status?.status ?? "SEM TELEMETRIA"}</strong>
     <span>Última checagem: {status?.checkedAt
       ? new Date(status.checkedAt).toLocaleTimeString("pt-BR") : "—"}</span>
     {status ? <><span>Motores: {status.engines.healthy} saudáveis · {status.engines.recovering} recuperando · {status.engines.blocked} bloqueados · {status.engines.stale} stale</span>
       <span>Executores: {status.executors.healthy}/{status.executors.total} saudáveis</span>
       <span>Auto-recuperações 24h: {status.autoRecoveries24h}</span>
+      {status.activeCriticalAlerts > 0 && <span>Alertas críticos pendentes: {status.activeCriticalAlerts}</span>}
       <small>Último incidente: {status.lastIncident
         ? `${status.lastIncident.detected_condition} · ${status.lastIncident.result}` : "nenhum"}</small></>
       : <small>Sem confirmação server-side. Não interpretar a interface como saúde operacional.</small>}

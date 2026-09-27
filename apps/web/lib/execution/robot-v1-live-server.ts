@@ -7,6 +7,7 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
   createLiveExecutorOrder, cancelLiveExecutorOrder, type LiveOrder,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
+import { verifiedReadRecoveryAlert, type ReadRecoveryAlert } from "./live-read-recovery";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveExposure, liveUncoveredQuantity,
@@ -1075,6 +1076,16 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
 
 /** Operator recovery is read-only against Binance. The SQL BUY gate opens only
  * after a fresh exchange/ledger match, protected positions and hard caps. */
+async function readVerifiedRecoveryIncident(service: Service, run: Run, expected?: ReadRecoveryAlert) {
+  const alerts = await service.from("robot_v1_live_alerts")
+    .select("alert_key,code,last_seen_at")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("severity", "CRITICAL").is("resolved_at", null);
+  if (alerts.error) throw new Error("COINOPS_LIVE_RECOVERY_ALERT_LOOKUP_FAILED");
+  return verifiedReadRecoveryAlert(run.status, run.id, alerts.data ?? [], expected);
+}
+
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
   source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
@@ -1083,6 +1094,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
   if (!run) throw new Error("COINOPS_LIVE_RESUME_LEASE_BUSY");
   let unlocked = false;
   let errorCode: string | null = null;
+  let recoveryIncident: ReadRecoveryAlert | undefined;
   try {
     await validateRunEngine(service, run);
     if (run.user_id !== userId || run.asset !== asset || !["ACTIVE", "PAUSED"].includes(run.status)
@@ -1090,6 +1102,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       || run.last_error || !run.last_reconciled_at
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)
       throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
+    if (source === "VERIFIED_READ_RECOVERY")
+      recoveryIncident = await readVerifiedRecoveryIncident(service, run);
     const health = await loadLiveEngineExecutorStatus(run);
     if (!["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_RESUME_EXECUTOR_NOT_ACTIVE");
@@ -1113,6 +1127,9 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (deployed[asset] > amount(prep.max_total_exposure_brl) + 1e-8
       || deployed.global > globalCap + 1e-8)
       throw new Error("COINOPS_LIVE_RESUME_HARD_CAP_EXCEEDED");
+    // Recheck after the external reads: a new/changed critical condition must
+    // never inherit approval from the earlier cron observation.
+    if (recoveryIncident) await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
       .update({ kill_switch: false })
@@ -1134,15 +1151,25 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       if (resumed.error || resumed.data?.status !== "ACTIVE")
         throw new Error("COINOPS_LIVE_RESUME_STATE_FAILED");
     }
-    await event(service, run, `RESUMED:${new Date().toISOString()}`, "LIVE_RESUMED",
-      null, { executor_version: health.health?.version, source });
-    const alert = await service.from("robot_v1_live_alerts")
+    let alertUpdate = service.from("robot_v1_live_alerts")
       .update({ resolved_at: new Date().toISOString() })
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
       .eq("user_id", run.user_id).eq("alert_key", `LIVE_RUN:${run.id}:CRITICAL`)
+      .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+      .eq("trading_engine_id", run.trading_engine_id)
       .is("resolved_at", null);
+    if (recoveryIncident) alertUpdate = alertUpdate.eq("code", recoveryIncident.code)
+      .eq("last_seen_at", recoveryIncident.last_seen_at);
+    const alert = await alertUpdate.select("id");
     if (alert.error) throw new Error("COINOPS_LIVE_RESUME_ALERT_UPDATE_FAILED");
-    return { status: "RESUMED", asset, cycle_id: run.id };
+    if (recoveryIncident && alert.data?.length !== 1)
+      throw new Error("COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED");
+    await event(service, run, `RESUMED:${new Date().toISOString()}`, "LIVE_RESUMED",
+      null, { executor_version: health.health?.version, source,
+        recovered_alert_code: recoveryIncident?.code ?? null });
+    return { status: "RESUMED", asset, cycle_id: run.id,
+      recovered_alert_code: recoveryIncident?.code ?? null,
+      recovered_alert_last_seen_at: recoveryIncident?.last_seen_at ?? null };
   } catch (error) {
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "COINOPS_LIVE_RESUME_FAILED";

@@ -5,6 +5,7 @@ import { shardedEngineMap } from "./sharded-engine-map";
 import { mayRecoverReadOutage } from "./live-read-recovery";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
+import { recordVerifiedReadRecovery } from "../coinops-watchdog/watchdog-recovery-audit";
 
 const headers = { "cache-control": "no-store" };
 
@@ -64,8 +65,13 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
           if (mayRecoverReadOutage(run.status, reconciled.status, alert.data?.code ?? null)) {
             const resumed = await resumeLiveRun(run.id, run.user_id, run.asset,
               "VERIFIED_READ_RECOVERY");
+            const recoveryAudit = resumed.recovered_alert_code && resumed.recovered_alert_last_seen_at
+              ? await recordVerifiedReadRecovery(service, { shardId: run.executor_shard_id,
+                accountId: run.exchange_account_id, engineId: run.trading_engine_id, runId: run.id,
+                alertCode: resumed.recovered_alert_code, alertSeenAt: resumed.recovered_alert_last_seen_at })
+              : "AUDIT_FAILED";
             return { ...run, run_id: run.id, ...reconciled,
-              status: "RECOVERED", recovery: resumed.status };
+              status: "RECOVERED", recovery: resumed.status, recovery_audit: recoveryAudit };
           }
         }
         return { ...run, run_id: run.id, ...reconciled };

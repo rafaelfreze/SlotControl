@@ -2,7 +2,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { advanceLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { shardedEngineMap } from "@/lib/execution/sharded-engine-map";
-import { evaluateFastRun, type FastAccount, type FastEngine, type FastOrder,
+import { criticalAlertsForRun, evaluateFastRun, type FastAccount, type FastAlert, type FastEngine, type FastOrder,
   type FastRun, type FastSlot } from "./watchdog-policy";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
@@ -100,7 +100,7 @@ export async function runServerWatchdog() {
     service.from("watchdog_incidents")
       .select("incident_id,shard_id,engine_id,incident_key,opened_at,last_recovery_attempt_at")
       .is("resolved_at", null),
-    service.from("robot_v1_live_alerts").select("trading_engine_id,alert_key,severity")
+    service.from("robot_v1_live_alerts").select("trading_engine_id,exchange_account_id,alert_key,severity,code,details")
       .eq("tenant_id", tenantId).is("resolved_at", null),
     service.from("executor_capacity_alerts").select("shard_id,code").is("resolved_at", null),
   ]);
@@ -136,16 +136,16 @@ export async function runServerWatchdog() {
   const activeWatchdogAlerts = new Set((alertsResult.data ?? [])
     .filter((item) => item.alert_key.startsWith("WATCHDOG:"))
     .map((item) => `${item.trading_engine_id}:${item.alert_key}`));
-  const existingCritical = new Set((alertsResult.data ?? [])
-    .filter((item) => item.severity === "CRITICAL" && !item.alert_key.startsWith("WATCHDOG:"))
-    .map((item) => item.trading_engine_id));
+  const alerts = (alertsResult.data ?? []) as FastAlert[];
+  const existingCritical = new Set(runs.filter((run) => criticalAlertsForRun(run, alerts).length)
+    .map((run) => run.id));
   const now = Date.now();
   const findings = runs.map((run) => {
     const account = accounts.get(run.exchange_account_id) ?? null;
     const shardId = account?.executor_shard_id ?? "unassigned";
     return { run, shardId, finding: evaluateFastRun({ run,
       engine: engines.get(run.trading_engine_id) ?? null, account, shardId,
-      slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], now }) };
+      slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], alerts, now }) };
   });
   if (findings.some((item) => item.shardId === "unassigned"))
     throw new Error("COINOPS_WATCHDOG_OWNERSHIP_UNKNOWN");
@@ -182,7 +182,7 @@ export async function runServerWatchdog() {
         await resolveIncident(service, incident, now, "SUPERSEDED");
       await openIncident(service, shard.id, run, finding.code, finding.state, now, open);
       const watchdogKey = `${run.trading_engine_id}:WATCHDOG:${run.id}`;
-      if (existingCritical.has(run.trading_engine_id)) {
+      if (existingCritical.has(run.id)) {
         if (activeWatchdogAlerts.has(watchdogKey)) await updateEngineAlert(service, run, null, now);
       } else await updateEngineAlert(service, run, finding.code, now);
       if (!offline && finding.recoverable) candidates.push(item);
