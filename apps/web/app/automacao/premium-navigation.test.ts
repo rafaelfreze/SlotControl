@@ -6,6 +6,7 @@ const source = readFileSync(new URL("./premium-automation.tsx", import.meta.url)
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
 const watchdog = readFileSync(new URL("./watchdog-card.tsx", import.meta.url), "utf8");
 const capacity = readFileSync(new URL("./capacity-card.tsx", import.meta.url), "utf8");
+const styles = readFileSync(new URL("./premium-automation.css", import.meta.url), "utf8");
 
 test("product environment navigation is only Testnet and Real; default stays Live", () => {
   assert.match(source, /const visibleEnvironments = \["testnet", "live"\] as const/);
@@ -27,6 +28,14 @@ test("product toolbar hides internal operations, reports and simulators without 
   assert.ok(source.includes('id="premium-operations"'), "positions, next orders and alert evidence remain available");
 });
 
+test("desktop navigation shares the top context row while mobile order stays explicit", () => {
+  const context = source.slice(source.indexOf('<div className="px-context-bar">'), source.indexOf('aria-label="Saúde da operação Live"'));
+  assert.ok(context.indexOf('className="px-environments"') < context.indexOf('className="px-toolbar"'));
+  assert.ok(context.indexOf('className="px-toolbar"') < context.indexOf('className="px-scope-filters"'));
+  assert.match(styles, /\.px-mobile-sticky-header \.px-toolbar\{flex:none;min-height:44px;margin:0;border:0/);
+  assert.match(styles, /\.px-mobile-sticky-header \.px-toolbar\{order:3;/);
+});
+
 test("shared quotes render once above infrastructure with only two USDT markets and no heading copy", () => {
   const dashboard = source.indexOf('<main className="px-dashboard">');
   const quotes = source.indexOf('className="px-market-overview"');
@@ -38,6 +47,8 @@ test("shared quotes render once above infrastructure with only two USDT markets 
   assert.doesNotMatch(source, /Cotações por moeda/);
   assert.doesNotMatch(source, /Até 4 mercados/);
   assert.match(source, /\{allAccounts \? <section className="px-market-overview"/);
+  assert.match(styles, /\.px-market-overview\{width:min\(100%,940px\);justify-self:center\}/);
+  assert.match(styles, /\.px-market-chart-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
 });
 
 test("home stays compact with no greeting and account pagination ranked by operated exposure", () => {
@@ -59,6 +70,10 @@ test("infrastructure area shows only compact executor cards", () => {
   assert.doesNotMatch(capacity, /<h2>Infraestrutura<\/h2>/);
   assert.doesNotMatch(capacity, /className="px-panel px-capacity"/);
   assert.match(capacity, /className="px-panel px-capacity-shard"/);
+  assert.match(capacity, /expandedShard === shard\.id \? "Ocultar detalhes" : "Ver detalhes"/);
+  assert.match(styles, /\.px-capacity-expand\{display:block/);
+  assert.match(styles, /\.px-capacity-details\{display:none/);
+  assert.match(styles, /\.px-capacity-details\.is-expanded\{display:flex\}/);
 });
 
 test("all-accounts home hides account-detail operation, engine, capital, limit and activity cards", () => {

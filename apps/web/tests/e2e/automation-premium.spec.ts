@@ -574,7 +574,7 @@ test("visão Todos pagina motores a cada 10 sem duplicar gráficos de moeda", as
   await noSideEffects(page, audit);
 });
 
-test("infraestrutura mobile resume executores em duas linhas expansíveis", async ({ page }) => {
+test("infraestrutura resume executores em linhas expansíveis no mobile e desktop", async ({ page }) => {
   const base = { action: "SCALE_OUT", binanceWeightCurrent: 2679, binanceWeightAverage: 3190,
     binanceWeightPeak: 4555, binanceLimit: 6000, binancePercent: 75.9,
     cpuPercent: 2.6, ramUsedMb: 180, schedulerBacklog: 0, reconciliationAgeMs: 27000,
@@ -601,8 +601,39 @@ test("infraestrutura mobile resume executores em duas linhas expansíveis", asyn
   await expect(page.locator("#infra-details-executor-01")).toBeHidden();
   await expect(page.locator("#infra-details-executor-02")).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await expect(page.locator(".px-capacity-details").first()).toBeVisible();
-  await expect(page.locator(".px-capacity-details").last()).toBeVisible();
+  await expect(page.locator("#infra-details-executor-01")).toBeHidden();
+  await expect(page.locator("#infra-details-executor-02")).toBeVisible();
+  await page.locator("#infra-executor-02 .px-capacity-expand").click();
+  await expect(page.locator(".px-capacity-details").first()).toBeHidden();
+  await expect(page.locator(".px-capacity-details").last()).toBeHidden();
+  expect((await page.locator(".px-capacity-shard").first().boundingBox())?.height ?? Infinity).toBeLessThan(100);
+  await noSideEffects(page, audit);
+});
+
+test("desktop reúne navegação no topo, centraliza cotações e recolhe executores", async ({ page }, testInfo) => {
+  const shard = { id: "executor-01", state: "HEALTHY", action: "OBSERVE",
+    binanceWeightCurrent: 642, binanceWeightAverage: 654, binanceWeightPeak: 748,
+    binanceLimit: 6000, binancePercent: 12.5, egressIp: "192.0.2.10",
+    cpuPercent: 0.7, ramUsedMb: 111, schedulerBacklog: 0, reconciliationAgeMs: 26000,
+    heartbeatAt: "2026-09-27T09:41:42Z", reservedWeight: 0, accountCount: 2,
+    engineCount: 2, canAddEngine: true, canAddTwoEngineAccount: true,
+    admissionReason: "HEALTHY", warningsMuted: false, alerts: [] };
+  const audit = await mount(page, "live", 1920, 1080, automationOperatorFixture(), { shards: [shard] });
+  const context = page.locator(".px-context-bar");
+  await expect(context.getByRole("navigation", { name: "Ambientes da Automação" })).toBeVisible();
+  await expect(context.getByRole("navigation", { name: "Ferramentas da Automação" })).toBeVisible();
+  const environments = await context.locator(".px-environments").boundingBox();
+  const toolbar = await context.locator(".px-toolbar").boundingBox();
+  expect(Math.abs((environments?.y ?? 0) - (toolbar?.y ?? 100))).toBeLessThan(10);
+  expect(toolbar?.x ?? 0).toBeGreaterThan((environments?.x ?? 0) + (environments?.width ?? 0));
+  const quotes = await page.locator(".px-market-overview").boundingBox();
+  expect(Math.abs((quotes?.x ?? 0) * 2 + (quotes?.width ?? 0) - 1920)).toBeLessThan(4);
+  await expect(page.locator(".px-market-chart h3")).toHaveText(["BTC/USDT", "SOL/USDT"]);
+  await expect(page.locator(".px-capacity-details")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Ver detalhes", exact: true }).first()).toBeVisible();
+  expect((await page.locator(".px-capacity-shard").boundingBox())?.height ?? Infinity).toBeLessThan(100);
+  expect((await geometry(page)).overflow).toBe(0);
+  await screenshot(page, testInfo, "desktop-unified-topbar");
   await noSideEffects(page, audit);
 });
 
