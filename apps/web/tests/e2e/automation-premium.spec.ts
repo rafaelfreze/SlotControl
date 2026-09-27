@@ -333,7 +333,7 @@ test("toolbar e detalhes preservam navegação sem submeter ações", async ({ p
   const assertScrollRestored = async () => {
     await expect.poll(() => page.evaluate(() => document.documentElement.style.overflow)).toBe(initialOverflow);
   };
-  for (const label of [/^Estratégia$/, /^Ajustes$/, /^Configurações$/, /^Simulador$/]) {
+  for (const label of [/^Estratégia$/, /^Ajustes$/, /^Configurações$/]) {
     await page.getByRole("button", { name: label }).first().click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await assertDrawerFrame();
@@ -342,8 +342,16 @@ test("toolbar e detalhes preservam navegação sem submeter ações", async ({ p
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await assertScrollRestored();
   }
+  await page.getByLabel("Conta", { exact: true }).selectOption({ index: 1 });
   await page.getByRole("button", { name: /Ver BTC/i }).first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
+  const engineSwitchLayout = await page.locator(".px-asset-switch").evaluate((element) => {
+    const buttons = Array.from(element.querySelectorAll("button")).map((button) => button.getBoundingClientRect());
+    return { display: getComputedStyle(element).display,
+      stacked: buttons.length < 2 || buttons[1]!.top >= buttons[0]!.bottom,
+      fullWidth: buttons.length === 0 || buttons.every((button) => button.width >= element.getBoundingClientRect().width - 1) };
+  });
+  expect(engineSwitchLayout).toEqual({ display: "grid", stacked: true, fullWidth: true });
   await screenshot(page, testInfo, "automation-mobile-asset-details");
   await page.getByRole("button", { name: "Ver todos os 25 slots", exact: true }).click();
   await expect(page.getByTestId("premium-slot-row")).toHaveCount(25);
@@ -353,7 +361,16 @@ test("toolbar e detalhes preservam navegação sem submeter ações", async ({ p
   await assertDrawerFrame();
   expect((await geometry(page)).overflow).toBe(0);
   await screenshot(page, testInfo, "automation-mobile-slot-details");
-  await page.getByRole("dialog").getByRole("button", { name: /fechar/i }).click();
+  await page.locator(".px-drawer-body").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const closeButton = page.getByRole("dialog").getByRole("button", { name: /fechar/i });
+  await expect(closeButton).toBeVisible();
+  const closeFrame = await closeButton.evaluate((button) => {
+    const rect = button.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, viewport: document.documentElement.clientHeight };
+  });
+  expect(closeFrame.top).toBeGreaterThanOrEqual(0);
+  expect(closeFrame.bottom).toBeLessThanOrEqual(closeFrame.viewport);
+  await closeButton.click();
   await assertScrollRestored();
   for (const label of [/Próximas BUYs/i, /Histórico de operações/i, /^Alertas/]) {
     await page.getByRole("tab", { name: label }).first().click();

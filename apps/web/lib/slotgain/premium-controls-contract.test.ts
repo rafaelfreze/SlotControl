@@ -9,6 +9,7 @@ const legacyShadow = read("automation-mobile.tsx");
 const center = read("automation-center.tsx");
 const premium = read("premium-automation.tsx");
 const primitives = read("premium-primitives.tsx");
+const styles = read("premium-automation.css");
 
 test("premium controls reuse existing environment components without dispatch on render", () => {
   assert.match(controls, /<ShadowControls[^>]+data=\{data\} asset=\{asset\}/);
@@ -73,9 +74,9 @@ test("premium navigation is presentation-only and keeps operational actions behi
 test("strategy drawer exposes the shared self-service center to Testnet without mixing Production accounts", () => {
   const engineCenter = read("engine-control-center.tsx");
   assert.match(premium, /\(view === "live" \|\| view === "testnet"\) && data\.operator/);
-  assert.match(premium, /<EngineControlCenter initialAccountId=\{selection\.accountId\} environment=\{environment as "REAL" \| "TESTNET"\}/);
+  assert.match(premium, /<EngineControlCenter[^>]+initialAccountId=\{selection\.accountId\} environment=\{environment as "REAL" \| "TESTNET"\}/);
   assert.match(engineCenter, /payload\.accounts \?\? \[\]\)\.filter\(\(item: Account\) => item\.environment === environment\)/);
-  assert.match(engineCenter, /payload\.engines \?\? \[\]\)\.filter\(\(item: Engine\) => item\.environment === environment\)/);
+  assert.match(engineCenter, /payload\.engines \?\? \[\]\)\.filter\(\(item: Engine\) =>[^]*?item\.exchange_account_id === accountId && item\.environment === environment\)/);
 });
 
 test("premium drawer retains native modal semantics and an accessible close control", () => {
@@ -86,6 +87,19 @@ test("premium drawer retains native modal semantics and an accessible close cont
   assert.match(primitives, /onCancel=\{onClose\}/);
   assert.match(primitives, /aria-label="Fechar" onClick=\{onClose\}/);
   assert.match(primitives, /<h2 id=\{titleId\}>\{title\}<\/h2>/);
+});
+
+test("premium drawer keeps the close header outside the mobile scroll area", () => {
+  assert.match(styles, /\.px-drawer\{[^}]*overflow:hidden[^}]*grid-template-rows:auto minmax\(0,1fr\)/);
+  assert.match(styles, /\.px-drawer\[open\]\{display:grid\}/);
+  assert.match(styles, /\.px-drawer-body\{[^}]*min-height:0[^}]*overflow-y:auto[^}]*overscroll-behavior:contain/);
+  assert.match(styles, /\.px-drawer>\.px-drawer-header\{display:block;position:relative/);
+});
+
+test("mobile engine selector uses compact full-width list rows", () => {
+  assert.match(styles, /\.px-drawer \.px-asset-switch\{display:grid;grid-template-columns:1fr/);
+  assert.match(styles, /\.px-asset-switch button\{width:100%;min-height:46px;padding:7px 11px/);
+  assert.match(styles, /\.px-asset-switch button::after\{content:"›"/);
 });
 
 test("isolated simulator copy does not claim the operating LIVE environment is blocked", () => {
