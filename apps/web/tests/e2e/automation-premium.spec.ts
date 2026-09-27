@@ -432,6 +432,14 @@ test("ciclo ACTIVE não apresenta LIVE verde quando o executor está sem saúde"
 
 for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${width}px`, async ({ page }, testInfo) => {
   const audit = await mount(page, "live", width, 900, automationOperatorFixture());
+  await expect(page.getByRole("navigation", { name: "Ambientes da Automação" }).getByRole("link")).toHaveText(["Testnet", "Real"]);
+  const toolbar = page.getByTestId("premium-toolbar");
+  for (const label of ["Operações", "Simulador", "Relatórios"]) {
+    await expect(toolbar.getByRole("button", { name: label, exact: true })).toHaveCount(0);
+    await expect(toolbar.getByRole("link", { name: label, exact: true })).toHaveCount(0);
+  }
+  expect(await page.locator(".px-market-overview").evaluate((element) =>
+    element.parentElement?.firstElementChild === element)).toBe(true);
   await expect(page.locator("[data-engine-id]")).toHaveCount(8);
   await expect(page.locator(".px-market-chart")).toHaveCount(4);
   await expect(page.locator(".px-account-engine-row")).toHaveCount(8);

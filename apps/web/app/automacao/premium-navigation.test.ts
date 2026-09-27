@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import test from "node:test";
+
+const source = readFileSync(new URL("./premium-automation.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+
+test("product environment navigation is only Testnet and Real; default stays Live", () => {
+  assert.match(source, /const visibleEnvironments = \["testnet", "live"\] as const/);
+  const nav = source.slice(source.indexOf('<nav className="px-environments"'), source.indexOf('<div className="px-scope-filters"'));
+  assert.match(nav, /visibleEnvironments\.map/);
+  assert.doesNotMatch(nav, /Object\.keys\(labels\)/);
+  assert.match(page, /searchParams\?\.testnet === "check" \? "testnet" : "live"/);
+});
+
+test("product toolbar hides internal operations, reports and simulators without deleting tools", () => {
+  const toolbar = source.slice(source.indexOf('<nav className="px-toolbar"'), source.indexOf('aria-label="Saúde da operação Live"'));
+  for (const name of ["Início", "Estratégia", "Ajustes", "Configurações", "Custos &amp; Operação"]) assert.ok(toolbar.includes(name), name);
+  for (const name of ['"Operações"', '"Relatórios"', '"Simulador"']) assert.ok(!toolbar.includes(name), name);
+  const menu = source.slice(source.indexOf('{panel === "menu" ?'));
+  assert.ok(!menu.includes("Relatórios da Automação"));
+  for (const route of ["../relatorios/page.tsx", "./simulador-ath/page.tsx", "./simulador-ajustes/page.tsx"]) {
+    assert.ok(existsSync(new URL(route, import.meta.url)), `Internal route retained: ${route}`);
+  }
+  assert.ok(source.includes('id="premium-operations"'), "positions, next orders and alert evidence remain available");
+});
+
+test("shared quotes render once above infrastructure and keep four unique markets", () => {
+  const dashboard = source.indexOf('<main className="px-dashboard">');
+  const quotes = source.indexOf('className="px-market-overview"');
+  const capacity = source.indexOf('<CapacityCard />');
+  assert.ok(dashboard >= 0 && quotes > dashboard && capacity > quotes);
+  assert.equal(source.match(/className="px-market-overview"/g)?.length, 1);
+  assert.match(source, /new Map\(assets\.map\(\(item\) => \[item\.symbol, item\]\)\)\.values\(\)\]\.slice\(0, 4\)/);
+  assert.match(source, /\{allAccounts \? <section className="px-market-overview"/);
+});

@@ -13,6 +13,8 @@ novas funcionalidades. Preserve migrations e ledger para leitura histórica.
   segurança, testes, publicação, evidências e limites financeiros.
 - [Monitor Production de 2 horas](./COINOPS_PRODUCTION_MONITOR_2H.md) — supervisão
   leve do Watchdog, incidentes, isolamento e aprendizado seguro, sem chaos de rotina.
+- [Navegação e cards compactos](./COINOPS_COMPACT_NAVIGATION.md) — Real/Testnet,
+  ferramentas internas preservadas, cotações no topo e ranking por moeda recolhível.
 - [Retirada do legado manual](./COINOPS_LEGACY_RETIREMENT.md) — rotas removidas,
   histórico preservado e contrato Automation-first.
 - [Auditoria de escala](./COINOPS_50_ACCOUNTS_AUDIT.md) — evidências e gates

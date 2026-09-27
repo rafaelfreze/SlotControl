@@ -8,6 +8,7 @@ import { rankViewerMarkets } from "@/lib/coinops-viewer/gain-ranking";
 import { ViewerSignOut } from "./sign-out";
 import { ViewerLiveBalances } from "./live-balances";
 import { ViewerGainSimulator } from "./gain-simulator";
+import { ViewerMarketPanels } from "./market-panels";
 import "./viewer.css";
 import "./viewer-redesign.css";
 
@@ -122,7 +123,7 @@ export default async function MeuCoinOps() {
       operationalBalance: slotRows.reduce((sum, slot) => sum + slot.balance, 0), history: historyRows };
   }));
   const currencies = [...new Set(marketRows.map((row) => row.currency))];
-  const gainRanking = rankViewerMarkets(marketRows);
+  const gainRanking = new Map(rankViewerMarkets(marketRows).map((market, index) => [market.symbol, { ...market, rank: index + 1 }]));
   const balanceEvidence = credential.data?.[0];
   const observedBalances: Array<{ asset: string; free: number; locked: number }> = balanceEvidence?.status === "PASS" && Array.isArray(balanceEvidence.evidence?.balances)
     ? balanceEvidence.evidence.balances.filter((item: unknown): item is { asset: string; free: number; locked: number } =>
@@ -143,39 +144,36 @@ export default async function MeuCoinOps() {
     <section className="viewer-hero"><div><h1>Bom dia, {firstName}!</h1><p>{allHealthy ? "Seu robô está operando normalmente." : "Confira o estado da sua operação abaixo."}</p></div>
       <div className="viewer-health-group"><span className={allHealthy ? "viewer-health is-ok" : "viewer-health"}>{allHealthy ? "● OPERANDO" : "● ATENÇÃO"}</span><small>Atualizado {latest ? new Date(latest).toLocaleString("pt-BR") : "sem reconciliação confirmada"}</small></div></section>
     <ViewerLiveBalances fallback={{ balances: observedBalances.map((row) => ({ ...row, total: row.free + row.locked })),
-      observedAt: balanceEvidence?.checked_at ?? null }} summaries={currencySummaries}>
-    {gainRanking.length ? <section className="viewer-panel viewer-gain-ranking" aria-label="Ranking de ganhos por mercado e slot">
-      <div className="viewer-section-title"><div><h2>Ranking de ganhos</h2><p>Mercados da sua conta · P&amp;L realizado líquido de taxas por slot</p></div></div>
-      <div className="viewer-gain-markets">{gainRanking.map((market, index) => <details className="viewer-gain-market" key={market.symbol} open>
-        <summary><span className="viewer-gain-rank">#{index + 1}</span><strong>{market.symbol.replace(market.currency, `/${market.currency}`)}</strong>
-          <span>{market.gains} gains <small>{market.monthlyGains} no mês</small></span>
-          <span>P&amp;L realizado <b className={market.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(market.realized, market.currency)}</b></span>
-          <span className="viewer-gain-more">{Math.min(15, market.rankedSlots.length)} slots por ganhos ▾</span></summary>
-        <div className="viewer-gain-slots"><div className="viewer-gain-slot viewer-gain-slot--heading"><span>Slot físico</span><span>Gains</span><span>No mês</span><span>P&amp;L líquido</span></div>
-          {market.rankedSlots.slice(0, 15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}
-          {market.rankedSlots.length > 15 ? <details className="viewer-gain-rest"><summary>Ver mais {market.rankedSlots.length - 15} slots</summary>
-            {market.rankedSlots.slice(15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}</details> : null}
-        </div>
-      </details>)}</div>
-    </section> : null}
-    </ViewerLiveBalances>
+      observedAt: balanceEvidence?.checked_at ?? null }} summaries={currencySummaries} />
     {!currencies.length ? <section className="viewer-panel viewer-empty"><h2>Conta em preparação</h2><p>Nenhum mercado Real ativado para esta conta.</p></section> : null}
     <section className="viewer-market-grid">{marketRows.map((market) => {
       const trend = market.trend;
       const min = Math.min(...trend), max = Math.max(...trend), spread = max - min || 1;
       const coords = trend.map((value, index) => `${index * 100 / Math.max(1, trend.length - 1)},${44 - (value - min) / spread * 36}`).join(" ");
       const base = market.symbol.replace(market.currency, "");
+      const ranking = gainRanking.get(market.symbol);
       return <article className={`viewer-panel viewer-market viewer-market--${base.toLowerCase()}`} key={market.symbol}><div className="viewer-section-title"><div className="viewer-market-name"><span className="viewer-coin" aria-hidden="true">{base === "BTC" ? "₿" : "◎"}</span><h2>{base}/{market.currency}</h2></div><span className={market.healthy ? "viewer-ok" : "viewer-warn"}>{market.healthy ? "OPERANDO" : "ATENÇÃO"}</span></div>
         <div className="viewer-market-price"><strong>{number(market.price)}</strong><span>{market.currency}</span>{market.change !== null ? <small className={market.change >= 0 ? "viewer-up" : "viewer-down"}>{market.change >= 0 ? "▲" : "▼"} {number(Math.abs(market.change))}% (24h)</small> : null}</div>
         {trend.length > 1 ? <svg className="viewer-chart" viewBox="0 0 100 48" preserveAspectRatio="none" role="img" aria-label={`Preço nas últimas 24 horas de ${market.symbol}`}><polyline points={coords} /></svg> : <div className="viewer-chart viewer-chart-empty">Histórico de preços indisponível</div>}
         <div className="viewer-market-summary"><div><small>Posições</small><strong>{market.openCount} / {market.slots.length}</strong></div><div><small>Gains</small><strong>{market.slots.reduce((sum, slot) => sum + slot.gains, 0)}</strong></div><div><small>P&amp;L aberto estimado</small><strong className={market.openPnl >= 0 ? "viewer-up" : "viewer-down"}>{amount(market.price === null ? null : market.openPnl, market.currency)}</strong></div></div>
-        <details className="viewer-details"><summary>Ver detalhes →</summary><div className="viewer-slots"><p className="viewer-footnote">{market.slots.length} slots · {market.openCount} posição(ões) aberta(s)</p>{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
+        <ViewerMarketPanels market={`${base}/${market.currency}`} details={<>
+        <div className="viewer-slots"><p className="viewer-footnote">{market.slots.length} slots · {market.openCount} posição(ões) aberta(s)</p>{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
           <strong>Slot #{slot.slot}<span>{slot.open ? "ABERTO" : slot.nextBuy ? "PRÓXIMA COMPRA" : "EM ESPERA"}</span></strong>
           <small>Saldo {amount(slot.balance, market.currency)} · {slot.gains} gains · {slot.monthly} no mês</small>
           {slot.open ? <small>Quantidade {number(slot.quantity, 8)} · Entrada {amount(slot.entry, market.currency)} · TP {amount(slot.tp, market.currency)}</small> : null}
           {slot.nextBuy ? <small>Próxima compra {amount(slot.nextBuy, market.currency)}</small> : null}
-        </div>)}</div></details>
+        </div>)}</div>
         <details className="viewer-details"><summary>Histórico de ganhos</summary><div className="viewer-slots">{market.history.slice(-20).reverse().map((item, index) => <div className="viewer-slot" key={`${item.at}-${index}`}><strong>Slot #{item.slot} · {amount(item.result, market.currency)}</strong><small>{new Date(item.at).toLocaleString("pt-BR")}</small></div>)}{!market.history.length ? <p>Sem gain realizado neste período.</p> : null}</div></details>
+        </>} ranking={ranking ? <section className="viewer-gain-ranking" aria-label={`Ranking de ganhos de ${base}/${market.currency}`}>
+          <div className="viewer-ranking-summary"><div><strong>#{ranking.rank} · {base}/{market.currency}</strong><small>{ranking.gains} gains · {ranking.monthlyGains} no mês</small></div>
+            <div><small>P&amp;L realizado</small><strong className={ranking.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(ranking.realized, market.currency)}</strong></div></div>
+          <p className="viewer-footnote">{Math.min(15, ranking.rankedSlots.length)} slots por ganhos · P&amp;L líquido de taxas</p>
+          <div className="viewer-gain-slots"><div className="viewer-gain-slot viewer-gain-slot--heading"><span>Slot físico</span><span>Gains</span><span>No mês</span><span>P&amp;L líquido</span></div>
+            {ranking.rankedSlots.slice(0, 15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}
+            {ranking.rankedSlots.length > 15 ? <details className="viewer-gain-rest"><summary>Ver mais {ranking.rankedSlots.length - 15} slots</summary>
+              {ranking.rankedSlots.slice(15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}</details> : null}
+          </div>
+        </section> : <p className="viewer-footnote">Ranking indisponível para este mercado.</p>} />
       </article>;
     })}</section>
     <ViewerGainSimulator markets={marketRows.map((row) => ({ symbol: row.symbol, currency: row.currency,
