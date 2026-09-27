@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runServerWatchdog } from "@/lib/coinops-watchdog/watchdog-server";
+import { monitorAssetHealthCollector } from "@/lib/coinops-asset-health/collector-monitor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +12,11 @@ export async function GET(request: NextRequest) {
     || request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`)
     return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
   try {
-    return NextResponse.json(await runServerWatchdog(),
+    const result = await runServerWatchdog();
+    // Informational collector supervision is isolated from engine health/recovery.
+    const assetHealthCollector = await monitorAssetHealthCollector()
+      .catch(() => ({ status: "UNAVAILABLE", code: "ASSET_COLLECTOR_UNAVAILABLE" }));
+    return NextResponse.json({ ...result, assetHealthCollector },
       { headers: { "cache-control": "no-store" } });
   } catch (error) {
     const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)

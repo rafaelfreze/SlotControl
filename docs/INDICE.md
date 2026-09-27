@@ -9,6 +9,10 @@ novas funcionalidades. Preserve migrations e ledger para leitura histórica.
   admissão, headroom, sharding e condições de publicação.
 - [Custos & Operação (ADMIN)](./COINOPS_FINOPS_PROVIDERS.md) — serviços reais,
   custos estimados e rateio, câmbio, snapshots e isolamento financeiro.
+- [Saúde do Ativo](./COINOPS_ASSET_HEALTH.md) — coletor server-side BTC/SOL,
+  status informativo, drawer compacto, histórico, alertas e isolamento absoluto do trading.
+- [Fontes e regras de saúde](./COINOPS_ASSET_HEALTH_SOURCES.md) — endpoints,
+  métricas, thresholds, cadências, metodologia e lacunas de cobertura.
 - [Entrega e operação FinOps](./COINOPS_FINOPS_DELIVERY.md) — sincronização,
   segurança, testes, publicação, evidências e limites financeiros.
 - [Monitor Production de 2 horas](./COINOPS_PRODUCTION_MONITOR_2H.md) — supervisão

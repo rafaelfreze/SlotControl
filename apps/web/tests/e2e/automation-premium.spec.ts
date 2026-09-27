@@ -16,7 +16,7 @@ const styles = ["app/globals.css", "app/compact-redesign.css", "app/official-mon
   "app/desktop-modules.css", "app/automation-redesign.css", "app/automation-center.css",
   "app/automation-cockpit.css", "app/reports-center.css", "app/automacao/live-preparation.css",
   "app/automacao/manual-adjustments.css", "app/automacao/ath-profiles.css",
-  "app/automacao/premium-automation.css"];
+  "app/automacao/premium-automation.css", "app/automacao/asset-health.css"];
 
 /** Bundle real client code, never server actions, credentials, or server loaders.
  * This follows the existing open-slot-growth-goal component test harness. */
@@ -55,7 +55,7 @@ function clientModules() {
 }
 
 async function mount(page: Page, view: View, width: number, height = 960,
-  data: Presentation = automationPremiumFixture(), capacityData: unknown = null) {
+  data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
@@ -73,8 +73,14 @@ async function mount(page: Page, view: View, width: number, height = 960,
   await page.addScriptTag({ content: `(() => {
     const React = window.React;
     const capacityFixture = ${JSON.stringify(capacityData)};
-    window.fetch = async (url) => ({ ok: String(url) === '/api/coinops-capacity' && Boolean(capacityFixture),
-      json: async () => capacityFixture ?? {} });
+    const assetHealthFixture = ${JSON.stringify(assetHealthData)};
+    window.__fixtureReads = [];
+    window.fetch = async (url) => {
+      window.__fixtureReads.push(String(url));
+      const data = String(url).startsWith('/api/coinops-asset-health?') ? assetHealthFixture
+        : String(url) === '/api/coinops-capacity' ? capacityFixture : null;
+      return { ok: Boolean(data), json: async () => data ?? {} };
+    };
     window.WebSocket = class { static OPEN = 1; readyState = 1; close() {} };
     const modules = {${bundle.code}};
     const cache = {};
@@ -117,6 +123,53 @@ async function mount(page: Page, view: View, width: number, height = 960,
   expect(browserErrors).toEqual([]);
   await expect(page.locator("#premium-fixture-root")).toContainText("CoinOps");
   return { browserErrors, requests };
+}
+
+for (const width of [320, 360, 375, 390, 430, 1280]) {
+  test(`asset health compact cards and closable drawer ${width}px`, async ({ page }, testInfo) => {
+    const assets = Object.fromEntries((["BTC", "SOL"] as const).map((asset) => [asset, {
+      asset, status: "HEALTHY", previousStatus: null, healthyIndicators: 4, totalIndicators: 5,
+      summary: "A rede está funcionando normalmente nas métricas acompanhadas.", reasons: ["Produção de blocos recente e regular"],
+      categories: ["NETWORK", "SECURITY", "DEVELOPMENT", "LIQUIDITY", "ECOSYSTEM"].map((category) => ({ category,
+        status: "HEALTHY", healthy: 1, total: 1, summary: "Evidência recente disponível." })),
+      metrics: [], sources: [{ id: "fixture", name: "Fonte de demonstração", url: "https://example.com", fetchedAt: AUTOMATION_FIXTURE_NOW, status: "HEALTHY" }],
+      trigger: "FRESH_EVIDENCE", evaluatedAt: AUTOMATION_FIXTURE_NOW, validUntil: "2026-09-24T13:00:00Z",
+      criticalSinceByMetric: {}, coverage: { available: 4, expected: 5, missingCategories: [], unavailableOptional: 1 },
+      history: [{ status: "HEALTHY", evaluatedAt: AUTOMATION_FIXTURE_NOW, reasons: ["Sem deterioração estrutural detectada."] }],
+    }]));
+    const audit = await mount(page, "live", width, 844, automationOperatorFixture(), null, {
+      generatedAt: AUTOMATION_FIXTURE_NOW, collector: { status: "HEALTHY", lastRunAt: AUTOMATION_FIXTURE_NOW, nextExpectedAt: "2026-09-24T12:30:00Z" }, assets,
+    });
+    await expect(page.locator(".px-market-chart .ah-badge")).toHaveCount(2);
+    const btc = page.getByRole("button", { name: /Saúde do ativo Bitcoin: SAUDÁVEL/ });
+    await expect(btc).toBeVisible();
+    await expect(btc).toHaveCSS("color", "rgb(56, 215, 165)");
+    expect((await btc.boundingBox())!.height).toBeLessThanOrEqual(55);
+    expect((await geometry(page)).overflow).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: testInfo.outputPath(`asset-health-cards-${width}.png`) });
+    await btc.click();
+    const dialog = page.getByRole("dialog", { name: "Saúde do Ativo — Bitcoin" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Por que está neste status?" })).toBeVisible();
+    await dialog.getByLabel("Período do histórico de saúde").selectOption("90");
+    await expect(dialog).toContainText("Sem deterioração estrutural detectada.");
+    await dialog.locator(".px-drawer-body").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const close = dialog.getByRole("button", { name: "Fechar", exact: true });
+    await expect(close).toBeVisible();
+    const box = await close.boundingBox();
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(844);
+    await page.screenshot({ path: testInfo.outputPath(`asset-health-${width}.png`) });
+    await close.click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: /Saúde do ativo Solana: SAUDÁVEL/ }).click();
+    await expect(page.getByRole("dialog", { name: "Saúde do Ativo — Solana" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    const healthReads = await page.evaluate(() => (window as unknown as { __fixtureReads: string[] }).__fixtureReads.filter((url) => url.startsWith("/api/coinops-asset-health")));
+    expect(healthReads).toEqual(["/api/coinops-asset-health?days=30", "/api/coinops-asset-health?days=90"]);
+    await noSideEffects(page, audit);
+  });
 }
 
 async function geometry(page: Page) {

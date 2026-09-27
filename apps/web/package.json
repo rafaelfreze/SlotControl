@@ -10,6 +10,8 @@
     "lint": "next lint --no-cache",
     "test": "node --experimental-strip-types --test lib/slotgain/*.test.ts lib/auth/*.test.ts lib/coinops-monitoring/*.test.ts lib/coinops-watchdog/*.test.ts lib/coinops-reports/*.test.ts lib/coinops-capacity/*.test.ts lib/coinops-finops/*.test.ts",
     "test:e2e": "playwright test",
+    "test:asset-health": "node --experimental-strip-types --test lib/coinops-asset-health/asset-health.test.ts lib/coinops-asset-health/server.test.ts lib/coinops-asset-health/push.test.ts app/automacao/asset-health.test.ts",
+    "test:asset-health:sql": "node --experimental-strip-types --test lib/coinops-asset-health/asset-health-migration-sql.test.ts",
     "predeploy": "npm run typecheck && npm run build"
   },
   "dependencies": {

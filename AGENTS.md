@@ -203,7 +203,15 @@ Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execuç
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.
 - Persistência UTC; apresentação auditável em `America/Campo_Grande`; exportação sem secrets. Consulte `docs/COINOPS_REPORTS_V1.md`.
 
-## Fechamento
+## Saúde do Ativo — fronteira obrigatória
+
+- `apps/web/lib/coinops-asset-health` é informativo e read-only em relação ao trading. BTC/SOL usam fontes públicas, coleta server-side, snapshots e regras determinísticas. Ver `docs/COINOPS_ASSET_HEALTH.md` e `docs/COINOPS_ASSET_HEALTH_SOURCES.md`.
+- `STRUCTURAL_RISK` nunca significa SELL ALL, PAUSE, cancelar ordens, mudar estratégia, slots, ciclos, ATH, spacing, TP, NEXT BUY, kill switch ou Capacity Manager. Qualquer acoplamento futuro exige nova decisão arquitetural explícita do usuário.
+- Watchdog observa somente execução/freshness/falhas do coletor; saúde estrutural não entra na saúde ou recuperação dos motores. Alertas usam outbox separada e ADMIN, nunca `robot_v1_live_alerts`.
+- GET lê snapshots persistidos; não coleta fontes nem prolonga validade ou promove status. Sem evidência recente: DADOS INSUFICIENTES, nunca falso verde/vermelho. Preço não é sinal de risco estrutural.
+- Testes direcionados: `npm run test:asset-health`; SQL concorrência/RLS local: `npm run test:asset-health:sql` (PostgreSQL local descartável, nunca Production). Histórico começa na implantação, sem preencher datas passadas artificialmente.
+
+## Entrega e fechamento
 
 Relate de forma proporcional:
 

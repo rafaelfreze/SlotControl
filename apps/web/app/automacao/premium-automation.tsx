@@ -16,6 +16,7 @@ import { ViewerUsersPanel } from "./viewer-users-panel";
 import { PushNotificationsPanel } from "./push-notifications-panel";
 import { CapacityCard } from "./capacity-card";
 import { WatchdogCard } from "./watchdog-card";
+import { AssetHealthBadge, AssetHealthProvider } from "./asset-health";
 import { NativeEngineAudit } from "./native-engine-audit";
 import { EngineControlCenter } from "./engine-control-center";
 import { LiveAdjustmentsCenter } from "./live-adjustments-center";
@@ -170,7 +171,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
   const reportHref = `/relatorios?account=${selection.accountId}&engine=${concrete?.engineId ?? "ALL"}&environment=${environment}`;
   const viewHref = (target: AutomationView) => `/automacao?view=${target}&account=${selection.accountId}`;
   const title = panel === "slot" ? `${active?.accountDisplayName ?? ""} · ${active?.symbol ?? asset} · Slot #${selectedSlot?.number}` : panel === "asset" ? `${active?.accountDisplayName ?? ""} · ${asset}/${currency} · operações e slots` : panel === "strategy" ? "Estratégia e motores" : panel === "adjustments" ? "Ajustes manuais" : panel === "config" ? "Configurações e controles" : panel === "simulator" ? "Simuladores isolados" : panel === "audit" ? "Análise e auditoria completa" : "Navegação CoinOps";
-  return <div className="px-app" data-testid="premium-automation" data-environment={environment}>
+  return <div className="px-app" data-testid="premium-automation" data-environment={environment}><AssetHealthProvider>
     <div className="px-mobile-sticky-header"><PremiumGlobalNavigation>
      <div className="px-top-status"><span className={`px-live ${liveActive ? "is-live" : ""}`}><i />{liveActive ? "LIVE" : liveConfigured ? "LIVE · ATENÇÃO" : "EM PREPARAÇÃO"}</span><span className={`px-sync px-sync--${sync.status === "AO VIVO" ? "live" : sync.stale ? "stale" : "reconnecting"}`} role="status" aria-live="polite" title={`Snapshot operacional: ${new Date(sync.lastSyncedAt).toISOString()}`}><i />{sync.status}<small>{sync.status === "AO VIVO" && sync.recent ? "Atualizado agora" : `Última sincronização ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Campo_Grande", hour: "2-digit", minute: "2-digit" }).format(sync.lastSyncedAt)}`}</small></span><small>Executor {liveStatus.ip ?? "não consultado"}<br />Binance Production</small></div><button className="px-avatar px-account-trigger" type="button" aria-label="Abrir menu da conta" onClick={() => setPanel("menu")}>{userLabel.slice(0, 2).toUpperCase()}</button></PremiumGlobalNavigation>
     <div className="px-context-bar">
@@ -183,7 +184,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     {view === "live" ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={liveStatus.online ? "is-ok" : "is-warning"}>● Executor {liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={healthy ? "is-ok" : "is-warning"}>● Estratégia {healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
       {allAccounts ? <section className="px-market-overview" aria-label="Cotações USDT">
-        <div className="px-market-chart-grid">{usdtMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /></article>)}</div>
+        <div className="px-market-chart-grid">{usdtMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /><AssetHealthBadge asset={model.asset} /></article>)}</div>
       </section> : null}
       {data.operator && (view === "live" || view === "overview") ? <CapacityCard /> : null}
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard /> : null}
@@ -258,5 +259,5 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       ].map(([label, value]) => <div key={String(label)}><dt>{label}</dt><dd>{value ?? "—"}</dd></div>)}</dl><h3>Ordens e ownership</h3>{selectedSlot.orders.map((order) => <div className="px-order-detail" key={order.id}><strong>{order.side} · {order.purpose} · {order.status}</strong><p>{money(order.price, currency)} · {number(order.quantity, 8)} {asset}</p><small>clientOrderId</small><code>{order.id}</code><small>Binance orderId</small><code>{order.exchangeId ?? "Sem ID de exchange"}</code></div>)}<h3>Eventos deste slot</h3>{selectedSlot.events.map((event, index) => <details key={`${event.id}-${index}`}><summary>{time(event.at)} · {event.type}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>)}<details><summary>Evidência completa · saldo, fees e ajustes</summary><pre>{JSON.stringify(selectedSlot.raw, null, 2)}</pre></details>{environment !== "REAL" ? <a className="px-button" href={`/automacao?view=${view}&account=${active.accountId}&market=${active.symbol}&engine=${active.engineId}&adjust=${environment}:${asset}:${selectedSlot.number}`}>Adicionar gain ou aporte</a> : null}<a className="px-button" href={reportHref}>Histórico e auditoria completa →</a></div></> : null}
       {panel === "menu" ? <nav className="px-menu-links" aria-label="Opções da Automação"><a href="/automacao?view=live">Início da Automação<PremiumIcon name="arrow" /></a>{data.operator ? <><a href="/custos-operacao">Custos &amp; Operação<PremiumIcon name="arrow" /></a><button type="button" className="px-button" onClick={() => setPanel("onboarding")}>Contas e onboarding</button><button type="button" className="px-button" onClick={() => setPanel("config")}>Configurações da Automação</button></> : null}<p>{userLabel}</p></nav> : null}
     </PremiumDrawer>
-  </div>;
+  </AssetHealthProvider></div>;
 }

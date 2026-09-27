@@ -45,6 +45,10 @@
       "regions": ["gru1"],
       "maxDuration": 300
     },
+    "app/api/cron/coinops-asset-health/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 120
+    },
     "app/api/coinops-finops/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 300
@@ -89,6 +93,10 @@
     {
       "path": "/api/cron/coinops-finops",
       "schedule": "17 */6 * * *"
+    },
+    {
+      "path": "/api/cron/coinops-asset-health",
+      "schedule": "7,37 * * * *"
     }
   ]
 }
