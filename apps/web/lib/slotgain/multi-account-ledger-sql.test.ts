@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { createServer } from "node:net";
@@ -13,12 +13,18 @@ const bin=process.env.COINOPS_AUDIT_PG_BIN??"C:/Program Files/PostgreSQL/17/bin"
 const available=existsSync(join(bin,"initdb.exe"));
 const directory=available?mkdtempSync(join(tmpdir(),"coinops-multi-account-")):"";
 let port=0;
+let postgresProcess:ChildProcess|null=null;
 const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith("PG"))),
  NODE_ENV:process.env.NODE_ENV??"test",
  PGHOST:"127.0.0.1",PGPORT:String(port),PGUSER:"multi_account_audit",PGDATABASE:"postgres",PGPASSFILE:join(directory,"no-credentials")};
 const args=()=>["-X","-w","-h","127.0.0.1","-p",String(port),"-U","multi_account_audit","-d","postgres","-v","ON_ERROR_STOP=1","-At"];
 function invoke(extra:string[]){try{return execFileSync(join(bin,"psql.exe"),[...args(),...extra],{env,windowsHide:true,encoding:"utf8",stdio:"pipe"}).replace(/\r/g,"").trim();}
  catch(error){const e=error as {stderr?:Buffer};throw new Error(e.stderr?.toString()??String(error));}}
+function invokeAsync(extra:string[]){return new Promise<string>((resolve,reject)=>{
+ execFile(join(bin,"psql.exe"),[...args(),...extra],{env,windowsHide:true,encoding:"utf8"},(error,stdout,stderr)=>{
+  if(error)reject(new Error(stderr||String(error)));else resolve(stdout.replace(/\r/g,"").trim());
+ });
+});}
 const sql=(s:string)=>invoke(["-c",s]);
 const tx=(s:string)=>sql(`begin;set local request.jwt.claim.role='service_role';${s};rollback;`);
 const product="11111111-1111-4111-8111-111111111111",tenant="22222222-2222-4222-8222-222222222222",user="33333333-3333-4333-8333-333333333333";
@@ -43,7 +49,14 @@ before(async()=>{
  port=address.port;env.PGPORT=String(port);
  await new Promise<void>((resolve,reject)=>reservation.close(error=>error?reject(error):resolve()));
  execFileSync(join(bin,"initdb.exe"),["-D",directory,"-U","multi_account_audit","-A","trust","--no-locale","-E","UTF8"],{env,windowsHide:true,stdio:"pipe"});
- execFileSync(join(bin,"pg_ctl.exe"),["-D",directory,"-l",join(directory,"server.log"),"-o",`-h 127.0.0.1 -p ${port}`,"-w","start"],{env,windowsHide:true,stdio:"ignore"});
+ postgresProcess=spawn(join(bin,"postgres.exe"),["-D",directory,"-h","127.0.0.1","-p",String(port)],{env,windowsHide:true,stdio:"ignore"});
+ for(let attempt=0;attempt<80;attempt+=1){
+  try{sql("select 1");break;}catch(error){
+   if(postgresProcess.exitCode!==null)throw new Error(`Disposable PostgreSQL exited before readiness: ${String(error)}`);
+   if(attempt===79)throw error;
+   await new Promise(resolve=>setTimeout(resolve,100));
+  }
+ }
  sql(scaffold);
  const path=resolve("../../supabase/migrations");
  for(const file of readdirSync(path).filter(n=>n>="20260922012849"&&n<"20260924100000").sort())invoke(["-1","-f",join(path,file)]);
@@ -75,8 +88,8 @@ before(async()=>{
  engine=sql("select id from coinops.trading_engines where environment='REAL' and symbol='BTCBRL'");
  testEngine=sql("select id from coinops.trading_engines where environment='TESTNET' and symbol='SOLUSDC'");
 });
-after(()=>{if(available&&existsSync(join(directory,"postmaster.pid")))execFileSync(join(bin,"pg_ctl.exe"),["-D",directory,"-m","fast","-w","stop"],{env,windowsHide:true,stdio:"pipe"});});
-const check=(name:string,fn:()=>void)=>test(name,{skip:available?false:"Local PostgreSQL unavailable: multi-account SQL NOT verified"},fn);
+after(()=>{postgresProcess?.kill();});
+const check=(name:string,fn:()=>void|Promise<void>)=>test(name,{skip:available?false:"Local PostgreSQL unavailable: multi-account SQL NOT verified"},fn);
 check("5.6 SQL: metadata backfill preserves legacy principal, flags, config, IDs and timestamps",()=>{
  assert.equal(sql(`select count(*)=6 and bool_and(legacy_compatible) from coinops.trading_engines`),"t");
  assert.equal(sql(`select bool_and(ath_reference_symbol=base_asset||'USDC') from coinops.trading_engines`),"t");
@@ -398,4 +411,74 @@ check("5.8 SQL: provisioning and immutable adjustments install without touching 
   select hard_cap_quote=20 from coinops.account_quote_caps where exchange_account_id='${accountB}';`);
  assert.deepEqual(funded.split("\n").filter(x=>["APPLIED","REVERSED","t"].includes(x)),
   ["APPLIED","t","t","REVERSED","t","t"]);
+});
+
+check("5.9 SQL: selective slots stay pending while OPEN, apply after TP, and replay once",()=>{
+ const path=resolve("../../supabase/migrations");
+ invoke(["-f",join(path,"20260927133000_add_selective_slot_contributions.sql")]);
+ const request="66666666-7777-4888-8999-aaaaaaaaaaaa",fingerprint="a".repeat(64);
+ const allocation=`(select jsonb_build_array(
+  jsonb_build_object('engineId','${engine}','slotNumber',1,'amount',2,
+    'balanceBefore',a.balance_brl,'operationSequence',s.operation_sequence))
+  from coinops.robot_v1_live_slot_accounts a join coinops.robot_v1_live_slots s
+    on s.trading_engine_id=a.trading_engine_id and s.slot_number=a.slot_number
+  where a.trading_engine_id='${engine}' and a.slot_number=1)`;
+ const out=tx(`${liveFixture()}
+  select id from ${prepareBuy()};${sync(buy,"101","1",17.5,"BUY")}
+  select id from coinops.prepare_robot_v1_live_order('${liveRun}','${liveSlot}','SELL','TP',1,
+   '${sell}',.00004,null,445000,'${"b".repeat(64)}','${lease}');
+  create temp table selective_orders_before as select to_jsonb(o) row_data
+   from coinops.robot_v1_live_orders o where run_id='${liveRun}';
+  create temp table selective_slot_before as select position_quantity,position_committed_brl,
+   entry_reference_price,last_take_profit_price from coinops.robot_v1_live_slots where id='${liveSlot}';
+  update coinops.robot_v1_live_runs set lease_owner=null,lease_until=null where id='${liveRun}';
+  select coinops.apply_live_selective_contribution('${operator}','${account}','${engine}','${user}',
+   'BRL','BRL',2,2,null,'selected fixture',${allocation},725,'${request}','${fingerprint}')->>'status';
+  select balance_brl=18 and contribution_brl=18 from coinops.robot_v1_live_slot_accounts
+   where trading_engine_id='${engine}' and slot_number=1;
+  select not exists((select to_jsonb(o) from coinops.robot_v1_live_orders o where run_id='${liveRun}'
+    except select row_data from selective_orders_before)
+   union all(select row_data from selective_orders_before except
+    select to_jsonb(o) from coinops.robot_v1_live_orders o where run_id='${liveRun}'));
+  select (s.position_quantity,s.position_committed_brl,s.entry_reference_price,s.last_take_profit_price)
+   is not distinct from (b.position_quantity,b.position_committed_brl,b.entry_reference_price,b.last_take_profit_price)
+   from coinops.robot_v1_live_slots s cross join selective_slot_before b where s.id='${liveSlot}';
+  select status='PENDING' and applied_at is null from coinops.robot_v1_live_selective_contribution_allocations;
+  select coinops.apply_live_selective_contribution('${operator}','${account}','${engine}','${user}',
+   'BRL','BRL',2,2,null,'selected fixture',${allocation},725,'${request}','${fingerprint}')->>'status';
+  select count(*)=1 from coinops.robot_v1_live_selective_contribution_batches;
+  update coinops.robot_v1_live_runs set lease_owner='${lease}',lease_until=now()+interval '5 minutes' where id='${liveRun}';
+  ${sync(sell,"102","2",17.8,"SELL")}
+  select slot_number from coinops.credit_robot_v1_live_closed_slot('${liveRun}','${liveSlot}',1,'${sell}',.00001,'${lease}');
+  select status='APPLIED' and applied_at is not null and applied_operation_sequence=2
+   from coinops.robot_v1_live_selective_contribution_allocations;
+  select balance_brl=20.28 and contribution_brl=20 and market_pnl_brl=.30 and fees_brl=.02 and gain_count=1
+   from coinops.robot_v1_live_slot_accounts where trading_engine_id='${engine}' and slot_number=1;
+ select count(*)=1 from coinops.robot_v1_live_events where run_id='${liveRun}'
+   and event_type='SELECTIVE_CONTRIBUTION_APPLIED';`);
+ assert.deepEqual(out.split("\n").filter(x=>["APPLIED","REPLAYED","t"].includes(x)),
+  ["APPLIED","t","t","t","t","REPLAYED","t","t","t","t"]);
+});
+
+check("5.9 SQL: concurrent duplicate confirmations converge to one batch",async()=>{
+ const request="77777777-8888-4999-8aaa-bbbbbbbbbbbb",fingerprint="c".repeat(64);
+ sql(`begin;set local request.jwt.claim.role='service_role';${liveFixture()}
+  update coinops.robot_v1_live_runs set lease_owner=null,lease_until=null where id='${liveRun}';commit;`);
+ const allocation=`(select jsonb_build_array(jsonb_build_object('engineId','${engine}',
+  'slotNumber',2,'amount',2,'balanceBefore',a.balance_brl,'operationSequence',s.operation_sequence))
+  from coinops.robot_v1_live_slot_accounts a join coinops.robot_v1_live_slots s
+   on s.trading_engine_id=a.trading_engine_id and s.slot_number=a.slot_number
+  where a.trading_engine_id='${engine}' and a.slot_number=2)`;
+ const statement=`set request.jwt.claim.role='service_role';select coinops.apply_live_selective_contribution(
+  '${operator}','${account}','${engine}','${user}','BRL','BRL',2,2,null,'concurrent fixture',
+  ${allocation},725,'${request}','${fingerprint}')->>'status';`;
+ const outcomes=(await Promise.all([invokeAsync(["-c",statement]),invokeAsync(["-c",statement])]))
+  .map((output)=>output.split("\n").at(-1)).sort();
+ assert.deepEqual(outcomes,["APPLIED","REPLAYED"]);
+ assert.equal(sql(`select count(*)=1 from coinops.robot_v1_live_selective_contribution_batches
+  where request_id='${request}'`),"t");
+ assert.equal(sql(`select hard_cap_quote=727 from coinops.account_quote_caps
+  where exchange_account_id='${account}' and quote_asset='BRL'`),"t");
+ assert.equal(sql(`select balance_brl=20 and contribution_brl=20 from coinops.robot_v1_live_slot_accounts
+  where trading_engine_id='${engine}' and slot_number=2`),"t");
 });

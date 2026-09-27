@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { allocateBulkSlots, splitBulkEngines } from "@/lib/execution/live-adjustment-plans";
+import { allocateBulkSlots, allocateSelectedSlots, splitBulkEngines } from "@/lib/execution/live-adjustment-plans";
 import "./live-adjustments-center.css";
 
 type Account = { id: string; display_name: string; is_legacy_default: boolean };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: "BRL" | "USDT";
   base_asset: "BTC" | "SOL"; status: string; hard_cap_quote: number | string };
-type Slot = { trading_engine_id: string; slot_number: number; entry_state: string; position_committed_brl: number | string };
+type Slot = { trading_engine_id: string; slot_number: number; operation_sequence: number; entry_state: string;
+  position_committed_brl: number | string; target_buy_price: number | string; entry_reference_price: number | string };
 type SlotAccount = { trading_engine_id: string; slot_number: number; balance_quote: number | string;
   contribution_quote: number | string; market_pnl_quote: number | string; fees_quote: number | string };
 type Total = { trading_engine_id: string; slot_number: number; lifetime_gain_count: number; monthly_gain_count: number };
@@ -18,8 +19,17 @@ type Plan = { id: string; exchange_account_id: string; quote_asset: string; revi
   status: "ACTIVE" | "DISABLED"; origin_currency: "BRL" | "USDT";
   monthly_amount_origin: number | string; btc_percent: number; sol_percent: number;
   start_month: string; horizon_months: number; reason: string; created_at: string };
+type SelectiveBatch = { id: string; exchange_account_id: string; trading_engine_id: string;
+  quote_asset: string; amount_quote: number | string; reason: string; source: string; created_at: string };
+type SelectiveAllocation = { id: string; batch_id: string; trading_engine_id: string; slot_number: number;
+  amount_quote: number | string; status: "PENDING" | "APPLIED" | "CANCELLED"; source: string;
+  created_at: string; applied_at: string | null; applied_operation_sequence: number | null };
+type LiveOrder = { trading_engine_id: string; slot_number: number; operation_sequence: number;
+  side: "BUY" | "SELL"; purpose: string; status: string; cumulative_quote: number | string;
+  executed_quantity: number | string; price: number | string | null };
 type Status = { accounts: Account[]; engines: Engine[]; slots: Slot[];
-  slotAccounts: SlotAccount[]; totals: Total[]; batches: Batch[]; plans: Plan[] };
+  slotAccounts: SlotAccount[]; totals: Total[]; batches: Batch[]; plans: Plan[];
+  selectiveBatches: SelectiveBatch[]; selectiveAllocations: SelectiveAllocation[]; orders: LiveOrder[] };
 type Preview = { previewHash: string; account: string; quote: string; amount: number;
   origin: number; originCurrency: string; free: number; exposure: number;
   availableForNewCapital: number; accountCap: number; afterCap: number;
@@ -28,10 +38,12 @@ type Preview = { previewHash: string; account: string; quote: string; amount: nu
   openCount: number; pendingForNextOperation: number;
   allocations: Array<{ engineId: string; slotNumber: number; amount: number; gainUnits: number;
     balanceBefore: number; balanceAfter: number; monthlyBefore: number; monthlyAfter: number;
-    lifetimeBefore: number; lifetimeAfter: number; open: boolean; target: number }> };
+    lifetimeBefore: number; lifetimeAfter: number; open: boolean; target: number;
+    allocationStatus: "PENDING" | "APPLIED" }> };
 type Draft = { action: string; kind?: string; accountId: string; quote: "BRL" | "USDT";
   engineId?: string; slotNumber?: number; gainUnits?: number; amount?: number;
   shares?: Array<{ engineId: string; amount: number }>; originCurrency?: "BRL" | "USDT";
+  selectedSlots?: number[]; customAllocations?: Array<{ slotNumber: number; amount: number }>;
   originAmount?: number; fxObservedAt?: string; evidence?: string; reason: string;
   requestId: string; previewHash?: string; originalId?: string; monthlyAmount?: number;
   btcPercent?: number; startMonth?: string; horizonMonths?: number };
@@ -67,7 +79,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const [status, setStatus] = useState<Status | null>(null);
   const [accountId, setAccountId] = useState(initialAccountId === "ALL" ? "" : initialAccountId);
   const [quote, setQuote] = useState<"BRL" | "USDT">("BRL");
-  const [kind, setKind] = useState<"MANUAL_GAIN" | "SLOT_CAPITAL" | "BULK_CAPITAL">("MANUAL_GAIN");
+  const [kind, setKind] = useState<"MANUAL_GAIN" | "SLOT_CAPITAL" | "BULK_CAPITAL" | "SELECTIVE_CAPITAL">("MANUAL_GAIN");
   const [engineId, setEngineId] = useState("");
   const [slotNumber, setSlotNumber] = useState(1);
   const [gainUnits, setGainUnits] = useState(1);
@@ -79,6 +91,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const [distribution, setDistribution] = useState<"EQUAL" | "PERCENT" | "ABSOLUTE">("EQUAL");
   const [firstPercent, setFirstPercent] = useState(50);
   const [firstAmountText, setFirstAmountText] = useState("");
+  const [selectedSlots, setSelectedSlots] = useState<number[]>([]);
+  const [slotFilter, setSlotFilter] = useState<"ALL" | "OPEN" | "AVAILABLE" | "PENDING">("ALL");
+  const [slotDistribution, setSlotDistribution] = useState<"EQUAL" | "CUSTOM">("EQUAL");
+  const [customSlotAmounts, setCustomSlotAmounts] = useState<Record<number, string>>({});
   const [reason, setReason] = useState("");
   const [planAmount, setPlanAmount] = useState("");
   const [planOrigin, setPlanOrigin] = useState<"BRL" | "USDT">("BRL");
@@ -138,9 +154,19 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const scopedSlotAccounts = (status?.slotAccounts ?? []).filter((item) => accountEngineIds.has(item.trading_engine_id));
   const externalContributions = (status?.batches ?? []).filter((item) => item.exchange_account_id === accountId
     && item.quote_asset === quote && ["CAPITAL", "REVERSAL"].includes(item.kind))
-    .reduce((sum, item) => sum + Number(item.amount_quote), 0);
+    .reduce((sum, item) => sum + Number(item.amount_quote), 0)
+    + (status?.selectiveBatches ?? []).filter((item) => item.exchange_account_id === accountId
+      && item.quote_asset === quote).reduce((sum, item) => sum + Number(item.amount_quote), 0);
   const marketResult = scopedSlotAccounts.reduce((sum, item) => sum + Number(item.market_pnl_quote) - Number(item.fees_quote), 0);
   const operationalBalance = scopedSlotAccounts.reduce((sum, item) => sum + Number(item.balance_quote), 0);
+  const selectivePending = (status?.selectiveAllocations ?? []).filter((item) => item.status === "PENDING");
+  const pendingBySlot = new Map<string, number>();
+  for (const item of selectivePending) {
+    const key = `${item.trading_engine_id}:${item.slot_number}`;
+    pendingBySlot.set(key, (pendingBySlot.get(key) ?? 0) + Number(item.amount_quote));
+  }
+  const engineSlots = (status?.slots ?? []).filter((item) => item.trading_engine_id === engineId)
+    .sort((left, right) => left.slot_number - right.slot_number);
 
   function invalidate() { setPreview(null); setPreviewDraft(null); setReverse(null); setError(""); setNotice(""); setRequestId(crypto.randomUUID()); }
   function chooseAccount(value: string) {
@@ -148,12 +174,12 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     const nextQuote = status?.engines.find((item) => item.exchange_account_id === value)?.quote_asset ?? "BRL";
     setQuote(nextQuote); setOriginCurrency(nextQuote);
     setEngineId(status?.engines.find((item) => item.exchange_account_id === value)?.id ?? "");
-    setSelected([]); invalidate();
+    setSelected([]); setSelectedSlots([]); setCustomSlotAmounts({}); invalidate();
   }
   function chooseQuote(value: "BRL" | "USDT") {
     setQuote(value); setOriginCurrency(value);
     setEngineId(accountEngines.find((item) => item.quote_asset === value)?.id ?? "");
-    setSelected([]); invalidate();
+    setSelected([]); setSelectedSlots([]); setCustomSlotAmounts({}); invalidate();
   }
   function shares() {
     const ids = selectedEngines.map((item) => item.id);
@@ -168,9 +194,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   }
   function draft(): Draft {
     if (!account || !quotes.includes(quote)) throw new Error("Selecione conta e moeda específicas.");
-    if (account.is_legacy_default && kind !== "MANUAL_GAIN")
+    if (account.is_legacy_default && kind !== "MANUAL_GAIN" && kind !== "SELECTIVE_CAPITAL")
       throw new Error("O limite fixo de Rafael não permite capital adicional sem autorização separada.");
-    const base: Draft = { action: "PREVIEW", kind: kind === "MANUAL_GAIN" ? "MANUAL_GAIN" : "CAPITAL",
+    const base: Draft = { action: "PREVIEW", kind: kind === "MANUAL_GAIN" ? "MANUAL_GAIN"
+      : kind === "SELECTIVE_CAPITAL" ? "SELECTIVE_CAPITAL" : "CAPITAL",
       accountId, quote, originCurrency: kind === "MANUAL_GAIN" ? quote : originCurrency,
       reason: reason.trim(), requestId };
     if (kind === "MANUAL_GAIN") return { ...base, engineId, slotNumber, gainUnits };
@@ -178,6 +205,14 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
       originAmount: Number(originText.replace(",", ".")), evidence: evidence.trim(),
       fxObservedAt: new Date().toISOString(),
     };
+    if (kind === "SELECTIVE_CAPITAL") {
+      const customAllocations = slotDistribution === "CUSTOM" ? selectedSlots.map((selectedSlotNumber) => ({
+        slotNumber: selectedSlotNumber,
+        amount: Number((customSlotAmounts[selectedSlotNumber] ?? "").replace(",", ".")),
+      })) : undefined;
+      allocateSelectedSlots(amount, engineId, selectedSlots, customAllocations);
+      return { ...base, engineId, amount, selectedSlots, customAllocations, ...currencyDetails };
+    }
     return kind === "SLOT_CAPITAL"
       ? { ...base, engineId, slotNumber, amount, ...currencyDetails }
       : { ...base, amount, shares: shares(), ...currencyDetails };
@@ -254,13 +289,15 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
       <label>Moeda do motor<select value={quote} onChange={(event) => chooseQuote(event.target.value as "BRL" | "USDT")}>
         {quotes.map((item) => <option value={item} key={item}>{item}</option>)}</select></label></div>
       <div className="lac-mode" role="group" aria-label="Tipo de ajuste">
-        {([['MANUAL_GAIN','Adicionar gain'],['SLOT_CAPITAL','Adicionar saldo'],['BULK_CAPITAL','Aporte em massa']] as const).map(([key,label]) =>
+        {([['MANUAL_GAIN','Adicionar gain'],['SLOT_CAPITAL','Adicionar saldo'],
+          ['BULK_CAPITAL','Todos os slots'],['SELECTIVE_CAPITAL','Selecionar slots']] as const).map(([key,label]) =>
           <button type="button" key={key} aria-pressed={kind === key} onClick={() => { setKind(key); invalidate(); }}>{label}</button>)}</div>
       {kind !== "BULK_CAPITAL" ? <div className="lac-grid">
-        <label>Motor<select value={engineId} onChange={(event) => { setEngineId(event.target.value); invalidate(); }}>
+        <label>Motor<select value={engineId} onChange={(event) => { setEngineId(event.target.value); setSelectedSlots([]); setCustomSlotAmounts({}); invalidate(); }}>
           <option value="">Selecione</option>{inQuote.map((item) => <option value={item.id} key={item.id}>{item.symbol}</option>)}</select></label>
-        <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>
+        {kind !== "SELECTIVE_CAPITAL" ? <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>
           {Array.from({ length: 25 }, (_, index) => <option value={index + 1} key={index}>Slot #{index + 1}</option>)}</select></label>
+          : <p className="lac-slot-note">Escolha manualmente qualquer subconjunto dos 25 slots deste motor.</p>}
       </div> : <fieldset className="lac-engines"><legend>Motores que receberão o aporte</legend>
         {inQuote.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)}
           onChange={(event) => { setSelected(event.target.checked ? [...selected,item.id] : selected.filter((id) => id !== item.id)); invalidate(); }} />{item.symbol} · limite {format(item.hard_cap_quote, quote)}</label>)}
@@ -289,13 +326,54 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
               value={firstAmountText} onChange={(event) => { setFirstAmountText(event.target.value); invalidate(); }} /></label> : null}
           </div> : null}
           {kind === "BULK_CAPITAL" ? <p className="lac-slot-note">O valor de cada motor é distribuído igualmente entre seus 25 slots, com sobra de centavos explícita.</p> : null}</>}
+      {kind === "SELECTIVE_CAPITAL" ? <section className="lac-selective" aria-label="Aporte em slots selecionados">
+        <div className="lac-selective-head"><div><strong>Slots do motor</strong><small>{selectedSlots.length} selecionado(s)
+          {selectedSlots.length && Number.isFinite(amount) ? ` · ${slotDistribution === "EQUAL" ? format(amount / selectedSlots.length, quote) : "valores personalizados"}` : ""}</small></div>
+          <label>Distribuição<select value={slotDistribution} onChange={(event) => { setSlotDistribution(event.target.value as "EQUAL" | "CUSTOM"); invalidate(); }}>
+            <option value="EQUAL">Igual entre selecionados</option><option value="CUSTOM">Personalizar valores</option></select></label></div>
+        <div className="lac-slot-filters" role="group" aria-label="Filtrar slots">
+          {([['ALL','Todos'],['OPEN','OPEN'],['AVAILABLE','Disponíveis'],['PENDING','Com aporte pendente']] as const).map(([key,label]) =>
+            <button type="button" key={key} aria-pressed={slotFilter === key} onClick={() => setSlotFilter(key)}>{label}</button>)}</div>
+        <div className="lac-slot-picker">{engineSlots.filter((slot) => {
+          const pending = pendingBySlot.get(`${slot.trading_engine_id}:${slot.slot_number}`) ?? 0;
+          return slotFilter === "ALL" || slotFilter === "OPEN" && slot.entry_state === "OPEN"
+            || slotFilter === "AVAILABLE" && slot.entry_state !== "OPEN"
+            || slotFilter === "PENDING" && pending > 0;
+        }).map((slot) => {
+          const accountRow = status?.slotAccounts.find((item) => item.trading_engine_id === slot.trading_engine_id && item.slot_number === slot.slot_number);
+          const totalRow = status?.totals.find((item) => item.trading_engine_id === slot.trading_engine_id && item.slot_number === slot.slot_number);
+          const pending = pendingBySlot.get(`${slot.trading_engine_id}:${slot.slot_number}`) ?? 0;
+          const buys = (status?.orders ?? []).filter((order) => order.trading_engine_id === slot.trading_engine_id
+            && order.slot_number === slot.slot_number && order.operation_sequence === slot.operation_sequence
+            && order.side === "BUY" && Number(order.executed_quantity) > 0);
+          const quantity = buys.reduce((sum, order) => sum + Number(order.executed_quantity), 0);
+          const entry = quantity ? buys.reduce((sum, order) => sum + Number(order.cumulative_quote), 0) / quantity : null;
+          const checked = selectedSlots.includes(slot.slot_number);
+          return <label className={`lac-slot-choice${checked ? " is-selected" : ""}`} key={slot.slot_number}>
+            <span className="lac-slot-title"><input type="checkbox" checked={checked} onChange={(event) => {
+              setSelectedSlots(event.target.checked ? [...selectedSlots,slot.slot_number].sort((a,b) => a-b)
+                : selectedSlots.filter((number) => number !== slot.slot_number)); invalidate();
+            }} /><b>#{slot.slot_number}</b><em>{slot.entry_state === "OPEN" ? "OPEN"
+              : slot.entry_state === "ARMED" ? "PRÓXIMA BUY" : "DISPONÍVEL"}</em></span>
+            <span>{format(accountRow?.balance_quote, quote)} capital</span>
+            {pending > 0 ? <strong>+ {format(pending, quote)} pendente</strong> : null}
+            <small>{entry ? `Entrada ${format(entry, quote)}` : `Próxima referência ${format(slot.target_buy_price, quote)}`}
+              {` · ${totalRow?.lifetime_gain_count ?? 0} gains`}</small>
+            <small>{slot.entry_state === "OPEN" ? "Aplicação após o fechamento" : slot.entry_state === "ARMED" ? "Ordem atual não será alterada" : "Disponível no ledger; sem BUY automática"}</small>
+            {checked && slotDistribution === "CUSTOM" ? <input aria-label={`Valor do slot ${slot.slot_number}`} inputMode="decimal"
+              value={customSlotAmounts[slot.slot_number] ?? ""} placeholder="0,00" onChange={(event) => {
+                setCustomSlotAmounts({ ...customSlotAmounts, [slot.slot_number]: event.target.value }); invalidate();
+              }} /> : null}
+          </label>;
+        })}</div>
+      </section> : null}
       <label>Motivo<input value={reason} maxLength={160} onChange={(event) => { setReason(event.target.value); invalidate(); }}
         placeholder="Obrigatório para auditoria" /></label>
       <div className="lac-actions"><button type="button" disabled={busy} onClick={makePreview}>Pré-visualizar · sem ordens</button>
         <button type="button" className="lac-quiet" onClick={() => refresh().catch((cause) => setError(cause.message))}>Atualizar estado</button></div>
       {preview ? <div className="lac-preview"><h4>Antes → ajuste → depois</h4>
         <p><strong>{preview.account} · {quote}</strong> · Binance livre {format(preview.free, quote)} · CoinOps {format(preview.accountCap, quote)} → {format(preview.afterCap, quote)}</p>
-        {previewDraft?.kind === "CAPITAL" ? <p>Aporte {format(preview.amount, quote)} · disponível comprovado {format(preview.availableForNewCapital, quote)} · fora do CoinOps depois {format(preview.outsideCoinOps, quote)}</p> : null}
+        {["CAPITAL","SELECTIVE_CAPITAL"].includes(previewDraft?.kind ?? "") ? <p>Aporte {format(preview.amount, quote)} · disponível comprovado {format(preview.availableForNewCapital, quote)} · fora do CoinOps depois {format(preview.outsideCoinOps, quote)}</p> : null}
         {preview.fxReference ? <p>Conversão declarada: {format(preview.origin, "BRL")} → {format(preview.amount, "USDT")} ·
           taxa efetiva {preview.fxReference.effectiveRate.toFixed(4)} BRL/USDT · referência pública Binance
           {" "}{preview.fxReference.referenceRate.toFixed(4)} em {preview.fxReference.observedAt}.
@@ -304,10 +382,20 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
         <p>Nenhuma posição OPEN, preço médio, quantidade ou TP será alterado. Nenhuma ordem será criada pelo ajuste.</p>
         <details><summary>Ver todos os slots afetados</summary><div className="lac-items">{preview.allocations.map((item) =>
           <p key={`${item.engineId}:${item.slotNumber}`}><b>{inQuote.find((engine) => engine.id === item.engineId)?.symbol} · #{item.slotNumber}</b>
-            <span>{item.open ? "OPEN" : "sem posição"} · {format(item.balanceBefore, quote)} + {format(item.amount, quote)} → {format(item.balanceAfter, quote)}</span>
+            <span>{item.open ? "OPEN" : "sem posição"} · {format(item.balanceBefore, quote)}
+              {item.allocationStatus === "PENDING"
+                ? ` · + ${format(item.amount, quote)} APORTE PENDENTE · posição atual intacta`
+                : ` + ${format(item.amount, quote)} → ${format(item.balanceAfter, quote)}`}</span>
             <span>{item.monthlyBefore}/{item.target} → {item.monthlyAfter}/{item.target} ganhos do mês{item.monthlyBefore < item.target && item.monthlyAfter >= item.target ? " · META BATIDA" : ""}</span></p>)}</div></details>
         <button type="button" disabled={busy} onClick={confirm}>Confirmar ajuste auditável</button></div> : null}
       <details className="lac-history"><summary>Histórico e estornos</summary>
+        {(status.selectiveBatches ?? []).filter((item) => item.exchange_account_id === accountId).map((batch) => {
+          const allocations = status.selectiveAllocations.filter((item) => item.batch_id === batch.id);
+          const pending = allocations.filter((item) => item.status === "PENDING").length;
+          return <div key={batch.id}><span><b>APORTE EM SLOTS SELECIONADOS</b>{" · "}{format(batch.amount_quote, batch.quote_asset)}
+            {" · "}{new Date(batch.created_at).toLocaleString("pt-BR")}</span>
+            <small>{allocations.length} slots · {pending} pendente(s) · {batch.reason}</small></div>;
+        })}
         {(status.batches ?? []).filter((item) => item.exchange_account_id === accountId).map((batch) =>
           <div key={batch.id}><span><b>{batch.kind === "MANUAL_GAIN" ? "GAIN MANUAL" : batch.kind === "REVERSAL" ? "ESTORNO" : "APORTE EXTERNO"}</b>
             {" · "}{format(batch.amount_quote, batch.quote_asset)} · {new Date(batch.created_at).toLocaleString("pt-BR")}</span>

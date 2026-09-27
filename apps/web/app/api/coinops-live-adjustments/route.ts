@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 
-import { allocateBulkSlots, projectSlotAdjustment } from "@/lib/execution/live-adjustment-plans";
+import { allocateBulkSlots, allocateSelectedSlots, projectSelectiveSlotContribution,
+  projectSlotAdjustment } from "@/lib/execution/live-adjustment-plans";
 import { operatorAccountSnapshot, operatorExecutorAdmin } from "@/lib/execution/operator-executor-admin";
 import { isIdentity } from "@/lib/execution/operator-context";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
@@ -24,13 +25,15 @@ type Engine = { id: string; exchange_account_id: string; operator_id: string; sy
 type Run = { id: string; trading_engine_id: string; status: string; last_error: string | null;
   last_reconciled_at: string | null; lease_until: string | null };
 type Slot = { id: string; trading_engine_id: string; slot_number: number; operation_sequence: number;
-  entry_state: string; position_committed_brl: number | string };
+  entry_state: string; position_committed_brl: number | string; target_buy_price: number | string;
+  entry_reference_price: number | string };
 type SlotAccount = { trading_engine_id: string; slot_number: number; balance_quote: number | string;
   contribution_quote: number | string; gain_count: number };
 type Draft = { action: "PREVIEW" | "CONFIRM" | "REVERSE_PREVIEW" | "REVERSE_CONFIRM" | "PLAN_SAVE" | "PLAN_DISABLE";
-  kind?: "MANUAL_GAIN" | "CAPITAL"; accountId: string; quote: "BRL" | "USDT";
+  kind?: "MANUAL_GAIN" | "CAPITAL" | "SELECTIVE_CAPITAL"; accountId: string; quote: "BRL" | "USDT";
   engineId?: string; slotNumber?: number; gainUnits?: number; amount?: number;
   shares?: Array<{ engineId: string; amount: number }>;
+  selectedSlots?: number[]; customAllocations?: Array<{ slotNumber: number; amount: number }>;
   originCurrency?: "BRL" | "USDT"; originAmount?: number;
   fxObservedAt?: string; evidence?: string; reason: string; requestId: string;
   previewHash?: string; originalId?: string; monthlyAmount?: number; btcPercent?: number;
@@ -117,7 +120,7 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
   const runIds = runs.data.map((run) => run.id);
   const [slotRows, accounts, orderRows, totals, alerts] = await Promise.all([
     scope.service.from("robot_v1_live_slots")
-      .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl")
+      .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price")
       .in("run_id", runIds),
     scope.service.from("robot_v1_live_slot_accounts")
       .select("trading_engine_id,slot_number,balance_quote,contribution_quote,gain_count")
@@ -182,7 +185,7 @@ function allocationInput(state: Awaited<ReturnType<typeof inspect>>, engineId: s
 }
 
 async function preview(scope: Scope, input: Draft) {
-  if (!input.kind || !["MANUAL_GAIN", "CAPITAL"].includes(input.kind))
+  if (!input.kind || !["MANUAL_GAIN", "CAPITAL", "SELECTIVE_CAPITAL"].includes(input.kind))
     throw new Error("COINOPS_ADJUSTMENT_KIND_INVALID");
   const state = await inspect(scope, input.accountId, input.quote);
   let allocations: ReturnType<typeof allocationInput>[];
@@ -197,10 +200,16 @@ async function preview(scope: Scope, input: Draft) {
     allocations = [allocationInput(state, input.engineId!, input.slotNumber!, 0, input.gainUnits!)];
   } else {
     amount = exactCents(input.amount);
-    if (state.account.is_legacy_default) throw new Error("COINOPS_ADJUSTMENT_LEGACY_CAP_DENIED");
+    if (input.kind === "CAPITAL" && state.account.is_legacy_default)
+      throw new Error("COINOPS_ADJUSTMENT_LEGACY_CAP_DENIED");
     if (amount > state.availableForNewCapital)
       throw new Error("APORTE_BLOQUEADO_SALDO_INSUFICIENTE");
-    if (input.slotNumber !== undefined) {
+    if (input.kind === "SELECTIVE_CAPITAL") {
+      if (!isIdentity(input.engineId) || !state.engines.some((engine) => engine.id === input.engineId))
+        throw new Error("COINOPS_ADJUSTMENT_SLOT_SELECTION_INVALID");
+      allocations = allocateSelectedSlots(amount, input.engineId!, input.selectedSlots ?? [], input.customAllocations)
+        .map((slot) => allocationInput(state, slot.engineId, slot.slotNumber, slot.amount, 0));
+    } else if (input.slotNumber !== undefined) {
       if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
         || input.slotNumber < 1 || input.slotNumber > 25
         || !state.engines.some((engine) => engine.id === input.engineId))
@@ -227,12 +236,17 @@ async function preview(scope: Scope, input: Draft) {
       fxReference = await verifyBrlUsdtConversion(origin, amount);
     } else throw new Error("COINOPS_ADJUSTMENT_CURRENCY_INVALID");
   }
-  const after = allocations.map((row) => ({ ...projectSlotAdjustment(row),
-    target: state.engines.find((engine) => engine.id === row.engineId)?.base_asset === "BTC" ? 7 : 2 }));
+  const after = allocations.map((row) => {
+    const projected = input.kind === "SELECTIVE_CAPITAL"
+      ? projectSelectiveSlotContribution(row) : { ...projectSlotAdjustment(row), allocationStatus: "APPLIED" as const };
+    return { ...projected,
+      target: state.engines.find((engine) => engine.id === row.engineId)?.base_asset === "BTC" ? 7 : 2 };
+  });
   const payload = { accountId: input.accountId, quote: input.quote, kind: input.kind,
     amount, origin, originCurrency: input.originCurrency ?? input.quote,
     fxAt: input.fxObservedAt ?? null, evidence: input.evidence?.trim() ?? null,
     reason: input.reason.trim(), requestId: input.requestId, accountCap: state.cap,
+    selectedSlots: input.selectedSlots ?? null, customAllocations: input.customAllocations ?? null,
     free: state.free, exposure: state.exposure, allocations: after };
   return { ...payload, account: state.account.display_name,
     availableForNewCapital: state.availableForNewCapital,
@@ -248,6 +262,15 @@ async function preview(scope: Scope, input: Draft) {
 async function existingBatch(scope: Scope, accountId: string, requestId: string) {
   const found = await scope.service.from("robot_v1_live_adjustment_batches")
     .select("id,kind,quote_asset,origin_currency,origin_amount,amount_quote,reason,reversal_of")
+    .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+    .eq("request_id", requestId).maybeSingle();
+  if (found.error) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
+  return found.data;
+}
+
+async function existingSelectiveBatch(scope: Scope, accountId: string, requestId: string) {
+  const found = await scope.service.from("robot_v1_live_selective_contribution_batches")
+    .select("id,request_fingerprint,trading_engine_id,quote_asset,amount_quote")
     .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
     .eq("request_id", requestId).maybeSingle();
   if (found.error) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
@@ -320,10 +343,31 @@ async function syncRecordedCaps(scope: Scope, accountId: string, quote: "BRL" | 
   if (result.status !== "UPDATED") throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
 }
 
+async function syncSelectiveRecordedCaps(scope: Scope, accountId: string, quote: "BRL" | "USDT",
+  batchId: string) {
+  const loaded = await loadAccount(scope, accountId, quote);
+  const batch = await scope.service.from("robot_v1_live_selective_contribution_batches")
+    .select("trading_engine_id,amount_quote").eq("id", batchId).eq("operator_id", scope.operator.id).single();
+  if (batch.error || !batch.data) throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
+  const delta = Number(batch.data.amount_quote);
+  const result = await operatorExecutorAdmin<{ status: string }>("/v1/admin/capital", {
+    operator_id: scope.operator.id, exchange_account_id: accountId,
+    credential_ref: loaded.account.credential_ref, environment: "REAL", quote_asset: quote,
+    expected_account_cap_quote: Number((loaded.cap - delta).toFixed(2)),
+    target_account_cap_quote: loaded.cap,
+    engines: loaded.engines.map((engine) => ({ trading_engine_id: engine.id, symbol: engine.symbol,
+      expected_hard_cap_quote: Number((Number(engine.hard_cap_quote)
+        - (engine.id === batch.data.trading_engine_id ? delta : 0)).toFixed(2)),
+      target_hard_cap_quote: Number(engine.hard_cap_quote) })),
+  }, "CAPITAL");
+  if (result.status !== "UPDATED") throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
+}
+
 export async function GET() {
   try {
     const scope = await adminScope();
-    const [accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans] = await Promise.all([
+    const [accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
+      selectiveBatches, selectiveAllocations] = await Promise.all([
       scope.service.from("exchange_accounts").select("id,display_name,status,is_legacy_default")
         .eq("operator_id", scope.operator.id).eq("status", "ACTIVE").order("display_name"),
       scope.service.from("trading_engines")
@@ -337,7 +381,7 @@ export async function GET() {
         .select("trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
         .eq("operator_id", scope.operator.id),
       scope.service.from("robot_v1_live_slots")
-        .select("run_id,trading_engine_id,slot_number,entry_state,position_committed_brl")
+        .select("run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price")
         .eq("operator_id", scope.operator.id),
       scope.service.from("robot_v1_slot_gain_totals")
         .select("trading_engine_id,slot_number,lifetime_gain_count,monthly_gain_count")
@@ -348,15 +392,31 @@ export async function GET() {
       scope.service.from("robot_v1_live_contribution_plans")
         .select("id,exchange_account_id,quote_asset,revision,status,origin_currency,monthly_amount_origin,btc_percent,sol_percent,start_month,horizon_months,reason,created_at")
         .eq("operator_id", scope.operator.id).order("created_at", { ascending: false }).limit(100),
+      scope.service.from("robot_v1_live_selective_contribution_batches")
+        .select("id,exchange_account_id,trading_engine_id,quote_asset,origin_currency,origin_amount,amount_quote,reason,source,created_at")
+        .eq("operator_id", scope.operator.id).order("created_at", { ascending: false }).limit(1000),
+      scope.service.from("robot_v1_live_selective_contribution_allocations")
+        .select("id,batch_id,trading_engine_id,slot_number,amount_quote,status,source,slot_state_at_creation,operation_sequence_at_creation,created_at,applied_at,applied_operation_sequence")
+        .eq("operator_id", scope.operator.id).order("created_at", { ascending: false }).limit(25000),
     ]);
-    if ([accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans].some((item) => item.error)
-      || batches.data?.length === 1000 || plans.data?.length === 100)
+    const currentRunIds = (runs.data ?? []).map((run) => run.id);
+    const orders = currentRunIds.length ? await scope.service.from("robot_v1_live_orders")
+      .select("run_id,trading_engine_id,slot_number,operation_sequence,side,purpose,status,cumulative_quote,executed_quantity,price")
+      .eq("operator_id", scope.operator.id).in("run_id", currentRunIds)
+      .order("created_at", { ascending: false }).limit(5000) : { data: [], error: null };
+    if ([accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
+      selectiveBatches, selectiveAllocations, orders].some((item) => item.error)
+      || batches.data?.length === 1000 || plans.data?.length === 100
+      || selectiveBatches.data?.length === 1000 || selectiveAllocations.data?.length === 25000
+      || orders.data?.length === 5000)
       throw new Error("COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE");
-    const currentRunIds = new Set((runs.data ?? []).map((run) => run.id));
+    const currentRunIdSet = new Set(currentRunIds);
     return json({ accounts: accounts.data, engines: engines.data, caps: caps.data,
       runs: runs.data, slotAccounts: slotAccounts.data,
-      slots: (slots.data ?? []).filter((slot) => currentRunIds.has(slot.run_id)),
-      totals: totals.data, batches: batches.data, plans: plans.data });
+      slots: (slots.data ?? []).filter((slot) => currentRunIdSet.has(slot.run_id)),
+      totals: totals.data, batches: batches.data, plans: plans.data,
+      selectiveBatches: selectiveBatches.data, selectiveAllocations: selectiveAllocations.data,
+      orders: (orders.data ?? []).filter((order) => currentRunIdSet.has(order.run_id)) });
   } catch { return json({ error: "COINOPS_ADJUSTMENT_ADMIN_UNAVAILABLE" }, 403); }
 }
 
@@ -392,6 +452,15 @@ export async function POST(request: NextRequest) {
     }
     if (input.action === "PREVIEW" || input.action === "CONFIRM") {
       if (input.action === "CONFIRM") {
+        if (input.kind === "SELECTIVE_CAPITAL") {
+          const existing = await existingSelectiveBatch(scope, input.accountId, input.requestId);
+          if (existing) {
+            if (!input.previewHash || existing.request_fingerprint !== input.previewHash)
+              throw new Error("COINOPS_ADJUSTMENT_REPLAY_CONFLICT");
+            await syncSelectiveRecordedCaps(scope, input.accountId, input.quote, existing.id);
+            return json({ status: "REPLAYED", id: existing.id });
+          }
+        }
         const existing = await existingBatch(scope, input.accountId, input.requestId);
         if (existing) {
           await verifyReplay(scope, input, existing);
@@ -409,21 +478,34 @@ export async function POST(request: NextRequest) {
       const evidence = result.fxReference
         ? `${result.evidence}; ${result.fxReference.source}; USDTBRL=${result.fxReference.referenceRate}; observed_at=${result.fxReference.observedAt}`
         : result.evidence;
-      const saved = await scope.service.rpc("apply_live_operator_adjustment", {
-        p_operator_id: scope.operator.id, p_account_id: input.accountId,
-        p_created_by: scope.operator.user_id, p_kind: input.kind,
-        p_quote_asset: input.quote, p_origin_currency: result.originCurrency,
-        p_origin_amount: result.origin, p_amount_quote: result.amount,
-        p_fx_rate: fxRate, p_fx_observed_at: result.fxReference?.observedAt ?? null,
-        p_evidence: evidence, p_reason: result.reason,
-        p_allocations: result.allocations.map((item) => ({ engineId: item.engineId,
-          slotNumber: item.slotNumber, amount: item.amount, gainUnits: item.gainUnits,
-          balanceBefore: item.balanceBefore, operationSequence: item.operationSequence,
-          monthlyBefore: item.monthlyBefore, lifetimeBefore: item.lifetimeBefore })),
-        p_expected_account_cap: result.accountCap, p_request_id: input.requestId,
-      });
+      const saved = input.kind === "SELECTIVE_CAPITAL"
+        ? await scope.service.rpc("apply_live_selective_contribution", {
+          p_operator_id: scope.operator.id, p_account_id: input.accountId,
+          p_engine_id: input.engineId, p_created_by: scope.operator.user_id,
+          p_quote_asset: input.quote, p_origin_currency: result.originCurrency,
+          p_origin_amount: result.origin, p_amount_quote: result.amount,
+          p_evidence: evidence, p_reason: result.reason,
+          p_allocations: result.allocations.map((item) => ({ engineId: item.engineId,
+            slotNumber: item.slotNumber, amount: item.amount, balanceBefore: item.balanceBefore,
+            operationSequence: item.operationSequence })),
+          p_expected_account_cap: result.accountCap, p_request_id: input.requestId,
+          p_request_fingerprint: result.previewHash,
+        })
+        : await scope.service.rpc("apply_live_operator_adjustment", {
+          p_operator_id: scope.operator.id, p_account_id: input.accountId,
+          p_created_by: scope.operator.user_id, p_kind: input.kind,
+          p_quote_asset: input.quote, p_origin_currency: result.originCurrency,
+          p_origin_amount: result.origin, p_amount_quote: result.amount,
+          p_fx_rate: fxRate, p_fx_observed_at: result.fxReference?.observedAt ?? null,
+          p_evidence: evidence, p_reason: result.reason,
+          p_allocations: result.allocations.map((item) => ({ engineId: item.engineId,
+            slotNumber: item.slotNumber, amount: item.amount, gainUnits: item.gainUnits,
+            balanceBefore: item.balanceBefore, operationSequence: item.operationSequence,
+            monthlyBefore: item.monthlyBefore, lifetimeBefore: item.lifetimeBefore })),
+          p_expected_account_cap: result.accountCap, p_request_id: input.requestId,
+        });
       if (saved.error || !saved.data) throw new Error(saved.error?.message ?? "COINOPS_ADJUSTMENT_APPLY_FAILED");
-      if (input.kind === "CAPITAL") {
+      if (input.kind === "CAPITAL" || input.kind === "SELECTIVE_CAPITAL") {
         try {
           const changed = await changeCaps(scope, state, result.allocations, result.afterCap);
           if (changed.status !== "UPDATED") throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");

@@ -32,6 +32,7 @@ novas funcionalidades. Preserve migrations e ledger para leitura histórica.
 - [Operador multi-account/multi-market 5.6](./COINOPS_MULTI_ACCOUNT_OPERATOR_5_6.md) — identidade, isolamento por conta/motor/moeda, executor, onboarding e rollout compatível; gates dependem da evidência de fechamento.
 - [Automação premium 5.5](./COINOPS_AUTOMATION_PREMIUM_5_5.md) — design system dos quatro ambientes, paridade funcional, drawers e smoke sem ordens.
 - [Automação ao vivo](./COINOPS_AUTOMATION_REALTIME.md) — sinais Realtime por motor, preços públicos, fallback e indicadores de desatualização sem writes no browser.
+- [Aporte seletivo por slots](./COINOPS_SELECTIVE_SLOT_CONTRIBUTIONS.md) — seleção manual de 1–25 slots, distribuição exata, ledger PENDING/APPLIED, idempotência e proteção integral de posições OPEN.
 - [Preparação LIVE 5.1 em BRL](./COINOPS_LIVE_PREPARATION_5_1.md) — BTCBRL/SOLBRL, filtros GET, capital, hard caps, preview e LIVE bloqueado.
 - [Auditoria adversarial pré-LIVE 5.0](./COINOPS_PRE_LIVE_AUDIT_5_0.md) — ledger, concorrência, recovery, metas, ATH, snapshots e gate somente leitura.
 - [Strategy Engine 4.1](./STRATEGY_ENGINE_4_1.md) — decisões únicas Shadow/Testnet, correção de cache, reactor de um minuto, missed e auditoria.

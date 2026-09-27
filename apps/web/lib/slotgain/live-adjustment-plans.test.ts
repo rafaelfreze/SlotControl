@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allocateBulkSlots, projectSlotAdjustment, splitBulkEngines } from "../execution/live-adjustment-plans.ts";
+import { allocateBulkSlots, allocateSelectedSlots, projectSelectiveSlotContribution,
+  projectSlotAdjustment, splitBulkEngines } from "../execution/live-adjustment-plans.ts";
 import { isIdentity } from "../execution/operator-context.ts";
 
 const btc = "11111111-1111-4111-8111-111111111111";
@@ -58,4 +59,48 @@ test("closed capital and manual gain stay different accounting dimensions", () =
   assert.equal(gain.balanceAfter, 20.76);
   assert.equal(gain.monthlyAfter, 2);
   assert.equal(gain.lifetimeAfter, 9);
+});
+
+test("selected contributions support 1, 3, 5 and 25 slots without leaking one cent", () => {
+  for (const selected of [[7], [1, 7, 25], [1, 2, 3, 7, 8], Array.from({ length: 25 }, (_, index) => index + 1)]) {
+    const allocations = allocateSelectedSlots(1000, btc, selected);
+    assert.deepEqual(allocations.map((item) => item.slotNumber), selected);
+    assert.equal(allocations.reduce((sum, item) => sum + Math.round(item.amount * 100), 0), 100_000);
+  }
+  assert.deepEqual(allocateSelectedSlots(1000, btc, [1, 2, 3, 7, 8]).map((item) => item.amount),
+    [200, 200, 200, 200, 200]);
+});
+
+test("selected equal distribution assigns odd remainder cents deterministically", () => {
+  assert.deepEqual(allocateSelectedSlots(10, btc, [3, 1, 2]), [
+    { engineId: btc, slotNumber: 1, amount: 3.34 },
+    { engineId: btc, slotNumber: 2, amount: 3.33 },
+    { engineId: btc, slotNumber: 3, amount: 3.33 },
+  ]);
+});
+
+test("selected custom values must match exactly the total and selected set", () => {
+  assert.deepEqual(allocateSelectedSlots(10, btc, [1, 3], [
+    { slotNumber: 1, amount: 4.25 }, { slotNumber: 3, amount: 5.75 },
+  ]).map((item) => item.amount), [4.25, 5.75]);
+  assert.throws(() => allocateSelectedSlots(10, btc, [1, 3], [
+    { slotNumber: 1, amount: 4 }, { slotNumber: 3, amount: 5 },
+  ]), /CUSTOM_SUM/);
+  assert.throws(() => allocateSelectedSlots(10, btc, [1, 3], [
+    { slotNumber: 1, amount: 5 }, { slotNumber: 2, amount: 5 },
+  ]), /CUSTOM_SUM/);
+  assert.throws(() => allocateSelectedSlots(0.02, btc, [1, 2, 3]), /SLOT_MINIMUM/);
+});
+
+test("selected OPEN capital is pending while available capital applies immediately", () => {
+  const base = { balanceBefore: 20, committed: 20, amount: 200,
+    gainUnits: 0, monthlyBefore: 1, lifetimeBefore: 4 };
+  const open = projectSelectiveSlotContribution({ ...base, open: true });
+  const available = projectSelectiveSlotContribution({ ...base, committed: 0, open: false });
+  assert.equal(open.allocationStatus, "PENDING");
+  assert.equal(open.balanceAfter, 20);
+  assert.equal(open.committedAfter, 20);
+  assert.equal(available.allocationStatus, "APPLIED");
+  assert.equal(available.balanceAfter, 220);
+  assert.equal(available.committedAfter, 0);
 });
