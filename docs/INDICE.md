@@ -9,6 +9,10 @@ novas funcionalidades. Preserve migrations e ledger para leitura histórica.
   admissão, headroom, sharding e condições de publicação.
 - [Custos & Operação (ADMIN)](./COINOPS_FINOPS_PROVIDERS.md) — serviços reais,
   custos estimados e rateio, câmbio, snapshots e isolamento financeiro.
+- [Entrega e operação FinOps](./COINOPS_FINOPS_DELIVERY.md) — sincronização,
+  segurança, testes, publicação, evidências e limites financeiros.
+- [Monitor Production de 2 horas](./COINOPS_PRODUCTION_MONITOR_2H.md) — supervisão
+  leve do Watchdog, incidentes, isolamento e aprendizado seguro, sem chaos de rotina.
 - [Retirada do legado manual](./COINOPS_LEGACY_RETIREMENT.md) — rotas removidas,
   histórico preservado e contrato Automation-first.
 - [Auditoria de escala](./COINOPS_50_ACCOUNTS_AUDIT.md) — evidências e gates

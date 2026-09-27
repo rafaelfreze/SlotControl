@@ -8,6 +8,12 @@ próxima BUY e recuperar um ciclo. Seu lease é por `robot_v1_live_runs.id`.
 tabela `executor_shards`, lê heartbeat/CPU/RAM/weight/fila e alerta sobre shard
 offline ou saturação. O `systemd` em cada VPS reinicia o processo executor.
 
+A supervisão Codex de Production a cada duas horas é uma camada separada:
+consulte `COINOPS_PRODUCTION_MONITOR_2H.md`. Seu fast path é somente leitura,
+usa registry/telemetria/ledger e não executa chaos tests ou Testnet por rotina.
+Incidentes novos só ampliam auto-recovery após causa determinística,
+reconciliação, idempotência, isolamento e regression test comprovados.
+
 `/api/cron/coinops-watchdog` é a segunda camada server-side, a cada minuto.
 O caminho normal consulta somente Supabase: registry de shards, última
 telemetria, runs ACTIVE, vínculo conta→shard, engine, 25 slots, ordens residentes
