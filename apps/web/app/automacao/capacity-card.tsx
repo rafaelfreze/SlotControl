@@ -42,11 +42,10 @@ export function CapacityCard() {
     const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 30_000);
     return () => { abort.abort(); clearInterval(timer); };
   }, []);
-  return <section className="px-panel px-capacity" id="coinops-infrastructure" aria-label="Infraestrutura CoinOps">
-    <h2>Infraestrutura</h2>
+  return <section className="px-capacity" id="coinops-infrastructure" aria-label="Infraestrutura CoinOps">
     {shards === null ? <p>Consultando capacidade do executor…</p> : shards.length === 0
       ? <p role="status">Capacidade indisponível. Novas ativações ficam bloqueadas; motores existentes continuam operando.</p>
-      : shards.map((shard) => <div key={shard.id} className="px-capacity-shard" id={`infra-${shard.id}`}>
+      : shards.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}>
         <div className="px-capacity-heading"><strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
           <span>{shard.accountCount} contas · {shard.engineCount} motores</span></div>
         <button type="button" className="px-capacity-expand" aria-expanded={expandedShard === shard.id}

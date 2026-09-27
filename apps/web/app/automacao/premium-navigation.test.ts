@@ -5,6 +5,7 @@ import test from "node:test";
 const source = readFileSync(new URL("./premium-automation.tsx", import.meta.url), "utf8");
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
 const watchdog = readFileSync(new URL("./watchdog-card.tsx", import.meta.url), "utf8");
+const capacity = readFileSync(new URL("./capacity-card.tsx", import.meta.url), "utf8");
 
 test("product environment navigation is only Testnet and Real; default stays Live", () => {
   assert.match(source, /const visibleEnvironments = \["testnet", "live"\] as const/);
@@ -52,4 +53,10 @@ test("watchdog starts collapsed and reveals operational evidence on demand", () 
   assert.doesNotMatch(watchdog, /<details open/);
   assert.match(watchdog, /Ver detalhes/);
   assert.match(watchdog, /Executores: \{status\.executors\.healthy\}\/\{status\.executors\.total\} saudáveis/);
+});
+
+test("infrastructure area shows only compact executor cards", () => {
+  assert.doesNotMatch(capacity, /<h2>Infraestrutura<\/h2>/);
+  assert.doesNotMatch(capacity, /className="px-panel px-capacity"/);
+  assert.match(capacity, /className="px-panel px-capacity-shard"/);
 });
