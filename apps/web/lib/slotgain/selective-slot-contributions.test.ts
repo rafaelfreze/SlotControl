@@ -6,6 +6,8 @@ import test from "node:test";
 const root = resolve("../..");
 const migration = readFileSync(resolve(root,
   "supabase/migrations/20260927133000_add_selective_slot_contributions.sql"), "utf8");
+const presetsMigration = readFileSync(resolve(root,
+  "supabase/migrations/20260927201831_add_selective_contribution_presets.sql"), "utf8");
 const route = readFileSync(resolve(root, "apps/web/app/api/coinops-live-adjustments/route.ts"), "utf8");
 const ui = readFileSync(resolve(root, "apps/web/app/automacao/live-adjustments-center.tsx"), "utf8");
 
@@ -34,8 +36,23 @@ test("OPEN allocation is pending and official TP settlement applies it once", ()
 });
 
 test("admin UI exposes explicit selection, filters, custom split and preview", () => {
-  for (const label of ["Selecionar slots", "Igual entre selecionados", "Personalizar valores",
+  for (const label of ["Selecionar manualmente", "Igual entre selecionados", "Personalizar valores",
     "Com aporte pendente", "APORTE PENDENTE", "Pré-visualizar · sem ordens"])
     assert.ok(ui.includes(label), `missing UI contract: ${label}`);
   assert.match(ui, /Array\.from\(\{ length: 25 \}/);
+});
+
+test("configurable presets are operator-scoped and never become a second financial service", () => {
+  assert.match(presetsMigration, /robot_v1_live_selective_contribution_presets/);
+  assert.match(presetsMigration, /enable row level security/);
+  assert.match(presetsMigration, /force row level security/);
+  assert.match(presetsMigration, /private\.coinops_operator_owned\(operator_id\)/);
+  assert.match(presetsMigration, /1 aberto \+ 4 abaixo/);
+  assert.match(presetsMigration, /2 abertos \+ 3 abaixo/);
+  assert.match(presetsMigration, /usage_count>0/);
+  assert.doesNotMatch(presetsMigration, /create_order|cancel_order|["']MARKET["']/i);
+  assert.equal((route.match(/apply_live_selective_contribution/g) ?? []).length, 1);
+  for (const label of ["Predefinição", "Região / âncora", "Gerenciar predefinições",
+    "Preset não pode formar", "Total de slots", "Seguintes abaixo"])
+    assert.ok(ui.includes(label), `missing preset UI contract: ${label}`);
 });

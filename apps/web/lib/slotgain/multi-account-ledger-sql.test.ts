@@ -482,3 +482,41 @@ check("5.9 SQL: concurrent duplicate confirmations converge to one batch",async(
  assert.equal(sql(`select balance_brl=20 and contribution_brl=20 from coinops.robot_v1_live_slot_accounts
   where trading_engine_id='${engine}' and slot_number=2`),"t");
 });
+
+check("5.10 SQL: preset CRUD, RLS and usage audit stay outside the financial ledger",()=>{
+ const path=resolve("../../supabase/migrations");
+ const slotsBefore=sql("select md5(string_agg(to_jsonb(s)::text,'' order by s.id)) from coinops.robot_v1_live_slots s");
+ const ordersBefore=sql("select md5(coalesce(string_agg(to_jsonb(o)::text,'' order by o.id),'')) from coinops.robot_v1_live_orders o");
+ invoke(["-f",join(path,"20260927201831_add_selective_contribution_presets.sql")]);
+ invoke(["-f",join(path,"20260927204259_index_selective_contribution_presets.sql")]);
+ assert.equal(sql(`select count(*)=2 and bool_and(built_in and status='ACTIVE')
+   from coinops.robot_v1_live_selective_contribution_presets where operator_id='${operator}'`),"t");
+ const custom="99999999-aaaa-4bbb-8ccc-dddddddddddd";
+ const output=tx(`select coinops.manage_live_selective_contribution_preset('${operator}','${user}',
+   'CREATE',null,'1 + 2',3,1,2,null)->>'status';
+  update coinops.robot_v1_live_selective_contribution_presets set id='${custom}'
+    where operator_id='${operator}' and name='1 + 2';
+  select coinops.manage_live_selective_contribution_preset('${operator}','${user}',
+   'UPDATE','${custom}','1 aberto + 2 abaixo',3,1,2,null)->>'status';
+  select coinops.manage_live_selective_contribution_preset('${operator}','${user}',
+   'TOGGLE','${custom}',null,null,null,null,false)->>'status';
+  select coinops.manage_live_selective_contribution_preset('${operator}','${user}',
+   'TOGGLE','${custom}',null,null,null,null,true)->>'status';
+  select coinops.mark_live_selective_contribution_preset_usage('${operator}','${user}','${custom}',
+   '${engine}','88888888-9999-4aaa-8bbb-cccccccccccc',1,array[1,2,3])->>'status';
+  select coinops.mark_live_selective_contribution_preset_usage('${operator}','${user}','${custom}',
+   '${engine}','88888888-9999-4aaa-8bbb-cccccccccccc',1,array[1,2,3])->>'status';
+  select coinops.manage_live_selective_contribution_preset('${operator}','${user}',
+   'DELETE','${custom}',null,null,null,null,null)->>'status';
+  select status='DISABLED' and usage_count=1 from coinops.robot_v1_live_selective_contribution_presets
+    where id='${custom}';
+  set local audit.product='${product}';set local audit.tenant='${tenant}';set local audit.user_id='${user}';
+  set local role authenticated;
+  select count(*)=3 from coinops.robot_v1_live_selective_contribution_presets;`);
+ assert.deepEqual(output.split("\n").filter(value=>["ACTIVE","DISABLED","RECORDED","REPLAYED","DISABLED_USED","t"].includes(value)),
+   ["ACTIVE","ACTIVE","DISABLED","ACTIVE","RECORDED","REPLAYED","DISABLED_USED","t","t"]);
+ assert.equal(sql(`select count(*)=0 from coinops.robot_v1_live_selective_contribution_preset_usages`),"t");
+ assert.throws(()=>tx("set local role anon;select id from coinops.robot_v1_live_selective_contribution_presets"),/permission denied/);
+ assert.equal(sql("select md5(string_agg(to_jsonb(s)::text,'' order by s.id)) from coinops.robot_v1_live_slots s"),slotsBefore);
+ assert.equal(sql("select md5(coalesce(string_agg(to_jsonb(o)::text,'' order by o.id),'')) from coinops.robot_v1_live_orders o"),ordersBefore);
+});

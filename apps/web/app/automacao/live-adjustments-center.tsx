@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { allocateBulkSlots, allocateSelectedSlots, splitBulkEngines } from "@/lib/execution/live-adjustment-plans";
+import { resolveSelectiveContributionPresetRegions } from "@/lib/execution/selective-contribution-presets";
 import "./live-adjustments-center.css";
 
 type Account = { id: string; display_name: string; is_legacy_default: boolean };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: "BRL" | "USDT";
   base_asset: "BTC" | "SOL"; status: string; hard_cap_quote: number | string };
 type Slot = { trading_engine_id: string; slot_number: number; operation_sequence: number; entry_state: string;
-  position_committed_brl: number | string; target_buy_price: number | string; entry_reference_price: number | string };
+  position_committed_brl: number | string; target_buy_price: number | string; entry_reference_price: number | string;
+  operational_rank: number | null };
 type SlotAccount = { trading_engine_id: string; slot_number: number; balance_quote: number | string;
   contribution_quote: number | string; market_pnl_quote: number | string; fees_quote: number | string };
 type Total = { trading_engine_id: string; slot_number: number; lifetime_gain_count: number; monthly_gain_count: number };
@@ -27,9 +29,13 @@ type SelectiveAllocation = { id: string; batch_id: string; trading_engine_id: st
 type LiveOrder = { trading_engine_id: string; slot_number: number; operation_sequence: number;
   side: "BUY" | "SELL"; purpose: string; status: string; cumulative_quote: number | string;
   executed_quantity: number | string; price: number | string | null };
+type Preset = { id: string; name: string; total_slots: number; open_slots: number;
+  following_slots: number; status: "ACTIVE" | "DISABLED"; built_in: boolean; usage_count: number;
+  created_at: string; updated_at: string };
 type Status = { accounts: Account[]; engines: Engine[]; slots: Slot[];
   slotAccounts: SlotAccount[]; totals: Total[]; batches: Batch[]; plans: Plan[];
-  selectiveBatches: SelectiveBatch[]; selectiveAllocations: SelectiveAllocation[]; orders: LiveOrder[] };
+  selectiveBatches: SelectiveBatch[]; selectiveAllocations: SelectiveAllocation[]; orders: LiveOrder[];
+  presets: Preset[] };
 type Preview = { previewHash: string; account: string; quote: string; amount: number;
   origin: number; originCurrency: string; free: number; exposure: number;
   availableForNewCapital: number; accountCap: number; afterCap: number;
@@ -37,16 +43,23 @@ type Preview = { previewHash: string; account: string; quote: string; amount: nu
   fxReference?: { referenceRate: number; effectiveRate: number; observedAt: string; source: string } | null;
   openCount: number; pendingForNextOperation: number;
   allocations: Array<{ engineId: string; slotNumber: number; amount: number; gainUnits: number;
-    balanceBefore: number; balanceAfter: number; monthlyBefore: number; monthlyAfter: number;
+    balanceBefore: number; balanceAfter: number; balanceAfterApplication: number;
+    monthlyBefore: number; monthlyAfter: number;
     lifetimeBefore: number; lifetimeAfter: number; open: boolean; target: number;
-    allocationStatus: "PENDING" | "APPLIED" }> };
+    allocationStatus: "PENDING" | "APPLIED" }>;
+  presetSelection?: { id: string; name: string; anchorSlotNumber: number; openSlots: number;
+    followingSlots: number; resolvedSlotNumbers: number[] } | null };
 type Draft = { action: string; kind?: string; accountId: string; quote: "BRL" | "USDT";
   engineId?: string; slotNumber?: number; gainUnits?: number; amount?: number;
   shares?: Array<{ engineId: string; amount: number }>; originCurrency?: "BRL" | "USDT";
   selectedSlots?: number[]; customAllocations?: Array<{ slotNumber: number; amount: number }>;
+  selectionMode?: "MANUAL" | "PRESET"; presetId?: string; presetAnchorSlot?: number;
   originAmount?: number; fxObservedAt?: string; evidence?: string; reason: string;
   requestId: string; previewHash?: string; originalId?: string; monthlyAmount?: number;
   btcPercent?: number; startMonth?: string; horizonMonths?: number };
+type PresetCommand = { action: "PRESET_CREATE" | "PRESET_UPDATE" | "PRESET_TOGGLE" | "PRESET_DELETE";
+  presetId?: string; name?: string; totalSlots?: number; openSlots?: number; followingSlots?: number;
+  enabled?: boolean };
 
 function format(value: number | string | undefined, quote: string) {
   const amount = Number(value);
@@ -65,7 +78,7 @@ function nextPlanMonth(plan: Plan, now = new Date()) {
   return "Horizonte encerrado";
 }
 
-async function control(input: Draft) {
+async function control(input: Draft | PresetCommand) {
   const response = await fetch("/api/coinops-live-adjustments", { method: "POST", credentials: "same-origin",
     cache: "no-store", headers: { "content-type": "application/json",
       "x-coinops-admin-intent": "live-adjustment" }, body: JSON.stringify(input) });
@@ -79,7 +92,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const [status, setStatus] = useState<Status | null>(null);
   const [accountId, setAccountId] = useState(initialAccountId === "ALL" ? "" : initialAccountId);
   const [quote, setQuote] = useState<"BRL" | "USDT">("BRL");
-  const [kind, setKind] = useState<"MANUAL_GAIN" | "SLOT_CAPITAL" | "BULK_CAPITAL" | "SELECTIVE_CAPITAL">("MANUAL_GAIN");
+  const [kind, setKind] = useState<"MANUAL_GAIN" | "SLOT_CAPITAL" | "BULK_CAPITAL" | "SELECTIVE_CAPITAL" | "PRESET_CAPITAL">("MANUAL_GAIN");
   const [engineId, setEngineId] = useState("");
   const [slotNumber, setSlotNumber] = useState(1);
   const [gainUnits, setGainUnits] = useState(1);
@@ -95,6 +108,13 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const [slotFilter, setSlotFilter] = useState<"ALL" | "OPEN" | "AVAILABLE" | "PENDING">("ALL");
   const [slotDistribution, setSlotDistribution] = useState<"EQUAL" | "CUSTOM">("EQUAL");
   const [customSlotAmounts, setCustomSlotAmounts] = useState<Record<number, string>>({});
+  const [presetId, setPresetId] = useState("");
+  const [presetAnchorSlot, setPresetAnchorSlot] = useState<number | null>(null);
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [presetName, setPresetName] = useState("");
+  const [presetTotalSlots, setPresetTotalSlots] = useState(3);
+  const [presetOpenSlots, setPresetOpenSlots] = useState(1);
+  const [presetFollowingSlots, setPresetFollowingSlots] = useState(2);
   const [reason, setReason] = useState("");
   const [planAmount, setPlanAmount] = useState("");
   const [planOrigin, setPlanOrigin] = useState<"BRL" | "USDT">("BRL");
@@ -127,7 +147,9 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
       setOriginCurrency(initialEngine.quote_asset);
     }
     if (initialEngine && !engineId) setEngineId(initialEngine.id);
-  }, [accountId, engineId, initialSymbol, quote]);
+    const firstPreset = (data.presets as Preset[] | undefined)?.find((item) => item.status === "ACTIVE");
+    if (!presetId && firstPreset) setPresetId(firstPreset.id);
+  }, [accountId, engineId, initialSymbol, presetId, quote]);
   useEffect(() => { if (active && !status) refresh().catch((cause) => setError(cause.message)); }, [active, status, refresh]);
 
   const account = status?.accounts.find((item) => item.id === accountId);
@@ -165,8 +187,35 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     const key = `${item.trading_engine_id}:${item.slot_number}`;
     pendingBySlot.set(key, (pendingBySlot.get(key) ?? 0) + Number(item.amount_quote));
   }
-  const engineSlots = (status?.slots ?? []).filter((item) => item.trading_engine_id === engineId)
-    .sort((left, right) => left.slot_number - right.slot_number);
+  const engineSlots = useMemo(() => (status?.slots ?? [])
+    .filter((item) => item.trading_engine_id === engineId)
+    .sort((left, right) => Number(left.operational_rank) - Number(right.operational_rank)), [status, engineId]);
+  const activePresets = (status?.presets ?? []).filter((item) => item.status === "ACTIVE");
+  const selectedPreset = activePresets.find((item) => item.id === presetId) ?? activePresets[0];
+  const presetRegions = useMemo(() => {
+    if (!selectedPreset || engineSlots.length !== 25) return [];
+    try {
+      return resolveSelectiveContributionPresetRegions({ id: selectedPreset.id, name: selectedPreset.name,
+        totalSlots: selectedPreset.total_slots, openSlots: selectedPreset.open_slots,
+        followingSlots: selectedPreset.following_slots }, engineSlots.map((slot) => ({
+        slotNumber: slot.slot_number, operationalRank: slot.operational_rank, entryState: slot.entry_state,
+      })));
+    } catch { return []; }
+  }, [selectedPreset, engineSlots]);
+  const selectedPresetRegion = presetRegions.find((region) => region.anchorSlotNumber === presetAnchorSlot)
+    ?? presetRegions[0];
+  const effectiveSelectedSlots = useMemo(() => kind === "PRESET_CAPITAL"
+    ? selectedPresetRegion?.slotNumbers ?? [] : selectedSlots,
+  [kind, selectedPresetRegion, selectedSlots]);
+  const proposedBySlot = useMemo(() => {
+    try {
+      const custom = slotDistribution === "CUSTOM" ? effectiveSelectedSlots.map((number) => ({
+        slotNumber: number, amount: Number((customSlotAmounts[number] ?? "").replace(",", ".")),
+      })) : undefined;
+      return new Map(allocateSelectedSlots(amount, engineId, effectiveSelectedSlots, custom)
+        .map((item) => [item.slotNumber, item.amount]));
+    } catch { return new Map<number, number>(); }
+  }, [amount, customSlotAmounts, effectiveSelectedSlots, engineId, slotDistribution]);
 
   function invalidate() { setPreview(null); setPreviewDraft(null); setReverse(null); setError(""); setNotice(""); setRequestId(crypto.randomUUID()); }
   function chooseAccount(value: string) {
@@ -174,12 +223,12 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     const nextQuote = status?.engines.find((item) => item.exchange_account_id === value)?.quote_asset ?? "BRL";
     setQuote(nextQuote); setOriginCurrency(nextQuote);
     setEngineId(status?.engines.find((item) => item.exchange_account_id === value)?.id ?? "");
-    setSelected([]); setSelectedSlots([]); setCustomSlotAmounts({}); invalidate();
+    setSelected([]); setSelectedSlots([]); setCustomSlotAmounts({}); setPresetAnchorSlot(null); invalidate();
   }
   function chooseQuote(value: "BRL" | "USDT") {
     setQuote(value); setOriginCurrency(value);
     setEngineId(accountEngines.find((item) => item.quote_asset === value)?.id ?? "");
-    setSelected([]); setSelectedSlots([]); setCustomSlotAmounts({}); invalidate();
+    setSelected([]); setSelectedSlots([]); setCustomSlotAmounts({}); setPresetAnchorSlot(null); invalidate();
   }
   function shares() {
     const ids = selectedEngines.map((item) => item.id);
@@ -194,10 +243,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   }
   function draft(): Draft {
     if (!account || !quotes.includes(quote)) throw new Error("Selecione conta e moeda específicas.");
-    if (account.is_legacy_default && kind !== "MANUAL_GAIN" && kind !== "SELECTIVE_CAPITAL")
+    if (account.is_legacy_default && kind !== "MANUAL_GAIN" && kind !== "SELECTIVE_CAPITAL" && kind !== "PRESET_CAPITAL")
       throw new Error("O limite fixo de Rafael não permite capital adicional sem autorização separada.");
     const base: Draft = { action: "PREVIEW", kind: kind === "MANUAL_GAIN" ? "MANUAL_GAIN"
-      : kind === "SELECTIVE_CAPITAL" ? "SELECTIVE_CAPITAL" : "CAPITAL",
+      : kind === "SELECTIVE_CAPITAL" || kind === "PRESET_CAPITAL" ? "SELECTIVE_CAPITAL" : "CAPITAL",
       accountId, quote, originCurrency: kind === "MANUAL_GAIN" ? quote : originCurrency,
       reason: reason.trim(), requestId };
     if (kind === "MANUAL_GAIN") return { ...base, engineId, slotNumber, gainUnits };
@@ -205,13 +254,21 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
       originAmount: Number(originText.replace(",", ".")), evidence: evidence.trim(),
       fxObservedAt: new Date().toISOString(),
     };
-    if (kind === "SELECTIVE_CAPITAL") {
-      const customAllocations = slotDistribution === "CUSTOM" ? selectedSlots.map((selectedSlotNumber) => ({
+    if (kind === "SELECTIVE_CAPITAL" || kind === "PRESET_CAPITAL") {
+      const resolvedSlots = kind === "PRESET_CAPITAL"
+        ? selectedPresetRegion?.slotNumbers ?? [] : selectedSlots;
+      if (kind === "PRESET_CAPITAL" && (!selectedPreset || !selectedPresetRegion))
+        throw new Error("Preset não pode formar a quantidade de slots nesta região.");
+      const customAllocations = slotDistribution === "CUSTOM" ? resolvedSlots.map((selectedSlotNumber) => ({
         slotNumber: selectedSlotNumber,
         amount: Number((customSlotAmounts[selectedSlotNumber] ?? "").replace(",", ".")),
       })) : undefined;
-      allocateSelectedSlots(amount, engineId, selectedSlots, customAllocations);
-      return { ...base, engineId, amount, selectedSlots, customAllocations, ...currencyDetails };
+      allocateSelectedSlots(amount, engineId, resolvedSlots, customAllocations);
+      return { ...base, engineId, amount, selectedSlots: resolvedSlots, customAllocations,
+        selectionMode: kind === "PRESET_CAPITAL" ? "PRESET" : "MANUAL",
+        presetId: kind === "PRESET_CAPITAL" ? selectedPreset?.id : undefined,
+        presetAnchorSlot: kind === "PRESET_CAPITAL" ? selectedPresetRegion?.anchorSlotNumber : undefined,
+        ...currencyDetails };
     }
     return kind === "SLOT_CAPITAL"
       ? { ...base, engineId, slotNumber, amount, ...currencyDetails }
@@ -228,7 +285,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   }
   async function confirm() {
     if (!preview || !previewDraft) return;
-    if (!window.confirm(previewDraft.kind === "CAPITAL"
+    if (!window.confirm(["CAPITAL", "SELECTIVE_CAPITAL"].includes(previewDraft.kind ?? "")
       ? `Registrar ${format(preview.amount, quote)} como capital externo da conta ${account?.display_name}? Nenhuma ordem ou posição OPEN será alterada.`
       : `Adicionar ${gainUnits} gain(s) manual(is) ao slot #${slotNumber} de ${account?.display_name}?`)) return;
     try { setBusy(true); setError("");
@@ -276,6 +333,51 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     finally { setBusy(false); }
   }
 
+  function resetPresetForm() {
+    setEditingPresetId(null); setPresetName(""); setPresetTotalSlots(3);
+    setPresetOpenSlots(1); setPresetFollowingSlots(2);
+  }
+  function editPreset(preset: Preset) {
+    setEditingPresetId(preset.id); setPresetName(preset.name); setPresetTotalSlots(preset.total_slots);
+    setPresetOpenSlots(preset.open_slots); setPresetFollowingSlots(preset.following_slots);
+  }
+  async function savePreset() {
+    try {
+      setBusy(true); setError("");
+      await control({ action: editingPresetId ? "PRESET_UPDATE" : "PRESET_CREATE",
+        presetId: editingPresetId ?? undefined, name: presetName.trim(), totalSlots: presetTotalSlots,
+        openSlots: presetOpenSlots, followingSlots: presetFollowingSlots });
+      setNotice(editingPresetId ? "Predefinição atualizada. Nenhum aporte foi executado."
+        : "Predefinição criada. Nenhum aporte foi executado.");
+      resetPresetForm(); await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao salvar predefinição."); }
+    finally { setBusy(false); }
+  }
+  async function togglePreset(preset: Preset) {
+    try {
+      setBusy(true); setError("");
+      await control({ action: "PRESET_TOGGLE", presetId: preset.id, enabled: preset.status !== "ACTIVE" });
+      setNotice(preset.status === "ACTIVE" ? "Predefinição desativada." : "Predefinição ativada.");
+      if (preset.id === presetId) setPresetAnchorSlot(null);
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao alterar predefinição."); }
+    finally { setBusy(false); }
+  }
+  async function deletePreset(preset: Preset) {
+    if (!window.confirm(preset.usage_count > 0 || preset.built_in
+      ? "Esta predefinição será desativada e preservada para auditoria. Continuar?"
+      : "Excluir esta predefinição ainda não utilizada?")) return;
+    try {
+      setBusy(true); setError("");
+      const result = await control({ action: "PRESET_DELETE", presetId: preset.id });
+      setNotice(result.deleted ? "Predefinição não utilizada excluída."
+        : "Predefinição preservada e desativada por segurança.");
+      if (preset.id === presetId) { setPresetId(""); setPresetAnchorSlot(null); }
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao excluir predefinição."); }
+    finally { setBusy(false); }
+  }
+
   return <section className="lac-center" aria-label="Ajustes LIVE por conta e motor">
     <header><h3>Ajustes · capital e gains</h3><p>Real · Binance Spot. Conta, moeda, motor e slot são obrigatórios. Preview não cria ordens.</p></header>
     {error ? <p className="lac-error" role="alert">{error}</p> : null}
@@ -290,14 +392,17 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
         {quotes.map((item) => <option value={item} key={item}>{item}</option>)}</select></label></div>
       <div className="lac-mode" role="group" aria-label="Tipo de ajuste">
         {([['MANUAL_GAIN','Adicionar gain'],['SLOT_CAPITAL','Adicionar saldo'],
-          ['BULK_CAPITAL','Todos os slots'],['SELECTIVE_CAPITAL','Selecionar slots']] as const).map(([key,label]) =>
+          ['BULK_CAPITAL','Todos os slots'],['SELECTIVE_CAPITAL','Selecionar manualmente'],
+          ['PRESET_CAPITAL','Predefinição']] as const).map(([key,label]) =>
           <button type="button" key={key} aria-pressed={kind === key} onClick={() => { setKind(key); invalidate(); }}>{label}</button>)}</div>
       {kind !== "BULK_CAPITAL" ? <div className="lac-grid">
-        <label>Motor<select value={engineId} onChange={(event) => { setEngineId(event.target.value); setSelectedSlots([]); setCustomSlotAmounts({}); invalidate(); }}>
+        <label>Motor<select value={engineId} onChange={(event) => { setEngineId(event.target.value); setSelectedSlots([]); setCustomSlotAmounts({}); setPresetAnchorSlot(null); invalidate(); }}>
           <option value="">Selecione</option>{inQuote.map((item) => <option value={item.id} key={item.id}>{item.symbol}</option>)}</select></label>
-        {kind !== "SELECTIVE_CAPITAL" ? <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>
+        {kind !== "SELECTIVE_CAPITAL" && kind !== "PRESET_CAPITAL" ? <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>
           {Array.from({ length: 25 }, (_, index) => <option value={index + 1} key={index}>Slot #{index + 1}</option>)}</select></label>
-          : <p className="lac-slot-note">Escolha manualmente qualquer subconjunto dos 25 slots deste motor.</p>}
+          : <p className="lac-slot-note">{kind === "PRESET_CAPITAL"
+            ? "A predefinição resolve a região pela ordem operacional oficial do motor."
+            : "Escolha manualmente qualquer subconjunto dos 25 slots deste motor."}</p>}
       </div> : <fieldset className="lac-engines"><legend>Motores que receberão o aporte</legend>
         {inQuote.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)}
           onChange={(event) => { setSelected(event.target.checked ? [...selected,item.id] : selected.filter((id) => id !== item.id)); invalidate(); }} />{item.symbol} · limite {format(item.hard_cap_quote, quote)}</label>)}
@@ -326,20 +431,35 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
               value={firstAmountText} onChange={(event) => { setFirstAmountText(event.target.value); invalidate(); }} /></label> : null}
           </div> : null}
           {kind === "BULK_CAPITAL" ? <p className="lac-slot-note">O valor de cada motor é distribuído igualmente entre seus 25 slots, com sobra de centavos explícita.</p> : null}</>}
-      {kind === "SELECTIVE_CAPITAL" ? <section className="lac-selective" aria-label="Aporte em slots selecionados">
-        <div className="lac-selective-head"><div><strong>Slots do motor</strong><small>{selectedSlots.length} selecionado(s)
-          {selectedSlots.length && Number.isFinite(amount) ? ` · ${slotDistribution === "EQUAL" ? format(amount / selectedSlots.length, quote) : "valores personalizados"}` : ""}</small></div>
+      {kind === "SELECTIVE_CAPITAL" || kind === "PRESET_CAPITAL" ? <section className="lac-selective" aria-label="Aporte em slots selecionados">
+        <div className="lac-selective-head"><div><strong>{kind === "PRESET_CAPITAL" ? "Região predefinida" : "Slots do motor"}</strong>
+          <small>{effectiveSelectedSlots.length} selecionado(s)
+          {effectiveSelectedSlots.length && Number.isFinite(amount) ? ` · ${slotDistribution === "EQUAL" ? format(amount / effectiveSelectedSlots.length, quote) : "valores personalizados"}` : ""}</small></div>
           <label>Distribuição<select value={slotDistribution} onChange={(event) => { setSlotDistribution(event.target.value as "EQUAL" | "CUSTOM"); invalidate(); }}>
             <option value="EQUAL">Igual entre selecionados</option><option value="CUSTOM">Personalizar valores</option></select></label></div>
-        <div className="lac-slot-filters" role="group" aria-label="Filtrar slots">
+        {kind === "PRESET_CAPITAL" ? <><div className="lac-grid">
+          <label>Predefinição<select value={selectedPreset?.id ?? ""} onChange={(event) => {
+            setPresetId(event.target.value); setPresetAnchorSlot(null); setCustomSlotAmounts({}); invalidate();
+          }}><option value="">Selecione</option>{activePresets.map((preset) => <option value={preset.id} key={preset.id}>
+            {preset.name} · {preset.total_slots} slots</option>)}</select></label>
+          <label>Região / âncora<select value={selectedPresetRegion?.anchorSlotNumber ?? ""} onChange={(event) => {
+            setPresetAnchorSlot(Number(event.target.value)); setCustomSlotAmounts({}); invalidate();
+          }}><option value="">Selecione</option>{presetRegions.map((region, index) => <option value={region.anchorSlotNumber} key={region.anchorSlotNumber}>
+            Região {String.fromCharCode(65 + index)} · OPEN {region.openAnchorSlotNumbers.map((slot) => `#${slot}`).join(" + ")} · até #{region.slotNumbers.at(-1)}
+          </option>)}</select></label></div>
+          {!selectedPreset ? <p className="lac-error">Crie ou ative uma predefinição.</p>
+            : !presetRegions.length ? <p className="lac-error">Preset não pode formar {selectedPreset.total_slots} slots nesta região. Escolha outro preset ou a seleção manual.</p>
+              : <p className="lac-slot-note">{selectedPreset.name} · ordem operacional oficial · {selectedPresetRegion?.slotNumbers.map((slot) => `#${slot}`).join(" → ")}</p>}
+        </> : <><div className="lac-slot-filters" role="group" aria-label="Filtrar slots">
           {([['ALL','Todos'],['OPEN','OPEN'],['AVAILABLE','Disponíveis'],['PENDING','Com aporte pendente']] as const).map(([key,label]) =>
-            <button type="button" key={key} aria-pressed={slotFilter === key} onClick={() => setSlotFilter(key)}>{label}</button>)}</div>
-        <div className="lac-slot-picker">{engineSlots.filter((slot) => {
+            <button type="button" key={key} aria-pressed={slotFilter === key} onClick={() => setSlotFilter(key)}>{label}</button>)}</div></>}
+        <div className="lac-slot-picker">{engineSlots.filter((slot) => kind === "PRESET_CAPITAL"
+          ? effectiveSelectedSlots.includes(slot.slot_number) : (() => {
           const pending = pendingBySlot.get(`${slot.trading_engine_id}:${slot.slot_number}`) ?? 0;
           return slotFilter === "ALL" || slotFilter === "OPEN" && slot.entry_state === "OPEN"
             || slotFilter === "AVAILABLE" && slot.entry_state !== "OPEN"
             || slotFilter === "PENDING" && pending > 0;
-        }).map((slot) => {
+        })()).map((slot) => {
           const accountRow = status?.slotAccounts.find((item) => item.trading_engine_id === slot.trading_engine_id && item.slot_number === slot.slot_number);
           const totalRow = status?.totals.find((item) => item.trading_engine_id === slot.trading_engine_id && item.slot_number === slot.slot_number);
           const pending = pendingBySlot.get(`${slot.trading_engine_id}:${slot.slot_number}`) ?? 0;
@@ -348,14 +468,15 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
             && order.side === "BUY" && Number(order.executed_quantity) > 0);
           const quantity = buys.reduce((sum, order) => sum + Number(order.executed_quantity), 0);
           const entry = quantity ? buys.reduce((sum, order) => sum + Number(order.cumulative_quote), 0) / quantity : null;
-          const checked = selectedSlots.includes(slot.slot_number);
+          const checked = effectiveSelectedSlots.includes(slot.slot_number);
           return <label className={`lac-slot-choice${checked ? " is-selected" : ""}`} key={slot.slot_number}>
-            <span className="lac-slot-title"><input type="checkbox" checked={checked} onChange={(event) => {
+            <span className="lac-slot-title">{kind === "SELECTIVE_CAPITAL" ? <input type="checkbox" checked={checked} onChange={(event) => {
               setSelectedSlots(event.target.checked ? [...selectedSlots,slot.slot_number].sort((a,b) => a-b)
                 : selectedSlots.filter((number) => number !== slot.slot_number)); invalidate();
-            }} /><b>#{slot.slot_number}</b><em>{slot.entry_state === "OPEN" ? "OPEN"
+            }} /> : null}<b>#{slot.slot_number}</b><em>{slot.entry_state === "OPEN" ? "OPEN"
               : slot.entry_state === "ARMED" ? "PRÓXIMA BUY" : "DISPONÍVEL"}</em></span>
             <span>{format(accountRow?.balance_quote, quote)} capital</span>
+            {proposedBySlot.has(slot.slot_number) ? <span>+ {format(proposedBySlot.get(slot.slot_number), quote)} aporte</span> : null}
             {pending > 0 ? <strong>+ {format(pending, quote)} pendente</strong> : null}
             <small>{entry ? `Entrada ${format(entry, quote)}` : `Próxima referência ${format(slot.target_buy_price, quote)}`}
               {` · ${totalRow?.lifetime_gain_count ?? 0} gains`}</small>
@@ -367,6 +488,30 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
           </label>;
         })}</div>
       </section> : null}
+      {kind === "PRESET_CAPITAL" ? <details className="lac-history lac-preset-manager"><summary>Gerenciar predefinições</summary>
+        <p className="lac-slot-note">Configuração somente de seleção: criar, editar ou desativar não movimenta capital e não envia ordens.</p>
+        <div className="lac-grid"><label>Nome<input value={presetName} maxLength={80}
+          onChange={(event) => setPresetName(event.target.value)} placeholder="Ex.: 1 + 2" /></label>
+          <label>Total de slots<input type="number" min={1} max={25} value={presetTotalSlots}
+            onChange={(event) => setPresetTotalSlots(Number(event.target.value))} /></label>
+          <label>Slots OPEN da região<input type="number" min={1} max={25} value={presetOpenSlots}
+            onChange={(event) => setPresetOpenSlots(Number(event.target.value))} /></label>
+          <label>Seguintes abaixo<input type="number" min={0} max={24} value={presetFollowingSlots}
+            onChange={(event) => setPresetFollowingSlots(Number(event.target.value))} /></label></div>
+        <p className={presetTotalSlots === presetOpenSlots + presetFollowingSlots ? "lac-slot-note" : "lac-error"}>
+          Total deve ser exatamente OPEN + abaixo: {presetOpenSlots} + {presetFollowingSlots} = {presetOpenSlots + presetFollowingSlots}.</p>
+        <div className="lac-actions"><button type="button" disabled={busy || presetName.trim().length < 3
+          || presetTotalSlots !== presetOpenSlots + presetFollowingSlots} onClick={savePreset}>
+          {editingPresetId ? "Salvar alterações" : "Criar predefinição"}</button>
+          {editingPresetId ? <button type="button" className="lac-quiet" onClick={resetPresetForm}>Cancelar edição</button> : null}</div>
+        <div className="lac-preset-list">{status.presets.map((preset) => <div key={preset.id}>
+          <span><b>{preset.name}</b> · {preset.open_slots} OPEN + {preset.following_slots} abaixo · {preset.total_slots} slots</span>
+          <small>{preset.status === "ACTIVE" ? "ATIVA" : "DESATIVADA"} · {preset.usage_count} uso(s){preset.built_in ? " · padrão CoinOps" : ""}</small>
+          <div><button type="button" disabled={busy} onClick={() => editPreset(preset)}>Editar</button>
+            <button type="button" disabled={busy} onClick={() => togglePreset(preset)}>{preset.status === "ACTIVE" ? "Desativar" : "Ativar"}</button>
+            <button type="button" disabled={busy} onClick={() => deletePreset(preset)}>Excluir</button></div>
+        </div>)}</div>
+      </details> : null}
       <label>Motivo<input value={reason} maxLength={160} onChange={(event) => { setReason(event.target.value); invalidate(); }}
         placeholder="Obrigatório para auditoria" /></label>
       <div className="lac-actions"><button type="button" disabled={busy} onClick={makePreview}>Pré-visualizar · sem ordens</button>
@@ -378,13 +523,16 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
           taxa efetiva {preview.fxReference.effectiveRate.toFixed(4)} BRL/USDT · referência pública Binance
           {" "}{preview.fxReference.referenceRate.toFixed(4)} em {preview.fxReference.observedAt}.
           O crédito USDT é conferido no saldo Spot; a referência não comprova por si só o ID da conversão.</p> : null}
+        {preview.presetSelection ? <p><strong>Preset: {preview.presetSelection.name}</strong> · âncora #{preview.presetSelection.anchorSlotNumber} ·
+          {" "}{preview.presetSelection.openSlots} OPEN + {preview.presetSelection.followingSlots} abaixo ·
+          {" "}{preview.presetSelection.resolvedSlotNumbers.map((slot) => `#${slot}`).join(" → ")}</p> : null}
         <p>{preview.allocations.length} slot(s) · {preview.openCount} OPEN · {format(preview.pendingForNextOperation, quote)} pendente da próxima operação em slots OPEN.</p>
         <p>Nenhuma posição OPEN, preço médio, quantidade ou TP será alterado. Nenhuma ordem será criada pelo ajuste.</p>
         <details><summary>Ver todos os slots afetados</summary><div className="lac-items">{preview.allocations.map((item) =>
           <p key={`${item.engineId}:${item.slotNumber}`}><b>{inQuote.find((engine) => engine.id === item.engineId)?.symbol} · #{item.slotNumber}</b>
             <span>{item.open ? "OPEN" : "sem posição"} · {format(item.balanceBefore, quote)}
               {item.allocationStatus === "PENDING"
-                ? ` · + ${format(item.amount, quote)} APORTE PENDENTE · posição atual intacta`
+                ? ` · + ${format(item.amount, quote)} APORTE PENDENTE · após fechamento ${format(item.balanceAfterApplication, quote)} · posição atual intacta`
                 : ` + ${format(item.amount, quote)} → ${format(item.balanceAfter, quote)}`}</span>
             <span>{item.monthlyBefore}/{item.target} → {item.monthlyAfter}/{item.target} ganhos do mês{item.monthlyBefore < item.target && item.monthlyAfter >= item.target ? " · META BATIDA" : ""}</span></p>)}</div></details>
         <button type="button" disabled={busy} onClick={confirm}>Confirmar ajuste auditável</button></div> : null}

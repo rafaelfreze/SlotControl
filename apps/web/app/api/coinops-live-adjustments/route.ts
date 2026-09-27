@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 
 import { allocateBulkSlots, allocateSelectedSlots, projectSelectiveSlotContribution,
   projectSlotAdjustment } from "@/lib/execution/live-adjustment-plans";
+import { resolveSelectiveContributionPresetRegion,
+  type SelectiveContributionPreset } from "@/lib/execution/selective-contribution-presets";
 import { operatorAccountSnapshot, operatorExecutorAdmin } from "@/lib/execution/operator-executor-admin";
 import { isIdentity } from "@/lib/execution/operator-context";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
@@ -26,7 +28,7 @@ type Run = { id: string; trading_engine_id: string; status: string; last_error: 
   last_reconciled_at: string | null; lease_until: string | null };
 type Slot = { id: string; trading_engine_id: string; slot_number: number; operation_sequence: number;
   entry_state: string; position_committed_brl: number | string; target_buy_price: number | string;
-  entry_reference_price: number | string };
+  entry_reference_price: number | string; operational_rank: number | null };
 type SlotAccount = { trading_engine_id: string; slot_number: number; balance_quote: number | string;
   contribution_quote: number | string; gain_count: number };
 type Draft = { action: "PREVIEW" | "CONFIRM" | "REVERSE_PREVIEW" | "REVERSE_CONFIRM" | "PLAN_SAVE" | "PLAN_DISABLE";
@@ -34,10 +36,19 @@ type Draft = { action: "PREVIEW" | "CONFIRM" | "REVERSE_PREVIEW" | "REVERSE_CONF
   engineId?: string; slotNumber?: number; gainUnits?: number; amount?: number;
   shares?: Array<{ engineId: string; amount: number }>;
   selectedSlots?: number[]; customAllocations?: Array<{ slotNumber: number; amount: number }>;
+  selectionMode?: "MANUAL" | "PRESET"; presetId?: string; presetAnchorSlot?: number;
   originCurrency?: "BRL" | "USDT"; originAmount?: number;
   fxObservedAt?: string; evidence?: string; reason: string; requestId: string;
   previewHash?: string; originalId?: string; monthlyAmount?: number; btcPercent?: number;
   startMonth?: string; horizonMonths?: number };
+type PresetCommand = { action: "PRESET_CREATE" | "PRESET_UPDATE" | "PRESET_TOGGLE" | "PRESET_DELETE";
+  presetId?: string; name?: string; totalSlots?: number; openSlots?: number; followingSlots?: number;
+  enabled?: boolean };
+
+function isPresetCommand(input: Draft | PresetCommand): input is PresetCommand {
+  return input.action === "PRESET_CREATE" || input.action === "PRESET_UPDATE"
+    || input.action === "PRESET_TOGGLE" || input.action === "PRESET_DELETE";
+}
 
 async function adminScope(): Promise<Scope> {
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_ADJUSTMENT_SCHEMA_DENIED");
@@ -120,7 +131,7 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
   const runIds = runs.data.map((run) => run.id);
   const [slotRows, accounts, orderRows, totals, alerts] = await Promise.all([
     scope.service.from("robot_v1_live_slots")
-      .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price")
+      .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank")
       .in("run_id", runIds),
     scope.service.from("robot_v1_live_slot_accounts")
       .select("trading_engine_id,slot_number,balance_quote,contribution_quote,gain_count")
@@ -190,6 +201,9 @@ async function preview(scope: Scope, input: Draft) {
   const state = await inspect(scope, input.accountId, input.quote);
   let allocations: ReturnType<typeof allocationInput>[];
   let amount = 0, origin = 0;
+  let resolvedSlotNumbers = input.selectedSlots ?? [];
+  let presetSelection: { id: string; name: string; anchorSlotNumber: number;
+    openSlots: number; followingSlots: number; resolvedSlotNumbers: number[] } | null = null;
   let fxReference: Awaited<ReturnType<typeof verifyBrlUsdtConversion>> | null = null;
   if (input.kind === "MANUAL_GAIN") {
     if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
@@ -207,7 +221,31 @@ async function preview(scope: Scope, input: Draft) {
     if (input.kind === "SELECTIVE_CAPITAL") {
       if (!isIdentity(input.engineId) || !state.engines.some((engine) => engine.id === input.engineId))
         throw new Error("COINOPS_ADJUSTMENT_SLOT_SELECTION_INVALID");
-      allocations = allocateSelectedSlots(amount, input.engineId!, input.selectedSlots ?? [], input.customAllocations)
+      if (input.selectionMode === "PRESET") {
+        if (!isIdentity(input.presetId) || !Number.isInteger(input.presetAnchorSlot))
+          throw new Error("COINOPS_PRESET_REGION_UNAVAILABLE");
+        const loadedPreset = await scope.service.from("robot_v1_live_selective_contribution_presets")
+          .select("id,name,total_slots,open_slots,following_slots,status")
+          .eq("id", input.presetId!).eq("operator_id", scope.operator.id).eq("status", "ACTIVE").single();
+        if (loadedPreset.error || !loadedPreset.data) throw new Error("COINOPS_PRESET_NOT_AVAILABLE");
+        const preset: SelectiveContributionPreset = { id: loadedPreset.data.id,
+          name: loadedPreset.data.name, totalSlots: loadedPreset.data.total_slots,
+          openSlots: loadedPreset.data.open_slots, followingSlots: loadedPreset.data.following_slots };
+        const region = resolveSelectiveContributionPresetRegion(preset,
+          state.slots.filter((slot) => slot.trading_engine_id === input.engineId).map((slot) => ({
+            slotNumber: slot.slot_number, operationalRank: slot.operational_rank, entryState: slot.entry_state,
+          })), input.presetAnchorSlot!);
+        resolvedSlotNumbers = region.slotNumbers;
+        if (input.selectedSlots?.length
+          && JSON.stringify(input.selectedSlots) !== JSON.stringify(resolvedSlotNumbers))
+          throw new Error("COINOPS_PRESET_SELECTION_STALE");
+        presetSelection = { id: preset.id, name: preset.name,
+          anchorSlotNumber: region.anchorSlotNumber, openSlots: preset.openSlots,
+          followingSlots: preset.followingSlots, resolvedSlotNumbers };
+      } else if (input.selectionMode && input.selectionMode !== "MANUAL") {
+        throw new Error("COINOPS_ADJUSTMENT_SLOT_SELECTION_INVALID");
+      }
+      allocations = allocateSelectedSlots(amount, input.engineId!, resolvedSlotNumbers, input.customAllocations)
         .map((slot) => allocationInput(state, slot.engineId, slot.slotNumber, slot.amount, 0));
     } else if (input.slotNumber !== undefined) {
       if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
@@ -240,13 +278,17 @@ async function preview(scope: Scope, input: Draft) {
     const projected = input.kind === "SELECTIVE_CAPITAL"
       ? projectSelectiveSlotContribution(row) : { ...projectSlotAdjustment(row), allocationStatus: "APPLIED" as const };
     return { ...projected,
+      balanceAfterApplication: Number((row.balanceBefore + row.amount).toFixed(8)),
       target: state.engines.find((engine) => engine.id === row.engineId)?.base_asset === "BTC" ? 7 : 2 };
   });
   const payload = { accountId: input.accountId, quote: input.quote, kind: input.kind,
     amount, origin, originCurrency: input.originCurrency ?? input.quote,
     fxAt: input.fxObservedAt ?? null, evidence: input.evidence?.trim() ?? null,
     reason: input.reason.trim(), requestId: input.requestId, accountCap: state.cap,
-    selectedSlots: input.selectedSlots ?? null, customAllocations: input.customAllocations ?? null,
+    selectedSlots: input.kind === "SELECTIVE_CAPITAL" ? resolvedSlotNumbers : null,
+    customAllocations: input.customAllocations ?? null,
+    resolvedSlotNumbers: input.kind === "SELECTIVE_CAPITAL" ? resolvedSlotNumbers : null,
+    presetSelection,
     free: state.free, exposure: state.exposure, allocations: after };
   return { ...payload, account: state.account.display_name,
     availableForNewCapital: state.availableForNewCapital,
@@ -367,7 +409,7 @@ export async function GET() {
   try {
     const scope = await adminScope();
     const [accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
-      selectiveBatches, selectiveAllocations] = await Promise.all([
+      selectiveBatches, selectiveAllocations, presets] = await Promise.all([
       scope.service.from("exchange_accounts").select("id,display_name,status,is_legacy_default")
         .eq("operator_id", scope.operator.id).eq("status", "ACTIVE").order("display_name"),
       scope.service.from("trading_engines")
@@ -381,7 +423,7 @@ export async function GET() {
         .select("trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
         .eq("operator_id", scope.operator.id),
       scope.service.from("robot_v1_live_slots")
-        .select("run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price")
+        .select("run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank")
         .eq("operator_id", scope.operator.id),
       scope.service.from("robot_v1_slot_gain_totals")
         .select("trading_engine_id,slot_number,lifetime_gain_count,monthly_gain_count")
@@ -398,6 +440,10 @@ export async function GET() {
       scope.service.from("robot_v1_live_selective_contribution_allocations")
         .select("id,batch_id,trading_engine_id,slot_number,amount_quote,status,source,slot_state_at_creation,operation_sequence_at_creation,created_at,applied_at,applied_operation_sequence")
         .eq("operator_id", scope.operator.id).order("created_at", { ascending: false }).limit(25000),
+      scope.service.from("robot_v1_live_selective_contribution_presets")
+        .select("id,name,total_slots,open_slots,following_slots,status,built_in,usage_count,created_at,updated_at")
+        .eq("operator_id", scope.operator.id).order("built_in", { ascending: false })
+        .order("created_at", { ascending: true }).limit(100),
     ]);
     const currentRunIds = (runs.data ?? []).map((run) => run.id);
     const orders = currentRunIds.length ? await scope.service.from("robot_v1_live_orders")
@@ -405,10 +451,10 @@ export async function GET() {
       .eq("operator_id", scope.operator.id).in("run_id", currentRunIds)
       .order("created_at", { ascending: false }).limit(5000) : { data: [], error: null };
     if ([accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
-      selectiveBatches, selectiveAllocations, orders].some((item) => item.error)
+      selectiveBatches, selectiveAllocations, presets, orders].some((item) => item.error)
       || batches.data?.length === 1000 || plans.data?.length === 100
       || selectiveBatches.data?.length === 1000 || selectiveAllocations.data?.length === 25000
-      || orders.data?.length === 5000)
+      || presets.data?.length === 100 || orders.data?.length === 5000)
       throw new Error("COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE");
     const currentRunIdSet = new Set(currentRunIds);
     return json({ accounts: accounts.data, engines: engines.data, caps: caps.data,
@@ -416,6 +462,7 @@ export async function GET() {
       slots: (slots.data ?? []).filter((slot) => currentRunIdSet.has(slot.run_id)),
       totals: totals.data, batches: batches.data, plans: plans.data,
       selectiveBatches: selectiveBatches.data, selectiveAllocations: selectiveAllocations.data,
+      presets: presets.data,
       orders: (orders.data ?? []).filter((order) => currentRunIdSet.has(order.run_id)) });
   } catch { return json({ error: "COINOPS_ADJUSTMENT_ADMIN_UNAVAILABLE" }, 403); }
 }
@@ -425,11 +472,25 @@ export async function POST(request: NextRequest) {
     sameOrigin(request);
     const raw = await request.text();
     if (Buffer.byteLength(raw) > 8192) throw new Error("COINOPS_ADJUSTMENT_BODY_TOO_LARGE");
-    const input = JSON.parse(raw) as Draft;
-    if (!input || !["PREVIEW", "CONFIRM", "REVERSE_PREVIEW", "REVERSE_CONFIRM", "PLAN_SAVE", "PLAN_DISABLE"].includes(input.action))
+    const input = JSON.parse(raw) as Draft | PresetCommand;
+    if (!input || !["PREVIEW", "CONFIRM", "REVERSE_PREVIEW", "REVERSE_CONFIRM", "PLAN_SAVE", "PLAN_DISABLE",
+      "PRESET_CREATE", "PRESET_UPDATE", "PRESET_TOGGLE", "PRESET_DELETE"].includes(input.action))
       throw new Error("COINOPS_ADJUSTMENT_ACTION_INVALID");
-    inputGuard(input);
     const scope = await adminScope();
+    if (isPresetCommand(input)) {
+      const presetInput = input;
+      const saved = await scope.service.rpc("manage_live_selective_contribution_preset", {
+        p_operator_id: scope.operator.id, p_actor_id: scope.operator.user_id,
+        p_action: presetInput.action.replace("PRESET_", ""),
+        p_preset_id: presetInput.presetId ?? null, p_name: presetInput.name ?? null,
+        p_total_slots: presetInput.totalSlots ?? null, p_open_slots: presetInput.openSlots ?? null,
+        p_following_slots: presetInput.followingSlots ?? null, p_enabled: presetInput.enabled ?? null,
+      });
+      if (saved.error || !saved.data) throw new Error(saved.error?.message ?? "COINOPS_SELECTIVE_PRESET_SAVE_FAILED");
+      revalidatePath("/automacao");
+      return json({ ...saved.data, noExchangeWrite: true, noLedgerContribution: true });
+    }
+    inputGuard(input);
     if (input.action === "PLAN_SAVE" || input.action === "PLAN_DISABLE") {
       await loadAccount(scope, input.accountId, input.quote);
       const amount = exactCents(input.monthlyAmount);
@@ -478,6 +539,17 @@ export async function POST(request: NextRequest) {
       const evidence = result.fxReference
         ? `${result.evidence}; ${result.fxReference.source}; USDTBRL=${result.fxReference.referenceRate}; observed_at=${result.fxReference.observedAt}`
         : result.evidence;
+      if (input.kind === "SELECTIVE_CAPITAL" && result.presetSelection) {
+        const marked = await scope.service.rpc("mark_live_selective_contribution_preset_usage", {
+          p_operator_id: scope.operator.id, p_actor_id: scope.operator.user_id,
+          p_preset_id: result.presetSelection.id, p_engine_id: input.engineId,
+          p_request_id: input.requestId,
+          p_anchor_slot_number: result.presetSelection.anchorSlotNumber,
+          p_resolved_slot_numbers: result.presetSelection.resolvedSlotNumbers,
+        });
+        if (marked.error || !marked.data)
+          throw new Error(marked.error?.message ?? "COINOPS_SELECTIVE_PRESET_USAGE_FAILED");
+      }
       const saved = input.kind === "SELECTIVE_CAPITAL"
         ? await scope.service.rpc("apply_live_selective_contribution", {
           p_operator_id: scope.operator.id, p_account_id: input.accountId,

@@ -56,3 +56,26 @@ disponível, referência de entrada, gains e próxima utilização conhecida, co
 filtros e preview completo. Smoke de Production é exclusivamente leitura e
 nunca confirma um aporte real. As provas de mutação, retry e aplicação após TP
 são executadas em PostgreSQL descartável.
+
+## Predefinições de região
+
+As predefinições são somente uma camada de seleção sobre o mesmo serviço. Os
+modelos iniciais são `1 aberto + 4 abaixo` e `2 abertos + 3 abaixo`; o ADMIN
+pode criar, editar, ativar ou desativar outros modelos informando total, slots
+OPEN da âncora e quantidade seguinte abaixo. A ordem vem de
+`robot_v1_live_slots.operational_rank`, nunca do número físico nem de previsão
+de mercado.
+
+O resolver lista todas as regiões válidas e exige escolha explícita quando há
+mais de uma. Os slots OPEN configurados precisam formar o prefixo consecutivo
+da região; os demais são exatamente os próximos ranks da estratégia. A grade
+jamais volta para cima ou inventa slots após o rank 25. Preview e confirmação
+resolvem novamente `preset + âncora`; qualquer mudança no estado/ordem invalida
+o fingerprint antes da escrita financeira.
+
+O resultado do resolver é apenas `resolved_slot_ids[]`, entregue a
+`apply_live_selective_contribution`. Preset não envia ordens, não muda a
+estratégia e não possui ledger financeiro próprio. O uso do preset é auditado
+separadamente e de forma idempotente pelo `request_id`; presets personalizados
+nunca usados podem ser excluídos, enquanto presets padrão ou já usados são
+preservados e apenas desativados.
