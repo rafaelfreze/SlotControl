@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { deriveAssetHealth, mergeAssetHealthMetrics, shouldNotifyAssetHealthTransition, STRUCTURAL_PERSISTENCE_MS } from "./rules.ts";
-import { collectAssetHealthMetrics } from "./sources.ts";
+import { analyzeBitcoinBlockProduction, BITCOIN_LONG_INTERVAL_MINUTES, collectAssetHealthMetrics } from "./sources.ts";
 import type { AssetHealthAsset, AssetHealthAssessment, AssetMetric } from "./types.ts";
 
 const now = new Date("2026-09-27T12:00:00.000Z");
@@ -131,12 +131,14 @@ test("transition notifications deduplicate stable status and do not label source
 });
 
 const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-function mockFetcher(tickerVolume: unknown = "1000000000") {
+function mockFetcher(tickerVolume: unknown = "1000000000", options: { blockTimestamps?: number[]; blockstreamUnavailable?: boolean } = {}) {
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url);
     if (path.includes("ticker/24hr")) return reply({ quoteVolume: tickerVolume, priceChangePercent: "-99" });
     if (path.includes("/depth")) return reply({ bids: [["100", "2"]], asks: [["100.01", "2"]] });
-    if (path.endsWith("/blocks")) return reply(Array.from({ length: 15 }, (_, index) => ({ timestamp: now.getTime() / 1000 - index * 600 - 60 })));
+    if (path.includes("blockstream.info/api/blocks") && options.blockstreamUnavailable) return new Response("stale", { status: 503 });
+    if (path.endsWith("/blocks")) return reply((options.blockTimestamps
+      ?? Array.from({ length: 15 }, (_, index) => now.getTime() / 1000 - index * 600 - 60)).map((timestamp) => ({ timestamp })));
     if (path.endsWith("/mempool")) return reply({ count: 100, vsize: 10000 });
     if (path.includes("summary.json")) return reply({ status: { indicator: "none" }, page: { updated_at: "2025-01-01T00:00:00Z" } });
     if (path.includes("mainnet-beta")) {
@@ -152,6 +154,62 @@ function mockFetcher(tickerVolume: unknown = "1000000000") {
     return new Response("missing", { status: 404 });
   }) as typeof fetch;
 }
+test("BTC 35 minutes without a block is LONG_BLOCK_INTERVAL observation, not global attention", async () => {
+  const tip = now.getTime() / 1000 - 35 * 60;
+  const timestamps = Array.from({ length: 15 }, (_, index) => tip - index * 10 * 60);
+  const metrics = (await collectAssetHealthMetrics(["FAST"], now, mockFetcher("1000000000", { blockTimestamps: timestamps })))
+    .filter((metric) => metric.asset === "BTC");
+  const tips = metrics.filter((metric) => metric.key === "tip_age");
+  assert.equal(tips.length, 2);
+  for (const tipMetric of tips) {
+    assert.equal(tipMetric.status, "WARNING");
+    assert.equal(tipMetric.indicatorClass, "COMPLEMENTARY_PROXY");
+    assert.equal(tipMetric.eventCode, "LONG_BLOCK_INTERVAL");
+  }
+  assert.ok(metrics.filter((metric) => metric.key === "block_interval").every((metric) => metric.status === "HEALTHY"));
+  const result = assess("BTC", [...fixtures("BTC"), ...metrics]);
+  assert.equal(result.status, "HEALTHY");
+  assert.equal(result.categories.find((category) => category.category === "NETWORK")?.status, "OBSERVE");
+  assert.equal(result.reasons.filter((reason) => reason.includes("LONG_BLOCK_INTERVAL")).length, 1);
+});
+test("several statistically abnormal intervals confirmed by two explorers can justify attention", async () => {
+  const tip = now.getTime() / 1000 - 5 * 60;
+  const timestamps = Array.from({ length: 15 }, (_, index) => tip - index * 40 * 60);
+  const analysis = analyzeBitcoinBlockProduction(timestamps, now);
+  assert.equal(analysis.productionStatus, "CRITICAL");
+  assert.ok(analysis.longIntervalCount >= 3);
+  assert.ok(analysis.tailProbability <= .000001);
+  const metrics = (await collectAssetHealthMetrics(["FAST"], now, mockFetcher("1000000000", { blockTimestamps: timestamps })))
+    .filter((metric) => metric.asset === "BTC");
+  const production = metrics.filter((metric) => metric.key === "block_interval");
+  assert.equal(production.length, 2);
+  assert.ok(production.every((metric) => metric.eventCode === "BLOCK_PRODUCTION_DEGRADED"));
+  const result = assess("BTC", [...fixtures("BTC"), ...metrics]);
+  assert.equal(result.status, "ATTENTION");
+  assert.equal(result.trigger, "NETWORK_DISRUPTION:CONFIRMED_MULTI_SOURCE");
+});
+test("Blockstream unavailable is source evidence loss, never an automatic BTC alert", async () => {
+  const metrics = (await collectAssetHealthMetrics(["FAST"], now, mockFetcher("1000000000", { blockstreamUnavailable: true })))
+    .filter((metric) => metric.asset === "BTC");
+  assert.ok(metrics.filter((metric) => metric.source.id === "blockstream").every((metric) => metric.status === "SOURCE_UNAVAILABLE"));
+  assert.equal(assess("BTC", [...fixtures("BTC"), ...metrics]).status, "HEALTHY");
+});
+test("normal block recovery does not oscillate global health after an isolated long interval", async () => {
+  const slowTip = now.getTime() / 1000 - 35 * 60;
+  const slow = (await collectAssetHealthMetrics(["FAST"], now, mockFetcher("1000000000", {
+    blockTimestamps: Array.from({ length: 15 }, (_, index) => slowTip - index * 10 * 60),
+  }))).filter((metric) => metric.asset === "BTC");
+  const observed = assess("BTC", [...fixtures("BTC"), ...slow]);
+  const later = new Date(now.getTime() + 30 * 60_000), recentTip = later.getTime() / 1000 - 5 * 60;
+  const recovered = (await collectAssetHealthMetrics(["FAST"], later, mockFetcher("1000000000", {
+    blockTimestamps: Array.from({ length: 15 }, (_, index) => recentTip - index * 10 * 60),
+  }))).filter((metric) => metric.asset === "BTC");
+  assert.equal(observed.status, "HEALTHY");
+  assert.equal(assess("BTC", [...fixtures("BTC", later), ...recovered], later, observed).status, "HEALTHY");
+});
+test("Bitcoin long-interval threshold is derived from the 5% exponential tail", () => {
+  assert.ok(Math.abs(BITCOIN_LONG_INTERVAL_MINUTES - 29.9573227355) < .000001);
+});
 test("collector uses official Solana sample method and excludes vote traffic", async () => {
   const metrics = await collectAssetHealthMetrics(["FAST"], now, mockFetcher());
   assert.equal(metrics.find((metric) => metric.key === "network_activity")?.value, 200);

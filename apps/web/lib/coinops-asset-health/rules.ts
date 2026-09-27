@@ -19,15 +19,32 @@ const evidenceKey = (metric: AssetMetric) => `${metric.source.id}:${metric.key}`
 const independence = (metric: AssetMetric) => metric.source.independenceGroup ?? metric.source.id;
 /** Compatibility for snapshots created before evidence tiers existed. */
 export const indicatorClass = (metric: AssetMetric): AssetMetricClass => metric.indicatorClass
-  ?? (metric.key === "nakamoto_coefficient" || metric.key === "vote_account_superminority_proxy" ? "COMPLEMENTARY_PROXY" : "PRIMARY");
+  ?? (metric.key === "nakamoto_coefficient" || metric.key === "vote_account_superminority_proxy"
+    || (metric.asset === "BTC" && metric.key === "tip_age") ? "COMPLEMENTARY_PROXY" : "PRIMARY");
+
+function normalizedPolicyMetric(metric: AssetMetric): AssetMetric {
+  if (metric.asset === "BTC" && metric.key === "tip_age") return { ...metric, indicatorClass: "COMPLEMENTARY_PROXY",
+    eventCode: metric.status === "WARNING" || metric.status === "CRITICAL" ? "LONG_BLOCK_INTERVAL" : undefined };
+  // Pre-statistical snapshots stored only an average. They remain visible but cannot count as structural evidence.
+  if (metric.asset === "BTC" && metric.key === "block_interval" && typeof metric.value === "number")
+    return { ...metric, indicatorClass: "COMPLEMENTARY_PROXY", eventCode: undefined,
+      reason: `${metric.label}: leitura legada sem distribuição da janela; preservada apenas como contexto até a próxima coleta.` };
+  return metric;
+}
 
 function effectiveMetric(metric: AssetMetric, now: Date): AssetMetric {
+  metric = normalizedPolicyMetric(metric);
   if (!available(metric)) return metric;
   // A freshly checked release from last month is fresh evidence; event age is evaluated separately.
   const reference = Date.parse(metric.observedAt ?? metric.fetchedAt);
   if (!Number.isFinite(reference) || reference > now.getTime() + 60_000 || now.getTime() - reference > metric.ttlSeconds * 1_000)
     return { ...metric, status: "DATA_STALE", reason: `${metric.label}: última observação fora do TTL; valor preservado sem inferir risco.` };
   return metric;
+}
+
+function uniqueEvidence(items: AssetMetric[], limit: number) {
+  const seen = new Set<string>();
+  return items.filter((metric) => !seen.has(metric.key) && Boolean(seen.add(metric.key))).slice(0, limit);
 }
 
 /** Last-good evidence keeps its original TTL; a collection failure never refreshes its age. */
@@ -110,18 +127,26 @@ export function deriveAssetHealth(input: { asset: AssetHealthAsset; metrics: Ass
     || primaryIndependentGroups.size >= ASSET_HEALTH_DECISION_POLICY.attentionIndependentPrimarySignals;
   const status: AssetHealthStatus = !enough ? "INSUFFICIENT_DATA" : structural ? "STRUCTURAL_RISK"
     : attention ? "ATTENTION" : "HEALTHY";
+  const attentionEvidence = uniqueEvidence([...confirmedCritical, ...primaryDegraded], 4);
+  const proxyEvidence = uniqueEvidence(proxyObservations, 3);
   const reasons = status === "INSUFFICIENT_DATA"
     ? [`Cobertura recente insuficiente: ${measured.length} indicadores${missingCategories.length ? `; faltam ${missingCategories.map((category) => categoryLabels[category]).join(", ")}` : " ou fontes independentes"}. Falha de coleta não é risco do ativo.`]
     : status === "STRUCTURAL_RISK" ? persistent.slice(0, 4).map((metric) => metric.reason)
-      : status === "ATTENTION" ? [...confirmedCritical, ...primaryDegraded].slice(0, 4).map((metric) => metric.reason)
-        : proxyObservations.length
-          ? ["O conjunto de rede, segurança, descentralização, desenvolvimento, liquidez e ecossistema não atingiu o quórum de deterioração estrutural. Há indicador complementar/proxy em observação, sem força isolada para rebaixar o ativo.", ...proxyObservations.slice(0, 3).map((metric) => metric.reason)]
+      : status === "ATTENTION" ? attentionEvidence.map((metric) => metric.reason)
+        : proxyEvidence.length
+          ? ["O conjunto de rede, segurança, descentralização, desenvolvimento, liquidez e ecossistema não atingiu o quórum de deterioração estrutural. Há indicador complementar/proxy em observação, sem força isolada para rebaixar o ativo.", ...proxyEvidence.map((metric) => metric.reason)]
           : ["Nas métricas recentes acompanhadas, rede, segurança, desenvolvimento, liquidez e ecossistema não apresentam deterioração estrutural relevante. Esta avaliação tem cobertura limitada às fontes listadas."];
   const unavailable = metrics.filter((metric) => !available(metric)).length;
+  const btcBlockEvidence = input.asset === "BTC" ? primaryDegraded.filter((metric) => metric.key === "block_interval") : [];
+  const btcBlockGroups = new Set(btcBlockEvidence.map(independence));
+  const btcNetworkDisruption = btcBlockGroups.size >= 2 && btcBlockEvidence.every((metric) => metric.status === "CRITICAL");
+  const btcProductionDegraded = btcBlockGroups.size >= 2;
   const trigger = status === "STRUCTURAL_RISK" ? `PERSISTENT_INDEPENDENT_EVIDENCE:${[...persistentCategories].join(",")}`
-    : status === "ATTENTION" ? `QUALIFIED_DEGRADATION:${[...confirmedCritical, ...primaryDegraded].map((metric) => metric.key).join(",")}`
+    : status === "ATTENTION" && btcNetworkDisruption ? "NETWORK_DISRUPTION:CONFIRMED_MULTI_SOURCE"
+      : status === "ATTENTION" && btcProductionDegraded ? "BLOCK_PRODUCTION_DEGRADED:CONFIRMED_MULTI_SOURCE"
+        : status === "ATTENTION" ? `QUALIFIED_DEGRADATION:${attentionEvidence.map((metric) => metric.key).join(",")}`
       : status === "INSUFFICIENT_DATA" ? `INSUFFICIENT:${measured.length}/${metrics.length}`
-        : proxyObservations.length ? `NO_GLOBAL_DEGRADATION;OBSERVE:${proxyObservations.map((metric) => metric.key).join(",")}` : "NO_STRUCTURAL_DETERIORATION";
+        : proxyEvidence.length ? `NO_GLOBAL_DEGRADATION;OBSERVE:${proxyEvidence.map((metric) => metric.key).join(",")}` : "NO_STRUCTURAL_DETERIORATION";
   const sources = [...new Set(metrics.map((metric) => metric.source.id))].map((id) => {
     const rows = metrics.filter((metric) => metric.source.id === id), latest = [...rows].sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt))[0];
     const failed = rows.some((metric) => !metric.optional && (metric.collectionStatus === "SOURCE_UNAVAILABLE" || metric.status === "SOURCE_UNAVAILABLE"));

@@ -29,6 +29,8 @@ export type AssetMetric = {
   collectionStatus?: "OK" | "SOURCE_UNAVAILABLE";
   optional?: boolean;
   contextOnly?: boolean;
+  /** Operational interpretation of the measured fact; never a trading signal. */
+  eventCode?: "LONG_BLOCK_INTERVAL" | "BLOCK_PRODUCTION_DEGRADED" | "NETWORK_DISRUPTION";
 };
 
 export type AssetCategoryAssessment = {

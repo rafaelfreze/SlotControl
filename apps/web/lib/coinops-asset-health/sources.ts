@@ -47,6 +47,59 @@ function status(value: number, warning: (value: number) => boolean, critical: (v
 }
 const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 
+export const BITCOIN_TARGET_BLOCK_MINUTES = 10;
+export const BITCOIN_LONG_INTERVAL_TAIL_PROBABILITY = .05;
+export const BITCOIN_PRODUCTION_WARNING_TAIL_PROBABILITY = .001;
+export const BITCOIN_PRODUCTION_CRITICAL_TAIL_PROBABILITY = .000001;
+export const BITCOIN_LONG_INTERVAL_MINUTES = -Math.log(BITCOIN_LONG_INTERVAL_TAIL_PROBABILITY) * BITCOIN_TARGET_BLOCK_MINUTES;
+
+/** Survival function for the sum of integer-count exponential block intervals (Erlang). */
+function erlangSurvival(intervalCount: number, normalizedElapsed: number) {
+  let term = 1, sum = 1;
+  for (let k = 1; k < intervalCount; k++) { term *= normalizedElapsed / k; sum += term; }
+  return Math.min(1, Math.exp(-normalizedElapsed) * sum);
+}
+
+export function analyzeBitcoinBlockProduction(timestamps: number[], now: Date) {
+  const intervalsMinutes = timestamps.slice(0, -1).map((value, index) => Math.max(0, value - timestamps[index + 1]) / 60);
+  const intervalCount = intervalsMinutes.length;
+  const elapsedMinutes = intervalsMinutes.reduce((sum, value) => sum + value, 0);
+  const meanMinutes = average(intervalsMinutes);
+  const longIntervalCount = intervalsMinutes.filter((value) => value >= BITCOIN_LONG_INTERVAL_MINUTES).length;
+  const tailProbability = intervalCount > 0
+    ? erlangSurvival(intervalCount, elapsedMinutes / BITCOIN_TARGET_BLOCK_MINUTES) : 1;
+  const tipAgeMinutes = Math.max(0, now.getTime() / 1000 - timestamps[0]) / 60;
+  const tipTailProbability = Math.exp(-tipAgeMinutes / BITCOIN_TARGET_BLOCK_MINUTES);
+  const enoughWindow = intervalCount >= 8;
+  const productionStatus: AssetMetricStatus = enoughWindow && longIntervalCount >= 3
+      && tailProbability <= BITCOIN_PRODUCTION_CRITICAL_TAIL_PROBABILITY ? "CRITICAL"
+    : enoughWindow && longIntervalCount >= 2
+      && tailProbability <= BITCOIN_PRODUCTION_WARNING_TAIL_PROBABILITY ? "WARNING" : "HEALTHY";
+  return { intervalCount, meanMinutes, longIntervalCount, tailProbability, tipAgeMinutes, tipTailProbability, productionStatus };
+}
+
+function bitcoinBlockMetrics(source: Source, now: Date, timestamps: number[]): AssetMetric[] {
+  const analysis = analyzeBitcoinBlockProduction(timestamps, now);
+  const elevatedTip = analysis.tipTailProbability <= BITCOIN_LONG_INTERVAL_TAIL_PROBABILITY;
+  return [
+    metric("BTC", "FAST", source, now, { key: "block_interval", label: "Produção de blocos em janela", category: "NETWORK",
+      value: { averageMinutes: analysis.meanMinutes, completedIntervals: analysis.intervalCount,
+        longIntervals: analysis.longIntervalCount, poissonTailProbability: analysis.tailProbability }, unit: null,
+      status: analysis.productionStatus, eventCode: analysis.productionStatus === "HEALTHY" ? undefined : "BLOCK_PRODUCTION_DEGRADED",
+      reason: analysis.productionStatus === "HEALTHY"
+        ? `${analysis.intervalCount} intervalos concluídos permanecem compatíveis com a produção probabilística esperada (média ${analysis.meanMinutes.toFixed(1)} min).`
+        : `BLOCK_PRODUCTION_DEGRADED: ${analysis.longIntervalCount} intervalos longos em ${analysis.intervalCount}; cauda estatística ${analysis.tailProbability.toExponential(2)}. Exige confirmação independente para alterar o status global.`,
+      metricAt: new Date(timestamps[0] * 1000).toISOString() }),
+    metric("BTC", "FAST", source, now, { key: "tip_age", label: "Tempo desde o último bloco", category: "NETWORK",
+      value: analysis.tipAgeMinutes, unit: "min", indicatorClass: "COMPLEMENTARY_PROXY",
+      status: elevatedTip ? "WARNING" : "HEALTHY", eventCode: elevatedTip ? "LONG_BLOCK_INTERVAL" : undefined,
+      reason: elevatedTip
+        ? `LONG_BLOCK_INTERVAL: último bloco há ${analysis.tipAgeMinutes.toFixed(1)} min — intervalo elevado, sem evidência estrutural isolada.`
+        : `Último bloco observado há ${analysis.tipAgeMinutes.toFixed(1)} min; dentro da variância operacional acompanhada.`,
+      metricAt: new Date(timestamps[0] * 1000).toISOString() }),
+  ];
+}
+
 async function binanceMarket(asset: AssetHealthAsset, now: Date, fetcher: FetchLike): Promise<AssetMetric[]> {
   const symbol = `${asset}USDT`, source = SOURCES.binance, cadence = "FAST" as const;
   try {
@@ -85,15 +138,8 @@ async function btcFast(now: Date, fetcher: FetchLike): Promise<AssetMetric[]> {
     const mempool = mempoolRaw as Record<string, unknown>;
     const timestamps = blocks.map((row) => finite(row.timestamp)).filter((value): value is number => value !== null);
     if (timestamps.length < 5 || timestamps.some((time) => time <= 0 || time > now.getTime() / 1000 + 7200)) throw new Error("INVALID_BLOCK_DATA");
-    const intervals = timestamps.slice(0, -1).map((value, index) => Math.max(0, value - timestamps[index + 1]) / 60);
-    const blockMinutes = average(intervals), tipAgeMinutes = Math.max(0, now.getTime() / 1000 - timestamps[0]) / 60;
     return [
-      metric("BTC", cadence, source, now, { key: "block_interval", label: "Intervalo entre blocos", category: "NETWORK",
-        value: blockMinutes, unit: "min", status: status(blockMinutes, (v) => v > 20, (v) => v > 35),
-        reason: blockMinutes <= 20 ? `Blocos recentes com intervalo médio de ${blockMinutes.toFixed(1)} min.` : `Intervalo médio recente entre blocos subiu para ${blockMinutes.toFixed(1)} min.` , metricAt: new Date(timestamps[0] * 1000).toISOString() }),
-      metric("BTC", cadence, source, now, { key: "tip_age", label: "Produção do bloco mais recente", category: "NETWORK",
-        value: tipAgeMinutes, unit: "min", status: status(tipAgeMinutes, (v) => v > 30, (v) => v > 60),
-        reason: tipAgeMinutes <= 30 ? `Bloco mais recente observado há ${tipAgeMinutes.toFixed(1)} min.` : `Nenhum novo bloco observado há ${tipAgeMinutes.toFixed(1)} min.`, metricAt: new Date(timestamps[0] * 1000).toISOString() }),
+      ...bitcoinBlockMetrics(source, now, timestamps),
       metric("BTC", cadence, source, now, { key: "mempool_backlog", label: "Mempool", category: "NETWORK", indicatorClass: "COMPLEMENTARY_PROXY",
         value: { transactions: finite(mempool.count), vsize: finite(mempool.vsize) }, unit: null, status: "HEALTHY",
         contextOnly: true, reason: "Mempool observada como contexto; congestionamento isolado não é risco estrutural." }),
@@ -142,13 +188,14 @@ async function btcIndependentTip(now: Date, fetcher: FetchLike): Promise<AssetMe
   const source = SOURCES.blockstream;
   try {
     const raw = await json(fetcher, "https://blockstream.info/api/blocks") as Array<{ timestamp?: number; height?: number }>;
-    const timestamp = finite(raw[0]?.timestamp);
-    if (!timestamp || timestamp > now.getTime() / 1000 + 7200) throw new Error("INVALID_BLOCKSTREAM_TIP");
-    const minutes = Math.max(0, now.getTime() / 1000 - timestamp) / 60;
-    return [metric("BTC", "FAST", source, now, { key: "tip_age", label: "Produção confirmada por explorer independente", category: "NETWORK",
-      value: minutes, unit: "min", metricAt: new Date(timestamp * 1000).toISOString(),
-      status: status(minutes, (value) => value > 30, (value) => value > 60), reason: `Blockstream observa último bloco há ${minutes.toFixed(1)} min.` })];
-  } catch (error) { return [unavailable("BTC", "FAST", source, now, "tip_age", "Produção confirmada por explorer independente", "NETWORK", error)]; }
+    const timestamps = raw.map((row) => finite(row.timestamp)).filter((value): value is number => value !== null);
+    if (timestamps.length < 5 || timestamps.some((timestamp) => timestamp <= 0 || timestamp > now.getTime() / 1000 + 7200))
+      throw new Error("INVALID_BLOCKSTREAM_TIP");
+    return bitcoinBlockMetrics(source, now, timestamps);
+  } catch (error) { return [
+    unavailable("BTC", "FAST", source, now, "block_interval", "Produção de blocos em janela", "NETWORK", error),
+    unavailable("BTC", "FAST", source, now, "tip_age", "Tempo desde o último bloco", "NETWORK", error),
+  ]; }
 }
 
 async function githubDevelopment(asset: AssetHealthAsset, repo: string, source: Source, key: string, now: Date, fetcher: FetchLike) {

@@ -40,8 +40,8 @@ Todos os limiares são heurísticas internas conservadoras de acompanhamento, n�
 
 | Métrica | Medida | Atenção | Crítico |
 |---|---|---|---|
-| BTC intervalo de blocos | Média dos intervalos recentes do explorer | >20 min | >35 min |
-| BTC último bloco, duas fontes | Idade do bloco observado em cada explorer | >30 min | >60 min |
+| BTC produção de blocos | Janela de 8–14 intervalos concluídos por explorer; soma comparada à distribuição Erlang com média-alvo de 10 min | `p ≤ 0,001` e ≥2 intervalos na cauda individual de 5% | `p ≤ 0,000001` e ≥3 intervalos na cauda individual de 5% |
+| BTC último bloco, duas fontes | Idade observada por explorer | cauda exponencial individual ≤5% (~29,96 min) = `LONG_BLOCK_INTERVAL`/OBSERVAR | Nunca é crítico isoladamente |
 | BTC hashrate | Hashrate atual / média da série mensal disponível | <70% | <50% |
 | BTC dificuldade | Dificuldade atual positiva | — | Valor inválido é indisponível |
 | BTC pool dominante | Maior contagem de blocos / total identificado no mês | >50% | >65% |
@@ -67,6 +67,7 @@ Ressalvas de medida:
 - A série de stablecoins usa metodologia DefiLlama e pode variar por migração/depeg/classificação. Precisa de histórico de 30 dias; série com última data há mais de 3 dias é indisponível.
 - TVL e volume DEX em USD são apenas contexto (`contextOnly`); não entram no total de indicadores, cobertura mínima ou risco. Variação de preços/bots/dupla contagem pode afetá-los.
 - Mempool é contexto; congestionamento isolado não é risco estrutural.
+- A produção de blocos é probabilística. O alvo de dez minutos é média, não prazo máximo. Um tip com ~35 minutos tem cauda exponencial de cerca de 3% e fica `LONG_BLOCK_INTERVAL`/`COMPLEMENTARY_PROXY`: visível, mas sem rebaixar o global. A janela de intervalos concluídos usa a sobrevivência Erlang (soma de exponenciais) e só produz `BLOCK_PRODUCTION_DEGRADED` com amostra mínima, múltiplos intervalos longos e cauda rara. Duas fontes precisam confirmar o padrão para `ATTENTION`; caso ambas confirmem o patamar crítico, o trigger auditável é `NETWORK_DISRUPTION:CONFIRMED_MULTI_SOURCE`. Mesmo assim, uma única categoria não basta para `STRUCTURAL_RISK`.
 - Commit recente indica manutenção observada, não qualidade, segurança ou ausência de vulnerabilidades.
 
 ## Status reproduzível
@@ -75,6 +76,7 @@ Ressalvas de medida:
 - Sem cobertura suficiente: `INSUFFICIENT_DATA` (DADOS INSUFICIENTES). API ausente/stale jamais vira risco do ativo.
 - Cobertura suficiente sem quórum de deterioração: `HEALTHY` dentro da cobertura declarada. Um `COMPLEMENTARY_PROXY` degradado fica `OBSERVE` na categoria e visível no drawer, mas não rebaixa o global sozinho.
 - `ATTENTION`: pelo menos 2 indicadores `PRIMARY` deteriorados em grupos independentes, ou 1 indicador de classe `CRITICAL` com estado crítico, fonte de alta confiança e coleta válida. Um pequeno desvio isolado não muda imediatamente a saúde estrutural.
+- Para BTC, `tip_age` é sempre `COMPLEMENTARY_PROXY`; snapshots antigos são normalizados na leitura. Uma média legada de blocos sem a distribuição da janela também vira apenas contexto até nova coleta. A própria janela móvel de 8–14 intervalos fornece histerese: um bloco atrasado não muda o global e um bloco novo não apaga instantaneamente um padrão persistente.
 - `STRUCTURAL_RISK` exige métricas críticas não-proxy, materiais e persistentes em pelo menos 2 categorias e 2 grupos independentes de fontes por pelo menos 6 horas. A data de início fica persistida por `source.id:key` em `criticalSinceByMetric`.
 - A confirmação precisa ter `observedAt >= criticalSince + 6h`: passagem do relógio ou GET da página não promove status. Uma amostra crítica antiga, sem nova coleta, não comprova persistência.
 - Uma fonte independente saudável para a mesma métrica crítica impede sua contribuição para escalada estrutural; a divergência continua em atenção e fica visível nas métricas.
@@ -101,4 +103,4 @@ Esses valores são evidência datada do desenvolvimento, não o estado permanent
 
 ## Regressões
 
-`apps/web/lib/coinops-asset-health/asset-health.test.ts`: BTC/SOL saudáveis, 12 saudáveis + 1 proxy degradado, dois PRIMARY independentes, CRITICAL confirmado, persistência multifonte, recuperação, origem comum, fontes conflitantes, lacuna de coleta, GET sem promoção por relógio, risco comprovado com falha transitória de fonte, último valor dentro/fora do TTL, data antiga de evento, cobertura insuficiente, lacunas opcionais, preço extremo, dedupe de transições, formato RPC correto/TPS sem votos, null indisponível, todas APIs offline e isolamento de imports/chamadas de trading.
+`apps/web/lib/coinops-asset-health/asset-health.test.ts`: inclui BTC 35 min sem bloco saudável/OBSERVAR, limiar estatístico derivado, múltiplos intervalos anormais confirmados por dois explorers, recuperação sem oscilação, Blockstream indisponível sem falso alerta, preço extremo, proxy Solana isolado, fontes conflitantes/stale, quórum/persistência, dedupe e isolamento do trading.

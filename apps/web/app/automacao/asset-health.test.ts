@@ -70,6 +70,17 @@ test("details keep source failure distinct from structural risk and avoid stale 
   assert.doesNotMatch(html, /<details open/);
 });
 
+test("drawer does not repeat the summary as the first reason", () => {
+  const { AssetHealthDetails } = load();
+  const reason = "LONG_BLOCK_INTERVAL: último bloco há 35,0 min — intervalo elevado, sem evidência estrutural isolada.";
+  const html = renderToStaticMarkup(React.createElement(AssetHealthDetails, {
+    asset: "BTC", snapshot: { ...snapshot, summary: reason, reasons: [reason, "Demais indicadores permanecem normais."] },
+    now, loading: false, readError: false, days: 30, setDays: () => undefined,
+  }));
+  assert.equal(html.match(/LONG_BLOCK_INTERVAL/g)?.length, 1);
+  assert.match(html, /Demais indicadores permanecem normais/);
+});
+
 test("drawer labels proxy-only category as OBSERVAR and exposes the evidence class", () => {
   const { AssetHealthDetails } = load();
   const proxySnapshot = { ...snapshot,

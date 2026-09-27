@@ -144,7 +144,8 @@ export function AssetHealthDetails({ asset, snapshot, now, loading, readError, d
       <p>{!snapshot ? loading ? "Consultando a análise mais recente." : "Ainda não há evidência suficiente disponível para avaliar o ativo. Isso não indica uma falha da rede."
         : stale ? `A análise anterior (${statusLabels[snapshot.status]}) está fora do prazo de validade. É necessário atualizar os dados antes de confirmar a saúde atual.` : snapshot.summary}</p>
       {readError ? <p className="ah-notice" role="status">Não foi possível atualizar a leitura agora. A última evidência válida permanece visível até seu prazo de validade.</p> : null}
-      {snapshot && !stale && snapshot.reasons.length ? <ul>{snapshot.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
+      {snapshot && !stale && snapshot.reasons.some((reason) => reason !== snapshot.summary)
+        ? <ul>{snapshot.reasons.filter((reason) => reason !== snapshot.summary).map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
       {snapshot?.coverage ? <p className="ah-disclaimer">Cobertura atual: {snapshot.coverage.available}/{snapshot.coverage.expected} indicadores disponíveis.
         {snapshot.coverage.missingCategories.length ? ` Áreas sem evidência suficiente: ${snapshot.coverage.missingCategories.map((category) => categoryLabels[category]).join(", ")}.` : ""}
         {snapshot.coverage.unavailableOptional > 0 ? ` ${snapshot.coverage.unavailableOptional} indicador(es) complementar(es) indisponível(is).` : ""}</p> : null}

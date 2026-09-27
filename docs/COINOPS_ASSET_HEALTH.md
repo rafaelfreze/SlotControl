@@ -22,6 +22,8 @@ Detalhamento completo em [Fontes e regras](./COINOPS_ASSET_HEALTH_SOURCES.md). C
 
 HEALTHY exige cobertura mínima por categoria e fontes independentes. Indicadores são classificados como `CRITICAL`, `PRIMARY` ou `COMPLEMENTARY_PROXY`. Um proxy isolado pode aparecer como `OBSERVE`, mas não rebaixa o status global. ATTENTION exige ao menos dois sinais PRIMARY deteriorados de grupos independentes, ou um CRITICAL confirmado, de alta confiança. STRUCTURAL_RISK exige deterioração crítica não-proxy em2categorias e2fontes independentes, confirmada por novas observações por6h. Ausência/stale é INSUFFICIENT_DATA. GET pode degradar validade, nunca renovar evidência ou criar nova escalada estrutural. Preço/candle/retorno não é entrada permitida; TVL e volume DEX não são sinais de risco.
 
+No BTC, um bloco isolado demorado é `LONG_BLOCK_INTERVAL` e somente `OBSERVE`. A produção só vira sinal PRIMARY quando uma janela de intervalos concluídos é estatisticamente anormal pela cauda Erlang, contém múltiplos intervalos longos e é confirmada por mempool.space e Blockstream. Isso separa `BLOCK_PRODUCTION_DEGRADED` de `NETWORK_DISRUPTION` e impede alternância estrutural a cada bloco.
+
 ## Persistência e segurança
 
 Migration `20260927110357_add_coinops_asset_health.sql`, projeto oficial `otdfpmsegjxpqrzisfmi`, schema `coinops`:
