@@ -46,7 +46,10 @@ reconciliação >=120 s, a admissão também bloqueia. Telemetria/heartbeat/
 weight com mais de 120 s, menos de 2 minutos amostrados, registry divergente
 ou Capacity Manager indisponível = CAPACITY_UNKNOWN, fail-closed apenas para
 nova ativação. A reserva SQL serializada por shard dura 20 min; replay do
-mesmo motor não duplica a cobrança.
+mesmo motor não duplica a cobrança. Uma amostra posterior, fresca e com
+registry coincidente consome a reserva de qualquer motor ACTIVE que já esteja
+representado naquela telemetria. Assim, reserva protege somente trabalho ainda
+não observado e nunca é somada novamente ao peso que já contém o motor.
 
 SCALE_OUT é indicado por peso Binance/IP: novo executor com IP fixo próprio,
 health e whitelist explícita, então novas contas atribuídas a ele. Não usar

@@ -9,6 +9,7 @@ import * as environmentTelemetry from "./environment-telemetry.ts";
 
 async function collect(testnetFailure = false, testnetAvailable = true) {
   const writes: Array<{ table: string; value: Record<string, unknown> }> = [];
+  const updates: Array<{ table: string; value: Record<string, unknown> }> = [];
   const now = new Date().toISOString();
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
@@ -29,7 +30,8 @@ async function collect(testnetFailure = false, testnetAvailable = true) {
     const chain = { select: () => chain, order: () => chain, in: () => chain, is: () => chain, gte: () => chain,
       eq: (key: string, value: unknown) => { filters[key] = value; return chain; },
       upsert: async (value: Record<string, unknown>) => { writes.push({ table, value }); return { error: null }; },
-      update: () => chain,
+      update: (value: Record<string, unknown>) => { updates.push({ table, value }); return chain; },
+      lte: () => chain, gt: () => chain,
       then: (fn: (value: unknown) => unknown) => Promise.resolve(query()).then(fn) };
     return chain;
   } };
@@ -60,11 +62,11 @@ async function collect(testnetFailure = false, testnetAvailable = true) {
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
   }, loaded, async () => ({ ok: true, json: async () => sample }));
   await (loaded.refreshExecutorCapacity as () => Promise<unknown>)();
-  return writes;
+  return { writes, updates };
 }
 
 test("collector persists independent Testnet evidence with ledger counts and vault account coverage", async () => {
-  const writes = await collect();
+  const { writes, updates } = await collect();
   const real = writes.find((row) => row.table === "executor_capacity_samples")!.value;
   const testnet = writes.find((row) => row.table === "executor_capacity_environment_samples")!.value;
   assert.equal(real.binance_weight_peak, 2400);
@@ -76,10 +78,12 @@ test("collector persists independent Testnet evidence with ledger counts and vau
   assert.equal(testnet.engine_count, 1);
   assert.ok(writes.indexOf(writes.find((row) => row.table === "executor_capacity_samples")!)
     < writes.indexOf(writes.find((row) => row.table === "executor_capacity_environment_samples")!));
+  assert.equal(updates.filter((row) => row.table === "executor_capacity_admissions").length, 2,
+    "fresh REAL and TESTNET samples consume only reservations already reflected by their own registries");
 });
 
 test("Testnet database failure or old executor payload cannot invalidate Production telemetry", async () => {
-  for (const writes of [await collect(true), await collect(false, false)]) {
+  for (const { writes } of [await collect(true), await collect(false, false)]) {
     assert.equal(writes.filter((row) => row.table === "executor_capacity_samples").length, 1);
     assert.equal(writes.filter((row) => row.table === "executor_capacity_environment_samples").length, 0);
   }

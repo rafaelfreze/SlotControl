@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assessShardCapacity, assertUniquePrimaryShard, decideShardAdmission,
+import { assessShardCapacity, assertUniquePrimaryShard, calculateAdmissionCapacity, decideShardAdmission,
   type ShardMetrics } from "./capacity-manager.ts";
 
 const now = Date.parse("2026-09-26T17:00:00Z");
@@ -66,4 +66,27 @@ test("Diogo one-engine admission uses 15-minute pressure, not the latest counter
   assert.equal(decideShardAdmission(normal, 900, undefined, now).allowed, true);
   assert.equal(decideShardAdmission({ ...normal, binanceWeightPeak: 3001 }, 900, undefined, now).allowed, false);
   assert.equal(decideShardAdmission(normal, 1800, undefined, now).allowed, false);
+});
+
+test("each fixed-IP shard derives admission independently and keeps one recovery reserve", () => {
+  const loaded = metrics({ shardId: "executor-01", binanceWeightCurrent: 2860,
+    binanceWeightAverage: 2700, binanceWeightPeak: 4448 });
+  const available = metrics({ shardId: "executor-02", accountIds: ["a", "b", "c", "d"],
+    engineIds: ["a", "b", "c", "d"], binanceWeightCurrent: 1583,
+    binanceWeightAverage: 1500, binanceWeightPeak: 2565 });
+  assert.equal(assessShardCapacity(loaded, undefined, now).state, "WARNING");
+  assert.equal(calculateAdmissionCapacity(loaded, 900, 0, undefined, now).safeAdditionalEngines, 0);
+  assert.equal(assessShardCapacity(available, undefined, now).state, "HEALTHY");
+  assert.equal(calculateAdmissionCapacity(available, 900, 0, undefined, now).safeAdditionalEngines, 1);
+  assert.equal(decideShardAdmission(available, 900, undefined, now).allowed, true);
+  assert.equal(decideShardAdmission(available, 1800, undefined, now).allowed, false);
+});
+
+test("a pending reservation is counted once and a reflected engine is not reserved again", () => {
+  const shard = metrics({ shardId: "executor-02", binanceWeightCurrent: 1583,
+    binanceWeightAverage: 1500, binanceWeightPeak: 2565 });
+  assert.equal(calculateAdmissionCapacity(shard, 900, 900, undefined, now).safeAdditionalEngines, 0,
+    "an actually pending engine consumes the remaining admission budget");
+  assert.equal(calculateAdmissionCapacity(shard, 900, 0, undefined, now).safeAdditionalEngines, 1,
+    "after telemetry reflects the engine, only the next engine is projected");
 });

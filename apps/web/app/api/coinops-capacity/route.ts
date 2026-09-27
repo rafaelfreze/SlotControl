@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { asShardMetrics, capacityScope } from "@/lib/coinops-capacity/capacity-server";
 import { shardReservedWeight } from "@/lib/coinops-capacity/admission-reservations";
-import { assessShardCapacity, decideShardAdmission, DEFAULT_CAPACITY_POLICY } from "@/lib/coinops-capacity/capacity-manager";
+import { assessShardCapacity, calculateAdmissionCapacity, decideShardAdmission,
+  DEFAULT_CAPACITY_POLICY } from "@/lib/coinops-capacity/capacity-manager";
 import { capacityWarningMuted } from "@/lib/coinops-capacity/capacity-warning-mute";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
@@ -54,6 +55,8 @@ export async function GET() {
       const admission = decideShardAdmission(metrics, Number(shard.incremental_engine_weight) + reservedWeight, policy);
       const dualEngineAdmission = decideShardAdmission(metrics,
         Number(shard.incremental_engine_weight) * 2 + reservedWeight, policy);
+      const capacity = calculateAdmissionCapacity(metrics,
+        Number(shard.incremental_engine_weight), reservedWeight, policy);
       const warningsMuted = mutedPairs.has(`${auth.operatorId}:${shard.id}`);
       return { id: shard.id, state: assessment.state, action: assessment.action, warningsMuted,
         egressIp: String(shard.egress_ipv4), reservedWeight,
@@ -69,8 +72,11 @@ export async function GET() {
         observedAt: sample?.observed_at ?? null,
         heartbeatAt: sample?.heartbeat_at ?? null,
         executorVersion: sample?.executor_version ?? null,
-        canAddEngine: assessment.state === "HEALTHY" && admission.allowed, admissionReason: admission.reason,
-        canAddTwoEngineAccount: assessment.state === "HEALTHY" && dualEngineAdmission.allowed,
+        incrementalEngineWeight: Number(shard.incremental_engine_weight),
+        admissionLimitWeight: capacity.admissionLimitWeight,
+        safeAdditionalEngines: capacity.safeAdditionalEngines,
+        canAddEngine: admission.allowed, admissionReason: admission.reason,
+        canAddTwoEngineAccount: dualEngineAdmission.allowed,
         alerts: (alerts.data ?? []).filter((item) => item.shard_id === shard.id
           && !capacityWarningMuted(item, auth.operatorId, mutedPairs)) };
     }) }, { headers });

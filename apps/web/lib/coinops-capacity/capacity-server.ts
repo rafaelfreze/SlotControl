@@ -174,6 +174,18 @@ async function saveShardCapacity(service: Service,
     : await service.from("executor_capacity_environment_samples").upsert({ ...values, environment,
       inventory_source: "LEDGER_CREDENTIAL_BOUND_TRANSPORT" }, { onConflict: "shard_id,environment" });
   if (saved.error) throw new Error("COINOPS_CAPACITY_SAMPLE_WRITE_FAILED");
+  // A reservation protects the admission window only until a subsequent
+  // registry-matched executor sample proves that the ACTIVE engine is already
+  // represented in observed weight. Expiring it here prevents the same engine
+  // being charged once in telemetry and again as pending admission.
+  if (registryMatch && scope.engineIds.length) {
+    const consumed = await service.from("executor_capacity_admissions")
+      .update({ expires_at: values.observed_at })
+      .eq("shard_id", shardId).eq("environment", environment)
+      .in("engine_id", scope.engineIds).lte("reserved_at", values.observed_at)
+      .gt("expires_at", values.observed_at);
+    if (consumed.error) throw new Error("COINOPS_CAPACITY_RESERVATION_CONSUME_FAILED");
+  }
   const assessment = assessShardCapacity(asShardMetrics(values), { ...DEFAULT_CAPACITY_POLICY,
     binanceLimitPerMinute: Number(shard.binance_limit_per_min), admissionRatio: Number(shard.admission_ratio) });
   const codes: Array<{ code: CapacityAlertCode; severity: "WARNING" | "CRITICAL" }> =

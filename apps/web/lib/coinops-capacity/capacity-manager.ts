@@ -84,6 +84,28 @@ export function assessShardCapacity(metrics: ShardMetrics | null,
 }
 export type AdmissionDecision = { allowed: boolean; code: "ASSIGN" | "CAPACITY_REQUIRED";
   reason: string; shardId: string | null };
+export type AdmissionCapacity = {
+  safeAdditionalEngines: number; observedWeight: number | null; admissionLimitWeight: number;
+  reservedWeight: number; incrementalEngineWeight: number; availableWeight: number;
+};
+/** Derives an executor's remaining admission capacity from that executor's own
+ * telemetry. Reservations are only unobserved work; once a fresh registry-
+ * matched sample contains an activated engine its reservation is consumed by
+ * the collector and must not be charged a second time. */
+export function calculateAdmissionCapacity(metrics: ShardMetrics | null,
+  incrementalEngineWeight: number, reservedWeight = 0,
+  policy: CapacityPolicy = DEFAULT_CAPACITY_POLICY, now = Date.now()): AdmissionCapacity {
+  const assessment = assessShardCapacity(metrics, policy, now);
+  const admissionLimitWeight = policy.binanceLimitPerMinute * policy.admissionRatio;
+  const invalid = !metrics || !valid(incrementalEngineWeight) || incrementalEngineWeight === 0
+    || !valid(reservedWeight) || ["OFFLINE", "WARNING", "CAPACITY_LIMIT"].includes(assessment.state);
+  const observedWeight = metrics ? Math.max(metrics.binanceWeightCurrent,
+    metrics.binanceWeightAverage, metrics.binanceWeightPeak) : null;
+  const availableWeight = invalid || observedWeight === null
+    ? 0 : Math.max(0, admissionLimitWeight - observedWeight - reservedWeight);
+  return { safeAdditionalEngines: invalid ? 0 : Math.floor(availableWeight / incrementalEngineWeight),
+    observedWeight, admissionLimitWeight, reservedWeight, incrementalEngineWeight, availableWeight };
+}
 /** Admission needs fresh metrics and a measured incremental p95. Existing
  * assignments and engines are never changed by this decision. */
 export function decideShardAdmission(metrics: ShardMetrics | null, incrementalWeightP95: number | null,
