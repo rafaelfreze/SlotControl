@@ -172,6 +172,14 @@ no ambiente de destino antes de operação remota.
 - Deploy/rollback de novo executor usa GitHub/main + SHA completo, release imutável, health exato e estado persistente separado. Não dependa de checkout ou arquivo particular de PC/notebook. Nunca reinicie o Executor 01 para testar o Executor 02.
 - Não declarar a infraestrutura ativa com base apenas no código: conservar gates, SHA, IP, health, migrations, smoke e limitações no runbook/relatório da entrega. Teste de fixture não comprova uma ordem Binance Testnet real nem entrega física de push.
 
+## Custos & Operação (FinOps ADMIN)
+
+- `/custos-operacao` é exclusivamente ADMIN; VIEWER não acessa custos internos nem APIs FinOps. Tabelas `coinops.finops_*` são server-only, com RLS e escopo tenant/operator.
+- Capital Binance e P&L de estratégias nunca são receita da plataforma. Custos seguem `REAL > ESTIMADO > RATEIO_ESTIMADO > INDISPONIVEL`; `MANUAL` identifica entrada/evidência, não cobrança confirmada. Sem fatura não significa custo zero.
+- A tela lê snapshots persistidos; sincronização independente a cada seis horas. Não acoplar billing, câmbio ou FinOps a trading, watchdog, admissão ou reconciliação com escrita. Falha de billing não bloqueia nenhum motor.
+- Preservar moeda original, fonte/data, método de rateio, período do fornecedor e câmbio congelado em cada snapshot. USD não equivale a USDT. Tarifas documentadas são estimativas, nunca valores pagos.
+- Registry descobre executores automaticamente; preço de um novo recurso precisa de evidência/configuração, não herda US$6 cegamente. Regras e limites: `docs/COINOPS_FINOPS_PROVIDERS.md`.
+
 ## Variáveis — nomes, nunca valores
 
 Descubra sempre o conjunto atual no runtime e nos exemplos. O inventário auditado inclui:
@@ -179,6 +187,7 @@ Descubra sempre o conjunto atual no runtime e nos exemplos. O inventário audita
 - Públicas/config de cliente: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, NEXT_PUBLIC_SITE_URL, NEXT_PUBLIC_APP_NAME.
 - Config server-side: SUPABASE_DATA_SCHEMA, COINOPS_SERVICE_TENANT_ID.
 - Secrets: SUPABASE_SERVICE_ROLE_KEY, CRON_SECRET.
+- Billing opcional server-side: FINOPS_DIGITALOCEAN_TOKEN (inventário de recursos, leitura), FINOPS_VERCEL_TOKEN (billing, leitura). Sem credencial, preservar preço/rateio documentado e identificar a origem; não inventar sincronização de fatura.
 - Teste/build: PLAYWRIGHT_BASE_URL, NEXT_DIST_DIR, CI, NODE_ENV.
 
 NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo para arquivo local, Git, URL, log, screenshot ou relatório.

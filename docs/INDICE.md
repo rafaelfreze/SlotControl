@@ -7,6 +7,8 @@ novas funcionalidades. Preserve migrations e ledger para leitura histórica.
 
 - [Capacity Manager e isolamento](./COINOPS_CAPACITY_MANAGER.md) — telemetria,
   admissão, headroom, sharding e condições de publicação.
+- [Custos & Operação (ADMIN)](./COINOPS_FINOPS_PROVIDERS.md) — serviços reais,
+  custos estimados e rateio, câmbio, snapshots e isolamento financeiro.
 - [Retirada do legado manual](./COINOPS_LEGACY_RETIREMENT.md) — rotas removidas,
   histórico preservado e contrato Automation-first.
 - [Auditoria de escala](./COINOPS_50_ACCOUNTS_AUDIT.md) — evidências e gates

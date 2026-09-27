@@ -40,6 +40,10 @@
     "app/api/cron/coinops-watchdog/route.ts": {
       "regions": ["gru1"],
       "maxDuration": 60
+    },
+    "app/api/cron/coinops-finops/route.ts": {
+      "regions": ["gru1"],
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -74,6 +78,10 @@
     {
       "path": "/api/cron/coinops-watchdog",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/coinops-finops",
+      "schedule": "17 */6 * * *"
     }
   ]
 }
