@@ -59,7 +59,7 @@ Entrega física é at-least-once: crash entre send e registro SENT pode reenviar
 
 ## Validação
 
-- Regras/fontes:24testes incluindo proxy isolado, quórum PRIMARY, CRITICAL confirmado, preço extremo, fontes conflitantes, persistência, APIs fora e stale.
+- Regras/fontes:23testes incluindo proxy isolado, quórum PRIMARY, CRITICAL confirmado, preço extremo, fontes conflitantes, persistência, APIs fora e stale.
 - Serviço/auth/cron:11testes; push:8testes; UI:6testes. Total44 direcionados sem SQL.
 - SQL:10/10 em PostgreSQL17 descartável real; concorrência, fencing, rollback, imutabilidade, RLS/grants e delivery dedupe. No Windows o start PostgreSQL exigiu permissão do sandbox; não foi falha da migration.
 - UI:12cenários Chromium/WebKit em320/360/375/390/430/1280px; close após scroll, Escape, sem overflow, história/dedupe. WebKit é emulação, não iPhone físico.

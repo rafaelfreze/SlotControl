@@ -28,15 +28,15 @@ COMPROVADO: cron publicado `7,37 * * * *` em Production. FAST 30min, STRUCTURAL 
 
 ## 7. Algoritmo/status
 
-REGRA DERIVADA: cobertura mínima + ausência de degradação → SAUDÁVEL. Uma métrica warning/critical → ATENÇÃO. RISCO ESTRUTURAL exige métricas críticas em pelo menos duas categorias e duas fontes independentes, com novas observações confirmando pelo menos 6h de persistência. Cobertura insuficiente → DADOS INSUFICIENTES. Nenhum número representa probabilidade de perda.
+REGRA DERIVADA: cobertura mínima + ausência de quórum de degradação → SAUDÁVEL. Indicadores são classificados como CRITICAL, PRIMARY ou COMPLEMENTARY_PROXY. ATENÇÃO exige dois PRIMARY deteriorados de grupos independentes, ou um CRITICAL confirmado e de alta confiança. Um proxy isolado fica OBSERVAR no drawer e não rebaixa o global. RISCO ESTRUTURAL exige evidência crítica não-proxy em pelo menos duas categorias e duas fontes independentes, com novas observações confirmando pelo menos 6h de persistência. Cobertura insuficiente → DADOS INSUFICIENTES. Não existe média cega e nenhum número representa probabilidade de perda.
 
 ## 8. Thresholds
 
-Todos versionados e documentados em [Fontes e regras](./COINOPS_ASSET_HEALTH_SOURCES.md#metricas-e-thresholds-deterministicos). Exemplos: BTC hashrate abaixo de 70%/50% da referência mensal; SOL stake delinquent acima de 10%/25%; spread acima de 0,1%/0,5%. Concentração SOL abaixo de 20/10 contas de voto para 1/3 do stake é warning/critical interno. Estes limiares são heurísticas explícitas, não consenso oficial.
+Todos versionados e documentados em [Fontes e regras](./COINOPS_ASSET_HEALTH_SOURCES.md#metricas-e-thresholds-deterministicos). Exemplos: BTC hashrate abaixo de 70%/50% da referência mensal; SOL stake delinquent acima de 10%/25%; spread acima de 0,1%/0,5%. Concentração SOL abaixo de 20/10 contas de voto para 1/3 do stake é observação complementar interna. Não é Nakamoto por operador e não participa sozinha do quórum global. Estes limiares são heurísticas explícitas, não consenso oficial.
 
 ## 9. Falso positivo
 
-COMPROVADO por testes: queda extrema de preço não gera risco; preço/candle/retorno são entradas proibidas. TVL/volume DEX/mempool não elevam risco. API fora não vira falha de rede. Fonte independente conflitante impede contribuição daquela métrica para escalada estrutural. GET nunca promove status pelo simples decurso do relógio.
+COMPROVADO por testes: 12 indicadores saudáveis + 1 proxy degradado permanecem globalmente SAUDÁVEIS; dois PRIMARY independentes justificam ATENÇÃO; um CRITICAL confirmado pode justificar ATENÇÃO; múltiplas deteriorações críticas persistentes podem chegar a RISCO ESTRUTURAL. Queda extrema de preço não gera risco; preço/candle/retorno são entradas proibidas. TVL/volume DEX/mempool não elevam risco. API fora não vira falha de rede. Fonte independente conflitante impede contribuição daquela métrica para escalada estrutural. GET nunca promove status pelo simples decurso do relógio.
 
 ## 10. Stale data
 
@@ -76,7 +76,7 @@ Nenhuma API paga, contratação, token novo ou serviço hipotético. Aproximadam
 
 ## 19. Testes
 
-- 44/44 testes direcionados: regras/fontes 19, serviço/Auth/cron 11, push 8, UI 6.
+- 49/49 testes direcionados: regras/fontes 23, serviço/Auth/cron 11, push 8, UI 7; todos aprovados no ajuste de quórum.
 - 10/10 testes SQL em PostgreSQL 17 real descartável: transação, concorrência, fencing, replay, rollback, RLS/grants, imutabilidade e dedupe.
 - 12/12 cenários Chromium/WebKit, 320/360/375/390/430/1280px; reteste de cor em 375px nos dois browsers.
 - Lint, typecheck, build e diff check aprovados para o bloco de implementação.
@@ -84,7 +84,7 @@ Nenhuma API paga, contratação, token novo ou serviço hipotético. Aproximadam
 
 ## 20. Git/SHA/main
 
-Implementação principal `131f72d74e1f365bc57a6ef57aee1c8f5510966b`, push por fast-forward de `codex/coinops-executor-02` para GitHub/main. Ajuste de compatibilidade VIEWER e este relatório seguem em commit de fechamento. Alterações locais preexistentes de outros trabalhos preservadas e fora do staging.
+Implementação principal `131f72d74e1f365bc57a6ef57aee1c8f5510966b`; regra antifalso-positivo `b304bf988cda3e08585fa69a77ca092967933798`, ambos publicados por fast-forward de `codex/coinops-executor-02` para GitHub/main. Alterações locais preexistentes de outros trabalhos preservadas e fora do staging.
 
 ## 21. Migration/RLS
 
@@ -92,7 +92,7 @@ COMPROVADO: `20260927110357_add_coinops_asset_health.sql` aplicada no projeto `o
 
 ## 22. Vercel
 
-Primeiro deployment Production READY: `dpl_ATm5CWQPx5PnDVDc2yUnUBQHqM1s`, SHA `131f72d`, domínio `cripto-flax.vercel.app`. Cron oficial listado como enabled/deployed. Primeira invocação pelo comando oficial `vercel crons run /api/cron/coinops-asset-health` às 11:16:36 UTC; HTTP200 nos logs. Coletor terminou HEALTHY, zero falhas de fonte, às 11:16:39 UTC. Watchdog confirmou coletor HEALTHY às 11:17:46 UTC.
+Primeiro deployment Production READY: `dpl_ATm5CWQPx5PnDVDc2yUnUBQHqM1s`, SHA `131f72d`. Ajuste antifalso-positivo READY em `dpl_3r7Hy3uEGEzvPuqhcT2B8mafKSRX`, SHA `b304bf9`, domínio `cripto-flax.vercel.app` apontando para esse deployment. Reavaliação pelo cron oficial às `2026-09-27T12:28:12.013Z`; coletor HEALTHY, zero falhas de fonte.
 
 ## 23. Smoke mobile
 
@@ -100,7 +100,7 @@ COMPROVADO em fixtures locais: badges compactos, sem overflow, drawer fechável 
 
 ## 24. BTC — status atual da evidência
 
-REGRA DERIVADA: SAUDÁVEL, 9/9 indicadores centrais saudáveis, avaliação `2026-09-27T11:16:39.201Z` (07:16:39 Cuiabá). Não significa ausência universal de risco.
+REGRA DERIVADA: antes SAUDÁVEL 9/9; depois SAUDÁVEL 9/9. Reavaliação `2026-09-27T12:28:12.013Z` (08:28:12 Cuiabá). Não significa ausência universal de risco.
 
 ## 25. BTC — justificativa
 
@@ -108,15 +108,15 @@ FATO MEDIDO: intervalo médio 8,28min; bloco mais recente há 1,88min em dois ex
 
 ## 26. SOL — status atual da evidência
 
-REGRA DERIVADA: ATENÇÃO, 12/13 indicadores centrais saudáveis, mesma avaliação. Motivo único: proxy de concentração por contas de voto. Não é outage, recomendação de trade ou classificação de risco estrutural.
+REGRA DERIVADA: antes ATENÇÃO 12/13 por um proxy isolado; depois SAUDÁVEL 12/13. A categoria Segurança permanece `OBSERVE`, visível no drawer. Motivo observado: proxy de concentração por contas de voto, sem quórum para rebaixar o global. Não é outage, recomendação de trade ou risco estrutural.
 
 ## 27. SOL — justificativa
 
-FATO MEDIDO: 18 contas de voto acumulam 1/3 do stake observado; limiar interno warning <20. Não é coeficiente Nakamoto oficial por operador. Rede oficial operacional, bloco finalizado com ~9,8s, 0,264s/slot, ~1.179 transações não-voto/s, 676 contas de voto ativas, 0,0083% stake delinquent, volume SOLUSDT 280,66 milhões USDT/24h. Oferta de stablecoins 16,804 bilhões USD e 103,44% da referência de 30 dias. Agave v4.3.0/Firedancer v26.09.4 com commits recentes. DADO INDISPONÍVEL: diversidade instalada por stake e feed completo de vulnerabilidades.
+FATO MEDIDO: 18 contas de voto acumulam 1/3 do stake observado. É `COMPLEMENTARY_PROXY`, sem agrupamento por operador, e não é coeficiente Nakamoto oficial. REGRA DERIVADA: esse proxy isolado não satisfaz nenhuma das condições de ATENÇÃO. As outras 12 métricas centrais permanecem saudáveis; rede, desenvolvimento, liquidez e ecossistema estão HEALTHY na avaliação, enquanto Segurança fica OBSERVE. DADO INDISPONÍVEL: diversidade instalada por stake, Nakamoto atual por operador e feed completo de vulnerabilidades.
 
 ## 28. Fontes e timestamps atuais
 
-Todas as fontes acima coletadas em `2026-09-27T11:16:36.785Z`; análise publicada às `11:16:39.201Z`. BTC bloco `11:14:44Z`; SOL bloco finalizado `11:16:27Z`; status oficial atualizado `11:03:39.091Z`; stablecoins têm métrica diária `2026-09-27T00:00:00Z`; commits/releases mantêm suas datas reais. fetchedAt não substitui metricAt. Consultar snapshots atuais para fatos posteriores.
+Reavaliação publicada em `2026-09-27T12:28:12.013Z` pelo fluxo server-side. Ela reutilizou somente evidências ainda dentro do TTL: FAST concluído às `12:07:37.556Z`; STRUCTURAL/DEVELOPMENT às `11:16:39.201Z`; observação do proxy às `11:16:36.785Z`. Não houve falsificação de `fetchedAt`/`observedAt`, e nenhuma cadência foi marcada como coletada novamente. Consultar snapshots atuais para fatos posteriores.
 
 ## 29. Gates
 
@@ -128,7 +128,7 @@ Todas as fontes acima coletadas em `2026-09-27T11:16:36.785Z`; análise publicad
 | MULTISOURCE_DATA_PASS | PASS — fontes reais + grupos independentes explícitos |
 | STALE_DATA_PROTECTION_PASS | PASS — regressões, sem falha artificial Production |
 | STRUCTURAL_HEALTH_ENGINE_PASS | PASS — regras determinísticas e regressões |
-| FALSE_POSITIVE_PROTECTION_PASS | PASS — preço/API/ruído/conflito testados |
+| FALSE_POSITIVE_PROTECTION_PASS | PASS — proxy isolado testado e corrigido em Production; preço/API/ruído/conflito também testados |
 | HEALTH_HISTORY_PASS | PASS — persistência real e testes; 30/90/365 dias ainda não transcorridos |
 | HEALTH_ALERTS_PASS | PARCIAL — outbox/dedupe/segurança testados; push físico não testado |
 | HOME_CARD_HEALTH_PASS | PASS local; smoke autenticado Production bloqueado pelo Chrome |
