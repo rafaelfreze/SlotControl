@@ -135,9 +135,44 @@ export function resolveExecutorContext(registry, input, key, env = process.env,
 
 export function canReadDynamicRegistry(metadata, readerUid = process.getuid?.(), readerGid = process.getgid?.()) {
   const permissions = metadata.mode & 0o777;
-  return (permissions & 0o077) === 0
+  return (permissions & 0o077) === 0 && (readerUid === 0 || metadata.uid === readerUid)
     || metadata.uid === 0 && permissions === 0o640
       && (readerUid === 0 || metadata.gid === readerGid);
+}
+
+/** Resolve the read-only ownership required after a root-operated atomic write.
+ * Non-root writers keep their naturally owned 0600 file. Root preserves the
+ * existing service group, or derives it from the service-owned data directory. */
+export function dynamicRegistryRootAccess(directoryMetadata, currentMetadata, writerUid = process.getuid?.()) {
+  if (writerUid !== 0) return null;
+  const currentPermissions = currentMetadata ? currentMetadata.mode & 0o777 : null;
+  const serviceGid = currentMetadata && (currentMetadata.uid !== 0 || currentPermissions === 0o640)
+    ? currentMetadata.gid
+    : directoryMetadata?.uid !== 0 ? directoryMetadata?.gid : null;
+  return Number.isInteger(serviceGid) ? { uid: 0, gid: serviceGid, mode: 0o640 } : null;
+}
+
+async function writeDynamicRegistry(directory, next) {
+  const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
+  const currentMetadata = await stat(target).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  const handle = await open(temporary, "wx", 0o600);
+  try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
+  try {
+    if (process.platform !== "win32") {
+      const access = dynamicRegistryRootAccess(await stat(directory), currentMetadata);
+      if (access) {
+        await chown(temporary, access.uid, access.gid);
+        await chmod(temporary, access.mode);
+      }
+    }
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
 }
 
 async function readDynamic(directory) {
@@ -271,10 +306,7 @@ export async function saveInactiveRegistryAccount(staticRegistry, directory, sco
       credentials: { ...dynamic.credentials, [scope.credential_ref]: { vault: true } } };
     validateExecutorRegistry({ ...staticRegistry, engines: [...staticRegistry.engines, ...next.engines],
       credentials: { ...staticRegistry.credentials, ...next.credentials } });
-    const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
-    try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+    await writeDynamicRegistry(directory, next);
     return { registered_engines: rows.length, status: "INACTIVE", trading_enabled: false };
   } finally { await lock.close(); await unlink(join(directory, "dynamic-registry.lock")).catch(() => {}); }
 }
@@ -317,16 +349,7 @@ export async function promoteRegistryEngine(staticRegistry, directory, scope) {
     validateExecutorRegistry({ ...staticRegistry,
       engines: [...staticRegistry.engines, ...next.engines],
       credentials: { ...staticRegistry.credentials, ...next.credentials } });
-    const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
-    try {
-      if (process.platform !== "win32" && process.getuid?.() === 0) {
-        const metadata = await stat(directory);
-        if (metadata.uid !== 0) { await chown(temporary, 0, metadata.gid); await chmod(temporary, 0o640); }
-      }
-      await rename(temporary, target);
-    } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+    await writeDynamicRegistry(directory, next);
     return { status: "ACTIVE", trading_engine_id: row.trading_engine_id, replayed: false };
   } finally { await lock.close(); await unlink(lockPath).catch(() => {}); }
 }
@@ -398,11 +421,7 @@ export async function changeRegistryCapital(staticRegistry, directory, scope) {
       && row.quote_asset === scope.quote_asset).some((row) => row.account_cap_quote !== scope.target_account_cap_quote
         || row.hard_cap_quote !== targets.find((item) => item.trading_engine_id === row.trading_engine_id)?.hard_cap_quote))
       deny("EXECUTOR_CAP_CHANGE_DENIED");
-    const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
-    try { await rename(temporary, target); }
-    catch (error) { await unlink(temporary).catch(() => {}); throw error; }
+    await writeDynamicRegistry(directory, next);
     return { status: "UPDATED", replayed: false };
   } finally { await lock.close(); await unlink(lockPath).catch(() => {}); }
 }
@@ -446,24 +465,7 @@ export async function promotePreparedRegistryAccount(staticRegistry, directory, 
     validateExecutorRegistry({ ...staticRegistry,
       engines: [...staticRegistry.engines, ...next.engines],
       credentials: { ...staticRegistry.credentials, ...next.credentials } });
-    const target = join(directory, "dynamic-registry.json"), temporary = `${target}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify(next)); } finally { await handle.close(); }
-    // Promotion is performed by root, while the unprivileged executor must
-    // read (never write) the resulting registry on each request.
-    try {
-      if (process.platform !== "win32" && process.getuid?.() === 0) {
-        const directoryMetadata = await stat(directory);
-        if (directoryMetadata.uid !== 0) {
-          await chown(temporary, 0, directoryMetadata.gid);
-          await chmod(temporary, 0o640);
-        }
-      }
-      await rename(temporary, target);
-    } catch (error) {
-      await unlink(temporary).catch(() => {});
-      throw error;
-    }
+    await writeDynamicRegistry(directory, next);
     return { status: "ACTIVE", promoted_engines: 2, replayed: false };
   } finally { await lock.close(); await unlink(lockPath).catch(() => {}); }
 }

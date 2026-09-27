@@ -8,7 +8,8 @@ import { randomUUID } from "node:crypto";
 import { validateExecutorRegistry, resolveExecutorContext, assertEngineOrder, engineOrderPrefix,
   durableIntent, saveInactiveRegistryAccount, promotePreparedRegistryAccount, promoteRegistryEngine,
   changeRegistryCapital,
-  loadCombinedRegistry, mergeDynamicRegistry, canReadDynamicRegistry } from "../src/account-registry.mjs";
+  loadCombinedRegistry, mergeDynamicRegistry, canReadDynamicRegistry,
+  dynamicRegistryRootAccess } from "../src/account-registry.mjs";
 import { sha256, requestSignature, withWriteIdempotency } from "../src/security.mjs";
 import { createExecutorHandler } from "../src/server.mjs";
 import { liveClientOrderId } from "../../web/lib/execution/robot-v1-live-cycle.ts";
@@ -30,6 +31,23 @@ test("promoted registry is readable only by root or its dedicated read-only grou
   assert.equal(canReadDynamicRegistry({ ...promoted, mode: 0o100660 }, 999, 988), false);
   assert.equal(canReadDynamicRegistry({ ...promoted, mode: 0o100644 }, 999, 988), false);
   assert.equal(canReadDynamicRegistry({ uid: 999, gid: 988, mode: 0o100600 }, 999, 988), true);
+  assert.equal(canReadDynamicRegistry({ uid: 0, gid: 0, mode: 0o100600 }, 999, 988), false);
+});
+
+test("every root registry write preserves read access for the executor service group", () => {
+  const serviceDirectory = { uid: 999, gid: 988, mode: 0o40700 };
+  const rootOnlyFile = { uid: 0, gid: 0, mode: 0o100600 };
+  const serviceFile = { uid: 999, gid: 988, mode: 0o100600 };
+  assert.deepEqual(dynamicRegistryRootAccess(serviceDirectory, null, 0),
+    { uid: 0, gid: 988, mode: 0o640 });
+  assert.deepEqual(dynamicRegistryRootAccess(serviceDirectory, rootOnlyFile, 0),
+    { uid: 0, gid: 988, mode: 0o640 });
+  assert.deepEqual(dynamicRegistryRootAccess({ uid: 0, gid: 0 }, serviceFile, 0),
+    { uid: 0, gid: 988, mode: 0o640 });
+  const access = dynamicRegistryRootAccess(serviceDirectory, rootOnlyFile, 0);
+  assert.equal(canReadDynamicRegistry({ uid: access.uid, gid: access.gid, mode: 0o100000 | access.mode },
+    999, 988), true);
+  assert.equal(dynamicRegistryRootAccess(serviceDirectory, serviceFile, 999), null);
 });
 
 test("A/B and four native markets resolve exact credentials, never fallback", () => {
