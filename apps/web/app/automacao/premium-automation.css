@@ -239,6 +239,7 @@
 /* The welcome copy was removed so the operational summary stays compact. */
 .px-hero{display:block;min-height:0;padding:16px 20px}
 .px-hero>.px-health{border-left:0;padding-left:0}
+.px-lower-grid--single{grid-template-columns:1fr}
 @media(max-width:760px){
   .px-hero{display:block;padding:0;border:0;background:transparent;box-shadow:none;border-radius:0;overflow:visible}
   .px-hero>.px-health{border:1px solid #075e575e;padding:12px 14px}
