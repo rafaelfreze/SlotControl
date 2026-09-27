@@ -61,9 +61,10 @@ test("infrastructure area shows only compact executor cards", () => {
   assert.match(capacity, /className="px-panel px-capacity-shard"/);
 });
 
-test("all-accounts home hides account-detail operation, capital and limit cards", () => {
+test("all-accounts home hides account-detail operation, engine, capital, limit and activity cards", () => {
   assert.match(source, /\{!allAccounts \? <section className="px-operations px-panel"/);
-  assert.match(source, /\{!allAccounts \? <><section className="px-panel px-capital"/);
-  assert.match(source, /className=\{`px-lower-grid \$\{allAccounts \? "px-lower-grid--single" : ""\}`\}/);
+  assert.match(source, /\{!allAccounts \? <div className="px-lower-grid"><section className="px-panel px-capital"/);
+  assert.match(source, /\{!allAccounts \? <section className="px-assets"/);
+  assert.doesNotMatch(source, /Motores por conta/);
   assert.match(source, /<section className="px-panel px-activity">/);
 });
