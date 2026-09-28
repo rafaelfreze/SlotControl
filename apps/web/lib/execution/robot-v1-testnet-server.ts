@@ -53,8 +53,10 @@ const context = (run: Run) => ({ asset: run.asset, cycleId: run.id, observedAt: 
 function candidate(slot: Slot, monthly?: MonthlySlotStatus, regime: "NORMAL" | "POST_ATH" = "NORMAL"): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: amount(slot.target_buy_price), balanceUsdc: amount(slot.balance_usdc),
-    operationalRank: regime === "POST_ATH" ? slot.operational_rank ?? monthly?.operationalRank : monthly?.operationalRank,
-    monthlyTargetReached: monthly?.monthlyTargetReached, postAthGroup: slot.post_ath_group,
+    operationalRank: monthly?.operationalRank === null ? null
+      : regime === "POST_ATH" ? slot.operational_rank ?? monthly?.operationalRank : monthly?.operationalRank,
+    monthlyTargetReached: monthly?.monthlyTargetReached, monthlyEntryEligible: monthly?.eligibleForNewEntry,
+    postAthGroup: slot.post_ath_group,
     entryOrigin: slot.entry_origin,
     state: slot.missed_at ? "MISSED" : ["OPEN", "CLOSED", "ARMED"].includes(slot.entry_state) ? slot.entry_state as "OPEN" | "CLOSED" | "ARMED" : "PLANNED" };
 }
@@ -734,7 +736,7 @@ async function armNextBuy(service: Service, run: Run, slots: Slot[], orders: Ord
     ? planStrategyPostAthNextEntry(strategyContext, candidates, market.price, residentBuy)
     : planStrategyNextEntry(strategyContext, candidates, market.price, residentBuy);
   if (run.entry_regime === "POST_ATH" && !candidates.some((item) => item.postAthGroup === "PRIMARY"
-    && !item.monthlyTargetReached && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(item.state))) {
+    && item.monthlyEntryEligible && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(item.state))) {
     await event(service, run, `POST_ATH_PRIMARY_EXHAUSTED:${run.ath_transition_key}:${run.ath_period_key}`,
       "POST_ATH_PRIMARY_EXHAUSTED", null, { periodKey: run.ath_period_key });
     if (candidates.find((item) => item.id === plan.nextCandidateId)?.postAthGroup === "RESERVE")

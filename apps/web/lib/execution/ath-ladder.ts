@@ -1,6 +1,6 @@
 import { buildPostAthQueue, orderedPostAthSlots, validateAthParameters, type AthParameters, type AthRegime, type AthSlot,
   type PostAthGroup } from "./ath-regime.ts";
-import { MONTHLY_SLOT_TARGET } from "./monthly-slot-policy.ts";
+import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "./monthly-slot-policy.ts";
 import type { V1Asset } from "./robot-v1.ts";
 import { athLadderLevelPrice } from "./ath-ladder-price.ts";
 
@@ -58,10 +58,11 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   validateAthParameters(parameters);
   // Both regimes require the same physical identity and gain evidence checks.
   const validatedQueue = buildPostAthQueue(asset, slots);
+  const completed = monthlyGoalsComplete(asset, slots);
   const queue = regime === "POST_ATH" ? validatedQueue : null;
   const ordered = queue ? orderedPostAthSlots(queue) : [...slots]
     .filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-      && slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset]
+      && (completed || slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset])
       && ["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"].includes(slot.entryState))
     .sort((left, right) => right.lifetimeGainCount - left.lifetimeGainCount
       || left.physicalSlotNumber - right.physicalSlotNumber);
@@ -85,7 +86,7 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
     const reached = slot.monthlyGainCount !== null && slot.monthlyGainCount >= MONTHLY_SLOT_TARGET[asset];
     const frozenReason = ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status) ? "OPEN_OR_TP" as const
       : slot.entryOrigin === "REENTRY" ? "LOCAL_REENTRY" as const
-        : reached ? "MONTHLY_TARGET" as const : !rankById.has(slot.physicalSlotId) ? "INELIGIBLE" as const : null;
+        : reached && !completed ? "MONTHLY_TARGET" as const : !rankById.has(slot.physicalSlotId) ? "INELIGIBLE" as const : null;
     const nextBuyPrice = frozenReason ? slot.buyPrice : computed.get(slot.physicalSlotId)!;
     if (!Number.isFinite(nextBuyPrice) || nextBuyPrice <= 0) throw new Error("COINOPS_ATH_LADDER_PRICE_INVALID");
     if (!frozenReason) {

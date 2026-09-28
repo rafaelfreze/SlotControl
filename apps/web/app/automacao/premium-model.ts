@@ -1,4 +1,4 @@
-import { MONTHLY_SLOT_TARGET } from "../../lib/execution/monthly-slot-policy.ts";
+import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "../../lib/execution/monthly-slot-policy.ts";
 import { reconcileV1PhysicalSlotAccounts, summarizeV1ShadowOperations } from "../../lib/execution/robot-v1-audit.ts";
 import { summarizeTestnetLedgerTotals, summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "../../lib/slotgain/testnet-results.ts";
 import { selectTestnetAssetData } from "../../lib/slotgain/testnet-asset-view.ts";
@@ -46,11 +46,11 @@ const fresh = (at: string | null | undefined, now: number, maxAge = 180_000) => 
 const rawField = (row: unknown, key: string): unknown => row && typeof row === "object" ? (row as Record<string, unknown>)[key] : undefined;
 const rawText = (row: unknown, key: string): string | null => typeof rawField(row, key) === "string" ? rawField(row, key) as string : null;
 
-function slotState(state: string, reached = false): Pick<PremiumSlot, "state" | "label" | "tone" | "nextAction"> {
+function slotState(state: string, reached = false, eligible = false): Pick<PremiumSlot, "state" | "label" | "tone" | "nextAction"> {
   if (state === "OPEN") return { state, label: "ABERTO", tone: "open", nextAction: "Aguardar TP" };
   if (state === "NEXT_BUY" || state === "ARMED") return { state: "NEXT_BUY", label: "PRÓXIMA BUY", tone: "armed", nextAction: "Aguardar fill" };
   if (state === "ACTIVE_ERROR" || state === "ERROR") return { state: "ACTIVE_ERROR", label: "REVISAR", tone: "error", nextAction: "Auditar ocorrência" };
-  if (reached) return { state: "TARGET_REACHED", label: "META BATIDA", tone: "warning", nextAction: "Aguardar próximo mês" };
+  if (reached && !eligible) return { state: "TARGET_REACHED", label: "META BATIDA", tone: "warning", nextAction: "Aguardar meta dos demais slots" };
   if (state === "REENTRY_WAITING" || state === "CLOSED") return { state: "REENTRY_WAITING", label: "REENTRADA", tone: "planned", nextAction: "Aguardar preço / reentrada" };
   if (state === "MISSED") return { state, label: "NÍVEL ATRAVESSADO", tone: "warning", nextAction: "Consultar evidência" };
   return { state: "PLANNED", label: "PLANEJADO", tone: "planned", nextAction: "Aguardar sua vez" };
@@ -96,6 +96,8 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     : number(config?.max_total_exposure_brl); base.regime = config?.regime ?? null;
   if (!live) return base;
   const orders = live.orders.map(normalizeOrder), events = eventsFor(live.events);
+  const complete = new Set(live.monthlyGains.map((row) => row.slot_number)).size === 25
+    && monthlyGoalsComplete(asset, live.monthlyGains.map((row) => ({ monthlyGainCount: number(row.monthly_gain_count) })));
   const slots = live.slots.map((row): PremiumSlot => {
     const account = live.accounts.find((item) => item.slot_number === row.slot_number);
     const monthly = live.monthlyGains.find((item) => item.slot_number === row.slot_number);
@@ -124,12 +126,12 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
       .reduce((total, allocation) => total + (number(allocation.amount_quote) ?? 0), 0);
     return { number: row.slot_number, physicalId: null, rank: row.operational_rank,
       group: row.post_ath_group, groupRank: row.post_ath_group_rank,
-      ...slotState(row.entry_state, month !== null && month >= base.goal), entryPrice: entry, currentPrice: price,
+      ...slotState(row.entry_state, month !== null && month >= base.goal, month !== null && (month < base.goal || complete)), entryPrice: entry, currentPrice: price,
       tpPrice: tp?.price ?? null, quantity, balance, committed, reserved,
       contributed, pendingContribution, valueAfterPending: balance === null ? null : balance + pendingContribution,
       realizedPnl: difference(marketPnl, fees), fees, openPnl: open ? price === null || quantity === null || committed === null ? null : quantity * price - committed : 0,
       gains, monthlyGains: month, goal: base.goal, targetReached: month !== null && month >= base.goal,
-      eligible: month === null ? null : month < base.goal, operationSequence: row.operation_sequence,
+      eligible: month === null ? null : month < base.goal || complete, operationSequence: row.operation_sequence,
       orders: slotOrders, events: events.filter((item) => item.slotNumber === row.slot_number), historicalCount: 0,
       raw: { slot: row, account, monthly } };
   });
@@ -193,7 +195,7 @@ function testnetAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAs
     return { number: row.slot_number, physicalId: goal?.physicalSlotId ?? null,
       rank: number(rawField(row, "operational_rank")) ?? goal?.operationalRank ?? null,
       group: rawText(row, "post_ath_group"), groupRank: number(rawField(row, "post_ath_group_rank")),
-      ...slotState(row.operationalState, goal?.monthlyTargetReached), entryPrice: row.entryPrice,
+      ...slotState(row.operationalState, goal?.monthlyTargetReached, goal?.eligibleForNewEntry), entryPrice: row.entryPrice,
       currentPrice: price, tpPrice: row.hasResidentTp ? row.takeProfitPrice : null, quantity: row.closed ? 0 : row.remainingQuantity,
       balance: row.balance, committed: row.positionCapital, reserved: row.reservedBuyCapital,
       contributed: null, pendingContribution: 0, valueAfterPending: row.balance,
@@ -255,7 +257,7 @@ function shadowAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAss
     return { number: row.slot_number, physicalId: goal?.physicalSlotId ?? `SHADOW:${config.id}:${row.slot_number}`,
       rank: number(rawField(row, "operational_rank")) ?? goal?.operationalRank ?? null,
       group: rawText(row, "post_ath_group"), groupRank: number(rawField(row, "post_ath_group_rank")),
-      ...slotState(open ? "OPEN" : armed ? "NEXT_BUY" : row.missed_at ? "MISSED" : row.operation_sequence > 1 ? "REENTRY_WAITING" : "PLANNED", goal?.monthlyTargetReached),
+      ...slotState(open ? "OPEN" : armed ? "NEXT_BUY" : row.missed_at ? "MISSED" : row.operation_sequence > 1 ? "REENTRY_WAITING" : "PLANNED", goal?.monthlyTargetReached, goal?.eligibleForNewEntry),
       entryPrice: entry, currentPrice: price, tpPrice: number(row.take_profit_price), quantity,
       balance: number(account?.balance_usdc), committed, reserved, realizedPnl: number(account?.net_profit_usdc),
       contributed: null, pendingContribution: 0, valueAfterPending: number(account?.balance_usdc),

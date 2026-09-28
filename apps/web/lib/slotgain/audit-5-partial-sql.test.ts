@@ -18,7 +18,9 @@ const args = ["-X", "-w", "-h", "127.0.0.1", "-p", String(port), "-U", "audit_ow
 const sql = (query: string) => execFileSync(join(bin, "psql.exe"), [...args, "-c", query], { env,
   encoding: "utf8", windowsHide: true, stdio: "pipe" }).replace(/\r/g, "").trim();
 const ids = { product: "11111111-1111-4111-8111-111111111111", tenant: "22222222-2222-4222-8222-222222222222",
-  user: "33333333-3333-4333-8333-333333333333", run: "55555555-5555-4555-8555-555555555555" };
+  user: "33333333-3333-4333-8333-333333333333", run: "55555555-5555-4555-8555-555555555555",
+  operator: "66666666-6666-4666-8666-666666666666", account: "77777777-7777-4777-8777-777777777777",
+  engine: "88888888-8888-4888-8888-888888888888" };
 const scope = `'${ids.product}','${ids.tenant}','${ids.user}'`;
 const slot = `(select id from coinops.robot_v1_testnet_slots where run_id='${ids.run}' and slot_number=1)`;
 const proof = `private.coinops_testnet_operation_closure('${ids.run}',${slot},1,.001)`;
@@ -27,7 +29,10 @@ create role anon; create role authenticated; create role service_role bypassrls;
 create schema coinops; create schema private; create schema auth;
 grant usage on schema coinops,private,auth to authenticated,service_role,anon;
 create function auth.jwt() returns jsonb language sql as $$select '{}'::jsonb$$;
+create table coinops.trading_engines(id uuid primary key, environment text, symbol text, base_asset text);
+insert into coinops.trading_engines values('${ids.engine}','TESTNET','SOLUSDC','SOL');
 create table coinops.robot_v1_testnet_runs(id uuid primary key default gen_random_uuid(),product_id uuid,tenant_id uuid,user_id uuid,
+ operator_id uuid,exchange_account_id uuid,trading_engine_id uuid,quote_asset text,
  asset text,symbol text,status text default 'ACTIVE',anchor_price numeric,slot_notional_usdc numeric,gain_rate numeric,entry_spacing numeric,
  next_capital_usdc numeric,next_gain_rate numeric,next_entry_spacing numeric,previous_run_id uuid,terminal_fill_client_order_id text,
  reset_idempotency_key text unique,reset_started_at timestamptz,recovery_source text,completed_at timestamptz,completion_reason text);
@@ -44,8 +49,8 @@ create table coinops.robot_v1_monthly_slot_gains(environment text,source_id uuid
  slot_number integer,physical_slot_id text,credited_at timestamptz,effective_gain_at timestamptz,evidence_basis text,period_key text,
  primary key(environment,source_id));
 create table coinops.robot_v1_slot_gain_totals(environment text,product_id uuid,tenant_id uuid,user_id uuid,asset text,slot_number integer,monthly_gain_count integer);
-insert into coinops.robot_v1_testnet_runs(id,product_id,tenant_id,user_id,asset,symbol,anchor_price,slot_notional_usdc,gain_rate,entry_spacing)
- values('${ids.run}',${scope},'SOL','SOLUSDC',10,10,.005,.01);
+insert into coinops.robot_v1_testnet_runs(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,quote_asset,asset,symbol,anchor_price,slot_notional_usdc,gain_rate,entry_spacing)
+ values('${ids.run}',${scope},'${ids.operator}','${ids.account}','${ids.engine}','USDC','SOL','SOLUSDC',10,10,.005,.01);
 insert into coinops.robot_v1_testnet_slots(run_id,product_id,tenant_id,user_id,slot_number,entry_state,balance_usdc,target_buy_price,entry_reference_price)
  select '${ids.run}',${scope},n,case when n=1 then 'OPEN' else 'PLANNED' end,10,10,10 from generate_series(1,25)n;
 insert into coinops.robot_v1_testnet_orders(run_id,slot_id,product_id,tenant_id,user_id,slot_number,side,purpose,client_order_id,exchange_order_id,status,executed_quantity,cumulative_quote,fee_base,fee_quote,price)
@@ -61,7 +66,10 @@ before(() => {
   const fn = baseline.match(/create function coinops\.record_robot_v1_testnet_monthly_gain\(\)[\s\S]*?end \$\$;/)?.[0];
   assert.ok(fn); sql(fn);
   sql("create trigger monthly_gain after insert on coinops.robot_v1_testnet_events for each row execute function coinops.record_robot_v1_testnet_monthly_gain()");
-  if (process.env.COINOPS_AUDIT_PARTIAL_BASELINE !== "1") execFileSync(join(bin,"psql.exe"),[...args,"-f",resolve("../../supabase/migrations/20260923231731_harden_robot_v1_testnet_partial_accounting.sql")],{env,windowsHide:true,stdio:"pipe"});
+  if (process.env.COINOPS_AUDIT_PARTIAL_BASELINE !== "1") {
+    execFileSync(join(bin,"psql.exe"),[...args,"-f",resolve("../../supabase/migrations/20260923231731_harden_robot_v1_testnet_partial_accounting.sql")],{env,windowsHide:true,stdio:"pipe"});
+    execFileSync(join(bin,"psql.exe"),[...args,"-f",resolve("../../supabase/migrations/20260928202508_monthly_goals_are_floor_not_stop.sql")],{env,windowsHide:true,stdio:"pipe"});
+  }
 });
 after(() => {
   if(available&&existsSync(join(directory,"postmaster.pid"))) execFileSync(join(bin,"pg_ctl.exe"),["-D",directory,"-m","fast","-w","stop"],{env,windowsHide:true,stdio:"pipe"});
@@ -160,15 +168,15 @@ check("partial SQL: restart parameters reject NULL, NaN and invalid date",()=>{
   {anchor:"'NaN'::numeric"},{tick:"'NaN'::numeric"},{at:"'infinity'::timestamptz"}])
   assert.throws(()=>tx(`select * from ${reset(change)}`),/RESET_INPUT_INVALID/);
 });
-check("partial SQL: reset idempotency key cannot alias another old run",()=>{
+check("partial SQL: reset key cannot alias a run outside the scoped engine",()=>{
  assert.throws(()=>tx(`${close()}; update coinops.robot_v1_testnet_slots set entry_state='CLOSED'; select * from ${reset()};
  insert into coinops.robot_v1_testnet_runs(id,product_id,tenant_id,user_id,asset,symbol,status) values('77777777-7777-4777-8777-777777777777',${scope},'BTC','BTCUSDC','ACTIVE');
- select * from ${reset({run:"'77777777-7777-4777-8777-777777777777'"})}`),/RESET_IDEMPOTENCY_CONFLICT/);
+ select * from ${reset({run:"'77777777-7777-4777-8777-777777777777'"})}`),/RESET_RUN_INVALID/);
 });
-check("partial SQL: all 25 targets block cycle creation and next period eligibility permits it",()=>{
- assert.throws(()=>tx(`${close()}; update coinops.robot_v1_testnet_slots set entry_state='CLOSED';
+check("partial SQL: all 25 targets still permit a guarded cycle restart and next period eligibility",()=>{
+ assert.ok(tx(`${close()}; update coinops.robot_v1_testnet_slots set entry_state='CLOSED';
  insert into coinops.robot_v1_slot_gain_totals select 'TESTNET',${scope},'SOL',n,2 from generate_series(1,25)n;
- select * from ${reset()}`),/ALL_MONTHLY_TARGETS_REACHED/);
+ select created from ${reset()}`).split("\n").includes("t"));
  assert.ok(tx(`${close()}; update coinops.robot_v1_testnet_slots set entry_state='CLOSED';
  insert into coinops.robot_v1_slot_gain_totals select 'TESTNET',${scope},'SOL',n,0 from generate_series(1,25)n;
  select created from ${reset()}`).split("\n").includes("t"));

@@ -42,3 +42,47 @@ test("missing credit evidence blocks new entry and duplicate physical IDs fail c
   assert.equal(rankMonthlySlots("SOL", "2026-09-23T16:00:00Z", slots([[5, 10, null]]))[0]?.blockedReason, "GAIN_EVIDENCE_INCOMPLETE");
   assert.throws(() => rankMonthlySlots("SOL", "2026-09-23T16:00:00Z", [slots([[5, 0, 0]])[0]!, slots([[5, 0, 0]])[0]!]), /COINOPS_MONTHLY_SLOT_EVIDENCE_INVALID/);
 });
+
+test("SOL 0/2, 1/2, 2/2, 3/2 and BTC 0/7, 6/7, 7/7, 8/7 keep the goal as a floor", () => {
+  for (const [asset, target, counts] of [["SOL", 2, [0, 1, 2, 3]], ["BTC", 7, [0, 6, 7, 8]]] as const) {
+    for (const count of counts) {
+      const inputs = slots(Array.from({ length: 25 }, (_, index) => [index + 1, count + 8, index === 0 ? count : 0]));
+      const status = rankMonthlySlots(asset, "2026-09-28T16:00:00Z", inputs);
+      assert.equal(status[0]?.monthlyGainCount, count);
+      assert.equal(status[0]?.monthlyGainTarget, target);
+      assert.equal(status[0]?.monthlyTargetReached, count >= target);
+      assert.equal(status[0]?.eligibleForNewEntry, count < target);
+      assert.equal(status[1]?.eligibleForNewEntry, true);
+    }
+    const almost = rankMonthlySlots(asset, "2026-09-28T16:00:00Z",
+      slots(Array.from({ length: 25 }, (_, index) => [index + 1, target + 8, index === 24 ? target - 1 : target])));
+    assert.equal(almost.filter((status) => status.eligibleForNewEntry).length, 1);
+    assert.equal(almost[24]?.operationalRank, 1);
+    const complete = rankMonthlySlots(asset, "2026-09-28T16:00:00Z",
+      slots(Array.from({ length: 25 }, (_, index) => [index + 1, target + 8, index === 0 ? target + 1 : target])));
+    assert.equal(complete.filter((status) => status.monthlyTargetReached).length, 25);
+    assert.equal(complete.filter((status) => status.eligibleForNewEntry).length, 25);
+    assert.equal(new Set(complete.map((status) => status.operationalRank)).size, 25);
+    assert.equal(complete[0]?.monthlyGainCount, target + 1);
+  }
+});
+
+test("local September/October and December/January rollover keeps OPEN and lifetime facts", () => {
+  for (const [before, after, previous, current] of [
+    ["2026-10-01T03:59:59.999Z", "2026-10-01T04:00:00.000Z", "2026-09", "2026-10"],
+    ["2027-01-01T03:59:59.999Z", "2027-01-01T04:00:00.000Z", "2026-12", "2027-01"],
+  ]) {
+    assert.equal(monthlyPeriodKey(before), previous);
+    assert.equal(monthlyPeriodKey(after), current);
+    assert.equal(nextMonthlyResetAt(before), after);
+    const physical = slots(Array.from({ length: 25 }, (_, index) => [index + 1, 12, index === 0 ? 2 : 0]));
+    physical[0]!.entryState = "OPEN";
+    const old = rankMonthlySlots("SOL", before, physical);
+    const next = rankMonthlySlots("SOL", after, physical.map((slot) => ({ ...slot, monthlyGainCount: 0 })));
+    assert.equal(old[0]?.entryState, "OPEN");
+    assert.equal(next[0]?.entryState, "OPEN");
+    assert.equal(next[0]?.monthlyGainCount, 0);
+    assert.equal(next[0]?.lifetimeGainCount, 12);
+    assert.equal(next[0]?.physicalSlotId, old[0]?.physicalSlotId);
+  }
+});

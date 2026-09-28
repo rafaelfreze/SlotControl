@@ -19,7 +19,7 @@ const ladder = (): AthLadderSlot[] => candidates().map((slot) => ({ physicalSlot
   entryOrigin: "GRID", operationSequence: 1 }));
 const parameters = { gainRate: .005, normalSpacing: .01, postAthSpacing: .02 };
 
-test("audit 5: all 25 targets hold the final close and the next local month restores eligibility", () => {
+test("audit 5: all 25 targets allow another cycle and the next local month resets only the monthly count", () => {
   for (const asset of ["BTC", "SOL"] as const) {
     const target = MONTHLY_SLOT_TARGET[asset];
     const physical = candidates().map((slot) => ({ physicalSlotId: slot.id, physicalSlotNumber: slot.slotNumber,
@@ -27,17 +27,19 @@ test("audit 5: all 25 targets hold the final close and the next local month rest
     const before = structuredClone(physical);
     const held = rankMonthlySlots(asset, instant, physical);
     const queue = candidates().map((slot, i) => ({ ...slot, state: "CLOSED" as const,
-      monthlyTargetReached: held[i]!.monthlyTargetReached, operationalRank: held[i]!.operationalRank }));
-    assert.equal(planStrategyNextEntry(ctx(asset), queue, 101).decision.action_type, "WAIT");
+      monthlyTargetReached: held[i]!.monthlyTargetReached, monthlyEntryEligible: held[i]!.eligibleForNewEntry,
+      operationalRank: held[i]!.operationalRank }));
+    assert.equal(held.filter((slot) => slot.eligibleForNewEntry).length, 25);
+    assert.equal(planStrategyNextEntry(ctx(asset), queue.map((slot) => ({ ...slot, state: "PLANNED" as const })), 101).decision.action_type, "ARM_NEXT_BUY");
     const closed = planStrategyClosedSlot(ctx(asset), queue, queue[0]!.id);
-    assert.equal(closed.mode, "MONTHLY_HOLD");
-    assert.ok(closed.decisions.every((decision) => decision.action_type === "WAIT"));
+    assert.equal(closed.mode, "GLOBAL_RESET");
+    assert.deepEqual(closed.decisions.map((decision) => decision.action_type), ["COMPLETE_CYCLE", "REANCHOR"]);
     const after = rankMonthlySlots(asset, "2026-10-01T04:00:00.000Z",
       physical.map((slot) => ({ ...slot, monthlyGainCount: 0 })));
     assert.equal(after.filter((slot) => slot.eligibleForNewEntry).length, 25);
     assert.deepEqual(after.map((slot) => slot.lifetimeGainCount), physical.map((slot) => slot.lifetimeGainCount));
     assert.deepEqual(after.map((slot) => slot.physicalSlotId), physical.map((slot) => slot.physicalSlotId));
-    const resumed = queue.map((slot, i) => ({ ...slot, monthlyTargetReached: false,
+    const resumed = queue.map((slot, i) => ({ ...slot, monthlyTargetReached: false, monthlyEntryEligible: true,
       operationalRank: after[i]!.operationalRank }));
     assert.equal(planStrategyClosedSlot(ctx(asset), resumed, resumed[0]!.id).mode, "GLOBAL_RESET");
     assert.deepEqual(physical, before);
@@ -109,15 +111,15 @@ test("audit 5: simulator cycle reset cannot reuse an initial decision identity",
   assert.equal(new Set(initial.map((step) => step.operationId)).size, initial.length);
 });
 
-test("audit 5: simulator does not start a new cycle after all 25 monthly targets", () => {
+test("audit 5: simulator continues a new cycle after all 25 monthly targets", () => {
   for (const asset of ["BTC", "SOL"] as const) {
     const target = MONTHLY_SLOT_TARGET[asset];
     const monthly = Array(25).fill(target); monthly[0] = target - 1;
     const result = simulateAth({ asset, initialPrice: 100, previousAth: 1000, floorReference: null,
       parameters, lifetimeGains: Array(25).fill(100), monthlyGains: monthly, prices: [100, 101, 102] });
-    assert.equal(result.cycleNumber, 1);
-    assert.equal(result.steps.filter((step) => step.event === "GLOBAL_RESET").length, 0);
-    assert.equal(result.slots.filter((slot) => slot.entryState === "OPEN" || slot.entryState === "ARMED").length, 0);
+    assert.ok(result.cycleNumber > 1);
+    assert.ok(result.steps.some((step) => step.event === "GLOBAL_RESET"));
+    assert.ok(result.slots.some((slot) => slot.entryState === "OPEN" || slot.entryState === "ARMED"));
   }
 });
 

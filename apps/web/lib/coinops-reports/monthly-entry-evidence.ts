@@ -19,18 +19,24 @@ export function auditMonthlyEntryEvidence(input: {
     const period = monthlyPeriodKey(new Date(time).toISOString());
     const goal = input.goals.find((row) => Number(row.physical_slot_number) === event.slot && row.period_key === period);
     if (!goal || !(Number(goal.monthly_gain_target) > 0)) { uncertain = true; continue; }
-    const facts = input.credits.filter((row) => Number(row.slot_number) === event.slot && row.period_key === period);
-    let total = 0, ambiguous = false;
-    for (const fact of facts) {
+    const periodGoals = input.goals.filter((row) => row.period_key === period);
+    if (periodGoals.length !== 25 || new Set(periodGoals.map((row) => Number(row.physical_slot_number))).size !== 25) {
+      uncertain = true; continue;
+    }
+    const counts = new Map<number, number>();
+    let ambiguous = false;
+    for (const fact of input.credits.filter((row) => row.period_key === period)) {
       const credited = Date.parse(String(fact.credited_at ?? "")), units = Number(fact.gain_units ?? 1);
-      if (!Number.isFinite(credited) || !Number.isFinite(units)) { ambiguous = true; continue; }
-      if (credited < time) total += units;
+      if (!Number.isFinite(credited) || !Number.isInteger(units)) { ambiguous = true; continue; }
+      if (credited < time) counts.set(Number(fact.slot_number), (counts.get(Number(fact.slot_number)) ?? 0) + units);
       else if (credited === time) ambiguous = true;
     }
     // Use the signed ledger known when the action occurred. A later reversal
     // neither invalidates a legitimate reentry nor erases an earlier violation.
     if (ambiguous) uncertain = true;
-    else if (total >= Number(goal.monthly_gain_target)) return "FAIL";
+    else if ((counts.get(event.slot) ?? 0) >= Number(goal.monthly_gain_target)
+      && !periodGoals.every((row) => Number(row.monthly_gain_target) > 0
+        && (counts.get(Number(row.physical_slot_number)) ?? 0) >= Number(row.monthly_gain_target))) return "FAIL";
   }
   return uncertain ? "WARNING" : "PASS";
 }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { MONTHLY_SLOT_TARGET } from "./monthly-slot-policy.ts";
+import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "./monthly-slot-policy.ts";
 import type { V1Asset } from "./robot-v1.ts";
 import type { HistoricalAth } from "./ath-market-source.ts";
 
@@ -130,8 +130,9 @@ export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[]): Po
     ids.add(slot.physicalSlotId); numbers.add(slot.physicalSlotNumber);
   }
   const eligibleStates = new Set(["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"]);
+  const completed = monthlyGoalsComplete(asset, slots);
   const eligible = slots.filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-    && slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset] && eligibleStates.has(slot.entryState));
+    && (completed || slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset]) && eligibleStates.has(slot.entryState));
   const byPhysicalId = (left: AthSlot, right: AthSlot) => left.physicalSlotId.localeCompare(right.physicalSlotId);
   const byHighestGain = (left: AthSlot, right: AthSlot) => right.lifetimeGainCount - left.lifetimeGainCount
     || byPhysicalId(left, right);

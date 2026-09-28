@@ -38,7 +38,9 @@ export function MonthlySlotDetails({ status }: { status?: MonthlySlotStatus }) {
     <span>Rank operacional<strong>{status.operationalRank === null ? "Fora da fila" : `#${status.operationalRank}`}</strong></span>
     <span>Gains totais<strong>{status.lifetimeGainCount}{status.marketGainCount != null && status.manualGainCount != null ? ` · mercado ${status.marketGainCount} + manual ${status.manualGainCount}` : ""}</strong></span>
     <span>Gains do mês / meta<strong>{status.monthlyGainCount ?? "Evidência pendente"} / {status.monthlyGainTarget}{status.monthlyMarketGainCount != null && status.monthlyManualGainCount != null ? ` · mercado ${status.monthlyMarketGainCount} + manual ${status.monthlyManualGainCount}` : ""}</strong></span>
-    <span>Elegibilidade<strong>{status.monthlyTargetReached ? "META BATIDA · até o próximo mês" : status.eligibleForNewEntry ? "Elegível" : "Evidência incompleta"}</strong></span>
+    <span>Elegibilidade<strong>{status.monthlyTargetReached && status.eligibleForNewEntry ? "Meta global concluída · elegível"
+      : status.monthlyTargetReached ? "Meta individual batida · aguardar demais slots"
+        : status.eligibleForNewEntry ? "Elegível" : "Evidência incompleta"}</strong></span>
     <span>Saldo composto<strong>{number(status.balanceUsdc)} USDC</strong></span>
     <span>Próxima ação<strong>{monthlyNextAction(status)}</strong></span>
     {target.environment && target.asset ? <span>Ajustes manuais<strong><a href={`/automacao?view=${target.environment.toLowerCase()}&adjust=${target.environment}:${target.asset}:${status.physicalSlotNumber}#manual-adjustments`}>Adicionar gain ou aporte →</a></strong></span> : null}

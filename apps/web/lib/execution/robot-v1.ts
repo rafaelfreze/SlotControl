@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { normalizePriceToTick, normalizeToStep } from "./binance-spot-adapter.ts";
+import { V1_SLOT_COUNT } from "./robot-v1-constants.ts";
 import type { ExchangeSymbolInfo } from "./types.ts";
 
-export const V1_SLOT_COUNT = 25;
+export { V1_SLOT_COUNT };
 export const ALLOWED_V1_SYMBOLS = ["BTCUSDC", "SOLUSDC"] as const;
 export type V1Symbol = typeof ALLOWED_V1_SYMBOLS[number];
 export type V1Asset = "BTC" | "SOL";

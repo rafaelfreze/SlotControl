@@ -1,6 +1,6 @@
 import { advanceAthState, athSimulationId, buildPostAthQueue, orderedPostAthSlots, validateAthParameters,
   type AthParameters, type AthRegime, type AthSlot, type AthState, type PostAthGroup, type PostAthSlot } from "./ath-regime.ts";
-import { MONTHLY_SLOT_TARGET } from "./monthly-slot-policy.ts";
+import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "./monthly-slot-policy.ts";
 import { planAthLadder } from "./ath-ladder.ts";
 import { ATH_SIMULATION_PRICE_TICK } from "./ath-simulation-scenarios.ts";
 import { calculateStrategyTakeProfit, planStrategyInitialEntry, planStrategyNextEntry, planStrategyPostAthNextEntry,
@@ -74,6 +74,7 @@ const candidate = (slot: SimSlot): StrategyCandidate => ({ id: slot.physicalSlot
   balanceUsdc: slot.balanceUsdc, operationalRank: slot.operationalRank,
   postAthGroup: slot.postAthGroup, entryOrigin: slot.entryOrigin,
   monthlyTargetReached: slot.monthlyTargetReached,
+  monthlyEntryEligible: slot.eligible,
   state: slot.entryState === "OPEN" ? "OPEN" : slot.entryState === "ARMED" ? "ARMED" : "PLANNED" });
 
 /** Pure replay. No service client, adapter, exchange credential or operational
@@ -92,7 +93,8 @@ export function simulateAth(input: AthSimulationInput) {
   let slots: SimSlot[] = Array.from({ length: 25 }, (_, index) => ({
     physicalSlotId: `${simulationId}:${input.asset}:${index + 1}`, physicalSlotNumber: index + 1,
     lifetimeGainCount: input.lifetimeGains[index]!, monthlyGainCount: input.monthlyGains[index]!,
-    entryState: "PLANNED", eligible: input.monthlyGains[index]! < MONTHLY_SLOT_TARGET[input.asset],
+    entryState: "PLANNED", eligible: monthlyGoalsComplete(input.asset, input.monthlyGains.map((monthlyGainCount) => ({ monthlyGainCount })))
+      || input.monthlyGains[index]! < MONTHLY_SLOT_TARGET[input.asset],
     monthlyTargetReached: input.monthlyGains[index]! >= MONTHLY_SLOT_TARGET[input.asset], postAthGroup: null,
     postAthGroupRank: null, operationalRank: index + 1, balanceUsdc: 10, entryPrice: null,
     takeProfit: null, buyPrice: input.initialPrice * (1 - input.parameters.normalSpacing) ** index,
@@ -127,7 +129,7 @@ export function simulateAth(input: AthSimulationInput) {
     }
   };
   const chooseNext = (index: number, price: number) => {
-    const pending = slots.filter((slot) => !slot.committed && slot.eligible && !slot.monthlyTargetReached
+    const pending = slots.filter((slot) => !slot.committed && slot.eligible
       && ["PLANNED", "ARMED"].includes(slot.entryState));
     const primaryAvailable = state.regime === "POST_ATH" && pending.some((slot) => slot.postAthGroup === "PRIMARY");
     if (state.regime === "POST_ATH" && !primaryAvailable && !primaryExhausted) {
@@ -194,24 +196,27 @@ export function simulateAth(input: AthSimulationInput) {
       slot.lifetimeGainCount++; slot.monthlyGainCount = (slot.monthlyGainCount ?? 0) + 1;
       slot.monthlyTargetReached = slot.monthlyGainCount >= MONTHLY_SLOT_TARGET[input.asset];
       slot.entryState = "PLANNED"; slot.takeProfit = null; slot.operationSequence++;
-      slot.committed = slot.monthlyTargetReached;
       slot.entryOrigin = "REENTRY"; slot.buyPrice = slot.entryPrice!;
-      slot.eligible = !slot.monthlyTargetReached;
+      const completed = monthlyGoalsComplete(input.asset, slots);
+      for (const physical of slots) {
+        physical.eligible = completed || !physical.monthlyTargetReached;
+        physical.committed = !completed && physical.monthlyTargetReached;
+      }
       if (slot.eligible && slot.operationalRank === null) slot.operationalRank = 26 + slot.physicalSlotNumber;
       emit(index, price, "TP_FILLED_COMPOUNDED", slot);
-      if (slot.monthlyTargetReached) emit(index, price, "MONTHLY_TARGET_HOLD", slot);
+      if (slot.monthlyTargetReached && !completed) emit(index, price, "MONTHLY_TARGET_HOLD", slot);
     }
     if (armed !== null) {
       const slot = slots[armed - 1]!;
       if (slot.entryState === "ARMED" && price <= slot.buyPrice) open(index, slot.buyPrice, slot, false);
     }
     if (!slots.some((slot) => slot.entryState === "OPEN")) {
-      if (index > 0 && hadOpenBefore && slots.some((slot) => !slot.monthlyTargetReached)) {
+      if (index > 0 && hadOpenBefore && slots.some((slot) => slot.eligible)) {
         if (armed !== null) { slots[armed - 1]!.entryState = "PLANNED"; armed = null; }
         cycleNumber++; emit(index, price, "GLOBAL_RESET");
         slots = slots.map((slot) => ({ ...slot, operationSequence: 1, entryOrigin: "GRID" as const,
           armedDecisionId: null,
-          committed: slot.monthlyTargetReached, entryState: "PLANNED" }));
+          committed: !slot.eligible, entryState: "PLANNED" }));
         if (state.regime === "POST_ATH") {
           const grouped = buildPostAthQueue(input.asset, slots as AthSlot[]);
           slots = slots.map((slot, position) => ({ ...slot, ...grouped[position] }));
@@ -220,7 +225,7 @@ export function simulateAth(input: AthSimulationInput) {
         assignPrices(price);
       }
       const next = state.regime === "POST_ATH" ? orderedPostAthSlots(slots).find((slot) => !slot.committed)
-        : [...slots].filter((slot) => !slot.committed && !slot.monthlyTargetReached)
+        : [...slots].filter((slot) => !slot.committed && slot.eligible)
           .sort((a, b) => b.lifetimeGainCount - a.lifetimeGainCount || a.physicalSlotNumber - b.physicalSlotNumber)[0];
       if (next) {
         open(index, price, next, true);

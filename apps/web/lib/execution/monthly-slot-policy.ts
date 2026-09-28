@@ -1,3 +1,4 @@
+import { V1_SLOT_COUNT } from "./robot-v1-constants.ts";
 import type { V1Asset } from "./robot-v1.ts";
 
 export const MONTHLY_SLOT_TIMEZONE = "America/Campo_Grande";
@@ -54,6 +55,14 @@ export type MonthlySlotStatus = MonthlySlotInput & {
   operationalRank: number | null;
 };
 
+/** A monthly goal is a floor, not a ceiling. Only a complete, evidenced
+ * physical set can release the goal-based priority for the rest of the month. */
+export function monthlyGoalsComplete(asset: V1Asset,
+  slots: readonly { monthlyGainCount: number | null }[]): boolean {
+  return slots.length === V1_SLOT_COUNT && slots.every((slot) => slot.monthlyGainCount !== null
+    && Number.isInteger(slot.monthlyGainCount) && slot.monthlyGainCount >= MONTHLY_SLOT_TARGET[asset]);
+}
+
 /** Gain rank is independent of price. The engine still decides which priced
  * opportunity is valid; an OPEN position can finish after reaching its goal. */
 export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs: readonly MonthlySlotInput[]): MonthlySlotStatus[] {
@@ -78,6 +87,10 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
     return { ...input, monthlyGainTarget: target, periodKey, timezone: MONTHLY_SLOT_TIMEZONE,
       monthlyTargetReached: reached, eligibleForNewEntry: blockedReason === null, blockedReason, operationalRank: null };
   });
+  if (monthlyGoalsComplete(asset, statuses)) for (const slot of statuses) {
+    slot.eligibleForNewEntry = true;
+    slot.blockedReason = null;
+  }
   const eligible = statuses.filter((slot) => slot.eligibleForNewEntry)
     .sort((left, right) => right.lifetimeGainCount - left.lifetimeGainCount || left.physicalSlotNumber - right.physicalSlotNumber);
   eligible.forEach((slot, index) => { slot.operationalRank = index + 1; });

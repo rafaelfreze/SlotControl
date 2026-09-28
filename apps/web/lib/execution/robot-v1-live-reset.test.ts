@@ -32,12 +32,23 @@ for (const target of [1, 2, 7]) {
   });
 }
 
-test("LIVE reset stays on monthly hold when all slots reached their configurable target", () => {
+test("LIVE reset stays available when all slots reached their configurable target", () => {
   const candidates = slots(2, 2).map((slot) => ({ ...slot, monthlyTargetReached: true,
-    operationalRank: null }));
+    monthlyEntryEligible: true, operationalRank: slot.slotNumber }));
   const result = planStrategyClosedSlot(context(oldCycle), candidates, "slot-1");
-  assert.equal(result.mode, "MONTHLY_HOLD");
-  assert.equal(result.decisions[0]?.reason, "ALL_MONTHLY_TARGETS_REACHED");
+  assert.equal(result.mode, "GLOBAL_RESET");
+  assert.deepEqual(result.decisions.map((decision) => decision.action_type), ["COMPLETE_CYCLE", "REANCHOR"]);
+});
+
+test("a remaining OPEN/TP keeps its position while a completed-goal slot may recycle", () => {
+  const candidates = slots(2, 2).map((slot) => ({ ...slot, monthlyTargetReached: true,
+    monthlyEntryEligible: true, operationalRank: slot.slotNumber }));
+  candidates[1] = { ...candidates[1]!, state: "OPEN", buyPrice: 594 };
+  const before = structuredClone(candidates[1]);
+  const result = planStrategyClosedSlot(context(oldCycle), candidates, "slot-1");
+  assert.equal(result.mode, "LOCAL_REENTRY");
+  assert.equal(result.decisions[0]?.action_type, "PLAN_LOCAL_REENTRY");
+  assert.deepEqual(candidates[1], before);
 });
 
 test("LIVE ledger reset migration permits fail-closed recovery but still rejects positions and unverified fills", () => {

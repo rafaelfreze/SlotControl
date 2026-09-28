@@ -77,7 +77,7 @@ export function buildMonthlyAuditRows(args: {
           status: status.monthlyTargetReached ? "META BATIDA" : status.blockedReason ? "EVIDÊNCIA INCOMPLETA" : "ELEGÍVEL",
           current_balance: raw.currentBalance, entry_state: raw.entryState,
           next_action: raw.entryState === "OPEN" || raw.entryState === "TP_ACTIVE" ? "AGUARDAR_TP"
-            : status.monthlyTargetReached ? "AGUARDAR_PROXIMO_MES"
+            : status.blockedReason === "MONTHLY_TARGET_REACHED" ? "AGUARDAR_META_DOS_DEMAIS_SLOTS"
             : status.blockedReason ? "RECONCILIAR_EVIDENCIA"
             : raw.entryState === "MISSED" ? "AGUARDAR_PROXIMO_CICLO" : "AGUARDAR_OPORTUNIDADE_DE_PRECO",
           next_reset_at: nextReset, strategy_version: raw.strategyVersion,

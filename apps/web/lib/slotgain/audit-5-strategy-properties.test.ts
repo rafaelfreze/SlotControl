@@ -4,7 +4,7 @@ import test from "node:test";
 import { buildPostAthQueue, orderedPostAthSlots } from "../execution/ath-regime.ts";
 import { planAthLadder } from "../execution/ath-ladder.ts";
 import { simulateAth } from "../execution/ath-simulator.ts";
-import { MONTHLY_SLOT_TARGET, rankMonthlySlots } from "../execution/monthly-slot-policy.ts";
+import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete, rankMonthlySlots } from "../execution/monthly-slot-policy.ts";
 import { planStrategyNextEntry, planStrategyPostAthNextEntry, type StrategyCandidate } from "../execution/strategy-engine.ts";
 
 function rng(seed: number) {
@@ -34,6 +34,7 @@ for (const [asset, seed] of [["BTC", 0x50b7c], ["SOL", 0x50501]] as const) {
         slotNumber: slot.physicalSlotNumber, operationSequence: random() < .3 ? 2 : 1,
         buyPrice: 70 + Math.floor(random() * 3500) / 100, balanceUsdc: slot.balanceUsdc,
         operationalRank: post ? athById.get(slot.physicalSlotId)!.operationalRank : slot.operationalRank,
+        monthlyEntryEligible: post ? athById.get(slot.physicalSlotId)!.eligible : slot.eligibleForNewEntry,
         monthlyTargetReached: slot.monthlyTargetReached, postAthGroup: athById.get(slot.physicalSlotId)!.postAthGroup,
         entryOrigin: random() < .3 ? "REENTRY" : "GRID", state: slot.entryState === "OPEN" ? "OPEN" : "PLANNED" }));
       const residentIndex = Math.floor(random() * 26);
@@ -53,12 +54,12 @@ for (const [asset, seed] of [["BTC", 0x50b7c], ["SOL", 0x50501]] as const) {
       }
       if (["ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"].includes(decision.decision.action_type)) {
         const selected = rows.find((row) => row.id === decision.nextCandidateId)!;
-        assert.equal(selected.monthlyTargetReached, false);
+        assert.equal(selected.monthlyEntryEligible, true);
         assert.notEqual(selected.operationalRank, null);
         assert.ok(selected.buyPrice < 100);
         const primaryAvailable = post && rows.some((row) => row.postAthGroup === "PRIMARY"
-          && !row.monthlyTargetReached && row.operationalRank !== null && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(row.state));
-        const competing = rows.filter((row) => !row.monthlyTargetReached && row.operationalRank !== null
+          && row.monthlyEntryEligible && row.operationalRank !== null && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(row.state));
+        const competing = rows.filter((row) => row.monthlyEntryEligible && row.operationalRank !== null
           && ["PLANNED", "ARMED"].includes(row.state) && row.buyPrice < 100
           && (!primaryAvailable || row.postAthGroup === "PRIMARY" || row.entryOrigin === "REENTRY"
             || row.id === resident?.candidateId));
@@ -69,8 +70,9 @@ for (const [asset, seed] of [["BTC", 0x50b7c], ["SOL", 0x50501]] as const) {
       const eligibleAth = ath.filter((slot) => slot.eligible);
       assert.equal(ath.filter((slot) => slot.postAthGroup === "PRIMARY").length, Math.min(15, eligibleAth.length));
       assert.equal(ath.filter((slot) => slot.postAthGroup === "RESERVE").length, Math.max(0, eligibleAth.length - 15));
-      assert.ok(eligibleAth.every((slot) => slot.monthlyGainCount !== null && slot.monthlyGainCount < target
-        && slot.entryState !== "OPEN"));
+      const goalsComplete = monthlyGoalsComplete(asset, inputs);
+      assert.ok(eligibleAth.every((slot) => slot.monthlyGainCount !== null
+        && (goalsComplete || slot.monthlyGainCount < target) && slot.entryState !== "OPEN"));
       const order = orderedPostAthSlots(ath);
       assert.deepEqual(order.map((slot) => slot.operationalRank), Array.from({ length: order.length }, (_, i) => i + 1));
       assert.equal(new Set(ath.map((slot) => slot.physicalSlotId)).size, 25);
@@ -108,7 +110,8 @@ for (const [asset, seed] of [["BTC", 0x50b7c], ["SOL", 0x50501]] as const) {
       const index = step.slot - 1;
       if (["INITIAL_MARKET_FILLED", "BUY_FILLED"].includes(step.event)) {
         assert.equal(positions.has(step.slot), false, `duplicate OPEN ${step.slot}`);
-        assert.ok(gains[index]! < MONTHLY_SLOT_TARGET[asset], `entry after target ${step.slot}`);
+        assert.ok(gains[index]! < MONTHLY_SLOT_TARGET[asset]
+          || gains.every((count) => count >= MONTHLY_SLOT_TARGET[asset]), `entry after target ${step.slot}`);
         assert.equal(step.balanceUsdc, balances[index]);
         positions.set(step.slot, { entry: step.price, tp: null, principal: balances[index]!, operationId: step.operationId });
       }

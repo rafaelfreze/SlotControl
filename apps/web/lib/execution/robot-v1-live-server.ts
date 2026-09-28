@@ -157,11 +157,11 @@ async function event(service: Service, run: Run, key: string, type: string,
 }
 
 function candidate(slot: Slot, account: Account, rank: number | null,
-  reached: boolean): StrategyCandidate {
+  reached: boolean, eligible: boolean): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: amount(slot.target_buy_price), balanceQuote: amount(account.balance_brl),
-    operationalRank: slot.post_ath_group ? slot.operational_rank : rank,
-    monthlyTargetReached: reached, postAthGroup: slot.post_ath_group,
+    operationalRank: rank === null ? null : slot.post_ath_group ? slot.operational_rank ?? rank : rank,
+    monthlyTargetReached: reached, monthlyEntryEligible: eligible, postAthGroup: slot.post_ath_group,
     entryOrigin: slot.entry_origin,
     state: slot.missed_at ? "MISSED" : ["OPEN", "CLOSED", "ARMED"].includes(slot.entry_state)
       ? slot.entry_state as "OPEN" | "CLOSED" | "ARMED" : "PLANNED" };
@@ -523,7 +523,7 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
     if (!status) throw new Error("COINOPS_LIVE_MONTHLY_STATUS_MISSING");
     const tp = planStrategyTakeProfit(context(run, `TP:${revision}`),
       { ...candidate(slot, ledger.accounts.find((item) => item.slot_number === slot.slot_number)!,
-        status.operationalRank, status.monthlyTargetReached), state: "OPEN" },
+        status.operationalRank, status.monthlyTargetReached, status.eligibleForNewEntry), state: "OPEN" },
       buyQuote / buyQuantity, filters,
       { gainRate: amount(run.gain_rate), entrySpacing: amount(run.entry_spacing) });
     const price = tp.target_price;
@@ -565,7 +565,7 @@ async function recycleClosedSlots(service: Service, run: Run, ledger: Ledger) {
   const candidates = ledger.slots.map((slot) => {
     const account = ledger.accounts.find((item) => item.slot_number === slot.slot_number)!;
     const status = statuses.find((item) => item.physicalSlotNumber === slot.slot_number)!;
-    return candidate(slot, account, status.operationalRank, status.monthlyTargetReached);
+    return candidate(slot, account, status.operationalRank, status.monthlyTargetReached, status.eligibleForNewEntry);
   });
   for (const slot of ledger.slots.filter((item) => item.entry_state === "CLOSED")) {
     const plan = planStrategyClosedSlot(context(run), candidates, slot.id);
@@ -749,7 +749,7 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
   const candidates = latest.slots.map((slot) => {
     const account = accounts.get(slot.slot_number)!;
     const rank = statuses.find((item) => item.physicalSlotNumber === slot.slot_number)!;
-    return candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached);
+    return candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached, rank.eligibleForNewEntry);
   });
   const plan = planStrategyClosedSlot(context(run), candidates, closed.id);
   if (plan.mode !== "GLOBAL_RESET") throw new Error("COINOPS_LIVE_RESET_STRATEGY_MISMATCH");
@@ -868,8 +868,10 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const account = ledger.accounts.find((item) => item.slot_number === selected.slot_number)!;
     const quote = Number(spendable(amount(account.balance_brl)).toFixed(8));
     if (quote < state.filters.minNotional) return "CAPACITY_HOLD";
+    const selectedStatus = ranks.get(selected.slot_number)!;
     const decision = planStrategyInitialEntry(context(run),
-      { ...candidate(selected, account, selected.operational_rank, false), balanceQuote: quote });
+      { ...candidate(selected, account, selected.operational_rank,
+        selectedStatus.monthlyTargetReached, selectedStatus.eligibleForNewEntry), balanceQuote: quote });
     if (decision.action_type !== "OPEN_INITIAL_MARKET") throw new Error("COINOPS_LIVE_INITIAL_DECISION_INVALID");
     const order = await prepareOrder(service, run, selected, decision, "BUY", "INITIAL", 1,
       null, quote, null);
@@ -909,7 +911,7 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   const candidates = ledger.slots.map((slot) => {
     const account = ledger.accounts.find((row) => row.slot_number === slot.slot_number)!;
     const rank = ranks.get(slot.slot_number)!;
-    const value = { ...candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached),
+    const value = { ...candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached, rank.eligibleForNewEntry),
       balanceQuote: Math.min(amount(account.balance_brl), amount(prep.max_order_notional_brl)) };
     if (active?.slot_id === slot.id) value.state = "ARMED";
     return value;

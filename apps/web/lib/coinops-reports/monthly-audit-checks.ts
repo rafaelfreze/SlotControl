@@ -91,8 +91,11 @@ export function buildMonthlyGoalChecks(data: AuditDatasets, source: Record<strin
           && n(sorted[index - 1]!.physical_slot_number) < n(row.physical_slot_number)));
     add("RANK_DESCENDING_BY_LIFETIME_GAINS", !current.length || sourceMissing ? "WARNING" : correctRank ? "PASS" : "FAIL",
       "Fila elegível ordenada por lifetime decrescente, desempate pelo slot físico.", scope);
-    add("RANK_EXCLUDES_TARGET_REACHED", !current.length || sourceMissing ? "WARNING" : current.every((row) => row.monthly_target_reached !== true || row.operational_rank == null) ? "PASS" : "FAIL",
-      "META BATIDA fica fora da fila; OPEN continua visível separadamente.", scope);
+    const allReached = current.length === 25 && current.every((row) => row.monthly_target_reached === true);
+    add("RANK_EXCLUDES_TARGET_REACHED", !current.length || sourceMissing ? "WARNING" : current.every((row) =>
+      allReached ? row.eligible_for_new_entry === true && row.operational_rank != null
+        : row.monthly_target_reached !== true || row.operational_rank == null) ? "PASS" : "FAIL",
+      "Enquanto houver slot abaixo da meta, META BATIDA sai da fila; com 25/25, todos voltam a ser elegíveis sem zerar gains.", scope);
     const identities = new Map<number, Set<string>>();
     for (const row of rows) {
       const id = n(row.physical_slot_number);

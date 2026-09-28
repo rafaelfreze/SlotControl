@@ -5,9 +5,9 @@
 - BTC: 7 gains confirmados por slot físico em cada mês de `America/Campo_Grande`; SOL: 2.
 - A fonte é `coinops.robot_v1_monthly_slot_gains`, um fato imutável por crédito de operação Shadow ou fechamento Testnet com TP preenchido e lucro positivo. `effective_gain_at` é o fechamento Shadow ou o fill de TP da exchange; `credited_at` preserva o reconhecimento local. Fill Testnet legado sem horário exato recebe `TESTNET_CREDIT_FALLBACK` e WARNING, nunca uma hora fictícia.
 - `lifetime_gain_count` é a soma histórica; `monthly_gain_count` considera apenas `period_key`. Virar o mês não apaga crédito, saldo composto, operação ou identidade física.
-- Ao atingir a meta, a posição já OPEN conserva o TP, mas o slot não recebe BUY ou reentrada nova até o mês seguinte. BUY CoinOps residente e ainda sem fill é cancelada após confirmação de ownership; fill parcial é protegido. Se todos os 25 atingirem a meta, não há nova entrada.
+- Enquanto houver algum slot abaixo da meta, os slots que a atingiram cedem prioridade e não recebem nova entrada; posição OPEN conserva TP e fill parcial permanece protegido. BUY residente sem fill só pode ser cancelada pelo fluxo autorizado após confirmação de ownership. Quando todos os 25 slots físicos atingirem a meta com contagem comprovada, a meta global está concluída e todos os slots elegíveis voltam à fila normal no mesmo mês. Novos gains continuam registrados (por exemplo, SOL 3/2 e BTC 8/7): meta é piso, não teto nem stop do motor.
 - `physical_slot_id` não muda. `operational_rank` é derivado entre elegíveis por lifetime DESC e slot físico ASC. Num ciclo novo, o primeiro rank recebe o primeiro nível/entrada MARKET; os demais preços da grade são associados aos slots sem renumerar identidades. Durante um ciclo ativo, a Strategy Engine escolhe o preço válido mais alto abaixo do mercado **antes** de usar rank como desempate; níveis cruzados sem ordem residente continuam MISSED, jamais compra MARKET retroativa.
-- Shadow e Binance Spot Testnet usam `StrategyDecision` 4.2 da mesma engine. Binance Production permanece READ-ONLY e LIVE bloqueado.
+- Shadow, Testnet e LIVE usam a elegibilidade mensal da Strategy Engine compartilhada. Esta regra não autoriza operações de teste em Binance Production.
 
 ## Persistência, escopo e segurança
 
@@ -23,4 +23,4 @@ Os 11 checks mensais confrontam contador, bloqueio, reentrada, virada, lifetime,
 
 ## Validação e limites
 
-Testes unitários cobrem metas 6→7/1→2, mês local, rank/empate, identidade, entrada inicial, proteção de fill parcial e prioridade de preço. A migration deve ser conferida no projeto Supabase `otdfpmsegjxpqrzisfmi`, schema `coinops`, antes da publicação do código que a lê. Smoke autenticado deve verificar desktop/mobile sem clicar em BUY, Gain ou outros comandos financeiros reais. Reconciliar BTC e SOL Testnet depois do deploy; qualquer ausência de TP, duplicação ou divergência Shadow × Testnet impede a conclusão.
+Testes unitários cobrem metas 6→7/1→2, 24/25 e 25/25, mês-calendário local, virada de ano, OPEN atravessando mês, rank/empate, identidade, entrada inicial, proteção de fill parcial e prioridade de preço. A migration aditiva `20260928202508_monthly_goals_are_floor_not_stop.sql` remove apenas o veto de meta 25/25 do reset Testnet, mantendo verificações de fechamento, idempotência e privilégios. Conferir projeto Supabase `otdfpmsegjxpqrzisfmi`, schema `coinops`, antes da publicação. Smoke de leitura nunca aciona BUY, Gain ou comandos financeiros reais.

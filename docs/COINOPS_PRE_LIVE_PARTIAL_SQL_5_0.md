@@ -1,5 +1,7 @@
 # Fase 5.0 — prova SQL de fechamento parcial e restart
 
+> Nota vigente (2026-09-28): a migration `20260928202508_monthly_goals_are_floor_not_stop.sql` substitui apenas o veto de meta 25/25 do restart Testnet. As demais guardas financeiras e de escopo descritas nesta prova continuam obrigatórias; a linha histórica de teste abaixo registra o comportamento anterior.
+
 Migration: `20260923231731_harden_robot_v1_testnet_partial_accounting.sql`. Alvo semântico exclusivo: tabelas `coinops.robot_v1_testnet_*`. A aplicação remota e o SHA final são registrados no relatório consolidado; este documento registra os testes locais.
 
 ## Causa e correção

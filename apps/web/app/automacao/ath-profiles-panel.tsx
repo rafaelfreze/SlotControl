@@ -66,10 +66,10 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLive
               <td>{slot.lifetimeGains} total · {slot.monthlyGains ?? "?"}/{slot.monthlyTarget} mês</td>
               <td>{slot.group ? `${slot.group} #${slot.groupRank}` : "—"}</td><td>{slot.status}</td>
               <td>{slot.balanceUsdc.toLocaleString("pt-BR", { maximumFractionDigits: 4 })} {context?.quote_asset ?? "USDC"}</td>
-              <td>{slot.monthlyGains !== null && slot.monthlyGains >= slot.monthlyTarget ? "META BATIDA — aguardar mês"
-                : ["OPEN", "TP_ACTIVE"].includes(slot.status) ? "Aguardar TP"
+              <td>{["OPEN", "TP_ACTIVE"].includes(slot.status) ? "Aguardar TP"
+                : slot.monthlyGains !== null && slot.monthlyGains >= slot.monthlyTarget && !slot.eligible ? "Meta batida · aguardar demais slots"
                   : slot.status === "ARMED" ? `Próxima BUY ${slot.buyPrice || "—"}`
-                    : slot.eligible ? `Aguardar preço ${slot.buyPrice || "—"}` : "Bloqueado"}</td>
+                    : slot.eligible ? `Aguardar preço ${slot.buyPrice || "—"}` : "Evidência pendente"}</td>
             </tr>)}</tbody></table></div></details> : null}
         </div></details>;
     })}</div>

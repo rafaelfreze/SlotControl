@@ -272,7 +272,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       physicalSlotId: goal.physicalSlotId, lifetimeGains: goal.lifetimeGainCount,
       monthlyGains: goal.monthlyGainCount, monthlyTarget: goal.monthlyGainTarget,
       balanceUsdc: goal.balanceUsdc, eligible: goal.eligibleForNewEntry,
-      operationalRank: slot?.operational_rank ?? goal.operationalRank,
+      operationalRank: goal.eligibleForNewEntry ? slot?.operational_rank ?? goal.operationalRank : null,
       group: slot?.post_ath_group ?? null, groupRank: slot?.post_ath_group_rank ?? null,
       status: goal.entryState, buyPrice: Number(shadowSlot?.buy_price ?? testnetSlot?.target_buy_price ?? 0) };
   });

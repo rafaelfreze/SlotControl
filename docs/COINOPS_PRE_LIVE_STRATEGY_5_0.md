@@ -1,5 +1,7 @@
 # Fase 5.0 — auditoria adversarial do motor puro
 
+> Nota vigente (2026-09-28): a antiga suspensão quando os 25 slots alcançavam a meta foi substituída pela regra oficial de meta como piso. Enquanto houver slots abaixo da meta, a prioridade antiga permanece; com 25/25 comprovados, todos os elegíveis continuam operando no mesmo mês. As constatações abaixo são o histórico da auditoria 5.0, não a regra operacional atual.
+
 Baseline auditado: `3b967b7d974af46ef715b6369f8d97168cc74ae5`. Correções locais versionam a Strategy Engine para `4.3.1`. Este documento descreve evidência de código/testes; publicação, fotografia remota e gate consolidado pertencem a `COINOPS_PRE_LIVE_AUDIT_5_0.md`.
 
 ## Findings e correções

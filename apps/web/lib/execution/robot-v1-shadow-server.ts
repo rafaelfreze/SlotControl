@@ -106,8 +106,9 @@ function strategyCandidate(slot: Slot, monthly?: MonthlySlotStatus, regime: "NOR
   return {
     id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: asNumber(slot.buy_price, "COINOPS_V1_SLOT_INVALID"), balanceUsdc: asNumber(slot.allocation_usdc, "COINOPS_V1_SLOT_INVALID"),
-    operationalRank: regime === "POST_ATH" ? slot.operational_rank ?? monthly?.operationalRank : monthly?.operationalRank,
-    monthlyTargetReached: monthly?.monthlyTargetReached,
+    operationalRank: monthly?.operationalRank === null ? null
+      : regime === "POST_ATH" ? slot.operational_rank ?? monthly?.operationalRank : monthly?.operationalRank,
+    monthlyTargetReached: monthly?.monthlyTargetReached, monthlyEntryEligible: monthly?.eligibleForNewEntry,
     postAthGroup: slot.post_ath_group, entryOrigin: slot.entry_origin,
     state: slot.status === "PARTIALLY_FILLED" ? "PARTIALLY_FILLED"
       : slot.status === "OPEN" || slot.status === "TP_ACTIVE" ? "OPEN"
@@ -358,7 +359,7 @@ async function reconcileSingleArmedEntry(supabase: Service, config: Config, cycl
     ? planStrategyPostAthNextEntry(strategyContextWithKey, candidates, observedFloor, residentBuy)
     : planStrategyNextEntry(strategyContextWithKey, candidates, observedFloor, residentBuy);
   if (cycle.entry_regime === "POST_ATH" && !candidates.some((item) => item.postAthGroup === "PRIMARY"
-    && !item.monthlyTargetReached && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(item.state))) {
+    && item.monthlyEntryEligible && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(item.state))) {
     await audit(supabase, config, "POST_ATH_PRIMARY_EXHAUSTED",
       `${cycle.id}:${cycle.ath_transition_key}:${cycle.ath_period_key}`,
       { cycleId: cycle.id, next: { regime: "POST_ATH", periodKey: cycle.ath_period_key }, observedAt });

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { buildMonthlyAuditRows } from "./monthly-audit.ts";
 import { buildMonthlyGoalChecks } from "./monthly-audit-checks.ts";
+import { auditMonthlyEntryEvidence } from "./monthly-entry-evidence.ts";
 import { REPORT_DATASET_KEYS, type AuditDatasets, type AuditFilters } from "./report-engine.ts";
 
 const config = { id: "config-sol", product_id: "product", tenant_id: "tenant", user_id: "user", asset: "SOL" };
@@ -94,4 +95,24 @@ test("monthly audit preserves pre-4.2 reentry but flags any new post-adoption en
   assert.equal(status("TARGET_REACHED_SLOT_HAS_NO_NEW_ENTRY"), "FAIL");
   source.robot_v1_testnet_events.push({ run_id: "run-sol", slot_number: 5, event_type: "SLOT_REENTRY_PLANNED", observed_at: "2026-09-23T18:31:00Z" });
   assert.equal(status("TARGET_REACHED_SLOT_HAS_NO_REENTRY"), "FAIL");
+});
+
+test("monthly report marks 25/25 as completed but still eligible; time-of-entry audit allows another gain", () => {
+  const completedCredits = Array.from({ length: 25 }, (_, index) => [1, 2].map((unit) => ({
+    environment: "SHADOW", asset: "SOL", slot_number: index + 1,
+    source_id: `op-${index + 1}-${unit}`, effective_gain_at: `2026-09-${unit === 1 ? "10" : "20"}T12:00:00Z`,
+    credited_at: `2026-09-${unit === 1 ? "10" : "20"}T12:00:00Z`, period_key: "2026-09",
+    evidence_basis: "SHADOW_CONFIRMED_TP_CLOSE", physical_slot_id: `SHADOW:config-sol:${index + 1}`
+  }))).flat();
+  const monthly = buildMonthlyAuditRows({ filters, observationEnd: filters.end, generatedAt: "2026-09-28T12:00:00Z",
+    incomplete: false, credits: completedCredits, configs: [config], cycles: [], shadowSlots: [],
+    shadowAccounts: accounts, runs: [], testnetSlots: [] }).filter((row) => row.period_key === "2026-09");
+  assert.equal(monthly.length, 25);
+  assert.ok(monthly.every((row) => row.monthly_target_reached === true && row.eligible_for_new_entry === true
+    && row.next_action === "AGUARDAR_OPORTUNIDADE_DE_PRECO"));
+  const evidence = { events: [{ slot: 5, at: "2026-09-21T12:00:00Z" }], credits: completedCredits,
+    goals: monthly, adoptedAt: Date.parse("2026-09-01T04:00:00Z") };
+  assert.equal(auditMonthlyEntryEvidence(evidence), "PASS");
+  assert.equal(auditMonthlyEntryEvidence({ ...evidence, credits: completedCredits.filter((row) =>
+    !(row.slot_number === 6 && row.source_id.endsWith("-2"))) }), "FAIL");
 });

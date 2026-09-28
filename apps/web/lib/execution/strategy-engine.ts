@@ -19,6 +19,9 @@ export type StrategyCandidate = {
   balanceQuote?: number;
   operationalRank?: number | null;
   monthlyTargetReached?: boolean;
+  /** Explicit policy result: a reached slot is eligible again only after all
+   * 25 physical slots have reached this month's target. */
+  monthlyEntryEligible?: boolean;
   postAthGroup?: "PRIMARY" | "RESERVE" | null;
   entryOrigin?: "GRID" | "REENTRY";
   state: "PLANNED" | "ARMED" | "PARTIALLY_FILLED" | "OPEN" | "CLOSED" | "MISSED";
@@ -71,6 +74,10 @@ function assertCandidates(candidates: readonly StrategyCandidate[]) {
 }
 
 function candidateBalance(candidate: StrategyCandidate) { return candidate.balanceQuote ?? candidate.balanceUsdc!; }
+function monthlyEligible(candidate: StrategyCandidate) {
+  return candidate.operationalRank !== null
+    && (candidate.monthlyEntryEligible ?? !candidate.monthlyTargetReached);
+}
 
 export function strategyOperationId(context: StrategyContext, candidate: StrategyCandidate) {
   assertContext(context);
@@ -143,7 +150,7 @@ function wait(context: StrategyContext, candidate: StrategyCandidate | null, rea
  * a newly anchored cycle. Recycled slots always return to the LIMIT queue. */
 export function planStrategyInitialEntry(context: StrategyContext, slot: StrategyCandidate): StrategyDecision {
   assertCandidates([slot]);
-  if (slot.operationSequence !== 1 || slot.monthlyTargetReached
+  if (slot.operationSequence !== 1 || !monthlyEligible(slot)
     || (slot.operationalRank === undefined ? slot.slotNumber !== 1 : slot.operationalRank !== 1))
     throw new Error("COINOPS_STRATEGY_INITIAL_SLOT_INVALID");
   if (slot.state !== "PLANNED") return wait(context, slot, "INITIAL_ENTRY_ALREADY_STARTED");
@@ -188,8 +195,8 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
   if (residentBuy && (!current || !["ARMED", "PARTIALLY_FILLED"].includes(current.state)
     || !Number.isFinite(residentBuy.executedQuantity) || residentBuy.executedQuantity < 0
     || (armed[0] && armed[0].id !== current.id))) throw new Error("COINOPS_STRATEGY_RESIDENT_BUY_INVALID");
-  const ranked = [...candidates].filter((candidate) => !candidate.monthlyTargetReached
-    && candidate.operationalRank !== null && (candidate.state === "PLANNED" || candidate.state === "ARMED"))
+  const ranked = [...candidates].filter((candidate) => monthlyEligible(candidate)
+    && (candidate.state === "PLANNED" || candidate.state === "ARMED"))
     .sort((left, right) => right.buyPrice - left.buyPrice
       || (left.operationalRank ?? left.slotNumber) - (right.operationalRank ?? right.slotNumber) || left.slotNumber - right.slotNumber);
   const missedCandidateIds = ranked.filter((candidate) => candidate.state === "PLANNED" && candidate.buyPrice >= observedFloor).map((candidate) => candidate.id);
@@ -228,7 +235,7 @@ export function planStrategyPostAthNextEntry(context: StrategyContext,
   candidates: readonly StrategyCandidate[], observedFloor: number, residentBuy?: StrategyResidentBuy | null) {
   assertCandidates(candidates);
   const primaryAvailable = candidates.some((candidate) => candidate.postAthGroup === "PRIMARY"
-    && !candidate.monthlyTargetReached && candidate.operationalRank !== null
+    && monthlyEligible(candidate)
     && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(candidate.state));
   const allowed = primaryAvailable ? candidates.filter((candidate) => candidate.postAthGroup === "PRIMARY"
     || candidate.entryOrigin === "REENTRY" || candidate.id === residentBuy?.candidateId
@@ -248,16 +255,16 @@ export function planStrategyClosedSlot(context: StrategyContext, candidates: rea
   if (!closed || closed.state !== "CLOSED") throw new Error("COINOPS_STRATEGY_CLOSED_SLOT_INVALID");
   const otherOpenPositions = candidates.filter((candidate) => candidate.state === "OPEN" || candidate.state === "PARTIALLY_FILLED").length;
   if (otherOpenPositions) {
-    if (closed.monthlyTargetReached || closed.operationalRank === null) return {
+    if (!monthlyEligible(closed)) return {
       mode: "MONTHLY_HOLD", otherOpenPositions, decisions: [wait(context, closed,
-        closed.monthlyTargetReached ? "MONTHLY_TARGET_REACHED" : "GAIN_EVIDENCE_INCOMPLETE")]
+        closed.monthlyTargetReached && !closed.monthlyEntryEligible ? "MONTHLY_TARGET_REACHED" : "GAIN_EVIDENCE_INCOMPLETE")]
     };
     const recycled = { ...closed, operationSequence: closed.operationSequence + 1 };
     return { mode: "LOCAL_REENTRY", otherOpenPositions, decisions: [
       decision(context, recycled, "PLAN_LOCAL_REENTRY", closed.buyPrice, candidateBalance(closed), 60, "OTHER_POSITION_REMAINS_OPEN", "PLANNED")
     ] };
   }
-  if (!candidates.some((candidate) => !candidate.monthlyTargetReached && candidate.operationalRank !== null)) {
+  if (!candidates.some(monthlyEligible)) {
     return { mode: "MONTHLY_HOLD", otherOpenPositions: 0, decisions: [wait(context, closed,
       candidates.every((candidate) => candidate.monthlyTargetReached) ? "ALL_MONTHLY_TARGETS_REACHED" : "GAIN_EVIDENCE_INCOMPLETE")] };
   }

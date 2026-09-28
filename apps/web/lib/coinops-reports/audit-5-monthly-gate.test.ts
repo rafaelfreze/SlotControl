@@ -54,8 +54,8 @@ test("audit 5: monthly parity checks every physical slot in both environments", 
 
 test("audit 5: truncated signed ledger cannot prove monthly entry or reentry violation", () => {
   const data = empty();
-  data.monthly_goals = [{ environment: "TESTNET", asset: "SOL", period_key: "2026-09",
-    physical_slot_number: 1, monthly_gain_target: 2 }];
+  data.monthly_goals = Array.from({ length: 25 }, (_, index) => ({ environment: "TESTNET", asset: "SOL", period_key: "2026-09",
+    physical_slot_number: index + 1, monthly_gain_target: 2 }));
   const source = {
     robot_v1_monthly_slot_gains: [{ ...reversal, environment: "TESTNET", gain_units: 2, evidence_basis: "MANUAL_TARGET_GAIN" }],
     robot_v1_strategy_decisions: [{ environment: "TESTNET", asset: "SOL", strategy_version: "4.3.1", created_at: "2026-09-01T04:00:00Z" }],

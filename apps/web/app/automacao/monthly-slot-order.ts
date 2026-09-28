@@ -15,7 +15,7 @@ export function orderMonthlySlotRows<T>(rows: readonly T[], statuses: readonly M
     if (filter === "reached") return status.monthlyTargetReached;
     if (filter === "eligible") return status.eligibleForNewEntry;
     if (filter === "open") return isOpen(status.entryState);
-    if (filter === "waiting") return !isOpen(status.entryState) && status.entryState !== "ARMED" && !status.monthlyTargetReached;
+    if (filter === "waiting") return !isOpen(status.entryState) && status.entryState !== "ARMED" && status.eligibleForNewEntry;
     return true;
   });
   return included.sort((left, right) => {
@@ -32,7 +32,7 @@ export function orderMonthlySlotRows<T>(rows: readonly T[], statuses: readonly M
 
 export function monthlyNextAction(status: MonthlySlotStatus): string {
   if (isOpen(status.entryState)) return "Aguardar TP";
-  if (status.monthlyTargetReached) return "Aguardar próximo mês";
+  if (status.blockedReason === "MONTHLY_TARGET_REACHED") return "Aguardar meta dos demais slots";
   if (!status.eligibleForNewEntry) return "Reconciliar evidência";
   if (status.entryState === "MISSED") return "Aguardar próximo ciclo";
   if (status.entryState === "ARMED") return "Próxima BUY armada";
