@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { allocateBulkSlots, allocateSelectedSlots, splitBulkEngines } from "@/lib/execution/live-adjustment-plans";
 import { resolveSelectiveContributionPresetRegions } from "@/lib/execution/selective-contribution-presets";
+import { getLiveAdjustmentReasonError, liveAdjustmentErrorMessage } from "@/lib/execution/live-adjustment-validation";
 import "./live-adjustments-center.css";
 
 type Account = { id: string; display_name: string; is_legacy_default: boolean };
@@ -83,7 +84,7 @@ async function control(input: Draft | PresetCommand) {
     cache: "no-store", headers: { "content-type": "application/json",
       "x-coinops-admin-intent": "live-adjustment" }, body: JSON.stringify(input) });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "COINOPS_ADJUSTMENT_FAILED");
+  if (!response.ok) throw new Error(liveAdjustmentErrorMessage(result.error ?? "COINOPS_ADJUSTMENT_FAILED"));
   return result;
 }
 
@@ -116,6 +117,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const [presetOpenSlots, setPresetOpenSlots] = useState(1);
   const [presetFollowingSlots, setPresetFollowingSlots] = useState(2);
   const [reason, setReason] = useState("");
+  const [reasonTouched, setReasonTouched] = useState(false);
+  const reasonInput = useRef<HTMLInputElement>(null);
+  const reasonHelpId = useId();
+  const reasonError = reasonTouched ? getLiveAdjustmentReasonError(reason) : null;
   const [planAmount, setPlanAmount] = useState("");
   const [planOrigin, setPlanOrigin] = useState<"BRL" | "USDT">("BRL");
   const [planBtc, setPlanBtc] = useState(50);
@@ -275,6 +280,12 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
       : { ...base, amount, shares: shares(), ...currencyDetails };
   }
   async function makePreview() {
+    setReasonTouched(true);
+    if (getLiveAdjustmentReasonError(reason)) {
+      setPreview(null); setPreviewDraft(null); setReverse(null); setError(""); setNotice("");
+      reasonInput.current?.focus();
+      return;
+    }
     try { setBusy(true); setError(""); setNotice(""); setReverse(null);
       const next = draft();
       if (next.shares) allocateBulkSlots(next.amount!, next.shares);
@@ -480,7 +491,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
             {pending > 0 ? <strong>+ {format(pending, quote)} pendente</strong> : null}
             <small>{entry ? `Entrada ${format(entry, quote)}` : `Próxima referência ${format(slot.target_buy_price, quote)}`}
               {` · ${totalRow?.lifetime_gain_count ?? 0} gains`}</small>
-            <small>{slot.entry_state === "OPEN" ? "Aplicação após o fechamento" : slot.entry_state === "ARMED" ? "Ordem atual não será alterada" : "Disponível no ledger; sem BUY automática"}</small>
+            <small>{slot.entry_state === "OPEN" ? "Aplicação após o fechamento" : slot.entry_state === "ARMED" ? "NEXT BUY sem fill: o motor atualiza o valor, mantendo o preço da estratégia" : "Disponível no ledger; sem BUY automática"}</small>
             {checked && slotDistribution === "CUSTOM" ? <input aria-label={`Valor do slot ${slot.slot_number}`} inputMode="decimal"
               value={customSlotAmounts[slot.slot_number] ?? ""} placeholder="0,00" onChange={(event) => {
                 setCustomSlotAmounts({ ...customSlotAmounts, [slot.slot_number]: event.target.value }); invalidate();
@@ -512,8 +523,14 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
             <button type="button" disabled={busy} onClick={() => deletePreset(preset)}>Excluir</button></div>
         </div>)}</div>
       </details> : null}
-      <label>Motivo<input value={reason} maxLength={160} onChange={(event) => { setReason(event.target.value); invalidate(); }}
-        placeholder="Obrigatório para auditoria" /></label>
+      <label>Motivo (obrigatório)<input ref={reasonInput} value={reason} required minLength={3} maxLength={160}
+        aria-invalid={Boolean(reasonError)} aria-describedby={reasonHelpId}
+        onBlur={() => setReasonTouched(true)}
+        onChange={(event) => { setReason(event.target.value); invalidate(); }}
+        placeholder="Ex.: aporte adicional nos slots selecionados" /></label>
+      <p id={reasonHelpId} className={reasonError ? "lac-error" : "lac-slot-note"}
+        role={reasonError ? "alert" : undefined}>{reasonError ? liveAdjustmentErrorMessage(reasonError)
+          : "Informe de 3 a 160 caracteres. O motivo será registrado no histórico do ajuste."}</p>
       <div className="lac-actions"><button type="button" disabled={busy} onClick={makePreview}>Pré-visualizar · sem ordens</button>
         <button type="button" className="lac-quiet" onClick={() => refresh().catch((cause) => setError(cause.message))}>Atualizar estado</button></div>
       {preview ? <div className="lac-preview"><h4>Antes → ajuste → depois</h4>

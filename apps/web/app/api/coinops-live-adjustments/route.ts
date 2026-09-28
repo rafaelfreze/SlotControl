@@ -8,6 +8,7 @@ import { resolveSelectiveContributionPresetRegion,
   type SelectiveContributionPreset } from "@/lib/execution/selective-contribution-presets";
 import { operatorAccountSnapshot, operatorExecutorAdmin } from "@/lib/execution/operator-executor-admin";
 import { isIdentity } from "@/lib/execution/operator-context";
+import { getLiveAdjustmentReasonError } from "@/lib/execution/live-adjustment-validation";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
@@ -93,9 +94,10 @@ async function verifyBrlUsdtConversion(originBrl: number, receivedUsdt: number) 
 
 function inputGuard(input: Draft) {
   if (!isIdentity(input.accountId) || !isIdentity(input.requestId)
-    || !["BRL", "USDT"].includes(input.quote)
-    || input.reason?.trim().length < 3 || input.reason.trim().length > 160)
+    || !["BRL", "USDT"].includes(input.quote))
     throw new Error("COINOPS_ADJUSTMENT_INPUT_INVALID");
+  const reasonError = getLiveAdjustmentReasonError(input.reason);
+  if (reasonError) throw new Error(reasonError);
 }
 
 async function loadAccount(scope: Scope, accountId: string, quote: string) {

@@ -63,6 +63,21 @@ reset.
 
 ## Operação e validação
 
+O motivo de auditoria é obrigatório, com 3–160 caracteres após remover espaços
+nas extremidades. A mesma validação atende todas as contas e shards: o formulário
+mostra o erro junto ao campo e o focaliza antes de enviar a prévia; o backend
+mantém a validação independente e retorna `COINOPS_ADJUSTMENT_REASON_REQUIRED`
+ou `COINOPS_ADJUSTMENT_REASON_INVALID`. Esses erros ocorrem antes de consultar
+o executor ou escrever batches/allocations. Não flexibilizar a auditoria para
+contornar um erro de preenchimento.
+
+No caso Dete de 28/09/2026, `COINOPS_ADJUSTMENT_INPUT_INVALID` vinha do motivo
+vazio, não de diferença entre executores. A prévia autenticada de R$ 5.000
+passou com o motivo preenchido; o ledger ainda tinha R$ 275 e nenhum batch de
+aporte às 11:17:44Z. A validação da correção não registra aportes reais. Em
+qualquer resultado incerto da confirmação, conferir o batch/request_id antes
+de tentar novamente; nunca concluir que um aporte falhou só pela mensagem.
+
 A interface mostra os 25 slots, capital atual, aporte pendente, OPEN ou
 disponível, referência de entrada, gains e próxima utilização conhecida, com
 filtros e preview completo. Smoke de Production é exclusivamente leitura e
