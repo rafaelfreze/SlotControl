@@ -83,6 +83,9 @@ novos números. Recarregar a página só lê snapshots, sem polling de fornecedo
 Datas de coleta operacional e fornecedores ficam separadas no topo. O botão
 **Início**, visível e fixo no mobile, retorna a `/automacao` preservando ambiente,
 conta e mercado em parâmetros validados, sem URL externa de retorno.
+O cabeçalho mobile usa `position:fixed` com espaço e safe-area reservados na
+própria rota: `sticky` é insuficiente porque o layout compartilhado possui
+`body` com overflow oculto. Não alterar esse layout global para corrigir FinOps.
 
 Somente `syncAllFinops`, chamado pelo cron autenticado, habilita o modo interno
 `SCHEDULED`. Dentro da mesma lease, ele verifica se já existe coleta externa na

@@ -213,4 +213,6 @@ test("rendered panel exposes a contextual Início link and separate operational/
   assert.match(css, /\.fo-topbar \.fo-back\{[^}]*min-height:44px/);
   assert.match(css, /@media\(max-width:700px\)\{[^\n]*\.fo-period\{grid-template-columns:minmax\(0,1fr\) auto/);
   assert.match(css, /safe-area-inset-top/);
+  assert.match(css, /@media\(max-width:700px\)\{\.fo-app\{padding-top:calc\(86px \+ env\(safe-area-inset-top\)\)\}\.fo-topbar\{position:fixed/,
+    "mobile return must survive the shared body's hidden overflow, with space reserved below it");
 });
