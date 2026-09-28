@@ -5,10 +5,10 @@ import ts from "typescript";
 import { verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
-  last_seen_at: "2026-09-27T00:00:12.000Z" };
+  first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
 
 function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
-  casLost?: boolean } = {}) {
+  casLost?: boolean; lateFill?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -48,7 +48,10 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "trading_engines") data = singular ? engine : [engine];
       else if (table === "robot_v1_live_slots") data = slots;
       else if (table === "robot_v1_live_slot_accounts") data = accounts;
-      else if (table === "robot_v1_live_orders") data = orders;
+      else if (table === "robot_v1_live_fills") data = options.lateFill ? [{ order_id: "filled-order",
+        filled_at: "2026-09-27T00:00:11.000Z", collected_at: "2026-09-27T00:00:30.000Z" }] : [];
+      else if (table === "robot_v1_live_orders") data = filters.id ? [{ id: "filled-order",
+        client_order_id: "owned:filled-tp", status: "FILLED", trades_reconciled: true }] : orders;
       else if (table === "account_quote_caps") data = { hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") data = {};
       else assert.fail(`Unexpected table ${table}`);
@@ -57,7 +60,9 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     const chain = {
       select: () => chain, eq: (key: string, value: unknown) => { filters[key] = value; return chain; },
       is: (key: string, value: unknown) => { filters[key] = value; return chain; },
-      in: () => chain, or: () => chain, gt: () => chain, order: () => chain,
+      in: (key: string, value: unknown) => { filters[key] = value; return chain; },
+      gte: () => chain, lte: () => chain, limit: () => chain,
+      or: () => chain, gt: () => chain, order: () => chain,
       update: (data: Record<string, unknown>) => { mutation = data; return chain; },
       upsert: (data: Record<string, unknown>) => { mutation = data; return chain; },
       single: async () => response(true), maybeSingle: async () => response(true),
@@ -79,7 +84,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => {
       calls.push("health"); return { gate: options.healthy === false ? "ATTENTION" : "LIVE_EXECUTOR_PROTECTED" };
     } },
-    "./live-executor-transport": { readLiveExecutorState: async () => {
+    "./live-executor-transport": { readLiveExecutorOrder: async () => ({ order: null }),
+      readLiveExecutorState: async () => {
       calls.push("exchange-state"); return { ...scope, filters: { quantityStep: 0.001 },
         price: { price: 630, observedAt: new Date().toISOString() }, observed_at: new Date().toISOString(),
         open_orders: options.missingTp ? [] : [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp" }] };
@@ -105,6 +111,17 @@ test("verified recovery claims lease, proves fresh health/protection and conditi
   assert.equal(clear?.filters.code, known.code);
   assert.equal(clear?.filters.last_seen_at, known.last_seen_at);
   assert.equal(clear?.filters.trading_engine_id, "engine-a");
+});
+
+test("missing-order alert recovers only after a late trade-backed fill and current exchange agreement", async () => {
+  const missing = { ...known, code: "COINOPS_LIVE_EXCHANGE_ORDER_MISSING" };
+  const safe = fixture({ alerts: [[missing]], lateFill: true });
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.equal(safe.writes.some((write) => write.table === "trading_engines"
+    && write.data.kill_switch === false), true);
+  const unproven = fixture({ alerts: [[missing]], lateFill: false });
+  await assert.rejects(unproven.run(), /RECOVERY_FILL_EVIDENCE_MISSING/);
+  assert.equal(unproven.writes.some((write) => write.data.kill_switch === false), false);
 });
 
 test("unknown/additional/changed critical incidents never open the BUY gate", async () => {

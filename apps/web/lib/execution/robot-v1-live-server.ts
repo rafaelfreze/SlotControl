@@ -24,6 +24,7 @@ import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
+import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
@@ -304,8 +305,22 @@ async function assertExchangeMatchesLedger(run: Run, orders: Order[], state: Liv
     ledger.delete(observed.clientOrderId!);
   }
   for (const pending of ledger.values()) {
-    if (pending.submission_guarded_at !== null && pending.client_order_id !== dispatchingClientOrderId)
+    if (pending.submission_guarded_at !== null && pending.client_order_id !== dispatchingClientOrderId) {
+      // openOrders is a snapshot, not proof of a lost order. Verify the exact
+      // persisted Binance ID before deciding whether this is an ordinary fill.
+      if (pending.exchange_order_id) {
+        const observed = (await readLiveExecutorOrder(run, pending.client_order_id,
+          pending.exchange_order_id)).order;
+        if (observed?.status === "FILLED") {
+          const evidence = await readLiveExecutorTrades(run, pending.client_order_id,
+            pending.exchange_order_id);
+          if (isConfirmedFilledSnapshotRace(pending, run.symbol, observed,
+            evidence.order, evidence.trades))
+            throw new Error("COINOPS_LIVE_FILLED_DURING_SNAPSHOT");
+        }
+      }
       throw new Error("COINOPS_LIVE_EXCHANGE_ORDER_MISSING");
+    }
   }
   return own.map((item) => item.clientOrderId!);
 }
@@ -1049,6 +1064,11 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     if (held.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_RESOLUTION_FAILED");
     return { status: "OK", next };
   } catch (error) {
+    if (error instanceof Error && error.message === "COINOPS_LIVE_FILLED_DURING_SNAPSHOT") {
+      // The next official tick starts at RECONCILE_ORDERS and credits the fill
+      // exactly once. No alert, kill switch, or second strategy implementation.
+      return { status: "RETRY", code: error.message };
+    }
     if (["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
       && error instanceof Error && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
       errorCode = "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
@@ -1131,6 +1151,8 @@ export async function auditLiveRun(runId: string) {
     return { status: "PASS", asset: run.asset, openPositions: ledger.slots.filter((item) =>
       item.entry_state === "OPEN").length, activeBuyCount: ownBuys.length };
   } catch (error) {
+    if (error instanceof Error && error.message === "COINOPS_LIVE_FILLED_DURING_SNAPSHOT")
+      return { status: "RETRY", asset: run.asset, code: error.message };
     const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "COINOPS_LIVE_MONITOR_FAILED";
     await preventNewBuys(service, run, code);
@@ -1202,12 +1224,38 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
  * after a fresh exchange/ledger match, protected positions and hard caps. */
 async function readVerifiedRecoveryIncident(service: Service, run: Run, expected?: ReadRecoveryAlert) {
   const alerts = await service.from("robot_v1_live_alerts")
-    .select("alert_key,code,last_seen_at")
+    .select("alert_key,code,first_seen_at,last_seen_at")
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
     .eq("trading_engine_id", run.trading_engine_id).eq("severity", "CRITICAL").is("resolved_at", null);
   if (alerts.error) throw new Error("COINOPS_LIVE_RECOVERY_ALERT_LOOKUP_FAILED");
   return verifiedReadRecoveryAlert(run.status, run.id, alerts.data ?? [], expected);
+}
+
+async function assertLateReconciledFill(service: Service, run: Run, incident: ReadRecoveryAlert) {
+  const detected = Date.parse(incident.first_seen_at ?? "");
+  if (!Number.isFinite(detected)) throw new Error("COINOPS_LIVE_RECOVERY_FILL_EVIDENCE_MISSING");
+  const fills = await service.from("robot_v1_live_fills")
+    .select("order_id,filled_at,collected_at")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
+    .eq("user_id", run.user_id).eq("operator_id", run.operator_id)
+    .eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id)
+    .eq("symbol", run.symbol)
+    .gte("filled_at", new Date(detected - 90_000).toISOString())
+    .lte("filled_at", new Date(detected + 90_000).toISOString()).limit(10);
+  if (fills.error || !fills.data?.length)
+    throw new Error("COINOPS_LIVE_RECOVERY_FILL_EVIDENCE_MISSING");
+  const late = fills.data.filter((fill) => Date.parse(fill.collected_at) > detected)
+    .map((fill) => fill.order_id);
+  if (!late.length) throw new Error("COINOPS_LIVE_RECOVERY_FILL_EVIDENCE_MISSING");
+  const orders = await service.from("robot_v1_live_orders")
+    .select("id,client_order_id,status,trades_reconciled")
+    .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+    .in("id", late);
+  if (orders.error || !orders.data?.some((order) => order.status === "FILLED"
+    && order.trades_reconciled && order.client_order_id.startsWith(liveEngineOrderPrefix(run.engine!))))
+    throw new Error("COINOPS_LIVE_RECOVERY_FILL_EVIDENCE_MISSING");
 }
 
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
@@ -1228,6 +1276,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
     if (source === "VERIFIED_READ_RECOVERY")
       recoveryIncident = await readVerifiedRecoveryIncident(service, run);
+    if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
+      await assertLateReconciledFill(service, run, recoveryIncident);
     const health = await loadLiveEngineExecutorStatus(run);
     if (!["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_RESUME_EXECUTOR_NOT_ACTIVE");
