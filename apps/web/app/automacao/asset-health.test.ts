@@ -140,7 +140,7 @@ test("Binance card shares the asset-health provider, opens its own drawer and al
   const element = BinanceHealthCard();
   const html = renderToStaticMarkup(element);
   assert.match(html, /BINANCE/);
-  assert.match(html, /Saúde da Binance · <strong>SAUDÁVEL/);
+  assert.match(html, /Saúde da Binance · <\/span><strong>SAUDÁVEL/);
   assert.match(html, /aria-haspopup="dialog"/);
   element.props.children[2].props.onClick();
   assert.equal(selected, "BINANCE");

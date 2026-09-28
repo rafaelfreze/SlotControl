@@ -140,7 +140,13 @@ for (const width of [320, 360, 375, 390, 430, 1280]) {
     const audit = await mount(page, "live", width, 844, automationOperatorFixture(), null, {
       generatedAt: AUTOMATION_FIXTURE_NOW, collector: { status: "HEALTHY", lastRunAt: AUTOMATION_FIXTURE_NOW, nextExpectedAt: "2026-09-24T12:30:00Z" }, assets,
       binance: { asset: "BINANCE", status: "HEALTHY", previousStatus: null, evaluatedAt: AUTOMATION_FIXTURE_NOW,
-        validUntil: "2026-09-24T13:00:00Z", summary: "Spot público observado.", reasons: [], metrics: [], sources: [],
+        validUntil: "2026-09-24T13:00:00Z", summary: "Spot público observado.", reasons: [], metrics: [{
+          key: "executor:fixture", label: "executor-fixture", category: "API_COINOPS", indicatorClass: "COMPLEMENTARY",
+          status: "HEALTHY", value: { version: "fixture-version", errorsLast5m: 0, weightPerMin: 2646,
+            reconciliationAgeMs: 25160, reconciliationP95Ms: 25160 }, reason: "Executor observado separadamente.",
+          source: { id: "coinops-fixture", name: "Telemetria CoinOps", url: "/automacao", independenceGroup: "coinops-executors" },
+          fetchedAt: AUTOMATION_FIXTURE_NOW, metricAt: AUTOMATION_FIXTURE_NOW, ttlSeconds: 300, confidence: "HIGH",
+        }], sources: [],
         trigger: "PUBLIC_SPOT_OBSERVED", failureSinceByMetric: {}, history: [] },
     });
     await expect(page.locator(".px-market-chart .ah-badge")).toHaveCount(3);
@@ -148,12 +154,18 @@ for (const width of [320, 360, 375, 390, 430, 1280]) {
       const box = element.getBoundingClientRect(); return { x: box.x, y: box.y, right: box.right };
     }));
     expect(cards).toHaveLength(3);
+    expect(await page.locator(".px-market-chart h3").allTextContents()).toEqual(["BTC/USDT", "BINANCE", "SOL/USDT"]);
     expect(Math.max(...cards.map((card) => card.y)) - Math.min(...cards.map((card) => card.y))).toBeLessThan(2);
     expect(cards[2].right).toBeLessThanOrEqual(width);
     const btc = page.getByRole("button", { name: /Saúde do ativo Bitcoin: SAUDÁVEL/ });
     await expect(btc).toBeVisible();
     await expect(btc).toHaveCSS("color", "rgb(56, 215, 165)");
     expect((await btc.boundingBox())!.height).toBeLessThanOrEqual(55);
+    if (width <= 600) {
+      const clippedBadges = await page.locator(".px-market-chart .ah-badge>span>span:nth-child(2)").evaluateAll((elements) =>
+        elements.filter((element) => element.scrollWidth > element.clientWidth + 1).length);
+      expect(clippedBadges, `status completo nos três cards em ${width}px`).toBe(0);
+    }
     expect((await geometry(page)).overflow).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`asset-health-cards-${width}.png`) });
     await btc.click();
@@ -176,7 +188,13 @@ for (const width of [320, 360, 375, 390, 430, 1280]) {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByRole("button", { name: /Saúde da Binance: SAUDÁVEL/ }).click();
-    await expect(page.getByRole("dialog", { name: "Saúde da Binance" })).toContainText("Reservas / custódia");
+    const binanceDialog = page.getByRole("dialog", { name: "Saúde da Binance" });
+    await expect(binanceDialog).toContainText("Reservas / custódia");
+    await expect(binanceDialog).toContainText("peso 2.646/min · 0 erros em 5 min · reconciliação há 25 s");
+    await expect(binanceDialog).not.toContainText("fixture-version");
+    const drawerOverflow = await binanceDialog.locator(".px-drawer-body").evaluate((element) => element.scrollWidth - element.clientWidth);
+    expect(drawerOverflow, `Binance drawer em ${width}px`).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: testInfo.outputPath(`binance-health-${width}.png`) });
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     const healthReads = await page.evaluate(() => (window as unknown as { __fixtureReads: string[] }).__fixtureReads.filter((url) => url.startsWith("/api/coinops-asset-health")));

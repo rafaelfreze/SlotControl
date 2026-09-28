@@ -117,7 +117,7 @@ export function BinanceHealthCard() {
     <button type="button" className={`ah-badge ah-tone-${status.toLowerCase()}`} onClick={() => open("BINANCE")}
       aria-label={`Saúde da Binance: ${snapshot ? binanceLabels[status] : loading ? "carregando" : "dados insuficientes"}. Ver análise.`}
       aria-haspopup="dialog" title="Abrir Saúde da Binance">
-      <span><i aria-hidden="true" /><span>Saúde da Binance · <strong>{snapshot ? binanceLabels[status] : loading ? "CARREGANDO" : "DADOS INSUFICIENTES"}</strong></span><span className="ah-badge-chevron" aria-hidden="true">›</span></span>
+      <span><i aria-hidden="true" /><span><span className="ah-badge-label-full">Saúde da Binance · </span><strong>{snapshot ? binanceLabels[status] : loading ? "CARREGANDO" : "DADOS INSUFICIENTES"}</strong></span><span className="ah-badge-chevron" aria-hidden="true">›</span></span>
       <small>{assetHealthAge(snapshot?.evaluatedAt, now)}</small>
     </button>
   </article>;
@@ -130,7 +130,7 @@ export function AssetHealthBadge({ asset }: { asset: AssetHealthAsset }) {
   return <button type="button" className={`ah-badge ah-tone-${status.toLowerCase()}`} onClick={() => open(asset)}
     aria-label={`Saúde do ativo ${names[asset]}: ${snapshot ? statusLabels[status] : loading ? "carregando" : "dados insuficientes"}. Ver análise.`}
     aria-haspopup="dialog" title="Abrir análise estrutural do ativo">
-    <span><i aria-hidden="true" /><span>Saúde do ativo · <strong>{snapshot ? statusLabels[status] : loading ? "CARREGANDO" : "DADOS INSUFICIENTES"}</strong></span><span className="ah-badge-chevron" aria-hidden="true">›</span></span>
+    <span><i aria-hidden="true" /><span><span className="ah-badge-label-full">Saúde do ativo · </span><strong>{snapshot ? statusLabels[status] : loading ? "CARREGANDO" : "DADOS INSUFICIENTES"}</strong></span><span className="ah-badge-chevron" aria-hidden="true">›</span></span>
     <small>{assetHealthAge(snapshot?.evaluatedAt, now)}</small>
   </button>;
 }
@@ -195,6 +195,22 @@ const binanceCategories: Array<[BinanceHealthMetric["category"], string]> = [
   ["SECURITY", "Segurança"], ["WITHDRAWALS", "Depósitos e saques"], ["REGULATION", "Regulação"],
 ];
 
+function executorMetricSummary(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const data = value as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof data.weightPerMin === "number" && Number.isFinite(data.weightPerMin)) {
+    parts.push(`peso ${data.weightPerMin.toLocaleString("pt-BR")}/min`);
+  }
+  if (typeof data.errorsLast5m === "number" && Number.isFinite(data.errorsLast5m)) {
+    parts.push(`${data.errorsLast5m.toLocaleString("pt-BR")} erros em 5 min`);
+  }
+  if (typeof data.reconciliationAgeMs === "number" && Number.isFinite(data.reconciliationAgeMs)) {
+    parts.push(`reconciliação há ${Math.round(data.reconciliationAgeMs / 1000)} s`);
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
+
 export function BinanceHealthDetails({ snapshot, now, loading, readError, days, setDays, collector }: {
   snapshot?: AssetHealthDashboard["binance"]; now: number; loading: boolean; readError: boolean; days: Days;
   setDays: (days: Days) => void; collector?: AssetHealthDashboard["collector"];
@@ -222,7 +238,7 @@ export function BinanceHealthDetails({ snapshot, now, loading, readError, days, 
               ?? metrics.find((metric) => metric.status === "HEALTHY")?.reason
               ?? "Sem feed estruturado confiável para afirmar o estado atual."}</p>
         {category === "API_COINOPS" ? metrics.map((metric) => <p key={metric.key}><strong>{metric.label}</strong> · {metricLabels[metric.status]}
-          {metric.value && typeof metric.value === "object" ? ` · ${JSON.stringify(metric.value)}` : ""}</p>) : null}</article>;
+          {executorMetricSummary(metric.value) ? ` · ${executorMetricSummary(metric.value)}` : ""}</p>) : null}</article>;
     })}</section>
     <details className="ah-disclosure"><summary>Riscos acompanhados</summary><p>Indisponibilidade prolongada, falha sistêmica, comprometimento de segurança, problemas de custódia, suspensão de saques e fatos regulatórios materiais que afetem a operação. Não são previsões.</p></details>
     <section className="ah-history"><header><h3>Histórico de saúde</h3><select aria-label="Período do histórico da Binance" value={days} onChange={(event) => setDays(Number(event.target.value) as Days)}><option value={30}>30 dias</option><option value={90}>90 dias</option><option value={365}>1 ano</option></select></header>
