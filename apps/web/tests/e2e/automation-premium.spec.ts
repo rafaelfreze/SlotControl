@@ -203,6 +203,14 @@ for (const width of [320, 360, 375, 390, 430, 1280]) {
   });
 }
 
+test("Binance health card remains visible when BTC quote is unavailable", async ({ page }) => {
+  const data = automationOperatorFixture();
+  if (data.operator) data.operator.engines = data.operator.engines.filter((engine) => engine.symbol !== "BTCUSDT");
+  const audit = await mount(page, "live", 320, 844, data);
+  expect(await page.locator(".px-market-chart h3").allTextContents()).toEqual(["BINANCE", "SOL/USDT"]);
+  await noSideEffects(page, audit);
+});
+
 async function geometry(page: Page) {
   return page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
