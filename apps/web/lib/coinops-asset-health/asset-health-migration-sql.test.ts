@@ -12,6 +12,7 @@ const bin = process.env.COINOPS_AUDIT_PG_BIN ?? "C:/Program Files/PostgreSQL/17/
 const available = existsSync(join(bin, "initdb.exe"));
 const directory = available ? mkdtempSync(join(tmpdir(), "coinops-asset-health-")) : "";
 const migration = readFileSync(resolve("../../supabase/migrations/20260927110357_add_coinops_asset_health.sql"), "utf8");
+const binanceMigration = readFileSync(resolve("../../supabase/migrations/20260928152148_add_coinops_binance_health.sql"), "utf8");
 const tables = ["collector_state", "snapshots", "current", "events", "deliveries"].map((name) => `asset_health_${name}`);
 let port = 0;
 const env = {
@@ -31,7 +32,7 @@ const subscription = "33333333-3333-4333-8333-333333333333";
 const json = (value: unknown) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
 const assessment = (asset: string, status = "HEALTHY", minutesAgo = 2, metrics: unknown[] = []) => ({
   asset, status, evaluatedAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
-  metrics, reasons: ["Public source evidence"], trigger: "scheduled", previousStatus: null
+  metrics, reasons: ["Public source evidence"], sources: [], trigger: "scheduled", previousStatus: null
 });
 const finish = (snapshots: unknown[], cadences: object = {}, claimToken = token) =>
   `select coinops.asset_health_finish('${claimToken}',${json(snapshots)},${json(cadences)},25)`;
@@ -196,4 +197,20 @@ check("delivery unique event/device and conditional lease prevent concurrent dup
   const nonOwner = owner === token ? otherToken : token;
   assert.equal(psql(`update coinops.asset_health_deliveries set status='SENT',sent_at=now() where lease_token='${nonOwner}' and lease_until>now()`), "UPDATE 0");
   assert.equal(psql(`update coinops.asset_health_deliveries set status='SENT',sent_at=now() where lease_token='${owner}' and lease_until>now()`), "UPDATE 1");
+});
+
+test("Binance migration only extends existing health constraints and fenced RPC", () => {
+  assert.doesNotMatch(binanceMigration, /coinops\.(?:trading_engines|exchange_accounts|robot_v1|live_|strategy_|executor_capacity)/i);
+  assert.doesNotMatch(binanceMigration, /security\s+definer|drop\s+(?:table|column)|truncate/i);
+  assert.match(binanceMigration, /asset_health_finish/);
+  assert.match(binanceMigration, /'BINANCE','BTC','SOL'/);
+});
+
+check("BTC, SOL and Binance persist atomically with critical transition and no trading mutation", () => {
+  reset(); psql(binanceMigration); claim();
+  assert.equal(psql(`set role service_role; ${finish([assessment("BTC"), assessment("SOL"), assessment("BINANCE")])}`).split("\n").at(-1), "t");
+  assert.equal(psql("select string_agg(asset,',' order by asset) from coinops.asset_health_current"), "BINANCE,BTC,SOL");
+  claim(); assert.equal(psql(finish([assessment("BINANCE", "CRITICAL_RISK", 0)])), "t");
+  assert.equal(psql("select status_before||':'||status_after from coinops.asset_health_events where asset='BINANCE'"), "HEALTHY:CRITICAL_RISK");
+  assert.equal(psql("select status from coinops.trading_engines where id='untouched'"), "ACTIVE");
 });

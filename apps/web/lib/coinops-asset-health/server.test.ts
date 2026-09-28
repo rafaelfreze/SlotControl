@@ -45,7 +45,7 @@ function worker(options: { claimed?: boolean; finish?: boolean; collectionError?
   const calls: Array<{ name: string; args?: any }> = [];
   const service = {
     from(table: string) {
-      assert.ok(["asset_health_collector_state", "asset_health_current", "asset_health_events"].includes(table), `Forbidden table: ${table}`);
+      assert.ok(["asset_health_collector_state", "asset_health_current", "asset_health_events", "executor_shards", "executor_capacity_samples"].includes(table), `Forbidden table: ${table}`);
       calls.push({ name: table });
       return query(table === "asset_health_collector_state" ? { status: "RUNNING", cadence_completed_at: {} } : [], options.readError ? {} : null,
         (method) => assert.equal(method === "update", false, "Page/worker reads cannot directly mutate rows"));
@@ -57,18 +57,22 @@ function worker(options: { claimed?: boolean; finish?: boolean; collectionError?
     },
   };
   const code = load("./server.ts", { "server-only": {}, "./access": { assetHealthService: () => service },
-    "./collector-policy": policy, "./rules": rules, "./snapshot-view": snapshotView, "./sources": { collectAssetHealthMetrics: async (cadences: unknown) => {
+    "./collector-policy": policy, "./rules": rules, "./snapshot-view": snapshotView,
+    "./binance": { collectBinanceMetrics: async () => [], mergeBinanceMetrics: () => [],
+      deriveBinanceHealth: ({ now }: { now: Date }) => ({ asset: "BINANCE", status: "INSUFFICIENT_DATA", metrics: [],
+        reasons: [], sources: [], trigger: "NO_EVIDENCE", evaluatedAt: now.toISOString(), validUntil: now.toISOString() }) },
+    "./sources": { collectAssetHealthMetrics: async (cadences: unknown) => {
       calls.push({ name: "collect", args: cadences }); if (options.collectionError) throw new Error("SECRET_AND_RAW_URL_NOT_LOGGED"); return [];
     } } });
   return { calls, code };
 }
-test("worker acquires lease before source requests and atomically persists both assets", async () => {
+test("worker acquires lease before source requests and atomically persists BTC, SOL and Binance", async () => {
   const w = worker();
   const result = await w.code.syncAssetHealth();
   assert.equal(result.status, "SYNCED");
   assert.equal(w.calls[0].name, "asset_health_claim");
   const save = w.calls.find((item) => item.name === "asset_health_finish")!;
-  assert.deepEqual(save.args.p_snapshots.map((item: { asset: string }) => item.asset), ["BTC", "SOL"]);
+  assert.deepEqual(save.args.p_snapshots.map((item: { asset: string }) => item.asset), ["BTC", "SOL", "BINANCE"]);
   assert.equal(save.args.p_token, w.calls[0].args.p_token);
   assert.equal(save.args.p_snapshots[0].status, "INSUFFICIENT_DATA");
   assert.equal(w.calls.filter((item) => item.name === "collect").length, 1);

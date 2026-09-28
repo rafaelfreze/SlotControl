@@ -215,6 +215,7 @@ Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execuç
 ## Saúde do Ativo — fronteira obrigatória
 
 - `apps/web/lib/coinops-asset-health` é informativo e read-only em relação ao trading. BTC/SOL usam fontes públicas, coleta server-side, snapshots e regras determinísticas. Ver `docs/COINOPS_ASSET_HEALTH.md` e `docs/COINOPS_ASSET_HEALTH_SOURCES.md`.
+- `BINANCE_HEALTH_CANNOT_TRADE`: Saúde da Binance usa o mesmo pipeline de snapshots/eventos, probes públicos e telemetria por shard. Falha de um executor/IP/key não é falha global Binance. PoR sem feed verificável é dado indisponível, nunca solvência presumida. Não importar cliente de ordens/saques/transferências nem acoplar status a trading.
 - `STRUCTURAL_RISK` nunca significa SELL ALL, PAUSE, cancelar ordens, mudar estratégia, slots, ciclos, ATH, spacing, TP, NEXT BUY, kill switch ou Capacity Manager. Qualquer acoplamento futuro exige nova decisão arquitetural explícita do usuário.
 - Watchdog observa somente execução/freshness/falhas do coletor; saúde estrutural não entra na saúde ou recuperação dos motores. Alertas usam outbox separada e ADMIN, nunca `robot_v1_live_alerts`.
 - GET lê snapshots persistidos; não coleta fontes nem prolonga validade ou promove status. Sem evidência recente: DADOS INSUFICIENTES, nunca falso verde/vermelho. Preço não é sinal de risco estrutural.

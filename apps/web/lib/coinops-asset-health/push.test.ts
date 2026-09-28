@@ -140,6 +140,14 @@ test("warning preference suppresses ordinary transitions but preserves structura
   assert.deepEqual(f.tables.asset_health_deliveries.map((row) => row.event_id).sort(), ["risk", "risk-recovery"]);
 });
 
+test("Binance critical transition is admin-only, deduplicated and deep-links to its drawer", async () => {
+  const f = fixture({ asset_health_events: [{ ...event("binance-risk", "ATTENTION", "CRITICAL_RISK"), asset: "BINANCE" }] });
+  assert.equal((await f.dispatch()).sent, 1);
+  assert.equal((await f.dispatch()).sent, 0);
+  assert.equal(f.successful[0].message.url, "/automacao?view=live&account=ALL&assetHealth=BINANCE");
+  assert.match(f.successful[0].message.body, /RISCO CRÍTICO/);
+});
+
 test("two concurrent dispatchers claim the same pending delivery only once", async () => {
   const f = fixture();
   const outcomes = await Promise.all([f.dispatch(), f.dispatch()]);

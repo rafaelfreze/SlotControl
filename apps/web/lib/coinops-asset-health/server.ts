@@ -5,7 +5,8 @@ import { collectorStatus, dueCadences, type CollectorState } from "./collector-p
 import { deriveAssetHealth, mergeAssetHealthMetrics } from "./rules";
 import { collectAssetHealthMetrics } from "./sources";
 import { snapshotForDisplay } from "./snapshot-view";
-import type { AssetHealthAsset, AssetHealthDashboard, AssetHealthHistoryItem, AssetHealthSnapshot } from "./types";
+import { collectBinanceMetrics, deriveBinanceHealth, mergeBinanceMetrics } from "./binance";
+import type { AssetHealthAsset, AssetHealthDashboard, AssetHealthHistoryItem, AssetHealthSnapshot, BinanceHealthSnapshot } from "./types";
 
 const ASSETS: AssetHealthAsset[] = ["BTC", "SOL"];
 const safeError = (error: unknown) => error instanceof Error && /^COINOPS_ASSET_HEALTH_[A-Z0-9_]+$/.test(error.message)
@@ -23,7 +24,15 @@ export async function loadAssetHealthDashboard(days: 30 | 90 | 365 = 30): Promis
   ]);
   if (current.error || state.error || events.error) throw new Error("COINOPS_ASSET_HEALTH_READ_FAILED");
   const assets: AssetHealthDashboard["assets"] = {};
+  let binance: AssetHealthDashboard["binance"];
   for (const row of current.data ?? []) {
+    if (row.asset === "BINANCE") {
+      const snapshot = row.assessment as BinanceHealthSnapshot;
+      const history = (events.data ?? []).filter((event) => event.asset === "BINANCE")
+        .map((event) => ({ status: event.status_after, evaluatedAt: event.created_at, reasons: event.reasons }));
+      binance = { ...snapshot, history };
+      continue;
+    }
     const snapshot = row.assessment as AssetHealthSnapshot;
     if (!ASSETS.includes(snapshot.asset)) continue;
     const refreshed = snapshotForDisplay(snapshot, now);
@@ -32,7 +41,8 @@ export async function loadAssetHealthDashboard(days: 30 | 90 | 365 = 30): Promis
     assets[snapshot.asset] = { ...refreshed, evaluatedAt: snapshot.evaluatedAt,
       previousStatus: snapshot.previousStatus, history };
   }
-  return { generatedAt: now.toISOString(), collector: collectorStatus(state.data as CollectorState | null, now), assets };
+  return { generatedAt: now.toISOString(), collector: collectorStatus(state.data as CollectorState | null, now), assets,
+    binance };
 }
 
 /** Single fenced worker; writes exclusively to asset_health_* tables, never trading. */
@@ -42,11 +52,13 @@ export async function syncAssetHealth() {
   if (claim.error) throw new Error("COINOPS_ASSET_HEALTH_CLAIM_FAILED");
   if (claim.data !== true) return { status: "SKIPPED_LOCK_OR_COOLDOWN" };
   try {
-    const [state, current] = await Promise.all([
+    const [state, current, shards, samples] = await Promise.all([
       service.from("asset_health_collector_state").select("*").eq("id", "default").single(),
       service.from("asset_health_current").select("asset,assessment"),
+      service.from("executor_shards").select("id,enabled"),
+      service.from("executor_capacity_samples").select("shard_id,heartbeat_at,weight_observed_at,binance_weight_current,errors_last_5m,reconciliation_age_ms,reconciliation_p95_ms,executor_version"),
     ]);
-    if (state.error || current.error) throw new Error("COINOPS_ASSET_HEALTH_READ_FAILED");
+    if (state.error || current.error || shards.error || samples.error) throw new Error("COINOPS_ASSET_HEALTH_READ_FAILED");
     const now = new Date(), cadences = dueCadences(state.data as CollectorState, now);
     const collected = await collectAssetHealthMetrics(cadences, now);
     const evaluated = new Date();
@@ -55,13 +67,18 @@ export async function syncAssetHealth() {
       const metrics = mergeAssetHealthMetrics(previous?.metrics ?? [], collected.filter((metric) => metric.asset === asset), evaluated);
       return { ...deriveAssetHealth({ asset, metrics, now: evaluated, previous }), previousStatus: previous?.status ?? null };
     });
-    const finished = await service.rpc("asset_health_finish", { p_token: token, p_snapshots: snapshots,
+    const previousBinance = (current.data ?? []).find((row) => row.asset === "BINANCE")?.assessment as BinanceHealthSnapshot | undefined;
+    const binanceCollected = await collectBinanceMetrics({ now: evaluated, dueFast: cadences.includes("FAST"),
+      dueStructural: cadences.includes("DEVELOPMENT"), shards: shards.data ?? [], samples: samples.data ?? [] });
+    const binance = deriveBinanceHealth({ now: evaluated, previous: previousBinance,
+      metrics: mergeBinanceMetrics(previousBinance?.metrics ?? [], binanceCollected, evaluated) });
+    const finished = await service.rpc("asset_health_finish", { p_token: token, p_snapshots: [...snapshots, binance],
       p_cadences: Object.fromEntries(cadences.map((cadence) => [cadence, evaluated.toISOString()])),
       p_duration_ms: Date.now() - started });
     if (finished.error || finished.data !== true) throw new Error("COINOPS_ASSET_HEALTH_FINISH_FAILED");
     return { status: "SYNCED", evaluatedAt: evaluated.toISOString(), durationMs: Date.now() - started,
-      cadences, assets: snapshots.map(({ asset, status, healthyIndicators, totalIndicators }) =>
-        ({ asset, status, healthyIndicators, totalIndicators })) };
+      cadences, assets: [...snapshots.map(({ asset, status, healthyIndicators, totalIndicators }) =>
+        ({ asset, status, healthyIndicators, totalIndicators })), { asset: "BINANCE", status: binance.status }] };
   } catch (error) {
     const code = safeError(error);
     await service.rpc("asset_health_fail", { p_token: token, p_error_code: code });

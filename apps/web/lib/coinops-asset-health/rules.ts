@@ -162,7 +162,7 @@ export function deriveAssetHealth(input: { asset: AssetHealthAsset; metrics: Ass
       missingCategories, unavailableOptional: metrics.filter((metric) => (metric.optional || metric.contextOnly) && !available(metric)).length } };
 }
 
-export function shouldNotifyAssetHealthTransition(before: AssetHealthStatus | null, after: AssetHealthStatus): boolean {
+export function shouldNotifyAssetHealthTransition(before: AssetHealthStatus | "CRITICAL_RISK" | null, after: AssetHealthStatus | "CRITICAL_RISK"): boolean {
   return Boolean(before && before !== after && before !== "INSUFFICIENT_DATA" && after !== "INSUFFICIENT_DATA");
 }
 

@@ -16,7 +16,7 @@ import { ViewerUsersPanel } from "./viewer-users-panel";
 import { PushNotificationsPanel } from "./push-notifications-panel";
 import { CapacityCard } from "./capacity-card";
 import { WatchdogCard } from "./watchdog-card";
-import { AssetHealthBadge, AssetHealthProvider } from "./asset-health";
+import { AssetHealthBadge, AssetHealthProvider, BinanceHealthCard } from "./asset-health";
 import { NativeEngineAudit } from "./native-engine-audit";
 import { EngineControlCenter } from "./engine-control-center";
 import { LiveAdjustmentsCenter } from "./live-adjustments-center";
@@ -202,7 +202,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     {view === "live" ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={liveStatus.online ? "is-ok" : "is-warning"}>● Executor {liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={healthy ? "is-ok" : "is-warning"}>● Estratégia {healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
       {allAccounts ? <section className="px-market-overview" aria-label="Cotações USDT">
-        <div className="px-market-chart-grid">{usdtMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /><AssetHealthBadge asset={model.asset} /></article>)}</div>
+        <div className="px-market-chart-grid">{usdtMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /><AssetHealthBadge asset={model.asset} /></article>)}<BinanceHealthCard /></div>
       </section> : null}
       {data.operator && (view === "live" || view === "overview") ? <CapacityCard onExecutorObservation={sync.observeExecutors} /> : null}
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard /> : null}

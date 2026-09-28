@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { AssetHealthAsset, AssetHealthDashboard, AssetHealthHistoryItem, AssetHealthStatus, AssetMetric } from "@/lib/coinops-asset-health/types";
+import type { AssetHealthAsset, AssetHealthDashboard, AssetHealthHistoryItem, AssetHealthStatus, AssetMetric, BinanceHealthMetric, BinanceHealthStatus, HealthSubject } from "@/lib/coinops-asset-health/types";
 import { PremiumDrawer, displayTime } from "./premium-primitives";
 import "./asset-health.css";
 
@@ -16,6 +16,8 @@ const confidenceLabels = { HIGH: "Alta", MEDIUM: "Média", LOW: "Baixa" };
 const indicatorClassLabels = { CRITICAL: "Crítico", PRIMARY: "Principal", COMPLEMENTARY_PROXY: "Complementar / proxy" };
 const categoryStatusLabels = { HEALTHY: "SAUDÁVEL", OBSERVE: "OBSERVAR", ATTENTION: "ATENÇÃO", RISK: "RISCO", INSUFFICIENT_DATA: "DADOS INSUFICIENTES" };
 const names = { BTC: "Bitcoin", SOL: "Solana" };
+const binanceLabels: Record<BinanceHealthStatus, string> = { HEALTHY: "SAUDÁVEL", ATTENTION: "ATENÇÃO",
+  CRITICAL_RISK: "RISCO CRÍTICO", INSUFFICIENT_DATA: "DADOS INSUFICIENTES" };
 const cache = new Map<Days, { at: number; data: AssetHealthDashboard }>();
 const pending = new Map<Days, Promise<AssetHealthDashboard>>();
 const CACHE_MS = 5 * 60_000;
@@ -49,22 +51,22 @@ export function assetHealthAge(value: string | undefined, now: number): string {
     : minutes < 1_440 ? `Atualizado há ${Math.floor(minutes / 60)} h` : `Atualizado há ${Math.floor(minutes / 1_440)} d`;
 }
 
-export function assetHealthChanges(history: AssetHealthHistoryItem[]): AssetHealthHistoryItem[] {
+export function assetHealthChanges<T extends { status: string; evaluatedAt: string }>(history: T[]): T[] {
   const rows = [...history].sort((left, right) => left.evaluatedAt.localeCompare(right.evaluatedAt));
   return rows.filter((row, index) => index === 0 || row.status !== rows[index - 1].status).reverse();
 }
 
-type HealthContext = { dashboard: AssetHealthDashboard | null; now: number; loading: boolean; open: (asset: AssetHealthAsset) => void };
+type HealthContext = { dashboard: AssetHealthDashboard | null; now: number; loading: boolean; open: (asset: HealthSubject) => void };
 const Context = createContext<HealthContext>({ dashboard: null, now: 0, loading: true, open: () => undefined });
 
-export function assetHealthDeepLink(search: string): AssetHealthAsset | null {
+export function assetHealthDeepLink(search: string): HealthSubject | null {
   const asset = new URLSearchParams(search).get("assetHealth");
-  return asset === "BTC" || asset === "SOL" ? asset : null;
+  return asset === "BTC" || asset === "SOL" || asset === "BINANCE" ? asset : null;
 }
 
 export function AssetHealthProvider({ children }: { children: ReactNode }) {
   const [dashboard, setDashboard] = useState<AssetHealthDashboard | null>(null);
-  const [selected, setSelected] = useState<AssetHealthAsset | null>(null);
+  const [selected, setSelected] = useState<HealthSubject | null>(null);
   const [days, setDays] = useState<Days>(30);
   const [now, setNow] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -89,13 +91,36 @@ export function AssetHealthProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", onVisible);
     return () => { mounted = false; window.clearInterval(refresh); window.clearInterval(clock); document.removeEventListener("visibilitychange", onVisible); };
   }, [days]);
-  const snapshot = selected ? dashboard?.assets[selected] : undefined;
+  const snapshot = selected && selected !== "BINANCE" ? dashboard?.assets[selected] : undefined;
   return <Context.Provider value={{ dashboard, now, loading, open: setSelected }}>{children}
-    {selected ? <PremiumDrawer open title={`Saúde do Ativo — ${names[selected]}`} onClose={() => setSelected(null)}>
-      <AssetHealthDetails asset={selected} snapshot={snapshot} now={now} loading={loading} readError={readError}
-        days={days} setDays={setDays} collector={dashboard?.collector} />
+    {selected ? <PremiumDrawer open title={selected === "BINANCE" ? "Saúde da Binance" : `Saúde do Ativo — ${names[selected]}`} onClose={() => setSelected(null)}>
+      {selected === "BINANCE" ? <BinanceHealthDetails snapshot={dashboard?.binance} now={now} loading={loading}
+        readError={readError} days={days} setDays={setDays} collector={dashboard?.collector} />
+        : <AssetHealthDetails asset={selected} snapshot={snapshot} now={now} loading={loading} readError={readError}
+          days={days} setDays={setDays} collector={dashboard?.collector} />}
     </PremiumDrawer> : null}
   </Context.Provider>;
+}
+
+export function displayedBinanceHealthStatus(snapshot: AssetHealthDashboard["binance"], now: number): BinanceHealthStatus {
+  if (!snapshot || !Number.isFinite(Date.parse(snapshot.validUntil)) || Date.parse(snapshot.validUntil) <= now) return "INSUFFICIENT_DATA";
+  return snapshot.status;
+}
+
+export function BinanceHealthCard() {
+  const { dashboard, now, loading, open } = useContext(Context);
+  const snapshot = dashboard?.binance;
+  const status = displayedBinanceHealthStatus(snapshot, now);
+  return <article className="px-panel px-market-chart px-binance-chart">
+    <header><span className="px-binance-mark" aria-hidden="true">◆</span><div><h3>BINANCE</h3><strong>Exchange</strong></div></header>
+    <p className="px-binance-summary">{snapshot && status !== "INSUFFICIENT_DATA" ? "Spot público observado · sem efeito nas ordens" : "Aguardando evidência server-side"}</p>
+    <button type="button" className={`ah-badge ah-tone-${status.toLowerCase()}`} onClick={() => open("BINANCE")}
+      aria-label={`Saúde da Binance: ${snapshot ? binanceLabels[status] : loading ? "carregando" : "dados insuficientes"}. Ver análise.`}
+      aria-haspopup="dialog" title="Abrir Saúde da Binance">
+      <span><i aria-hidden="true" /><span>Saúde da Binance · <strong>{snapshot ? binanceLabels[status] : loading ? "CARREGANDO" : "DADOS INSUFICIENTES"}</strong></span><span className="ah-badge-chevron" aria-hidden="true">›</span></span>
+      <small>{assetHealthAge(snapshot?.evaluatedAt, now)}</small>
+    </button>
+  </article>;
 }
 
 export function AssetHealthBadge({ asset }: { asset: AssetHealthAsset }) {
@@ -162,5 +187,52 @@ export function AssetHealthDetails({ asset, snapshot, now, loading, readError, d
     </section>
     {snapshot ? <><details className="ah-disclosure"><summary>Fontes e última atualização</summary><ul className="ah-sources">{snapshot.sources.map((source) => <li key={source.id}><SourceLink url={source.url}>{source.name}</SourceLink><small>{displayTime(source.fetchedAt)} · {metricLabels[source.status as keyof typeof metricLabels] ?? source.status}</small></li>)}</ul><p>Avaliação: {displayTime(snapshot.evaluatedAt)}<br />Validade: {displayTime(snapshot.validUntil)}</p><p>Monitor de coleta: {collector?.status === "HEALTHY" ? "Em dia" : collector?.status === "FAILED" ? "Falha na coleta" : collector?.status === "STALE" ? "Coleta atrasada" : "Aguardando coleta"} · última execução {displayTime(collector?.lastRunAt)}</p></details>
       <details className="ah-disclosure"><summary>Ver detalhes técnicos</summary><p>Fatos medidos por fonte. O status geral é uma regra derivada; confiança não é probabilidade de investimento.</p>{snapshot.metrics.map((metric) => <TechnicalMetric key={`${metric.source.id}:${metric.key}`} metric={metric} />)}</details></> : null}
+  </div>;
+}
+
+const binanceCategories: Array<[BinanceHealthMetric["category"], string]> = [
+  ["OPERATION", "Operação"], ["API_COINOPS", "API CoinOps"], ["RESERVES", "Reservas / custódia"],
+  ["SECURITY", "Segurança"], ["WITHDRAWALS", "Depósitos e saques"], ["REGULATION", "Regulação"],
+];
+
+export function BinanceHealthDetails({ snapshot, now, loading, readError, days, setDays, collector }: {
+  snapshot?: AssetHealthDashboard["binance"]; now: number; loading: boolean; readError: boolean; days: Days;
+  setDays: (days: Days) => void; collector?: AssetHealthDashboard["collector"];
+}) {
+  const status = displayedBinanceHealthStatus(snapshot, now);
+  const stale = Boolean(snapshot && status === "INSUFFICIENT_DATA" && snapshot.status !== "INSUFFICIENT_DATA");
+  const changes = assetHealthChanges(snapshot?.history ?? []);
+  return <div className="ah-details">
+    <section className={`ah-status ah-tone-${status.toLowerCase()}`} aria-label="Status atual"><small>STATUS ATUAL</small>
+      <strong>{!snapshot && loading ? "CARREGANDO" : binanceLabels[status]}</strong><span>{assetHealthAge(snapshot?.evaluatedAt, now)}</span></section>
+    <section className="ah-summary"><h3>Por que está neste status?</h3><p>{!snapshot ? "Aguardando a primeira coleta server-side."
+      : stale ? "A última avaliação venceu; não é possível confirmar a saúde atual." : snapshot.summary}</p>
+      {readError ? <p className="ah-notice" role="status">Não foi possível atualizar a leitura. Evidência anterior só vale até o prazo informado.</p> : null}
+      <p className="ah-disclaimer">Status informativo, limitado às fontes exibidas. Não mede solvência completa e não envia, cancela ou altera ordens.</p></section>
+    <section className="ah-categories" aria-label="Indicadores da Binance">{binanceCategories.map(([category, label]) => {
+      const metrics = snapshot?.metrics.filter((metric) => metric.category === category) ?? [];
+      const available = metrics.filter((metric) => metric.status === "HEALTHY");
+      const warning = metrics.some((metric) => metric.status === "WARNING" || metric.status === "CRITICAL");
+      const categoryStatus = stale || !metrics.length || metrics.every((metric) => ["SOURCE_UNAVAILABLE", "DATA_STALE"].includes(metric.status))
+        ? "DADOS INSUFICIENTES" : warning ? "OBSERVAR" : available.length ? "SAUDÁVEL NO ESCOPO" : "DADOS INSUFICIENTES";
+      return <article key={category}><header><h3>{label}</h3><span className="ah-category-label">{categoryStatus}</span></header>
+        <p>{category === "RESERVES" ? "PoR é um retrato pontual divulgado pela Binance; não comprova todos os passivos nem substitui auditoria completa."
+          : category === "API_COINOPS" ? "Cada executor/IP é avaliado separadamente; falha local não é falha global da Binance."
+            : metrics.find((metric) => metric.status === "WARNING" || metric.status === "CRITICAL")?.reason
+              ?? metrics.find((metric) => metric.status === "HEALTHY")?.reason
+              ?? "Sem feed estruturado confiável para afirmar o estado atual."}</p>
+        {category === "API_COINOPS" ? metrics.map((metric) => <p key={metric.key}><strong>{metric.label}</strong> · {metricLabels[metric.status]}
+          {metric.value && typeof metric.value === "object" ? ` · ${JSON.stringify(metric.value)}` : ""}</p>) : null}</article>;
+    })}</section>
+    <details className="ah-disclosure"><summary>Riscos acompanhados</summary><p>Indisponibilidade prolongada, falha sistêmica, comprometimento de segurança, problemas de custódia, suspensão de saques e fatos regulatórios materiais que afetem a operação. Não são previsões.</p></details>
+    <section className="ah-history"><header><h3>Histórico de saúde</h3><select aria-label="Período do histórico da Binance" value={days} onChange={(event) => setDays(Number(event.target.value) as Days)}><option value={30}>30 dias</option><option value={90}>90 dias</option><option value={365}>1 ano</option></select></header>
+      {loading ? <p>Carregando histórico…</p> : readError ? <p>Histórico indisponível nesta consulta.</p>
+        : changes.length ? <ol>{changes.slice(0, 12).map((entry) => <li key={entry.evaluatedAt}><strong>{binanceLabels[entry.status as BinanceHealthStatus]}</strong> · <time dateTime={entry.evaluatedAt}>{displayTime(entry.evaluatedAt)}</time><p>{entry.reasons[0]}</p></li>)}</ol>
+          : <p>Sem mudanças registradas no período.</p>}</section>
+    {snapshot ? <><details className="ah-disclosure"><summary>Fontes e última atualização</summary><ul className="ah-sources">{snapshot.sources.map((source) => <li key={source.id}><SourceLink url={source.url}>{source.name}</SourceLink><small>{displayTime(source.fetchedAt)} · {source.status}</small></li>)}</ul>
+      <p>Monitor de coleta: {collector?.status ?? "NOT_RUN"} · última execução {displayTime(collector?.lastRunAt)}</p></details>
+      <details className="ah-disclosure"><summary>Ver detalhes técnicos</summary>{snapshot.metrics.map((metric) => <div className="ah-metric" key={metric.key}><strong>{metric.label}</strong> · {metric.indicatorClass} · {metricLabels[metric.status]}
+        <p>{metric.reason}</p><small>Medido em {displayTime(metric.metricAt)} · coletado em {displayTime(metric.fetchedAt)} · confiança {confidenceLabels[metric.confidence]} · <SourceLink url={metric.source.url}>{metric.source.name}</SourceLink></small>
+        {metric.errorCode ? <p>Coleta: {metric.errorCode}</p> : null}</div>)}</details></> : null}
   </div>;
 }

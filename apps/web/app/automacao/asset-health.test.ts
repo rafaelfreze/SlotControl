@@ -120,11 +120,36 @@ test("frontend reads only cached internal snapshots and never imports trading or
   assert.match(source, /document\.visibilityState === "hidden"/);
 });
 
-test("push deep links open only allowlisted BTC or SOL and never accept arbitrary assets or URLs", () => {
+test("push deep links open only allowlisted BTC, SOL or Binance and never accept arbitrary subjects or URLs", () => {
   const { assetHealthDeepLink } = load();
   assert.equal(assetHealthDeepLink("?view=live&account=ALL&assetHealth=BTC"), "BTC");
   assert.equal(assetHealthDeepLink("?assetHealth=SOL"), "SOL");
+  assert.equal(assetHealthDeepLink("?assetHealth=BINANCE"), "BINANCE");
   for (const value of ["", "?assetHealth=ETH", "?assetHealth=btc", "?assetHealth=https%3A%2F%2Fevil.example", "?assetHealth=BTC%3Balert(1)"]) {
     assert.equal(assetHealthDeepLink(value), null);
   }
+});
+
+test("Binance card shares the asset-health provider, opens its own drawer and all three cards use one mobile grid", () => {
+  let selected = "";
+  const { BinanceHealthCard, BinanceHealthDetails } = load({ dashboard: { assets: {}, binance: {
+    asset: "BINANCE", status: "HEALTHY", previousStatus: null, evaluatedAt: "2026-09-27T11:45:00Z",
+    validUntil: "2026-09-27T12:45:00Z", summary: "Spot observado", reasons: [], metrics: [], sources: [],
+    trigger: "PUBLIC_SPOT_OBSERVED", failureSinceByMetric: {}, history: [],
+  } }, now, loading: false, open: (asset: string) => { selected = asset; } });
+  const element = BinanceHealthCard();
+  const html = renderToStaticMarkup(element);
+  assert.match(html, /BINANCE/);
+  assert.match(html, /Saúde da Binance · <strong>SAUDÁVEL/);
+  assert.match(html, /aria-haspopup="dialog"/);
+  element.props.children[2].props.onClick();
+  assert.equal(selected, "BINANCE");
+  assert.match(integration, /<BinanceHealthCard \/>/);
+  const css = readFileSync(new URL("./premium-automation.css", import.meta.url), "utf8");
+  assert.match(css, /\.px-market-chart-grid\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+  const detail = renderToStaticMarkup(React.createElement(BinanceHealthDetails, {
+    snapshot: undefined, now, loading: false, readError: false, days: 30, setDays: () => undefined,
+  }));
+  assert.match(detail, /Reservas \/ custódia/);
+  assert.match(detail, /não envia, cancela ou altera ordens/);
 });

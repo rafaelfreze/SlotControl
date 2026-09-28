@@ -139,8 +139,17 @@ for (const width of [320, 360, 375, 390, 430, 1280]) {
     }]));
     const audit = await mount(page, "live", width, 844, automationOperatorFixture(), null, {
       generatedAt: AUTOMATION_FIXTURE_NOW, collector: { status: "HEALTHY", lastRunAt: AUTOMATION_FIXTURE_NOW, nextExpectedAt: "2026-09-24T12:30:00Z" }, assets,
+      binance: { asset: "BINANCE", status: "HEALTHY", previousStatus: null, evaluatedAt: AUTOMATION_FIXTURE_NOW,
+        validUntil: "2026-09-24T13:00:00Z", summary: "Spot público observado.", reasons: [], metrics: [], sources: [],
+        trigger: "PUBLIC_SPOT_OBSERVED", failureSinceByMetric: {}, history: [] },
     });
-    await expect(page.locator(".px-market-chart .ah-badge")).toHaveCount(2);
+    await expect(page.locator(".px-market-chart .ah-badge")).toHaveCount(3);
+    const cards = await page.locator(".px-market-chart").evaluateAll((elements) => elements.map((element) => {
+      const box = element.getBoundingClientRect(); return { x: box.x, y: box.y, right: box.right };
+    }));
+    expect(cards).toHaveLength(3);
+    expect(Math.max(...cards.map((card) => card.y)) - Math.min(...cards.map((card) => card.y))).toBeLessThan(2);
+    expect(cards[2].right).toBeLessThanOrEqual(width);
     const btc = page.getByRole("button", { name: /Saúde do ativo Bitcoin: SAUDÁVEL/ });
     await expect(btc).toBeVisible();
     await expect(btc).toHaveCSS("color", "rgb(56, 215, 165)");
@@ -164,6 +173,10 @@ for (const width of [320, 360, 375, 390, 430, 1280]) {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByRole("button", { name: /Saúde do ativo Solana: SAUDÁVEL/ }).click();
     await expect(page.getByRole("dialog", { name: "Saúde do Ativo — Solana" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: /Saúde da Binance: SAUDÁVEL/ }).click();
+    await expect(page.getByRole("dialog", { name: "Saúde da Binance" })).toContainText("Reservas / custódia");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     const healthReads = await page.evaluate(() => (window as unknown as { __fixtureReads: string[] }).__fixtureReads.filter((url) => url.startsWith("/api/coinops-asset-health")));

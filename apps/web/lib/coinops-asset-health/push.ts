@@ -4,12 +4,13 @@ import { getCoinOpsServiceTenantId } from "../supabase/env";
 import { sendToDevice } from "../coinops-notifications/push-server";
 import { assetHealthService } from "./access";
 import { shouldNotifyAssetHealthTransition } from "./rules";
-import type { AssetHealthStatus } from "./types";
+import type { AssetHealthStatus, BinanceHealthStatus } from "./types";
 
-type Event = { id: string; asset: string; status_before: AssetHealthStatus; status_after: AssetHealthStatus; created_at: string };
+type HealthStatus = AssetHealthStatus | BinanceHealthStatus;
+type Event = { id: string; asset: string; status_before: HealthStatus; status_after: HealthStatus; created_at: string };
 type Device = { id: string; user_id: string; operator_id: string; endpoint: string; p256dh: string; auth_secret: string; warning_enabled: boolean };
-const labels: Record<AssetHealthStatus, string> = {
-  HEALTHY: "SAUDÁVEL", ATTENTION: "ATENÇÃO", STRUCTURAL_RISK: "RISCO ESTRUTURAL", INSUFFICIENT_DATA: "DADOS INSUFICIENTES",
+const labels: Record<HealthStatus, string> = {
+  HEALTHY: "SAUDÁVEL", ATTENTION: "ATENÇÃO", STRUCTURAL_RISK: "RISCO ESTRUTURAL", CRITICAL_RISK: "RISCO CRÍTICO", INSUFFICIENT_DATA: "DADOS INSUFICIENTES",
 };
 
 /** Separate outbox: never creates an engine alert or touches engine recovery. */
@@ -30,7 +31,8 @@ export async function dispatchAssetHealthPush() {
   if (subscriptions.error) throw new Error("COINOPS_ASSET_HEALTH_PUSH_DEVICE_READ_FAILED");
   const devices = (subscriptions.data as Device[] ?? []).filter((device) => admins.get(device.operator_id) === device.user_id);
   const allowed = (event: Event, device: Device) => device.warning_enabled
-    || event.status_after === "STRUCTURAL_RISK" || event.status_before === "STRUCTURAL_RISK";
+    || event.status_after === "STRUCTURAL_RISK" || event.status_before === "STRUCTURAL_RISK"
+    || event.status_after === "CRITICAL_RISK" || event.status_before === "CRITICAL_RISK";
   const candidates = events.flatMap((event) => devices.filter((device) => allowed(event, device))
     .map((device) => ({ event_id: event.id, subscription_id: device.id })));
   if (candidates.length) {
