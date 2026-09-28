@@ -65,15 +65,17 @@ export default async function MeuCoinOps() {
   const marketRows = await Promise.all((engines.data ?? []).map(async (engine) => {
     const scoped = <T extends string>(table: string, columns: T) => service.from(table).select(columns)
       .eq("operator_id", operatorId).eq("exchange_account_id", accountId).eq("trading_engine_id", engine.id);
-    const [run, accounts, gains, marketData] = await Promise.all([
+    const [run, accounts, gains, allocations, marketData] = await Promise.all([
       scoped("robot_v1_live_runs", "id,status,last_reconciled_at,last_error,gain_rate")
         .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle(),
-      scoped("robot_v1_live_slot_accounts", "slot_number,balance_quote,market_pnl_quote,fees_quote,gain_count").order("slot_number"),
+      scoped("robot_v1_live_slot_accounts", "slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count").order("slot_number"),
       scoped("robot_v1_slot_gain_totals", "slot_number,period_key,monthly_gain_count,lifetime_gain_count")
         .eq("period_key", month),
+      scoped("robot_v1_live_selective_contribution_allocations", "slot_number,amount_quote,status")
+        .in("status", ["PENDING", "APPLIED"]),
       publicMarket(engine.symbol),
     ]);
-    if (run.error || accounts.error || gains.error) throw new Error("COINOPS_VIEWER_LEDGER_UNAVAILABLE");
+    if (run.error || accounts.error || gains.error || allocations.error) throw new Error("COINOPS_VIEWER_LEDGER_UNAVAILABLE");
     const [slots, orders, alerts, history] = run.data ? await Promise.all([
       scoped("robot_v1_live_slots", "slot_number,operation_sequence,position_quantity,position_committed_quote,target_buy_price")
         .eq("run_id", run.data.id).order("slot_number"),
@@ -87,6 +89,9 @@ export default async function MeuCoinOps() {
     const orderRows = orders?.data ?? [];
     const gainMap = new Map((gains.data ?? []).map((row) => [row.slot_number, row]));
     const accountMap = new Map((accounts.data ?? []).map((row) => [row.slot_number, row]));
+    const pendingBySlot = new Map<number, number>();
+    for (const allocation of allocations.data ?? []) if (allocation.status === "PENDING")
+      pendingBySlot.set(allocation.slot_number, (pendingBySlot.get(allocation.slot_number) ?? 0) + asNumber(allocation.amount_quote));
     const positions = new Map((slots?.data ?? []).map((row) => [row.slot_number, row]));
     const slotRows = [...accountMap.values()].map((slot) => {
       const position = positions.get(slot.slot_number);
@@ -100,7 +105,9 @@ export default async function MeuCoinOps() {
         ? asNumber(lastBuy.cumulative_quote) / asNumber(lastBuy.executed_quantity) : null;
       const tp = currentOrders.find((order) => order.side === "SELL" && order.status === "NEW");
       const next = currentOrders.find((order) => order.side === "BUY" && order.status === "NEW");
-      return { slot: slot.slot_number, balance: asNumber(slot.balance_quote),
+      const balance = asNumber(slot.balance_quote), pendingContribution = pendingBySlot.get(slot.slot_number) ?? 0;
+      return { slot: slot.slot_number, balance, contributed: asNumber(slot.contribution_quote), pendingContribution,
+        valueAfterPending: balance + pendingContribution,
         committed: asNumber(position?.position_committed_quote), gains: slot.gain_count,
         monthly: gainMap.get(slot.slot_number)?.monthly_gain_count ?? 0,
         open: quantity > 0, quantity, entry, tp: tp ? asNumber(tp.price) : null,
@@ -157,10 +164,12 @@ export default async function MeuCoinOps() {
         {trend.length > 1 ? <svg className="viewer-chart" viewBox="0 0 100 48" preserveAspectRatio="none" role="img" aria-label={`Preço nas últimas 24 horas de ${market.symbol}`}><polyline points={coords} /></svg> : <div className="viewer-chart viewer-chart-empty">Histórico de preços indisponível</div>}
         <div className="viewer-market-summary"><div><small>Posições</small><strong>{market.openCount} / {market.slots.length}</strong></div><div><small>Gains</small><strong>{market.slots.reduce((sum, slot) => sum + slot.gains, 0)}</strong></div><div><small>P&amp;L aberto estimado</small><strong className={market.openPnl >= 0 ? "viewer-up" : "viewer-down"}>{amount(market.price === null ? null : market.openPnl, market.currency)}</strong></div></div>
         <ViewerMarketPanels market={`${base}/${market.currency}`} details={<>
-        <div className="viewer-slots"><p className="viewer-footnote">{market.slots.length} slots · {market.openCount} posição(ões) aberta(s)</p>{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
+        <div className="viewer-slots"><p className="viewer-footnote">{market.slots.length} slots · {market.openCount} posição(ões) aberta(s). O valor atual já inclui aportes aplicados.</p>{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
           <strong>Slot #{slot.slot}<span>{slot.open ? "ABERTO" : slot.nextBuy ? "PRÓXIMA COMPRA" : "EM ESPERA"}</span></strong>
-          <small>Saldo {amount(slot.balance, market.currency)} · {slot.gains} gains · {slot.monthly} no mês</small>
-          {slot.open ? <small>Quantidade {number(slot.quantity, 8)} · Entrada {amount(slot.entry, market.currency)} · TP {amount(slot.tp, market.currency)}</small> : null}
+          <div className="viewer-slot-finance"><span><small>Valor atual</small><b>{amount(slot.balance, market.currency)}</b></span><span><small>Aportado</small><b>{amount(slot.contributed, market.currency)}</b></span><span><small>P&amp;L realizado</small><b className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</b></span><span><small>P&amp;L aberto</small><b className={(slot.openPnl ?? 0) >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.openPnl, market.currency)}</b></span></div>
+          {slot.pendingContribution > 0 ? <small className="viewer-pending">+ {amount(slot.pendingContribution, market.currency)} de aporte pendente · após aplicar {amount(slot.valueAfterPending, market.currency)}</small> : null}
+          <small>{slot.gains} gains · {slot.monthly} no mês</small>
+          {slot.open ? <small>Posição {amount(slot.committed, market.currency)} · Quantidade {number(slot.quantity, 8)} · Entrada {amount(slot.entry, market.currency)} · TP {amount(slot.tp, market.currency)}</small> : null}
           {slot.nextBuy ? <small>Próxima compra {amount(slot.nextBuy, market.currency)}</small> : null}
         </div>)}</div>
         <details className="viewer-details"><summary>Histórico de ganhos</summary><div className="viewer-slots">{market.history.slice(-20).reverse().map((item, index) => <div className="viewer-slot" key={`${item.at}-${index}`}><strong>Slot #{item.slot} · {amount(item.result, market.currency)}</strong><small>{new Date(item.at).toLocaleString("pt-BR")}</small></div>)}{!market.history.length ? <p>Sem gain realizado neste período.</p> : null}</div></details>
@@ -168,10 +177,10 @@ export default async function MeuCoinOps() {
           <div className="viewer-ranking-summary"><div><strong>#{ranking.rank} · {base}/{market.currency}</strong><small>{ranking.gains} gains · {ranking.monthlyGains} no mês</small></div>
             <div><small>P&amp;L realizado</small><strong className={ranking.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(ranking.realized, market.currency)}</strong></div></div>
           <p className="viewer-footnote">{Math.min(15, ranking.rankedSlots.length)} slots por ganhos · P&amp;L líquido de taxas</p>
-          <div className="viewer-gain-slots"><div className="viewer-gain-slot viewer-gain-slot--heading"><span>Slot físico</span><span>Gains</span><span>No mês</span><span>P&amp;L líquido</span></div>
-            {ranking.rankedSlots.slice(0, 15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}
+          <div className="viewer-gain-slots"><div className="viewer-gain-slot viewer-gain-slot--heading"><span>Slot físico</span><span>Gains</span><span>Valor atual / aportes</span><span>P&amp;L realizado / aberto</span></div>
+            {ranking.rankedSlots.slice(0, 15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}<small>{slot.open ? "OPEN" : "DISPONÍVEL"}</small></strong><span>{slot.gains}<small>{slot.monthly} no mês</small></span><span><b>{amount(slot.balance, market.currency)}</b><small>Aportado {amount(slot.contributed, market.currency)}</small>{slot.pendingContribution > 0 ? <small className="viewer-pending">+ {amount(slot.pendingContribution, market.currency)} pendente</small> : null}</span><span><b className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</b><small className={(slot.openPnl ?? 0) >= 0 ? "viewer-up" : "viewer-down"}>Aberto {amount(slot.openPnl, market.currency)}</small></span></div>)}
             {ranking.rankedSlots.length > 15 ? <details className="viewer-gain-rest"><summary>Ver mais {ranking.rankedSlots.length - 15} slots</summary>
-              {ranking.rankedSlots.slice(15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}</strong><span>{slot.gains}</span><span>{slot.monthly}</span><strong className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</strong></div>)}</details> : null}
+              {ranking.rankedSlots.slice(15).map((slot) => <div className="viewer-gain-slot" key={slot.slot}><strong>#{slot.slot}<small>{slot.open ? "OPEN" : "DISPONÍVEL"}</small></strong><span>{slot.gains}<small>{slot.monthly} no mês</small></span><span><b>{amount(slot.balance, market.currency)}</b><small>Aportado {amount(slot.contributed, market.currency)}</small>{slot.pendingContribution > 0 ? <small className="viewer-pending">+ {amount(slot.pendingContribution, market.currency)} pendente</small> : null}</span><span><b className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</b><small className={(slot.openPnl ?? 0) >= 0 ? "viewer-up" : "viewer-down"}>Aberto {amount(slot.openPnl, market.currency)}</small></span></div>)}</details> : null}
           </div>
         </section> : <p className="viewer-footnote">Ranking indisponível para este mercado.</p>} />
       </article>;

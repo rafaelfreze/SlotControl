@@ -35,6 +35,7 @@ test("LIVE uses CoinOps position only, actual fill price, remaining BUY reservat
     post_ath_group_rank: null, operation_sequence: 1, position_quantity: index === 0 ? 1 : 0,
     position_committed_brl: index === 0 ? 100 : 0, missed_at: null }));
   const accounts = slots.map((row) => ({ slot_number: row.slot_number, balance_brl: 18,
+    contribution_brl: row.slot_number === 1 ? 8 : 0,
     market_pnl_brl: 0, fees_brl: 0, gain_count: row.slot_number === 1 ? 7 : 0,
     manual_gain_brl: 0, dust_quantity: 0, dust_cost_brl: 0 }));
   const data = fixture({ balances: [{ asset: "BTC", total: 100 }],
@@ -43,6 +44,7 @@ test("LIVE uses CoinOps position only, actual fill price, remaining BUY reservat
     liveAssetData: { BTC: { run: { id: "real-btc", status: "ACTIVE", symbol: "BTCBRL",
       entry_regime: "NORMAL", last_reconciled_at: AT, last_error: null, gain_rate: .012, entry_spacing: .01 },
       slots, accounts, monthlyGains: [{ slot_number: 1, monthly_gain_count: 7, lifetime_gain_count: 7 }],
+      selectiveAllocations: [{ slot_number: 1, amount_quote: 10, status: "PENDING" }],
       events: [], alerts: [], orders: [
         order({ client_order_id: "filled", status: "FILLED", price: null, executed_quantity: 1, cumulative_quote: 100 }),
         order({ client_order_id: "tp", side: "SELL", purpose: "TP", price: 101.2 }),
@@ -57,6 +59,10 @@ test("LIVE uses CoinOps position only, actual fill price, remaining BUY reservat
   assert.equal(btc.freeCapital, 282.5);
   assert.equal(btc.slots[0].quantity, 1);
   assert.equal(btc.slots[0].entryPrice, 100);
+  assert.equal(btc.slots[0].balance, 18, "current value already includes applied contribution");
+  assert.equal(btc.slots[0].contributed, 8);
+  assert.equal(btc.slots[0].pendingContribution, 10);
+  assert.equal(btc.slots[0].valueAfterPending, 28, "only pending capital is added to the current value");
   assert.equal(btc.openPnl, 10);
   assert.equal(btc.tpCount, 1);
   assert.equal(btc.nextCount, 1);
@@ -117,13 +123,15 @@ test("native USDT LIVE uses its own executor, preparation gates and quote ledger
     position_committed_brl: 0, position_committed_quote: index === 0 ? 10 : 0, missed_at: null }));
   const accounts = slots.map((row) => ({ slot_number: row.slot_number, balance_brl: 0,
     balance_quote: 16.76, market_pnl_brl: 0, market_pnl_quote: 0,
+    contribution_quote: row.slot_number === 1 ? 5 : 0,
     fees_brl: 0, fees_quote: 0, gain_count: 0 }));
   const input = fixture({ engineContext: { environment: "REAL", legacy_compatible: false,
     hard_cap_quote: 419 }, nativeLiveControl: { liveEnabled: true, killSwitch: false,
       executor: { gate: "LIVE_EXECUTOR_ACTIVE" } }, liveAssetData: { BTC: {
         run: { id: "thyely-btc", status: "ACTIVE", entry_regime: "NORMAL",
           last_reconciled_at: AT, last_error: null, gain_rate: .012, entry_spacing: .02 },
-        slots, accounts, monthlyGains: [], events: [], alerts: [], orders: [
+        slots, accounts, selectiveAllocations: [{ slot_number: 1, amount_quote: 10, status: "PENDING" }],
+        monthlyGains: [], events: [], alerts: [], orders: [
           order({ client_order_id: "filled", status: "FILLED", executed_quantity: .1, cumulative_quote: 10 }),
           order({ client_order_id: "tp", side: "SELL", purpose: "TP", price: 101.2, requested_quantity: .1 }),
           order({ client_order_id: "next", slot_number: 2, price: 80,
@@ -137,6 +145,9 @@ test("native USDT LIVE uses its own executor, preparation gates and quote ledger
   assert.equal(native.committed, 10);
   assert.equal(native.reserved, 16);
   assert.equal(native.exposure, 26);
+  assert.equal(native.slots[0].contributed, 5);
+  assert.equal(native.slots[0].pendingContribution, 10);
+  assert.equal(native.slots[0].valueAfterPending, 26.76);
   const noExecutor = structuredClone(input);
   noExecutor.nativeLiveControl!.executor!.gate = "ATTENTION";
   assert.equal(buildPremiumAssets(noExecutor, "REAL", NOW)[0].health.healthy, false);

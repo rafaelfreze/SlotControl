@@ -53,9 +53,14 @@ export type LiveAssetData = {
     created_at?: string; updated_at?: string; fee_base?: number | string;
     fee_quote?: number | string; fee_other?: unknown[]; reserved_notional_brl?: number | string }>;
   accounts: Array<{ slot_number: number; balance_brl: number | string;
+    balance_quote?: number | string; contribution_brl?: number | string;
+    contribution_quote?: number | string;
     market_pnl_brl: number | string; manual_gain_brl: number | string;
-    fees_brl: number | string; gain_count: number;
+    market_pnl_quote?: number | string; manual_gain_quote?: number | string;
+    fees_brl: number | string; fees_quote?: number | string; gain_count: number;
     dust_quantity: number | string; dust_cost_brl: number | string }>;
+  selectiveAllocations?: Array<{ slot_number: number; amount_quote: number | string;
+    status: "PENDING" | "APPLIED" | "CANCELLED"; created_at?: string; applied_at?: string | null }>;
   monthlyGains: Array<{ slot_number: number; monthly_gain_count: number;
     lifetime_gain_count: number }>;
   events: Array<{ event_type: string; slot_number: number | null;

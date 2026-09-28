@@ -215,7 +215,10 @@ test("native LIVE reads its own preparation and scoped executor health without i
         reserved_notional_quote: 16, executed_quantity: 0, cumulative_quote: 0 },
     ],
     robot_v1_live_slot_accounts: slots.map((slot) => ({ slot_number: slot.slot_number,
-      balance_quote: 16.76, market_pnl_quote: 0, fees_quote: 0, gain_count: 0 })),
+      balance_quote: 16.76, contribution_quote: slot.slot_number === 1 ? 5 : 0,
+      market_pnl_quote: 0, fees_quote: 0, gain_count: 0 })),
+    robot_v1_live_selective_contribution_allocations: [
+      { slot_number: 1, amount_quote: 10, status: "PENDING", created_at: at, applied_at: null }],
     robot_v1_live_events: [], robot_v1_live_alerts: [],
     robot_v1_live_preparations: { live_enabled: true, kill_switch: false },
     account_quote_caps: [{ exchange_account_id: nativeAccount.id, quote_asset: "USDT", hard_cap_quote: 838 }],
@@ -247,6 +250,9 @@ test("native LIVE reads its own preparation and scoped executor health without i
   assert.equal(result.engines[0].health.healthy, true);
   assert.equal(result.engines[0].currency, "USDT");
   assert.equal(result.engines[0].exposure, 26);
+  assert.equal(result.engines[0].slots[0].contributed, 5);
+  assert.equal(result.engines[0].slots[0].pendingContribution, 10);
+  assert.equal(result.engines[0].slots[0].valueAfterPending, 26.76);
   assert.equal(result.engineData[nativeEngine.id].nativeLiveControl?.executor?.gate, "LIVE_EXECUTOR_ACTIVE");
   assert.equal(result.engineData[nativeEngine.id].livePreparation, null);
 });

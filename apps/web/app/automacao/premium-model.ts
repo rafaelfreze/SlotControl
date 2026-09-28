@@ -18,6 +18,7 @@ export type PremiumSlot = {
   state: string; label: string; tone: "open" | "armed" | "planned" | "warning" | "error" | "closed";
   entryPrice: number | null; currentPrice: number | null; tpPrice: number | null; quantity: number | null;
   balance: number | null; committed: number | null; reserved: number | null; realizedPnl: number | null;
+  contributed: number | null; pendingContribution: number; valueAfterPending: number | null;
   openPnl: number | null; fees: number | null; gains: number | null; monthlyGains: number | null; goal: number;
   targetReached: boolean; eligible: boolean | null; operationSequence: number | null; nextAction: string;
   orders: PremiumOrder[]; events: PremiumEvent[]; historicalCount: number; raw: unknown;
@@ -116,10 +117,16 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     // last filled BUY for displayed entry price; target_buy_price is an intention.
     const filledBuy = [...slotOrders].reverse().find((item) => item.side === "BUY" && (item.executedQuantity ?? 0) > 0);
     const entry = open && filledBuy?.executedQuantity && filledBuy.quote !== null ? filledBuy.quote / filledBuy.executedQuantity : number(row.target_buy_price);
+    const balance = amount(account, "balance_brl", "balance_quote");
+    const contributed = amount(account, "contribution_brl", "contribution_quote");
+    const pendingContribution = (live.selectiveAllocations ?? [])
+      .filter((allocation) => allocation.slot_number === row.slot_number && allocation.status === "PENDING")
+      .reduce((total, allocation) => total + (number(allocation.amount_quote) ?? 0), 0);
     return { number: row.slot_number, physicalId: null, rank: row.operational_rank,
       group: row.post_ath_group, groupRank: row.post_ath_group_rank,
       ...slotState(row.entry_state, month !== null && month >= base.goal), entryPrice: entry, currentPrice: price,
-      tpPrice: tp?.price ?? null, quantity, balance: amount(account, "balance_brl", "balance_quote"), committed, reserved,
+      tpPrice: tp?.price ?? null, quantity, balance, committed, reserved,
+      contributed, pendingContribution, valueAfterPending: balance === null ? null : balance + pendingContribution,
       realizedPnl: difference(marketPnl, fees), fees, openPnl: open ? price === null || quantity === null || committed === null ? null : quantity * price - committed : 0,
       gains, monthlyGains: month, goal: base.goal, targetReached: month !== null && month >= base.goal,
       eligible: month === null ? null : month < base.goal, operationSequence: row.operation_sequence,
@@ -189,6 +196,7 @@ function testnetAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAs
       ...slotState(row.operationalState, goal?.monthlyTargetReached), entryPrice: row.entryPrice,
       currentPrice: price, tpPrice: row.hasResidentTp ? row.takeProfitPrice : null, quantity: row.closed ? 0 : row.remainingQuantity,
       balance: row.balance, committed: row.positionCapital, reserved: row.reservedBuyCapital,
+      contributed: null, pendingContribution: 0, valueAfterPending: row.balance,
       realizedPnl: sum(history.map((item) => item.realizedProfit)), openPnl: row.openPnl,
       fees: row.hasUnknownFees ? null : row.feesQuote, gains: goal?.lifetimeGainCount ?? sum(history.map((item) => item.gains)),
       monthlyGains: goal?.monthlyGainCount ?? null, goal: base.goal, targetReached: goal?.monthlyTargetReached ?? false,
@@ -250,6 +258,7 @@ function shadowAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAss
       ...slotState(open ? "OPEN" : armed ? "NEXT_BUY" : row.missed_at ? "MISSED" : row.operation_sequence > 1 ? "REENTRY_WAITING" : "PLANNED", goal?.monthlyTargetReached),
       entryPrice: entry, currentPrice: price, tpPrice: number(row.take_profit_price), quantity,
       balance: number(account?.balance_usdc), committed, reserved, realizedPnl: number(account?.net_profit_usdc),
+      contributed: null, pendingContribution: 0, valueAfterPending: number(account?.balance_usdc),
       openPnl: open ? price === null || quantity === null || committed === null ? null : quantity * price - committed : 0,
       fees: number(account?.fees_usdc), gains: goal?.lifetimeGainCount ?? number(account?.gain_count),
       monthlyGains: goal?.monthlyGainCount ?? null, goal: base.goal, targetReached: goal?.monthlyTargetReached ?? false,

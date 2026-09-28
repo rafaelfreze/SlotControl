@@ -82,6 +82,11 @@ test("viewer ranking is inside each market, preserves fifteen slots and all rema
   assert.match(page, /rankedSlots\.slice\(15\)/);
   assert.match(page, /Ver mais \{ranking\.rankedSlots\.length - 15\} slots/);
   assert.match(page, /slot\.market_pnl_quote\) - asNumber\(slot\.fees_quote/);
+  assert.match(page, /contribution_quote/);
+  assert.match(page, /robot_v1_live_selective_contribution_allocations/);
+  assert.match(page, /O valor atual já inclui aportes aplicados/);
+  assert.match(page, /Aportado/);
+  assert.match(page, /aporte pendente/);
   assert.match(page, /coinops_role !== "VIEWER"/);
   assert.match(page, /\.eq\("exchange_account_id", accountId\)/);
 });

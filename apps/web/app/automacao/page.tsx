@@ -89,6 +89,7 @@ async function loadLegacyTestnetData(supabase: ReturnType<typeof createClient>, 
 
 async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, accountId: string,
   engineIds: string[], productId: string, tenantId: string, userId: string) {
+  const service = createServiceRoleClient();
   const entries = await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
     const current = await supabase.from("robot_v1_live_runs")
       .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing")
@@ -98,7 +99,7 @@ async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, acc
     if (current.error) throw new Error("COINOPS_LIVE_RUN_READ_FAILED");
     if (!current.data) return { asset, data: null };
     const run = current.data;
-    const [slots, orders, accounts, events, alerts] = await Promise.all([
+    const [slots, orders, accounts, allocations, events, alerts] = await Promise.all([
       supabase.from("robot_v1_live_slots")
         .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at")
         .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
@@ -108,10 +109,15 @@ async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, acc
         .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
         .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
       supabase.from("robot_v1_live_slot_accounts")
-        .select("slot_number,balance_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
+        .select("slot_number,balance_brl,contribution_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
         .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
         .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
         .eq("asset", asset).order("slot_number"),
+      service.from("robot_v1_live_selective_contribution_allocations")
+        .select("slot_number,amount_quote,status,created_at,applied_at")
+        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
+        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
+        .eq("symbol", `${asset}BRL`).in("status", ["PENDING", "APPLIED"]).order("created_at"),
       supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details")
         .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
         .eq("run_id", run.id).eq("tenant_id", tenantId)
@@ -122,10 +128,10 @@ async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, acc
         .eq("asset", asset).is("resolved_at", null)
         .order("last_seen_at", { ascending: false }).limit(10),
     ]);
-    if (slots.error || orders.error || accounts.error || events.error || alerts.error)
+    if (slots.error || orders.error || accounts.error || allocations.error || events.error || alerts.error)
       throw new Error("COINOPS_LIVE_LEDGER_READ_FAILED");
     return { asset, data: { run, slots: slots.data || [], orders: orders.data || [],
-      accounts: accounts.data || [], events: events.data || [], alerts: alerts.data || [], monthlyGains: [] } };
+      accounts: accounts.data || [], selectiveAllocations: allocations.data || [], events: events.data || [], alerts: alerts.data || [], monthlyGains: [] } };
   }));
   return Object.fromEntries(entries.filter((item) => item.data).map((item) => [item.asset, item.data])) as
     Partial<Record<"BTC" | "SOL", LiveAssetData>>;

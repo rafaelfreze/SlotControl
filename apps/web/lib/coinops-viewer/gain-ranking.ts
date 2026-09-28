@@ -1,4 +1,6 @@
-export type RankedSlot = { slot: number; gains: number; monthly: number; realized: number };
+export type RankedSlot = { slot: number; gains: number; monthly: number; realized: number;
+  balance: number; contributed: number; pendingContribution: number;
+  openPnl: number | null; open: boolean };
 export type RankedMarket = { symbol: string; currency: string; slots: RankedSlot[]; realized: number };
 
 export function rankViewerMarkets<T extends RankedMarket>(markets: readonly T[]) {

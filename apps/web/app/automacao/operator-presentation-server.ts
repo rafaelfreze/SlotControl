@@ -63,20 +63,22 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
       .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle();
     if (run.error) throw new Error("COINOPS_ENGINE_RUN_UNAVAILABLE");
     if (!run.data) return result;
-    const [slots, orders, accounts, events, alerts, preparation] = await Promise.all([
+    const [slots, orders, accounts, allocations, events, alerts, preparation] = await Promise.all([
       query("robot_v1_live_slots", "slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,position_committed_quote,missed_at").eq("run_id", run.data.id).order("slot_number"),
       query("robot_v1_live_orders", "side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl,reserved_notional_quote").eq("run_id", run.data.id).order("created_at"),
-      query("robot_v1_live_slot_accounts", "slot_number,balance_brl,balance_quote,market_pnl_brl,market_pnl_quote,manual_gain_brl,manual_gain_quote,fees_brl,fees_quote,gain_count,dust_quantity,dust_cost_brl,dust_cost_quote").order("slot_number"),
+      query("robot_v1_live_slot_accounts", "slot_number,balance_brl,balance_quote,contribution_brl,contribution_quote,market_pnl_brl,market_pnl_quote,manual_gain_brl,manual_gain_quote,fees_brl,fees_quote,gain_count,dust_quantity,dust_cost_brl,dust_cost_quote").order("slot_number"),
+      query("robot_v1_live_selective_contribution_allocations", "slot_number,amount_quote,status,created_at,applied_at")
+        .in("status", ["PENDING", "APPLIED"]).order("created_at"),
       query("robot_v1_live_events", "event_type,slot_number,observed_at,details").eq("run_id", run.data.id).order("observed_at", { ascending: false }).limit(40),
       query("robot_v1_live_alerts", "severity,code,last_seen_at").is("resolved_at", null).limit(20),
       query("robot_v1_live_preparations", "live_enabled,kill_switch").maybeSingle(),
     ]);
-    if ([slots, orders, accounts, events, alerts, preparation].some((row) => row.error) || !preparation.data)
+    if ([slots, orders, accounts, allocations, events, alerts, preparation].some((row) => row.error) || !preparation.data)
       throw new Error("COINOPS_ENGINE_LEDGER_UNAVAILABLE");
     result.nativeLiveControl = { liveEnabled: preparation.data.live_enabled,
       killSwitch: preparation.data.kill_switch, executor: null };
     result.liveAssetData = { [asset]: { run: run.data, slots: slots.data ?? [], orders: orders.data ?? [],
-      accounts: accounts.data ?? [], events: events.data ?? [], alerts: alerts.data ?? [],
+      accounts: accounts.data ?? [], selectiveAllocations: allocations.data ?? [], events: events.data ?? [], alerts: alerts.data ?? [],
       monthlyGains: (totals.data ?? []).filter((row) => row.period_key === monthlyPeriodKey(new Date())) } };
     return result;
   }

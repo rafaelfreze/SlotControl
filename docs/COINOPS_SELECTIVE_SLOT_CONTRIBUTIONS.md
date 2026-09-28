@@ -65,6 +65,15 @@ filtros e preview completo. Smoke de Production é exclusivamente leitura e
 nunca confirma um aporte real. As provas de mutação, retry e aplicação após TP
 são executadas em PostgreSQL descartável.
 
+Na tela administrativa da conta, `Slots da conta` resume cada motor em uma
+linha compacta e abre a lista dos 25 slots. `Valor atual` é o saldo composto do
+slot e já inclui aportes `APPLIED` e resultados realizados; `Aportado` lê o
+acumulador `contribution_quote`/`contribution_brl`; `Pendente` soma somente
+allocations `PENDING`. Portanto, o valor projetado após aplicação é `valor
+atual + pendente`, nunca `valor atual + aportado`. O portal VIEWER usa a mesma
+definição em `Ver detalhes` e `Ver ranking`, incluindo posição, P&L aberto,
+P&L realizado e gains. Essas consultas são server-side e somente leitura.
+
 ## Predefinições de região
 
 As predefinições são somente uma camada de seleção sobre o mesmo serviço. Os
