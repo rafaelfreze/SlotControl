@@ -62,5 +62,5 @@ export function revalueFinopsFx(previous: FinopsDashboard, quotes: FxQuote[], no
       allocatedBrl: enabled.some(row => row.allocatedBrl !== null) ? sumKnown(enabled.map(row => row.allocatedBrl)).known : null,
       unavailableServices: enabled.filter(row => row.projectedBrl === null).length },
     sources: [...previous.sources.filter(source => !source.startsWith("FX_REPAIR:")),
-      `FX_REPAIR: somente conversão atualizada; capital e telemetria preservados da coleta ${previous.externalCapturedAt ?? previous.capturedAt}.`] };
+      `FX_REPAIR: somente conversão atualizada; capital e telemetria preservam seus timestamps de observação. Última coleta operacional: ${previous.operationalCapturedAt ?? previous.externalCapturedAt ?? previous.capturedAt}.`] };
 }

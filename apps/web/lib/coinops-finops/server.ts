@@ -132,6 +132,9 @@ async function inventory(service: Service, scope: FinopsScope, shards: Shard[], 
 }
 
 type FinancialAlert = { code: string; serviceId: string | null; message: string; key?: string };
+const CAPITAL_SYNC_FAILURE_MESSAGE = "Não foi possível atualizar o capital monitorado. Trading permanece independente.";
+const isCapitalSyncFailure = (alert: FinancialAlert) => alert.code === "BILLING_SYNC_FAILED"
+  && alert.serviceId === null && alert.message === CAPITAL_SYNC_FAILURE_MESSAGE;
 const financialAlertKey = (alert: FinancialAlert, now: Date) => alert.key ?? `${alert.code}:${alert.serviceId ?? "PLATFORM"}:${periodAt(now)}`;
 const missingFxAlert = (currencies: string[], now: Date): FinancialAlert => ({ code: "BILLING_SYNC_FAILED", serviceId: null,
   key: `BILLING_SYNC_FAILED:FX:${periodAt(now)}`, message: `Cotação BRL ausente para: ${currencies.join(", ")}. Valores nativos preservados; consolidado indisponível.` });
@@ -211,24 +214,50 @@ async function persistAlerts(service: Service, scope: FinopsScope, alerts: Finan
   }
 }
 
-/** Already holds the FinOps lease. This path never enters inventory, billing,
- * wallet snapshot or trading code and does not advance last_external_synced_at. */
-async function repairPersistedFinopsFx(service: Service, scope: FinopsScope, owner: string, previous: FinopsDashboard, now: Date) {
+/** Both repair paths hold the same lease; combined refreshes persist their
+ * attempt in the payload instead of publishing a second FX-only snapshot. */
+async function collectPersistedFinopsFx(service: Service, scope: FinopsScope, previous: FinopsDashboard, now: Date) {
   const latest = await scoped(service, "finops_snapshots", scope).like("snapshot_key", "FX_REPAIR:%")
     .order("captured_at", { ascending: false }).limit(1).maybeSingle();
   if (latest.error) throw new Error("COINOPS_FINOPS_READ_FAILED");
-  const nextSyncAt = nextFinopsFxRepair(latest.data?.captured_at ?? previous.capturedAt!, now);
-  if (nextSyncAt) return { status: "FRESH", nextSyncAt };
+  const attempts = [latest.data?.captured_at, previous.fxRepairCapturedAt, previous.externalCapturedAt ?? previous.capturedAt]
+    .filter((at): at is string => typeof at === "string");
+  if (attempts.some((at) => !Number.isFinite(Date.parse(at)) || Date.parse(at) > now.getTime() + 60_000))
+    throw new Error("COINOPS_FINOPS_SYNC_TIME_INVALID");
+  const lastAttempt = attempts.sort((a, b) => Date.parse(b) - Date.parse(a))[0];
+  const nextSyncAt = lastAttempt ? nextFinopsFxRepair(lastAttempt, now) : null;
+  if (nextSyncAt) return { nextSyncAt, quotes: null };
   let quotes: FxQuote[] = [];
   try { quotes = await fetchFinopsFx(now); } catch { /* Append a partial attempt; the cooldown also covers provider outages. */ }
-  const payload = revalueFinopsFx(previous, quotes, now);
-  const missing = missingFinopsFx(payload.capital, payload.services, payload.fx);
-  if (missing.length) await persistAlerts(service, scope, [missingFxAlert(missing, now)], now, false);
-  else {
+  return { nextSyncAt: null, quotes };
+}
+
+async function resolveFinopsFxAlert(service: Service, scope: FinopsScope, now: Date) {
+  const resolved = await service.from("finops_alerts").update({ resolved_at: now.toISOString() })
+    .eq("tenant_id", scope.tenantId).eq("operator_id", scope.operatorId).eq("alert_key", missingFxAlert([], now).key!).is("resolved_at", null);
+  if (resolved.error) throw new Error("COINOPS_FINOPS_ALERT_SAVE_FAILED");
+}
+
+async function resolveFinopsCapitalAlerts(service: Service, scope: FinopsScope, previous: FinopsDashboard, now: Date) {
+  // Legacy capital failures shared the platform billing key. Resolve only the
+  // exact cause observed, never another provider's alert or a concurrently changed message.
+  for (const alert of previous.alerts.filter(isCapitalSyncFailure)) {
     const resolved = await service.from("finops_alerts").update({ resolved_at: now.toISOString() })
-      .eq("tenant_id", scope.tenantId).eq("operator_id", scope.operatorId).eq("alert_key", missingFxAlert([], now).key!).is("resolved_at", null);
+      .eq("tenant_id", scope.tenantId).eq("operator_id", scope.operatorId).eq("id", alert.id)
+      .eq("code", alert.code).eq("message", CAPITAL_SYNC_FAILURE_MESSAGE).is("service_id", null).is("resolved_at", null);
     if (resolved.error) throw new Error("COINOPS_FINOPS_ALERT_SAVE_FAILED");
   }
+}
+
+/** Already holds the FinOps lease. This path never enters inventory, billing,
+ * wallet snapshot or trading code and does not advance last_external_synced_at. */
+async function repairPersistedFinopsFx(service: Service, scope: FinopsScope, owner: string, previous: FinopsDashboard, now: Date) {
+  const attempt = await collectPersistedFinopsFx(service, scope, previous, now);
+  if (!attempt.quotes) return { status: "FRESH", nextSyncAt: attempt.nextSyncAt };
+  const payload = { ...revalueFinopsFx(previous, attempt.quotes, now), fxRepairCapturedAt: now.toISOString() };
+  const missing = missingFinopsFx(payload.capital, payload.services, payload.fx);
+  if (missing.length) await persistAlerts(service, scope, [missingFxAlert(missing, now)], now, false);
+  else await resolveFinopsFxAlert(service, scope, now);
   const saved = await service.rpc("finops_finish_sync", { p_tenant_id: scope.tenantId, p_operator_id: scope.operatorId,
     p_owner: owner, p_snapshot_key: `FX_REPAIR:${owner}`, p_external: false, p_payload: payload });
   if (saved.error) throw new Error("COINOPS_FINOPS_SNAPSHOT_SAVE_FAILED");
@@ -260,6 +289,17 @@ function buildExecutors(shards: Shard[], samples: DbRow[], services: FinopsServi
   });
 }
 
+/** Independent of billing/FX. The persisted attempt also limits failed wallet reads. */
+function nextOperationalSync(previous: FinopsDashboard, now: Date): string | null {
+  const at = previous.operationalCapturedAt ?? previous.externalCapturedAt ?? previous.capturedAt;
+  if (!at) return null;
+  const observed = Date.parse(at);
+  if (!Number.isFinite(observed) || observed > now.getTime() + 60_000)
+    throw new Error("COINOPS_FINOPS_SYNC_TIME_INVALID");
+  const next = observed + 60_000;
+  return next > now.getTime() ? new Date(next).toISOString() : null;
+}
+
 export async function syncFinops(scope: FinopsScope, options: { refreshExternal?: boolean; force?: boolean;
   trigger?: "SCHEDULED" } = {}) {
   assertScope(scope);
@@ -270,42 +310,72 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
   try {
     const previous = await loadFinopsDashboard(scope);
     const slotKey = `SIX_HOUR:${Math.floor(now.getTime() / SIX_HOURS)}`;
-    if (options.refreshExternal !== false) {
+    let refreshExternal = options.refreshExternal !== false, operationalOnly = false;
+    let nextSyncAt: string | null = null;
+    if (refreshExternal) {
       const state = await scoped(service, "finops_sync_state", scope).maybeSingle();
       if (state.error) throw new Error("COINOPS_FINOPS_READ_FAILED");
-      const nextSyncAt = nextFinopsExternalSync(state.data?.last_external_synced_at ?? null, now,
+      nextSyncAt = nextFinopsExternalSync(state.data?.last_external_synced_at ?? null, now,
         options.trigger ?? "ADMIN");
       if (nextSyncAt) {
-        if (options.trigger !== "SCHEDULED" && previous.capturedAt && previous.period === periodAt(now)
-          && missingFinopsFx(previous.capital, previous.services, previous.fx).length)
-          return await repairPersistedFinopsFx(service, scope, owner, previous, now);
-        return { status: "FRESH", nextSyncAt };
+        if (options.trigger === "SCHEDULED") return { status: "FRESH", nextSyncAt };
+        const nextOperationalSyncAt = nextOperationalSync(previous, now);
+        if (nextOperationalSyncAt) {
+          if (previous.capturedAt && previous.period === periodAt(now)
+            && missingFinopsFx(previous.capital, previous.services, previous.fx).length) {
+            const repaired = await repairPersistedFinopsFx(service, scope, owner, previous, now);
+            return { ...repaired, nextFxSyncAt: "nextSyncAt" in repaired ? repaired.nextSyncAt : null,
+              nextSyncAt, nextOperationalSyncAt };
+          }
+          return { status: "FRESH", nextSyncAt, nextOperationalSyncAt };
+        }
+        refreshExternal = false;
+        operationalOnly = true;
       }
     }
     const [shards, samples] = await Promise.all([
       readAll<Shard>(() => service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio").order("id")),
       readAll<DbRow>(() => service.from("executor_capacity_samples").select("*").order("shard_id")),
     ]);
-    const priorServices = await inventory(service, scope, shards, now);
-    const alerts = options.refreshExternal === false ? [] : await refreshProviders(service, scope, shards, priorServices, now);
+    // An operational refresh preserves billing evidence exactly, including each
+    // provider timestamp. Only missing FX may use its separately bounded repair.
+    const priorServices = operationalOnly ? [] : await inventory(service, scope, shards, now);
+    const alerts: FinancialAlert[] = refreshExternal ? await refreshProviders(service, scope, shards, priorServices, now) : [];
     let fx: FxQuote[] = previous.fx;
-    if (options.refreshExternal !== false) {
+    if (refreshExternal) {
       try { fx = await fetchFinopsFx(now); }
       catch (error) { fx = []; alerts.push({ code: "BILLING_SYNC_FAILED", serviceId: null, message: `Conversão cambial: ${safeCode(error)}. Valores originais preservados.` }); }
     }
-    const rows = await readAll<DbRow>(() => scoped(service, "finops_services", scope).order("id"));
-    const services = rows.map((row) => enrichService(row, fx, now));
+    // A new calendar month must expire prior-month actuals even while provider
+    // collection is in cooldown. Revalue persisted rows; never recollect billing.
+    let services = operationalOnly && previous.period === periodAt(now) ? previous.services
+      : (await readAll<DbRow>(() => scoped(service, "finops_services", scope).order("id"))).map((row) => enrichService(row, fx, now));
     let capital = previous.capital, accounts = previous.summary.accounts, engines = previous.summary.engines,
       capitalComplete = previous.summary.nativeCapitalComplete ?? previous.summary.capitalComplete;
-    if (options.refreshExternal !== false || !previous.capturedAt) {
+    const refreshCapital = refreshExternal || operationalOnly || !previous.capturedAt;
+    if (refreshCapital) {
       try {
-        const raw = await loadFinopsCapital(service, { operatorId: scope.operatorId, tenantId: scope.tenantId, refreshWallets: options.refreshExternal !== false });
+        const raw = await loadFinopsCapital(service, { operatorId: scope.operatorId, tenantId: scope.tenantId,
+          refreshWallets: refreshExternal || operationalOnly });
         capital = finopsCapitalRows(raw); accounts = raw.counts.activeAccounts; engines = raw.counts.activeEngines;
         capitalComplete = raw.accounts.every((account) => account.currencies.length > 0 && account.currencies.every((row) => row.complete));
       } catch (error) {
         capital = { accounts: [], markets: [], notes: [`Capital indisponível nesta sincronização: ${safeCode(error)}.`] };
         capitalComplete = false;
-        alerts.push({ code: "BILLING_SYNC_FAILED", serviceId: null, message: "Não foi possível atualizar o capital monitorado. Trading permanece independente." });
+        alerts.push({ code: "BILLING_SYNC_FAILED", serviceId: null, message: CAPITAL_SYNC_FAILURE_MESSAGE,
+          key: `BILLING_SYNC_FAILED:CAPITAL:${periodAt(now)}` });
+      }
+    }
+    let fxRepairCapturedAt = previous.fxRepairCapturedAt;
+    if (operationalOnly && missingFinopsFx(capital, services, fx).length) {
+      const attempt = await collectPersistedFinopsFx(service, scope, previous, now);
+      const quotes = attempt.quotes;
+      if (quotes) {
+        fx = [...fx.filter((old) => !quotes.some((quote) => quote.base === old.base && quote.quote === old.quote)), ...quotes];
+        // Reuse the existing pure FX valuation; native capital and source clocks
+        // remain untouched. The common snapshot composer below runs only once.
+        services = revalueFinopsFx({ ...previous, services, capital }, quotes, now).services;
+        fxRepairCapturedAt = now.toISOString();
       }
     }
     const capitalByCurrency: Record<string, number | null> = {};
@@ -334,10 +404,16 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
       if (row.actualMonthCost !== null && row.recurringMonthly !== null && row.recurringMonthly > 0 && row.actualMonthCost > row.recurringMonthly * 1.25)
         alerts.push({ code: "UNEXPECTED_COST", serviceId: row.id, message: "Cobrança conhecida ultrapassa a recorrência em mais de 25%; verificar consumo variável e extras." });
     }
+    const unrefreshedBillingFailure = operationalOnly && previous.alerts.some((alert) => alert.code === "BILLING_SYNC_FAILED"
+      && !(refreshCapital && nativeCapitalComplete && isCapitalSyncFailure(alert))
+      && !(fxRepairCapturedAt === now.toISOString() && !missingFx.length && alert.message.startsWith("Cotação BRL ausente para:")));
     const payload: FinopsDashboard = { capturedAt: now.toISOString(),
-      externalCapturedAt: options.refreshExternal === false ? previous.externalCapturedAt ?? previous.capturedAt : now.toISOString(),
+      externalCapturedAt: refreshExternal ? now.toISOString() : previous.externalCapturedAt ?? previous.capturedAt,
+      operationalCapturedAt: refreshCapital ? now.toISOString()
+        : previous.operationalCapturedAt ?? previous.externalCapturedAt ?? previous.capturedAt,
+      ...(fxRepairCapturedAt ? { fxRepairCapturedAt } : {}),
       period: periodAt(now), syncStatus: alerts.some((alert) => alert.code === "BILLING_SYNC_FAILED") || !capitalComplete
-        || enabledServices.some(row => row.projectedBrl === null) ? "PARTIAL" : "OK",
+        || unrefreshedBillingFailure || enabledServices.some(row => row.projectedBrl === null || row.syncStatus === "FAILED") ? "PARTIAL" : "OK",
       summary: { accounts, engines, executors: shards.filter((row) => row.enabled).length,
         capitalBrl: capitalComplete ? convertedCapital.total : null, capitalByCurrency, capitalComplete, nativeCapitalComplete,
         actualBrl: actual.total, projectedBrl: projected.total, knownActualBrl: actual.known, knownProjectedBrl: projected.known,
@@ -353,12 +429,18 @@ export async function syncFinops(scope: FinopsScope, options: { refreshExternal?
       growth: [10, 50, 100].map((additionalAccounts) => ({ additionalAccounts, additionalEngines: additionalAccounts * 2,
         estimatedExecutors: null, incrementalBrl: null,
         reason: "Cenário ilustrativo de 2 motores por conta. Quantidade de novos executores depende do custo incremental medido e headroom, não de limite fixo de usuários. Tarifa de plano conhecido está no card de infraestrutura." })) };
-    await persistAlerts(service, scope, alerts, now, options.refreshExternal !== false);
+    await persistAlerts(service, scope, alerts, now, refreshExternal);
+    if (!refreshExternal && refreshCapital && nativeCapitalComplete)
+      await resolveFinopsCapitalAlerts(service, scope, previous, now);
+    if (operationalOnly && fxRepairCapturedAt === now.toISOString() && !missingFx.length)
+      await resolveFinopsFxAlert(service, scope, now);
     const snapshot = await service.rpc("finops_finish_sync", { p_tenant_id: scope.tenantId, p_operator_id: scope.operatorId,
-      p_owner: owner, p_snapshot_key: options.refreshExternal === false ? `MANUAL:${owner}` : slotKey,
-      p_external: options.refreshExternal !== false, p_payload: payload });
+      p_owner: owner, p_snapshot_key: operationalOnly ? `OPERATIONAL:${owner}` : refreshExternal ? slotKey : `MANUAL:${owner}`,
+      p_external: refreshExternal, p_payload: payload });
     if (snapshot.error) throw new Error("COINOPS_FINOPS_SNAPSHOT_SAVE_FAILED");
-    return { status: payload.syncStatus, services: services.length, capturedAt: payload.capturedAt };
+    return { status: operationalOnly && payload.syncStatus === "OK" ? "OPERATIONAL_UPDATED" : payload.syncStatus,
+      services: services.length, capturedAt: payload.capturedAt, operationalCapturedAt: payload.operationalCapturedAt,
+      ...(operationalOnly ? { nextSyncAt } : {}) };
   } catch (error) {
     await service.from("finops_sync_state").update({ last_status: "FAILED", last_error: safeCode(error) })
       .eq("tenant_id", scope.tenantId).eq("operator_id", scope.operatorId).eq("lease_owner", owner);

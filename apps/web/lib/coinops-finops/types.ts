@@ -42,6 +42,10 @@ export type FinopsMarketRow = { accountId: string; accountName: string; shardId:
   realizedPnl: number | null; openPnl: number | null };
 export type FinopsDashboard = {
   capturedAt: string | null; externalCapturedAt?: string | null; period: string; syncStatus: string;
+  /** Last operational collection attempt, not the observation time of every source. */
+  operationalCapturedAt?: string | null;
+  /** FX-only repair attempt, including when combined with an operational refresh. */
+  fxRepairCapturedAt?: string | null;
   summary: { accounts: number; engines: number; executors: number;
     capitalBrl: number | null; capitalByCurrency: Record<string, number | null>;
     actualBrl: number | null; projectedBrl: number | null; knownActualBrl: number;

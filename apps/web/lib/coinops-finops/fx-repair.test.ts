@@ -51,11 +51,23 @@ test("FX-only retry has its own one-minute cooldown",()=>{
   assert.equal(repair.nextFinopsFxRepair("2026-09-27T01:19:00Z",now),null);
 });
 
+test("FX repair describes the operational clock without changing source observations",()=>{
+  const original=fixture();
+  original.externalCapturedAt=original.capturedAt;
+  original.operationalCapturedAt="2026-09-27T01:19:00Z";
+  const fixed=repair.revalueFinopsFx(original,[usdt],now);
+  assert.match(fixed.sources.at(-1)!,/Última coleta operacional: 2026-09-27T01:19:00Z/);
+  assert.deepEqual(fixed.capital,original.capital);
+  assert.equal(fixed.externalCapturedAt,original.externalCapturedAt);
+});
+
 const localRequire=createRequire(import.meta.url);
 const ts=localRequire("typescript") as typeof import("typescript");
 function worker(freshRepair=false,failFx=false) {
   const data=fixture(), at=new Date();
   data.capturedAt=new Date(at.getTime()-600_000).toISOString();data.period=model.periodAt(at);
+  // Operational data was just collected; this request exercises only FX repair.
+  data.operationalCapturedAt=at.toISOString();
   const scope: FinopsScope={operatorId:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",tenantId:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",userId:"cccccccc-cccc-4ccc-8ccc-cccccccccccc"};
   const calls:Array<{name:string;args?:Record<string,unknown>}>=[];
   const service={from(table:string){

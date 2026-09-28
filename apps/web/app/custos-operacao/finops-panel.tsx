@@ -1,7 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import type { FinopsDashboard, FinopsExecutor, FinopsService, FinopsCapitalRow, FinancialOrigin } from "@/lib/coinops-finops/types";
 import { PremiumBrand, PremiumIcon } from "../automacao/premium-primitives";
@@ -119,8 +118,11 @@ function ExecutorCard({ executor, capital }: { executor: FinopsExecutor; capital
   </article>;
 }
 
-export function FinopsPanel({ data }: { data: FinopsDashboard }) {
+export function FinopsPanel({ data: initialData, homeHref = "/automacao?view=live" }: { data: FinopsDashboard; homeHref?: string }) {
   const router = useRouter();
+  const [data, setData] = useState(initialData);
+  useEffect(() => setData(initialData), [initialData]);
+  const syncInFlight = useRef(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ error: boolean; message: string } | null>(null);
   const [period, setPeriod] = useState("1");
@@ -145,6 +147,8 @@ export function FinopsPanel({ data }: { data: FinopsDashboard }) {
   const needsCapacity = data.executors.filter((item) => item.needsCapacity);
   const referenceExecutor = data.executors.find((item) => item.enabled && item.monthlyBrl !== null);
   async function sync() {
+    if (syncInFlight.current) return;
+    syncInFlight.current = true;
     setSyncing(true); setSyncResult(null);
     try {
       const response = await fetch("/api/coinops-finops", { method: "POST", credentials: "same-origin",
@@ -152,21 +156,33 @@ export function FinopsPanel({ data }: { data: FinopsDashboard }) {
       if (!response.ok) throw new Error(response.status === 401 || response.status === 403
         ? "Acesso administrativo indisponível. Entre novamente."
         : "A atualização não foi concluída. O último snapshot permanece disponível; tente novamente mais tarde.");
-      const result = await response.json() as { status?: string; nextSyncAt?: string };
-      const message = result.status === "FRESH" ? `Dados já sincronizados. Nova consulta aos fornecedores ${result.nextSyncAt ? `a partir de ${instant(result.nextSyncAt)}` : "após o intervalo de 6 horas"}.`
+      const result = await response.json() as { status?: string; nextSyncAt?: string; nextOperationalSyncAt?: string };
+      // Await the committed snapshot before announcing success. router.refresh()
+      // is not awaitable and can leave the old numbers visible after the toast.
+      const latest = await fetch("/api/coinops-finops", { cache: "no-store", credentials: "same-origin" });
+      if (!latest.ok) throw new Error("A coleta foi solicitada, mas não foi possível carregar o resultado. Os valores exibidos ainda são os anteriores; tente atualizar novamente.");
+      const dashboard = await latest.json() as FinopsDashboard;
+      if (!dashboard || !dashboard.summary || typeof dashboard.period !== "string"
+        || !(dashboard.capturedAt === null || typeof dashboard.capturedAt === "string")
+        || !dashboard.summary.capitalByCurrency
+        || ![dashboard.services, dashboard.history, dashboard.executors, dashboard.fx, dashboard.alerts, dashboard.sources,
+          dashboard.capital?.accounts, dashboard.capital?.markets, dashboard.capital?.notes].every(Array.isArray))
+        throw new Error("Resposta incompleta. Os valores anteriores foram preservados.");
+      setData(dashboard);
+      const message = result.status === "FRESH" ? `Último snapshot recarregado. ${result.nextOperationalSyncAt ? `Nova coleta operacional a partir de ${instant(result.nextOperationalSyncAt)} (proteção de 60 segundos).` : "Coleta dentro do intervalo mínimo."}`
         : result.status === "IN_PROGRESS" ? "Já existe uma atualização em andamento. Aguarde a conclusão."
         : result.status === "PARTIAL" ? "Snapshot atualizado parcialmente. Consulte os avisos e a origem de cada valor."
+        : result.status === "OPERATIONAL_UPDATED" ? "Capital e infraestrutura consultados agora. Custos dos fornecedores e câmbio mantêm sua própria data de coleta."
         : "Dados atualizados e snapshot registrado.";
       setSyncResult({ error: false, message });
-      router.refresh();
     } catch (error) {
       setSyncResult({ error: true, message: error instanceof Error ? error.message : "Falha ao atualizar os dados." });
-    } finally { setSyncing(false); }
+    } finally { syncInFlight.current = false; setSyncing(false); }
   }
   return <div className="fo-app" data-testid="finops-admin">
-    <header className="fo-topbar"><PremiumBrand /><span className="fo-admin-label">ADMIN</span><Link className="fo-back" href="/automacao?view=live">← Automação</Link></header>
+    <header className="fo-topbar"><PremiumBrand /><span className="fo-admin-label">ADMIN</span><a className="fo-back fo-button" href={homeHref} aria-label="Voltar ao Início mantendo conta e mercado"><PremiumIcon name="home" />Início</a></header>
     <main>
-      <section className="fo-heading"><div><span className="fo-eyebrow">GESTÃO DA PLATAFORMA</span><h1>Custos &amp; Operação</h1><p>Capital acompanhado, resultados das estratégias e custos do CoinOps, cada um no seu lugar.</p></div><div className="fo-period"><strong>{periodLabel(data.period)}</strong><small>Atualização: {instant(data.capturedAt)}{data.externalCapturedAt && data.externalCapturedAt !== data.capturedAt ? <><br />Capital e infraestrutura: {instant(data.externalCapturedAt)}</> : null}</small><span>{labels[data.syncStatus] ?? data.syncStatus}</span><button className="fo-button" type="button" disabled={syncing} onClick={() => void sync()}>{syncing ? "Atualizando…" : "Atualizar dados"}</button><small>Coleta operacional a cada 6h · câmbio ausente pode ser recuperado separadamente</small></div></section>
+      <section className="fo-heading"><div><span className="fo-eyebrow">GESTÃO DA PLATAFORMA</span><h1>Custos &amp; Operação</h1><p>Capital acompanhado, resultados das estratégias e custos do CoinOps, cada um no seu lugar.</p></div><div className="fo-period"><strong>{periodLabel(data.period)}</strong><button className="fo-button" type="button" disabled={syncing} onClick={() => void sync()}>{syncing ? "Atualizando…" : "Atualizar dados"}</button><div className="fo-freshness"><small>Coleta de capital e infraestrutura: {instant(data.operationalCapturedAt ?? data.externalCapturedAt ?? data.capturedAt)}</small><small>Coleta de fornecedores: {instant(data.externalCapturedAt ?? data.capturedAt)}</small><span>{data.syncStatus === "OK" ? "Snapshot disponível · confira a data das fontes" : labels[data.syncStatus] ?? data.syncStatus}</span></div><small className="fo-refresh-help">Atualizar consulta capital e infraestrutura agora (intervalo mínimo de 60s). Fornecedores: a cada 6h. Falhas permanecem indicadas, sem alterar o trading.</small></div></section>
       {syncResult ? <p className={`fo-sync-result ${syncResult.error ? "fo-error" : ""}`} role={syncResult.error ? "alert" : "status"}>{syncResult.message}</p> : null}
       {!available ? <p className="fo-empty">A primeira sincronização ainda não foi concluída. Use “Atualizar dados” para criar o snapshot inicial. Os campos abaixo permanecerão indisponíveis até essa coleta.</p> : null}
       <div className="fo-principle"><PremiumIcon name="shield" /><p>O capital das contas Binance pertence aos usuários. <strong>Ele não é receita da plataforma.</strong> Valores em moedas diferentes só são consolidados com cotação identificada.</p></div>

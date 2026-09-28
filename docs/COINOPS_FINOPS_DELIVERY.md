@@ -61,10 +61,28 @@ Cron próprio: `/api/cron/coinops-finops`, expressão `17 */6 * * *`, UTC,
 autenticado pelo `CRON_SECRET` existente. Duração máxima: 300 segundos.
 Não é o cron de trading/watchdog e não compartilha seus locks.
 
-O botão **Atualizar dados** usa o mesmo worker e mantém cooldown móvel de seis
-horas desde a última coleta externa publicada. A virada de uma janela UTC não
-permite ao ADMIN contornar esse intervalo. Durante execução concorrente retorna
-`IN_PROGRESS`; dentro do cooldown retorna `FRESH` e `nextSyncAt`.
+O botão **Atualizar dados** usa o mesmo worker e separa dois relógios:
+
+- Fornecedores/billing: cooldown móvel de seis horas desde a última coleta
+  externa publicada. A virada de uma janela UTC não permite contorná-lo.
+- Capital/infraestrutura: nova leitura administrativa, limitada a uma coleta
+  por 60 segundos, sob a mesma lease. Consulta ledger, registry, telemetria e
+  snapshots read-only das contas pelos executores atribuídos. Não envia ordens,
+  não altera capital e não executa reconciliação com escrita.
+
+Durante execução concorrente retorna `IN_PROGRESS`; no cooldown operacional,
+`FRESH` com `nextOperationalSyncAt`. Fora dele, atualiza a operação mesmo com
+billing em cooldown e retorna `OPERATIONAL_UPDATED` ou `PARTIAL`. Snapshots
+`OPERATIONAL:<owner>` usam `p_external:false`, mantendo `externalCapturedAt` e
+`last_external_synced_at`. `operationalCapturedAt` identifica a coleta, não
+substitui a evidência `observedAt`/heartbeat de cada fonte. Uma falha permanece
+parcial/indisponível; não converte saldo antigo em saldo atual.
+
+A UI aguarda o GET do snapshot persistido após o POST antes de exibir sucesso e
+novos números. Recarregar a página só lê snapshots, sem polling de fornecedores.
+Datas de coleta operacional e fornecedores ficam separadas no topo. O botão
+**Início**, visível e fixo no mobile, retorna a `/automacao` preservando ambiente,
+conta e mercado em parâmetros validados, sem URL externa de retorno.
 
 Somente `syncAllFinops`, chamado pelo cron autenticado, habilita o modo interno
 `SCHEDULED`. Dentro da mesma lease, ele verifica se já existe coleta externa na
@@ -90,6 +108,20 @@ FinOps, não um monitor LIVE de segundo a segundo. O painel operacional continua
 sendo a fonte de saúde atual. Idade e origem devem permanecer visíveis.
 
 ## 4. Fontes canônicas de capital
+
+Correção de 28/09/2026: o retorno antecipado `FRESH` do cooldown de fornecedores
+impedia ler o aporte novo no FinOps. A atualização operacional independente acima
+corrige essa causa, sem invalidar billing a cada clique. Regressões executam o
+worker real com dependências simuladas: separação dos relógios, limite de 60s,
+concorrência, fencing, erro parcial, recuperação específica do capital e reparo FX.
+O painel testa espera pelo snapshot confirmado, erro HTTP/JSON incompleto,
+clique duplicado e navegação de retorno segura. Validação Production deve usar
+apenas leitura/sincronização FinOps, nunca aporte real nem envio de ordens.
+
+Não confundir esse snapshot com `Capital em posições` na Automação: esse último
+é o custo comprometido das posições já compradas (ledger), não todo o aporte.
+Uma NEXT BUY residente ainda sem fill compõe a reserva/exposição, não as posições.
+Aporte pendente em OPEN não aumenta quantidade nem custo da posição atual.
 
 Fontes: `exchange_accounts`, `trading_engines`, `robot_v1_live_runs`,
 `robot_v1_live_slots`, `robot_v1_live_slot_accounts` e
