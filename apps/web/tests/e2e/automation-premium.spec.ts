@@ -471,6 +471,33 @@ test("toolbar e detalhes preservam navegação sem submeter ações", async ({ p
   await noSideEffects(page, audit);
 });
 
+for (const width of [320, 390, 768, 1280]) {
+  test(`histórico de operações mantém campos legíveis e sem sobreposição em ${width}px`, async ({ page }, testInfo) => {
+    const audit = await mount(page, "live", width, 844, automationOperatorFixture());
+    await page.getByLabel("Conta", { exact: true }).selectOption({ index: 1 });
+    await page.getByRole("tab", { name: "Histórico de operações" }).click();
+    const rows = page.locator(".px-history-row");
+    await expect(rows.first()).toBeVisible();
+    const layout = await rows.evaluateAll((elements) => elements.map((row) => {
+      const parent = row.getBoundingClientRect();
+      const cells = [".px-history-identity", ".px-history-kind", ".px-history-amount", ".px-history-status", ".px-history-time"]
+        .map((selector) => row.querySelector(selector)!.getBoundingClientRect());
+      const within = cells.every((cell) => cell.left >= parent.left - 1 && cell.right <= parent.right + 1);
+      const overlaps = cells.some((cell, index) => cells.slice(index + 1).some((other) =>
+        cell.left < other.right - 1 && cell.right > other.left + 1 &&
+        cell.top < other.bottom - 1 && cell.bottom > other.top + 1));
+      return { within, overlaps };
+    }));
+    expect(layout.length).toBeGreaterThan(0);
+    expect(layout.every((row) => row.within && !row.overlaps)).toBe(true);
+    await expect(rows.first()).toContainText(/Slot #\d+/);
+    await expect(rows.first()).toContainText(/BUY|SELL/);
+    expect((await geometry(page)).overflow).toBeLessThanOrEqual(1);
+    await rows.first().screenshot({ path: testInfo.outputPath(`operation-history-${width}.png`) });
+    await noSideEffects(page, audit);
+  });
+}
+
 test("rascunhos de estratégia e ajustes sobrevivem ao fechamento e à troca de drawer", async ({ page }) => {
   const audit = await mount(page, "live", 390, 844);
   for (const [buttonLabel, panelLabel, draft] of [
