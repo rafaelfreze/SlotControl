@@ -29,6 +29,8 @@ TLS usa certificado Let's Encrypt do IPv4, perfil `shortlived`, sem fallback par
 
 ## Deploy por SHA
 
+O SHA deve coincidir com o alvo comum de `apps/live-executor/deploy/fleet-release.json`. Obter os scripts, manifest e helper `fleet-parity.mjs` juntos do main revisado, mesmo quando o runtime alvo não mudou. Ambos os scripts rejeitam um alvo diferente antes de alterar host. `DEPLOY_HEALTHY`/`ALREADY_DEPLOYED` é evidência individual: somente `fleet-parity.mjs --check-code` e `--verify`, sobre TODOS os shards enabled do registry oficial, permitem encerrar a publicação. Novos executores seguem a mesma regra antes do onboarding. Procedimento e limites em `COINOPS_EXECUTOR_FLEET_PARITY.md`.
+
 ```bash
 bash apps/live-executor/deploy/deploy-shard.sh executor-02 SHA_COMPLETO_REVISADO
 ```

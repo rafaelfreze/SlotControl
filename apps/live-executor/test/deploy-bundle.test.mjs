@@ -10,6 +10,23 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
+test("both deploy paths require the common fleet target before host writes and never imply fleet completion", async () => {
+  const folder = join(root, "apps/live-executor/deploy");
+  for (const name of ["deploy-legacy.sh", "deploy-shard.sh"]) {
+    const script = await readFile(join(folder, name), "utf8");
+    const guard = script.indexOf('"$script_directory/fleet-parity.mjs" --check-target "$revision"');
+    assert.ok(guard > 0);
+    for (const write of ["exec 9>", "git -C", "git --git-dir", 'set_version "$revision"', "systemctl restart"])
+      if (script.includes(write)) assert.ok(guard < script.indexOf(write), `${name}: ${write} precedes release guard`);
+    const already = script.split(/\r?\n/).find((line) => line.includes("ALREADY_DEPLOYED"));
+    assert.match(already, /FLEET_PARITY_REQUIRED/);
+    assert.match(script, /FLEET_PARITY_REQUIRED: run fleet-parity.mjs --verify/);
+    assert.ok(!script.includes("FLEET_PARITY_PASS"), "one host cannot certify the entire registry");
+  }
+  const bootstrap = await readFile(join(folder, "bootstrap-new-shard.sh"), "utf8");
+  assert.match(bootstrap, /NEW_SHARD_NOT_READY:.*fleet-release.json.*FLEET_PARITY_PASS/);
+});
+
 test("deployment archive has every runtime import without web node_modules or files outside execution", async () => {
   const stage = await mkdtemp(join(tmpdir(), "coinops-deploy-bundle-"));
   try {

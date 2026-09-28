@@ -173,6 +173,13 @@ no ambiente de destino antes de operação remota.
 - Deploy e rollback de qualquer executor exigem leitura/import do código como `User`/`Group` reais do systemd antes de restart, não apenas como root. Código público usa `umask 022`; env/vault/estado mantêm permissões privadas. Usar `deploy-legacy.sh` somente no checkout estabelecido do Executor 01 e `deploy-shard.sh` nos demais; ambos usam `runtime-preflight.sh`. Incidente EACCES causado por root/umask077 nesta manutenção e procedimento seguro: `docs/COINOPS_SHARD_DEPLOY_RUNBOOK.md`.
 - Não declarar a infraestrutura ativa com base apenas no código: conservar gates, SHA, IP, health, migrations, smoke e limitações no runbook/relatório da entrega. Teste de fixture não comprova uma ordem Binance Testnet real nem entrega física de push.
 
+### Paridade obrigatória dos executores
+
+- Regras, runtime e contrato financeiros são comuns a todos os shards, atuais e futuros. IP, HMAC, vault, contas e limites por conta permanecem isolados: paridade nunca significa copiar configuração privada ou capital.
+- A release comum revisada está em `apps/live-executor/deploy/fleet-release.json`. Alteração de runtime exige publicação sequencial para TODOS os shards habilitados descobertos no registry oficial, seguida de `fleet-parity.mjs --check-code` e `--verify`. Um health individual ou SHA declarado não basta: conferir código público por fingerprint, processo, Node, identidade/IP e freshness. Nunca encerrar rollout sem `FLEET_PARITY_PASS`.
+- Novos shards usam a mesma release e entram na verificação automaticamente. Bootstrap/DEPLOY_HEALTHY individual não significa pronto para onboarding. Diferença durante janela rolling autorizada é transitória, não PASS final. Divergência de paridade não autoriza kill global, restart automático, troca de credenciais, migração de contas ou ordem corretiva.
+- Mudança exclusivamente web que não altera o grafo de runtime do executor não exige restart de VPS. A Strategy Engine/reconciliação server-side é compartilhada, não copiada como regra particular de uma conta. Procedimento e evidência: `docs/COINOPS_EXECUTOR_FLEET_PARITY.md`.
+
 ## Custos & Operação (FinOps ADMIN)
 
 - `/custos-operacao` é exclusivamente ADMIN; VIEWER não acessa custos internos nem APIs FinOps. Tabelas `coinops.finops_*` são server-only, com RLS e escopo tenant/operator.

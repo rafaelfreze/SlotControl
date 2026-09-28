@@ -11,6 +11,7 @@ source "$script_directory/runtime-preflight.sh"
 shard=$1; revision=$2
 [[ $shard =~ ^executor-[0-9]{2,4}$ && $shard != executor-01 && $shard != executor-00 ]] || fail 'EXECUTOR01_FORBIDDEN'
 [[ $revision =~ ^[a-f0-9]{40}$ ]] || fail 'FULL_COMMIT_SHA_REQUIRED'
+/usr/local/bin/node "$script_directory/fleet-parity.mjs" --check-target "$revision" || fail 'FLEET_RELEASE_TARGET_REQUIRED'
 env_file=/etc/coinops/live-executor.env
 [[ -f $env_file && ! -L $env_file && $(stat -c %u "$env_file") == 0 && $(stat -c %a "$env_file") == 600 ]] || fail 'PRIVATE_ROOT_ENV_REQUIRED'
 [[ $(awk -F= '$1=="COINOPS_EXECUTOR_SHARD_ID"{print $2}' "$env_file") == "$shard" ]] || fail 'SHARD_ID_MISMATCH'
@@ -84,7 +85,7 @@ health_matches() {
 [[ ! -e /opt/coinops/current.next && ! -L /opt/coinops/current.next ]] || fail 'INTERRUPTED_SWITCH_REQUIRES_INSPECTION'
 if [[ $previous == "$release" && $old_version == "$revision" ]] \
   && systemctl is-active --quiet coinops-live-executor && health_matches "$revision"; then
-  printf 'ALREADY_DEPLOYED shard=%s sha=%s (no restart)\n' "$shard" "$revision"; exit 0
+  printf 'ALREADY_DEPLOYED shard=%s sha=%s (no restart); FLEET_PARITY_REQUIRED before closing rollout\n' "$shard" "$revision"; exit 0
 fi
 set_version "$revision"
 switch_release "$release"
@@ -106,3 +107,4 @@ if [[ $healthy != true ]]; then
   exit 1
 fi
 printf 'DEPLOY_HEALTHY shard=%s sha=%s ip=%s\n' "$shard" "$revision" "$ipv4"
+printf 'FLEET_PARITY_REQUIRED: run fleet-parity.mjs --verify from reviewed main before closing this rollout.\n'

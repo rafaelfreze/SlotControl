@@ -9,6 +9,7 @@ source "$script_directory/runtime-preflight.sh"
 [[ ${EUID} -eq 0 ]] || fail 'ROOT_REQUIRED'
 [[ $# -eq 1 && $1 =~ ^[a-f0-9]{40}$ ]] || fail 'Usage: deploy-legacy.sh FULL_REVIEWED_MAIN_SHA'
 revision=$1
+/usr/local/bin/node "$script_directory/fleet-parity.mjs" --check-target "$revision" || fail 'FLEET_RELEASE_TARGET_REQUIRED'
 repo=/opt/coinops/source
 env_file=/etc/coinops/live-executor.env
 [[ -d $repo/.git && ! -L $repo && ! -e /opt/coinops/current ]] || fail 'LEGACY_CHECKOUT_REQUIRED'
@@ -84,7 +85,7 @@ public_code_permissions || fail 'CURRENT_CODE_PERMISSIONS_FAILED'
 runtime_preflight "$repo" || fail 'CURRENT_SERVICE_IMPORT_FAILED'
 if [[ $previous == "$revision" && $old_version == "$revision" ]] \
   && systemctl is-active --quiet coinops-live-executor && health_matches "$revision"; then
-  printf 'ALREADY_DEPLOYED shard=executor-01 sha=%s (no restart)\n' "$revision"; exit 0
+  printf 'ALREADY_DEPLOYED shard=executor-01 sha=%s (no restart); FLEET_PARITY_REQUIRED before closing rollout\n' "$revision"; exit 0
 fi
 (umask 022; git -C "$repo" merge --ff-only "$revision") || fail 'FAST_FORWARD_FAILED'
 public_code_permissions || rollback
@@ -93,3 +94,4 @@ set_version "$revision"
 systemctl restart coinops-live-executor || rollback
 health_matches "$revision" || rollback
 printf 'DEPLOY_HEALTHY shard=executor-01 sha=%s ip=%s\n' "$revision" "$ipv4"
+printf 'FLEET_PARITY_REQUIRED: run fleet-parity.mjs --verify from reviewed main before closing this rollout.\n'

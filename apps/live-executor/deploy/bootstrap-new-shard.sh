@@ -88,3 +88,4 @@ systemctl daemon-reload
 systemctl enable coinops-live-executor
 systemctl enable --now coinops-certbot-renew.timer
 printf 'BOOTSTRAP_COMPLETE shard=%s ip=%s runtime=Node%s; verify registry and deploy a reviewed main SHA next.\n' "$shard" "$ipv4" "$node_version"
+printf 'NEW_SHARD_NOT_READY: deploy the common fleet-release.json target and require FLEET_PARITY_PASS before onboarding.\n'

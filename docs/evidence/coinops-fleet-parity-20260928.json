@@ -1,0 +1,41 @@
+{
+  "status": "FLEET_PARITY_PASS",
+  "target_sha": "89ce0d3237f7c2509acd9c87958ba4dbb6bf3f63",
+  "checked_at": "2026-09-28T13:20:37.623Z",
+  "verified": 2,
+  "total": 2,
+  "shards": [
+    {
+      "shard_id": "executor-01",
+      "ip": "46.101.104.48",
+      "status": "PASS",
+      "reasons": [],
+      "actual_sha": "89ce0d3237f7c2509acd9c87958ba4dbb6bf3f63",
+      "observed_at": "2026-09-28T13:19:58.498Z",
+      "runtime_sha256": "6e26f78dc3bf0e30753f78920f87216426786067770ae528c411e52f0f697821"
+    },
+    {
+      "shard_id": "executor-02",
+      "ip": "164.90.223.159",
+      "status": "PASS",
+      "reasons": [],
+      "actual_sha": "89ce0d3237f7c2509acd9c87958ba4dbb6bf3f63",
+      "observed_at": "2026-09-28T13:20:03.996Z",
+      "runtime_sha256": "6e26f78dc3bf0e30753f78920f87216426786067770ae528c411e52f0f697821"
+    }
+  ],
+  "registry_source": "Supabase official connector; enabled shards queried before and after SSH",
+  "source_project": "otdfpmsegjxpqrzisfmi",
+  "source_schema": "coinops",
+  "public_runtime_file_count": 21,
+  "production_writes": false,
+  "executor_restarts": false,
+  "validation": {
+    "capital_and_reports_tests": 43,
+    "transport_and_isolation_tests": 40,
+    "deployment_tests": 6,
+    "fleet_tests": 15,
+    "syntax": "PASS"
+  },
+  "cli_limitation": "Direct --verify correctly rejected an existing local env file containing placeholders; the exported SSH probes and evaluator ran with fresh registry from the official connector."
+}
