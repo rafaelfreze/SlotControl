@@ -17,7 +17,7 @@ import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlyS
 import type { AutomationView } from "./automation-center";
 import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
 import { resolveEngineContext } from "@/lib/execution/operator-context";
-import { buildOperatorPresentation } from "./operator-presentation-server";
+import { buildOperatorPresentation, presentationEnvironment } from "./operator-presentation-server";
 import type { Presentation } from "./premium-automation";
 import { PremiumAutomation } from "./premium-automation";
 import { getPremiumMarketCandles } from "./premium-market";
@@ -169,8 +169,10 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   ]);
   const productionPromise = loadLiveProductionSnapshot(legacyRealContexts).catch(() => null);
   const executorPromise = loadLiveExecutorStatus();
-  const scopedHealthPromise = Promise.all(realContexts.map(async (context) =>
-    [context.trading_engine_id, await loadLiveEngineExecutorStatus(context)] as const));
+  const scopedHealthPromise = view === "live" || view === "overview"
+    ? Promise.all(realContexts.map(async (context) =>
+      [context.trading_engine_id, await loadLiveEngineExecutorStatus(context)] as const))
+    : Promise.resolve([] as Array<readonly [string, Awaited<ReturnType<typeof loadLiveEngineExecutorStatus>>]>);
   const testnetDataPromise = loadHistoricalEnvironments
     ? loadLegacyTestnetData(supabase, legacyAccount.id, legacyEngineIds, tenantId, user.id)
     : Promise.resolve({} as Awaited<ReturnType<typeof loadLegacyTestnetData>>);
@@ -382,7 +384,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   };
   presentation.operator = await buildOperatorPresentation(supabase, presentation, registry, {
     accountId: searchParams?.account || "ALL", symbol: searchParams?.market || "ALL",
-  }, new Map(await scopedHealthPromise), view === "live" ? "REAL" : undefined);
+  }, new Map(await scopedHealthPromise), presentationEnvironment(view));
   const onboarding = await supabase.from("account_onboarding_checks")
     .select("exchange_account_id,trading_engine_id,check_key,status,checked_at")
     .eq("operator_id", registry.operator.id).order("checked_at", { ascending: false }).limit(200);

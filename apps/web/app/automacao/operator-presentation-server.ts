@@ -6,8 +6,18 @@ import type { Props } from "./automation-mobile";
 import { buildPremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { monthlyPeriodKey, rankMonthlySlots } from "@/lib/execution/monthly-slot-policy";
 import { loadLiveExecutorStatus, type LiveExecutorStatus } from "@/lib/execution/live-executor-health";
+import type { AutomationView } from "./automation-center";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
+
+export function presentationEnvironment(view: AutomationView): EngineContext["environment"] | undefined {
+  return view === "live" ? "REAL" : view === "testnet" ? "TESTNET" : view === "shadow" ? "SHADOW" : undefined;
+}
+
+function assertEngineReads(rows: Array<{ name: string; error: unknown }>): void {
+  const failed = rows.find((row) => row.error);
+  if (failed) throw new Error(`COINOPS_ENGINE_${failed.name}_UNAVAILABLE`);
+}
 
 /** UI observations must not borrow the longer financial dispatch timeout. */
 const fetchUiHealth: typeof fetch = (url, init) => fetch(url, { ...init,
@@ -73,8 +83,13 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
       query("robot_v1_live_alerts", "severity,code,last_seen_at").is("resolved_at", null).limit(20),
       query("robot_v1_live_preparations", "live_enabled,kill_switch").maybeSingle(),
     ]);
-    if ([slots, orders, accounts, allocations, events, alerts, preparation].some((row) => row.error) || !preparation.data)
-      throw new Error("COINOPS_ENGINE_LEDGER_UNAVAILABLE");
+    assertEngineReads([
+      { name: "LIVE_SLOTS", error: slots.error }, { name: "LIVE_ORDERS", error: orders.error },
+      { name: "LIVE_ACCOUNTS", error: accounts.error }, { name: "LIVE_ALLOCATIONS", error: allocations.error },
+      { name: "LIVE_EVENTS", error: events.error }, { name: "LIVE_ALERTS", error: alerts.error },
+      { name: "LIVE_PREPARATION", error: preparation.error },
+    ]);
+    if (!preparation.data) throw new Error("COINOPS_ENGINE_LIVE_PREPARATION_UNAVAILABLE");
     result.nativeLiveControl = { liveEnabled: preparation.data.live_enabled,
       killSwitch: preparation.data.kill_switch, executor: null };
     result.liveAssetData = { [asset]: { run: run.data, slots: slots.data ?? [], orders: orders.data ?? [],
@@ -92,7 +107,8 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
       query("robot_v1_testnet_orders", "run_id,slot_number,side,purpose,revision,operation_sequence,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,fee_base,fee_quote,fee_other,created_at,updated_at").eq("run_id", run.data.id).order("created_at"),
       query("robot_v1_testnet_events", "id,run_id,event_type,slot_number,observed_at,details").eq("run_id", run.data.id).order("observed_at", { ascending: false }).limit(100),
     ]);
-    if ([slots, orders, events].some((row) => row.error)) throw new Error("COINOPS_ENGINE_LEDGER_UNAVAILABLE");
+    assertEngineReads([{ name: "TESTNET_SLOTS", error: slots.error },
+      { name: "TESTNET_ORDERS", error: orders.error }, { name: "TESTNET_EVENTS", error: events.error }]);
     result.testnetAssetData = { [asset]: { run: run.data, slots: slots.data ?? [], orders: orders.data ?? [], events: events.data ?? [] } };
     result.testnetRun = run.data; result.testnetSlots = slots.data ?? []; result.testnetOrders = orders.data ?? []; result.testnetEvents = events.data ?? [];
   } else {
@@ -104,7 +120,10 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
       query("robot_v1_slot_accounts", "config_id,slot_number,initial_balance_usdc,balance_usdc,gain_count,gross_profit_usdc,fees_usdc,net_profit_usdc,last_operation_id").order("slot_number"),
       query("robot_v1_audit_events", "cycle_id,slot_id,event_type,next_state,observed_at").order("observed_at", { ascending: false }).limit(40),
     ]);
-    if ([configs, cycles, slots, operations, accounts, events].some((row) => row.error)) throw new Error("COINOPS_ENGINE_LEDGER_UNAVAILABLE");
+    assertEngineReads([{ name: "SHADOW_CONFIGS", error: configs.error },
+      { name: "SHADOW_CYCLES", error: cycles.error }, { name: "SHADOW_SLOTS", error: slots.error },
+      { name: "SHADOW_OPERATIONS", error: operations.error }, { name: "SHADOW_ACCOUNTS", error: accounts.error },
+      { name: "SHADOW_EVENTS", error: events.error }]);
     Object.assign(result, { configs: configs.data, cycles: cycles.data, slots: slots.data,
       operations: operations.data, slotAccounts: accounts.data, events: events.data });
   }
@@ -131,18 +150,32 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
   const engineData: Record<string, Props> = {};
   const capsPromise = client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
     .eq("operator_id", registry.operator.id);
-  const loaded = await Promise.all(registry.engines.map(async (row) => {
-    const context = resolveEngineContext(registry, { environment: row.environment,
-      exchange_account_id: row.exchange_account_id, trading_engine_id: row.id });
-    // The environment tabs navigate to distinct server renders. Loading every
-    // paused engine (including its historical events) on the LIVE route causes
-    // avoidable RLS scans and can exhaust PostgREST's statement timeout.
-    const scoped = visibleEnvironment && context.environment !== visibleEnvironment
-      ? emptyScoped(data, context)
-      : context.legacy_compatible ? legacyEnginePresentation(data, context)
-      : await nativeEnginePresentation(client, data, context);
-    return { context, scoped };
+  const contexts = registry.engines.map((row) => resolveEngineContext(registry, {
+    environment: row.environment, exchange_account_id: row.exchange_account_id, trading_engine_id: row.id,
   }));
+  const loaded: Array<{ context: EngineContext; scoped: Props; readUnavailable: boolean }> = [];
+  // Each native engine starts several independent PostgREST reads. Keep the
+  // aggregate request fan-out bounded even when the registry grows.
+  for (let offset = 0; offset < contexts.length; offset += 2) {
+    const batch = await Promise.all(contexts.slice(offset, offset + 2).map(async (context) => {
+      if (visibleEnvironment && context.environment !== visibleEnvironment)
+        return { context, scoped: emptyScoped(data, context), readUnavailable: false };
+      if (context.legacy_compatible)
+        return { context, scoped: legacyEnginePresentation(data, context), readUnavailable: false };
+      try {
+        return { context, scoped: await nativeEnginePresentation(client, data, context), readUnavailable: false };
+      } catch (error) {
+        // A single timed-out read cannot make other accounts disappear. Never
+        // present the affected engine as healthy or reuse another engine's data.
+        if (!(error instanceof Error) || !/^COINOPS_ENGINE_[A-Z_]+_UNAVAILABLE$/.test(error.message)) throw error;
+        console.error("COINOPS_OPERATOR_ENGINE_READ_FAILED", {
+          engineId: context.trading_engine_id, environment: context.environment, code: error.message,
+        });
+        return { context, scoped: emptyScoped(data, context), readUnavailable: true };
+      }
+    }));
+    loaded.push(...batch);
+  }
   const caps = await capsPromise;
   if (caps.error) throw new Error("COINOPS_ACCOUNT_CAPS_UNAVAILABLE");
   const live = loaded.filter(({ context, scoped }) => context.environment === "REAL"
@@ -160,9 +193,11 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
       else if (scoped.nativeLiveControl) scoped.nativeLiveControl = { ...scoped.nativeLiveControl, executor };
     }));
   }
-  const engines = loaded.map(({ context, scoped }) => {
+  const engines = loaded.map(({ context, scoped, readUnavailable }) => {
     engineData[context.trading_engine_id] = scoped;
-    return buildPremiumEngine(scoped, context);
+    const engine = buildPremiumEngine(scoped, context);
+    return readUnavailable ? { ...engine, health: { healthy: false as const, tone: "attention" as const,
+      label: "DADOS INDISPONÍVEIS", reason: "Leitura deste motor falhou; o estado operacional não está confirmado nesta tela." } } : engine;
   });
   return { accounts: registry.accounts.map((account) => ({ id: account.id, displayName: account.display_name,
     status: account.status, killSwitch: registry.operator.kill_switch || account.kill_switch })),

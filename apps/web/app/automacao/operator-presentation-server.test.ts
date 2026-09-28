@@ -255,4 +255,129 @@ test("native LIVE reads its own preparation and scoped executor health without i
   assert.equal(result.engines[0].slots[0].valueAfterPending, 26.76);
   assert.equal(result.engineData[nativeEngine.id].nativeLiveControl?.executor?.gate, "LIVE_EXECUTOR_ACTIVE");
   assert.equal(result.engineData[nativeEngine.id].livePreparation, null);
+
+  const timeoutClient = { from(table: string) {
+    assert.ok(table in rows, `Unexpected native table ${table}`);
+    const value = { data: rows[table], error: table === "robot_v1_live_events" ? { code: "57014" } : null };
+    const chain: Record<string, unknown> = {};
+    for (const method of ["select", "eq", "in", "is", "order", "limit"])
+      chain[method] = () => chain;
+    chain.maybeSingle = async () => value;
+    chain.then = (resolve: (value: unknown) => void) => Promise.resolve(value).then(resolve);
+    return chain;
+  } } as unknown as Parameters<typeof BuildPresentation>[0];
+  const priorError = console.error;
+  const logs: unknown[][] = [];
+  console.error = (...args: unknown[]) => { logs.push(args); };
+  try {
+    const degraded = await build(timeoutClient, data(), nativeRegistry,
+      { accountId: "ALL", symbol: "ALL" }, undefined, "REAL");
+    assert.equal(degraded.engines[0].health.label, "DADOS INDISPONÍVEIS");
+    assert.equal(degraded.engines[0].health.healthy, false);
+    assert.equal(degraded.engines[0].slots.length, 0, "stale financial rows are never reused");
+    assert.equal((logs[0]?.[1] as { code?: string }).code, "COINOPS_ENGINE_LIVE_EVENTS_UNAVAILABLE");
+  } finally { console.error = priorError; }
+});
+
+test("Testnet and LIVE tabs read only their environment, including native engines", async () => {
+  const source = readFileSync(new URL("./operator-presentation-server.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const dependencies: Record<string, unknown> = { "server-only": {},
+    "@/lib/execution/operator-context": { resolveEngineContext },
+    "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
+    "./premium-operator": { buildPremiumEngine },
+    "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
+  const evaluated: Record<string, unknown> = {};
+  new Function("require", "exports", compiled)((name: string) => dependencies[name], evaluated);
+  const build = evaluated.buildOperatorPresentation as typeof BuildPresentation;
+  const environment = evaluated.presentationEnvironment as (view: string) => string | undefined;
+  assert.equal(environment("testnet"), "TESTNET");
+  assert.equal(environment("live"), "REAL");
+  assert.equal(environment("shadow"), "SHADOW");
+  assert.equal(environment("overview"), undefined);
+
+  const nativeRegistry: DomainRegistry = { operator: registry.operator, accounts: registry.accounts,
+    engines: [
+      { ...registry.engines[0], id: id(70), symbol: "BTCBRL", environment: "REAL",
+        legacy_compatible: false },
+      { ...registry.engines[0], id: id(71), symbol: "BTCUSDC", quote_asset: "USDC",
+        environment: "TESTNET", legacy_compatible: false },
+    ] };
+  const reads: string[] = [];
+  const client = { from(table: string) {
+    reads.push(table);
+    const value = { data: table === "account_quote_caps" || table === "robot_v1_slot_gain_totals" ? [] : null,
+      error: null };
+    const chain: Record<string, unknown> = {};
+    for (const method of ["select", "eq", "in", "is", "order", "limit"])
+      chain[method] = () => chain;
+    chain.maybeSingle = async () => value;
+    chain.then = (resolve: (value: unknown) => void) => Promise.resolve(value).then(resolve);
+    return chain;
+  } } as unknown as Parameters<typeof BuildPresentation>[0];
+  const result = await build(client, data(), nativeRegistry,
+    { accountId: "ALL", symbol: "ALL" }, undefined, "TESTNET");
+  assert.equal(result.engines.length, 2, "registry identities stay available for navigation");
+  assert.ok(reads.includes("robot_v1_testnet_runs"));
+  assert.ok(!reads.some((table) => table.startsWith("robot_v1_live_")),
+    "Testnet cannot fail because an unrelated LIVE ledger times out");
+  assert.deepEqual(result.engineData[id(70)].liveAssetData, {});
+});
+
+test("one native ledger timeout degrades only that engine and bounds concurrent reads", async () => {
+  const source = readFileSync(new URL("./operator-presentation-server.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const dependencies: Record<string, unknown> = { "server-only": {},
+    "@/lib/execution/operator-context": { resolveEngineContext },
+    "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
+    "./premium-operator": { buildPremiumEngine },
+    "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
+  const evaluated: Record<string, unknown> = {};
+  new Function("require", "exports", compiled)((name: string) => dependencies[name], evaluated);
+  const build = evaluated.buildOperatorPresentation as typeof BuildPresentation;
+  const nativeRegistry: DomainRegistry = { operator: registry.operator,
+    accounts: Array.from({ length: 5 }, (_, index) => ({ ...registry.accounts[0],
+      id: id(90 + index), is_legacy_default: false })),
+    engines: Array.from({ length: 5 }, (_, index) => ({ ...registry.engines[0], id: id(80 + index),
+      exchange_account_id: id(90 + index), symbol: "BTCUSDC", quote_asset: "USDC",
+      environment: "TESTNET" as const, legacy_compatible: false })) };
+  let inFlight = 0, maximum = 0;
+  const client = { from(table: string) {
+    let engineId = "";
+    const chain: Record<string, unknown> = {};
+    for (const method of ["select", "in", "is", "order", "limit"])
+      chain[method] = () => chain;
+    chain.eq = (field: string, value: unknown) => {
+      if (field === "trading_engine_id") engineId = String(value);
+      return chain;
+    };
+    const value = () => ({
+      data: table === "account_quote_caps" || table === "robot_v1_slot_gain_totals" ? [] : null,
+      error: table === "robot_v1_slot_gain_totals" && engineId === id(80) ? { code: "57014" } : null,
+    });
+    chain.maybeSingle = async () => value();
+    chain.then = (resolve: (value: unknown) => void) => {
+      if (table !== "robot_v1_slot_gain_totals") return Promise.resolve(value()).then(resolve);
+      inFlight++; maximum = Math.max(maximum, inFlight);
+      return new Promise((done) => setTimeout(done, 2)).then(() => {
+        inFlight--; return resolve(value());
+      });
+    };
+    return chain;
+  } } as unknown as Parameters<typeof BuildPresentation>[0];
+  const priorError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    const result = await build(client, data(), nativeRegistry,
+      { accountId: "ALL", symbol: "ALL" }, undefined, "TESTNET");
+    assert.equal(maximum, 2, "native reads must be batched across the registry");
+    assert.equal(result.engines.length, 5);
+    assert.equal(result.engines[0].health.label, "DADOS INDISPONÍVEIS");
+    assert.ok(!result.engines[0].health.healthy && result.engines[0].slots.length === 0);
+    assert.ok(result.engines.slice(1).every((engine) => engine.health.label !== "DADOS INDISPONÍVEIS"));
+    assert.equal(errors.length, 1, "only the failed engine is logged without aborting the page");
+  } finally { console.error = priorError; }
 });
