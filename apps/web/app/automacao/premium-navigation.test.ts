@@ -39,7 +39,7 @@ test("desktop navigation shares the top context row while mobile order stays exp
 test("shared quotes render once above infrastructure with only two USDT markets and no heading copy", () => {
   const dashboard = source.indexOf('<main className="px-dashboard">');
   const quotes = source.indexOf('className="px-market-overview"');
-  const capacity = source.indexOf('<CapacityCard />');
+  const capacity = source.indexOf('<CapacityCard ');
   assert.ok(dashboard >= 0 && quotes > dashboard && capacity > quotes);
   assert.equal(source.match(/className="px-market-overview"/g)?.length, 1);
   assert.match(source, /const usdtMarketOrder = \["BTCUSDT", "SOLUSDT"\]/);

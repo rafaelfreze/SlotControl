@@ -1,6 +1,6 @@
 # CoinOps — provisionamento e deploy de novos shards
 
-Este runbook serve exclusivamente para `executor-02` e posteriores. Os scripts rejeitam `executor-01`, seu IPv4 `46.101.104.48` e o checkout legado `/opt/coinops/source`. Não copiar env, vault, registry, leases ou estado do Executor 01. Nenhum comando abaixo migra contas, altera ledger ou envia ordens.
+O provisionamento e `deploy-shard.sh` servem exclusivamente para `executor-02` e posteriores e rejeitam `executor-01`, seu IPv4 `46.101.104.48` e o checkout legado `/opt/coinops/source`. A seção de deploy legado abaixo usa outro script, exclusivo para esse checkout existente. Não copiar env, vault, registry, leases ou estado entre executores. Nenhum comando abaixo migra contas, altera ledger ou envia ordens.
 
 ## Contrato
 
@@ -36,6 +36,50 @@ bash apps/live-executor/deploy/deploy-shard.sh executor-02 SHA_COMPLETO_REVISADO
 O script mantém espelho Git sem credenciais em `/opt/coinops/repository.git`, extrai somente executor e dependências locais da Strategy Engine para `/opt/coinops/releases/SHA`, valida imports e muda atomicamente `/opt/coinops/current`. O estado permanece fora do release. Atualiza somente a versão no env; nenhum secret é trocado. Um lock de deploy impede execução simultânea.
 
 O health exige shard, SHA e IPv4 corretos. Se falhar, retorna ao release anterior e reinicia somente este servidor; no primeiro deploy malsucedido o serviço é parado, sem apagar estado. Uma repetição do mesmo SHA ativo não reinicia o serviço. Nunca fazer rollback para commit anterior à implementação multi-shard.
+`ALREADY_DEPLOYED` exige também a versão correta no env e health observado com
+shard/SHA/IP exatos; symlink correto e `systemctl is-active` sozinhos não bastam.
+`DEPLOY_FAILED_ROLLED_BACK` só é emitido depois de confirmar o health da versão
+anterior. Se restart ou health do rollback falhar, o script termina com erro
+específico, sem declarar recuperação concluída.
+
+### Preflight obrigatório com a identidade do serviço
+
+`runtime-preflight.sh` consulta `User`, `Group`, `WorkingDirectory` e `ExecStart`
+do systemd, rejeita root e executa via `runuser` uma verificação de leitura de
+todos os arquivos de runtime e import do servidor, sem iniciar listener e com
+ambiente vazio. Root conseguir importar **não** comprova acesso pelo serviço.
+Staging, release final e rollback passam por essa verificação antes do restart.
+Código público usa `umask 022`/permissão de leitura; env root:root 0600, vault,
+registry, idempotência, leases e estado persistente não têm permissões ampliadas.
+Manter o helper adjacente ao script e obter ambos do SHA revisado de main.
+
+### Executor 01 — checkout legado existente
+
+```bash
+bash apps/live-executor/deploy/deploy-legacy.sh SHA_COMPLETO_REVISADO
+```
+
+Esse script exige `/opt/coinops/source`, ausência do layout `/current`, origem
+oficial, working tree limpa, IP estabelecido e shard ausente (default legado 01)
+ou explicitamente 01. Exige SHA completo pertencente a main e avanço fast-forward.
+Antes do merge, valida archive do candidato e runtime anterior como usuário do
+serviço. Merge e eventual rollback usam `umask 022`; leitura é normalizada somente
+nos arquivos rastreados de runtime, nunca recursivamente no checkout inteiro.
+Só `COINOPS_EXECUTOR_VERSION` é alterada no env, verificando hash das demais linhas.
+Após falha, `git switch --detach` para o SHA anterior recusa árvore suja, repete
+preflight e verifica health; não usa reset/force nem restaura estado financeiro.
+O próximo avanço pode partir desse HEAD detached. Mesmo SHA ativo/saudável não
+reinicia. Stagings públicos de preflight são preservados para inspeção e limpeza
+operacional controlada; não contêm env, vault ou estado.
+
+Incidente observado em 2026-09-28: durante esta manutenção, um deploy manual do
+Executor 01 executado como root com `umask 077` criou três arquivos públicos de
+código em modo 0600. O serviço não-root falhou com EACCES; o primeiro rollback
+repetiu a permissão e não recuperou. Normalizar a leitura desses arquivos e
+reiniciar restaurou o serviço. A causa foi o procedimento desta execução, não
+gain, aporte, Binance ou Strategy Engine. A correção permanente acima elimina o
+critério inadequado de “import como root passou” e cobre também rollback e shards
+futuros. Testes locais/static não substituem prova do UID/GID real no servidor.
 
 ### Janela de compatibilidade revisada
 
@@ -64,6 +108,11 @@ espaços, entradas vazias, repetidas, wildcard e listas maiores são rejeitados.
 O banner legado e o health por engine usam o mesmo gate. Quando o executor
 publica `actual_executor_version`, esse é o release conferido; `version` é
 fallback apenas quando o campo está ausente, nunca um bypass por alias legado.
+No health autenticado `/v1/health`, `version` e `actual_executor_version` (quando
+presente) precisam coincidir; só o GET legado admite alias diferente. Se o painel
+mostrar shard HEALTHY mas engine sem confirmação, comparar o health autenticado
+daquele engine com a janela/versões exatas e todos os demais gates. Health de
+infraestrutura, Watchdog verde ou reconciliação recente não substituem essa prova.
 
 Publicar a web com a janela, validar o estado atual e atualizar um executor por
 vez pelo SHA revisado; confirmar health exato, reconciliação e isolamento antes

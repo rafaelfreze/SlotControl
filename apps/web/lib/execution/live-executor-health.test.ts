@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadLiveExecutorStatus } from "./live-executor-health.ts";
+import { resolveExecutorShard } from "./executor-shards-server.ts";
 
 const ip = "46.101.104.48";
 const healthy = { healthy: true, version: "test", region: "FRA1", environment: "BINANCE_PRODUCTION_PREPARED",
@@ -97,4 +98,28 @@ test("reported actual release cannot be bypassed by a matching legacy alias or m
   await withVersionEnvironment({ ...rollingEnvironment, COINOPS_EXECUTOR_01_VERSION_TRANSITION_UNTIL: "" }, async () => {
     assert.equal((await read({ actual_executor_version: "release-old" })).gate, "ATTENTION");
   });
+});
+
+test("authenticated shard health accepts both exact rolling releases but never conflicting reported versions", async () => {
+  const engine = { operator_id: "fixture-operator", exchange_account_id: "fixture-account",
+    trading_engine_id: "fixture-engine", symbol: "SOLUSDT", quote_asset: "USDT" };
+  const secondIp = "203.0.113.22";
+  const env = { COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify({ "executor-02": {
+    egressIp: secondIp, baseUrl: `https://${secondIp}`, hmacSecret: "fixture-secret-for-shard-health".repeat(2),
+    validatedVersion: "old-shard02" } }), COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: "new-shard02",
+    COINOPS_EXECUTOR_02_VERSION_TRANSITION_START: "2026-09-28T10:00:00Z",
+    COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL: "2026-09-28T10:22:39Z" };
+  let clock = Date.parse("2026-09-28T10:06:18Z");
+  const resolver = async () => resolveExecutorShard("executor-02", env, clock);
+  const read = (version: string, actualVersion = version) => loadLiveExecutorStatus(undefined, undefined,
+    (async () => Response.json({ ...engine, ...healthy, executor_shard_id: "executor-02",
+      version, actual_executor_version: actualVersion, environment: "REAL", egress_ipv4: secondIp,
+      trading_enabled: true, kill_switch: false })) as typeof fetch, undefined, engine, resolver);
+  assert.equal((await read("old-shard02")).gate, "LIVE_EXECUTOR_ACTIVE");
+  assert.equal((await read("new-shard02")).gate, "LIVE_EXECUTOR_ACTIVE");
+  assert.equal((await read("unreviewed", "new-shard02")).gate, "ATTENTION");
+  assert.equal((await read("new-shard02", "unreviewed")).gate, "ATTENTION");
+  clock = Date.parse(env.COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL);
+  assert.equal((await read("old-shard02")).gate, "ATTENTION");
+  assert.equal((await read("new-shard02")).gate, "LIVE_EXECUTOR_ACTIVE");
 });

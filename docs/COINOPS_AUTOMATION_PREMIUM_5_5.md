@@ -62,3 +62,13 @@ Reverter somente o commit de UI pelo fluxo Git normal. Não reiniciar executor, 
 As duas barras internas — ambientes e ferramentas — continuam presentes e independentes desse menu. A barra de ferramentas conserva seu scroll horizontal próprio no celular; a página não deve produzir overflow horizontal.
 
 O harness offline agora cobre 24 casos: as quatro views, isolamento A/B, drawers e controles anteriores, mais sete casos de workspace/menu em 360, 390, 430, 1024, 1280, 1440 e 1920px. Cada novo caso confere margens, rotas existentes, touch targets, teclado, fechamento, não sobreposição e screenshots aberto/fechado. Rede, submissões e actions permanecem bloqueadas; screenshots não contêm dados produtivos. A emulação de largura não equivale a uma validação física de iPhone/PWA nem prova insets não nulos de um aparelho.
+
+## Sincronização visual de executor e motores — 2026-09-28
+
+O card de capacidade já lê telemetria persistida a cada 30s, enquanto o snapshot RSC dos motores normalmente se renova em até 120s com Realtime conectado (fallback 30s). Uma troca de versão/estado do executor pode, portanto, aparecer no card antes da confirmação operacional dos motores. Capacidade saudável não substitui o health assinado de cada motor.
+
+`automation-executor-sync.ts` usa a resposta existente de capacidade apenas como sinal de renovação: versão diferente ou transição OFFLINE/observado do mesmo IP, restrita aos motores REAL selecionados. No primeiro retorno válido, uma divergência de versão ou snapshot ATTENTION pede nova validação. Observação e heartbeat devem ter até 120s; campos ausentes, inválidos, futuros ou stale não comprovam recuperação. WARNING/OBSERVE/CAPACITY_LIMIT, peso e timestamps que avançam normalmente não geram renovação adicional.
+
+O callback passa pelo mesmo debounce/minimum gap de 15s de `useAutomationLiveSync`, uma vez por fingerprint de shard/IP/versão/estado no contexto selecionado. Repetir polling ou renderizar um snapshot ainda ATTENTION não cria loop. A frequência global de 120s permanece; não há API adicional, consulta direta à Binance, hard reload, alteração de seleção/formulários ou mutação financeira. Somente o novo snapshot server-side pode mudar o estado visível; ausência de health continua sem confirmação.
+
+Regressão offline: `node --experimental-strip-types --test app/automacao/automation-executor-sync.test.ts app/automacao/automation-live-scope.test.ts app/automacao/premium-navigation.test.ts`. Inclui hook real transpiled com timers controlados, dedupe/gap, background/cleanup, versão, falha/recuperação, isolamento por IP, stale, health ausente e estados de capacidade sem falso verde. Publicação/smoke autenticado são evidências separadas; fixtures não confirmam Production.

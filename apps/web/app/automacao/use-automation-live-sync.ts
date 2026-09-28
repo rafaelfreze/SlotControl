@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/browser";
 import type { AutomationView } from "./automation-center";
 import type { PremiumEngine, PremiumSelection } from "./premium-operator";
 import { automationSignalFilter, automationSignalMatches, automationSignalScopes } from "./automation-live-scope";
+import { observeExecutorSnapshots, type ExecutorObservation, type ExecutorSnapshot } from "./automation-executor-sync";
 
 type SyncStatus = "AO VIVO" | "RECONECTANDO" | "DESATUALIZADO";
 const STALE_MS = 150_000;
@@ -14,7 +15,7 @@ const FALLBACK_REFRESH_MS = 30_000;
 const MIN_REFRESH_GAP_MS = 15_000;
 
 export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngine[],
-  selection: PremiumSelection, snapshotAt: string) {
+  selection: PremiumSelection, snapshotAt: string, executorSnapshots: ExecutorSnapshot[] = []) {
   const router = useRouter();
   const selectedAccountId = selection.accountId;
   const selectedSymbol = selection.symbol;
@@ -29,6 +30,20 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
   const connectedRef = useRef(false);
   const lastSyncedRef = useRef(Date.parse(snapshotAt) || Date.now());
   const pendingRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestRefresh = useRef<((delay?: number) => void) | null>(null);
+  const executorContext = useRef({ scopeKey, snapshots: executorSnapshots });
+  const executorObservations = useRef({ scopeKey, seen: new Map<string, string>() });
+  useEffect(() => { executorContext.current = { scopeKey, snapshots: executorSnapshots }; }, [scopeKey, executorSnapshots]);
+  const observeExecutors = useCallback((observations: ExecutorObservation[]) => {
+    if (document.visibilityState !== "visible" || !requestRefresh.current) return;
+    const context = executorContext.current;
+    if (executorObservations.current.scopeKey !== context.scopeKey) {
+      executorObservations.current = { scopeKey: context.scopeKey, seen: new Map() };
+    }
+    if (observeExecutorSnapshots(executorObservations.current.seen, observations, context.snapshots, Date.now())) {
+      requestRefresh.current(0);
+    }
+  }, []);
 
   useEffect(() => {
     const observed = Date.parse(snapshotAt) || Date.now();
@@ -57,6 +72,7 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
         }
       }, wait);
     };
+    requestRefresh.current = refresh;
     const hash = scopes.reduce((value, scope) =>
       [...scope.trading_engine_id].reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, value), 0);
     const channel = scopes.length ? client.channel(`automation-refresh-${hash.toString(16)}`) : null;
@@ -88,6 +104,7 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
     window.addEventListener("focus", onFocus);
     return () => {
       active = false;
+      requestRefresh.current = null;
       clearInterval(poll);
       if (pendingRefresh.current) clearTimeout(pendingRefresh.current);
       pendingRefresh.current = null;
@@ -98,5 +115,5 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
   }, [scopeKey, selectedAccountId, selectedSymbol, generation, router]);
   const stale = clock - lastSyncedAt > STALE_MS;
   const status: SyncStatus = stale ? "DESATUALIZADO" : connected ? "AO VIVO" : "RECONECTANDO";
-  return { status, lastSyncedAt, stale, recent: clock - lastSyncedAt < 30_000 };
+  return { status, lastSyncedAt, stale, recent: clock - lastSyncedAt < 30_000, observeExecutors };
 }

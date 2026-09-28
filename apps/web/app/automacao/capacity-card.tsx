@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ExecutorObservation } from "./automation-executor-sync";
 
 type Shard = { id: string; state: string; action: string; binanceWeightCurrent: number | null;
-  egressIp: string; binanceWeightAverage: number | null; binanceWeightPeak: number | null;
+  egressIp: string; executorVersion: string | null; binanceWeightAverage: number | null; binanceWeightPeak: number | null;
   heartbeatAt: string | null; observedAt: string | null; reservedWeight: number;
   binanceLimit: number; binancePercent: number | null; cpuPercent: number | null;
   ramUsedMb: number | null; schedulerBacklog: number | null; reconciliationAgeMs: number | null;
@@ -11,7 +12,11 @@ type Shard = { id: string; state: string; action: string; binanceWeightCurrent: 
   canAddTwoEngineAccount: boolean; warningsMuted: boolean;
   alerts: Array<{ code: string }> };
 
-export function CapacityCard() {
+export function CapacityCard({ onExecutorObservation }: {
+  onExecutorObservation?: (shards: ExecutorObservation[]) => void;
+}) {
+  const observationCallback = useRef(onExecutorObservation);
+  useEffect(() => { observationCallback.current = onExecutorObservation; }, [onExecutorObservation]);
   const [shards, setShards] = useState<Shard[] | null>(null);
   const [mutating, setMutating] = useState<string | null>(null);
   const [muteError, setMuteError] = useState<string | null>(null);
@@ -36,7 +41,12 @@ export function CapacityCard() {
     const abort = new AbortController();
     const refresh = () => fetch("/api/coinops-capacity", { cache: "no-store", signal: abort.signal })
       .then((response) => response.ok ? response.json() : null)
-      .then((result) => { if (!abort.signal.aborted) setShards(Array.isArray(result?.shards) ? result.shards : []); })
+      .then((result) => {
+        if (abort.signal.aborted) return;
+        const observed = Array.isArray(result?.shards) ? result.shards : [];
+        setShards(observed);
+        if (observed.length) observationCallback.current?.(observed);
+      })
       .catch(() => { if (!abort.signal.aborted) setShards([]); });
     void refresh();
     const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 30_000);

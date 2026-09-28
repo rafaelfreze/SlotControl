@@ -56,6 +56,7 @@ export async function loadLiveExecutorStatus(
     const actualVersion = health.actual_executor_version === undefined ? health.version : health.actual_executor_version;
     const verified = (engine || response!.ok) && health.healthy === true
       && acceptedVersions !== null && acceptedVersions.includes(actualVersion)
+      && (!engine || health.version === actualVersion)
       && health.environment === (engine ? "REAL" : "BINANCE_PRODUCTION_PREPARED")
       && health.binance_connectivity === "OK"
       && health.account_permission === "SPOT_RESTRICTED"

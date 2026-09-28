@@ -117,7 +117,14 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const engines = useMemo(() => data.operator?.engines ?? legacyPremiumEngines(data), [data]);
   const market = useAutomationMarketPrices(engines.filter((engine) => view === "overview"
     || engine.environment === environment).map((engine) => engine.symbol));
-  const sync = useAutomationLiveSync(view, engines, selection, data.snapshotAt ?? new Date(0).toISOString());
+  const executorSnapshots = useMemo(() => view !== "live" && view !== "overview" ? []
+    : selectPremiumEngines(engines, "REAL", selection).map((engine) => {
+      const scoped = data.operator ? data.operator.engineData[engine.engineId] : data;
+      const executor = scoped?.nativeLiveControl?.executor ?? scoped?.livePreparation?.executor;
+      return { ip: executor?.ip ?? null, gate: executor?.gate ?? null,
+        version: executor?.health?.actual_executor_version ?? executor?.health?.version ?? null };
+    }), [data, engines, selection, view]);
+  const sync = useAutomationLiveSync(view, engines, selection, data.snapshotAt ?? new Date(0).toISOString(), executorSnapshots);
   const assets = useMemo(() => selectPremiumEngines(engines, environment, selection).map((engine) =>
     withLiveMarketPrice(engine, market.status !== "stale" ? market.prices[engine.symbol] ?? null : null)),
     [engines, environment, selection, market.prices, market.status]);
@@ -195,7 +202,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {allAccounts ? <section className="px-market-overview" aria-label="Cotações USDT">
         <div className="px-market-chart-grid">{usdtMarketCharts.map((model) => <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /><AssetHealthBadge asset={model.asset} /></article>)}</div>
       </section> : null}
-      {data.operator && (view === "live" || view === "overview") ? <CapacityCard /> : null}
+      {data.operator && (view === "live" || view === "overview") ? <CapacityCard onExecutorObservation={sync.observeExecutors} /> : null}
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard /> : null}
       <section className="px-hero px-panel" aria-label="Sistema operacional"><div className={`px-health ${healthy && (environment !== "REAL" || liveStatus.online && liveStatus.binanceConnected) || paused ? "" : "px-health--attention"}`}><div><h2>Sistema Operacional</h2><p><i>{paused ? "·" : environment === "REAL" ? liveStatus.online ? "✓" : "!" : healthy ? "✓" : "!"}</i>{environment === "REAL" ? "Executor" : "Motor"} <strong>{paused ? "PAUSADO" : environment === "REAL" ? liveStatus.online ? "ONLINE" : "VERIFICAR" : healthy ? "ATIVO" : "ATENÇÃO"}</strong></p><p><i>{environment === "REAL" ? liveStatus.binanceConnected ? "✓" : "!" : "·"}</i>{environment === "REAL" ? "Binance" : environment} <strong>{environment === "REAL" ? liveStatus.binanceConnected ? "CONNECTED" : "VERIFICAR" : "ISOLADO"}</strong></p><p><i>{paused ? "·" : healthy ? "✓" : "!"}</i>Estratégia <strong>{paused ? "PAUSADA" : healthy ? "ATIVA" : "VERIFICAR"}</strong></p></div><div className="px-health-check"><small>Última verificação<br /><time>{time(checked)}</time></small><button type="button" className="px-button" onClick={() => { setOperationTab("alerts"); goOperations(); }}>Ver logs <PremiumIcon name="arrow" /></button></div></div></section>
       {!healthy && !paused ? <div className="px-alert-banner" role="status">{globalOverCap ? <p><strong>LIMITE GLOBAL EXCEDIDO</strong>Verifique a reconciliação e os limites autorizados.</p> : null}{assets.filter((item) => !item.health.healthy).map((item) => <p key={item.engineId}><strong>{item.accountDisplayName} · {item.symbol} · {item.health.label}</strong> {item.health.reason}</p>)}</div> : null}
