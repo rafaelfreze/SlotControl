@@ -37,6 +37,43 @@ O script mantém espelho Git sem credenciais em `/opt/coinops/repository.git`, e
 
 O health exige shard, SHA e IPv4 corretos. Se falhar, retorna ao release anterior e reinicia somente este servidor; no primeiro deploy malsucedido o serviço é parado, sem apagar estado. Uma repetição do mesmo SHA ativo não reinicia o serviço. Nunca fazer rollback para commit anterior à implementação multi-shard.
 
+### Janela de compatibilidade revisada
+
+Somente após autorização explícita, preparar a aceitação temporária da versão
+atual e da nova versão revisada. Não modificar/copiar JSON com secrets para isso.
+Manter a versão atual única em `validatedVersion` do shard (ou
+`LIVE_EXECUTOR_VALIDATED_VERSION` no Executor 01), e configurar somente:
+
+- `COINOPS_EXECUTOR_XX_NEXT_VALIDATED_VERSION`: nova versão exata revisada;
+- `COINOPS_EXECUTOR_XX_VERSION_TRANSITION_START`: início UTC ISO, inclusivo;
+- `COINOPS_EXECUTOR_XX_VERSION_TRANSITION_UNTIL`: fim UTC ISO, exclusivo.
+
+Substituir `EXECUTOR_XX` pelo shard real. Datas exigem `Z`, com segundos e
+milissegundos opcionais (três dígitos). A janela deve durar mais de zero e no
+máximo seis horas; usar a menor janela operacional suficiente. Antes do início
+somente a antiga é aceita; durante a janela somente antiga/nova; no instante
+exato do fim e depois **somente a nova**, mesmo em instâncias web já em execução.
+O gate é recalculado por request; restart/redeploy não prolonga a exceção.
+Configuração incompleta, inválida ou NEXT com múltiplas versões falha fechada
+apenas no shard correspondente. Uma lista direta de duas versões também exige
+START/UNTIL e usa a primeira como antiga e a segunda como nova; não combiná-la
+com NEXT. Não há aceitação indefinida de duas versões.
+
+Cada versão conserva o limite de 100 caracteres e o alfabeto `a-zA-Z0-9._-`;
+espaços, entradas vazias, repetidas, wildcard e listas maiores são rejeitados.
+O banner legado e o health por engine usam o mesmo gate. Quando o executor
+publica `actual_executor_version`, esse é o release conferido; `version` é
+fallback apenas quando o campo está ausente, nunca um bypass por alias legado.
+
+Publicar a web com a janela, validar o estado atual e atualizar um executor por
+vez pelo SHA revisado; confirmar health exato, reconciliação e isolamento antes
+do próximo. Registrar evidência do fechamento novo-only no fim. Na próxima
+configuração/rollout, promover a nova versão à base e remover NEXT/START/UNTIL
+juntos; nunca remover somente NEXT. Depois do cutoff, rollback para a antiga
+exige nova decisão explícita de versão, não reabrir a janela silenciosamente.
+Nenhum passo muda IP/HMAC/credenciais, permissões, flags, caps ou guardas
+financeiros; capacidades novas continuam exigindo suporte explícito do executor.
+
 ## Health, logs e restart
 
 ```bash

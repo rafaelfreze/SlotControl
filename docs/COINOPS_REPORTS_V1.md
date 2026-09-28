@@ -1,8 +1,14 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 12`. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 13`. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
+Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
+de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento
+zero-fill reconciliado e nova ordem ENTRY com mesmo preço/run/slot/operação.
+O export continua somente leitura: não inicia a substituição nem consulta/cancela
+ordens para construir evidência. Não certifica o estado Binance atual nem a
+preservação global de TPs por mera ausência de alerta.
 Na versão 12, o check `STRATEGY_PRICE_INVARIANT` marca FAIL para alerta LIVE
 ativo de preço estratégico e WARNING na ausência desse alerta: o pacote não
 inclui uma leitura Binance direta e contemporânea, portanto não inventa PASS.
@@ -79,6 +85,31 @@ O detector compara candles com janelas em que um gatilho Shadow estava armado, n
 O pacote padrão inclui candles próximos a eventos/gatilhos para controlar tamanho. Os candles completos têm download separado em páginas/stream, em partes de até 7 dias para respeitar o tempo máximo da função Vercel; a interface oferece todas as partes contíguas do período, sem truncar silenciosamente. Limites de fontes no pacote são declarados. Reduza a janela se uma fonte atingir o limite; não interprete pacote truncado como auditoria integral.
 
 ## Contrato obrigatório de evolução
+
+### Atualização da NEXT BUY por aporte — contrato v13
+
+`LIVE_EXECUTION.csv`/JSON conservam `NEXT_BUY_CAPITAL_REFRESH_PLANNED` e
+`NEXT_BUY_CAPITAL_REFRESH_CONFIRMED` em `event_type`, com `details` contendo:
+`refresh_key`, `old_client_order_id`, `new_client_order_id`, `old_quantity`,
+`new_quantity`, `price`, `old_notional_quote`, `new_notional_quote`,
+`slot_balance_quote`, `quote_asset`, `operation_sequence` e `capital_sources`
+(IDs de allocations/items). A confirmação acrescenta `old_status`,
+`old_executed_quantity`, `new_status` e `exchange_reconciled_at`.
+Conta/motor/run/slot vêm do envelope de escopo existente. IDs de origem são
+referências auditáveis, não cópia ou segunda contabilização do aporte.
+
+O plano não é ACK nem prova de ordem enviada. Crash/retry entre cancelar e
+confirmar mantém WARNING até haver evidência persistida completa; campos antigos
+ausentes, fontes incompletas e ausência de ocorrência também são WARNING, não
+zero/PASS. Divergência comprovada de preço/quantidade/ownership/execução anterior
+é FAIL mesmo com outra fonte ausente. PASS limita-se ao confronto do plano e da
+confirmação com as duas ordens da mesma identidade física/operação. Uma ordem
+nova que preencher ou for encerrada posteriormente não reescreve a confirmação
+histórica. OPEN e TP permanecem fora do escopo de redimensionamento.
+
+A regra exportada `next_buy_applied_capital_refresh` é contrato do código atual,
+sem vigência retroativa. Não há novo CSV, tabela, consulta externa ou permissão.
+Testes: `next-buy-capital-refresh-audit.test.ts` e contratos do pacote v13.
 
 ### Fase 5.0 — contrato v7
 

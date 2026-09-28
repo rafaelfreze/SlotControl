@@ -286,7 +286,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   async function confirm() {
     if (!preview || !previewDraft) return;
     if (!window.confirm(["CAPITAL", "SELECTIVE_CAPITAL"].includes(previewDraft.kind ?? "")
-      ? `Registrar ${format(preview.amount, quote)} como capital externo da conta ${account?.display_name}? Nenhuma ordem ou posição OPEN será alterada.`
+      ? `Registrar ${format(preview.amount, quote)} como capital externo da conta ${account?.display_name}? Posições OPEN e TPs serão preservados. A próxima BUY sem fill será atualizada pelo motor com o capital aplicado, no mesmo preço da estratégia.`
       : `Adicionar ${gainUnits} gain(s) manual(is) ao slot #${slotNumber} de ${account?.display_name}?`)) return;
     try { setBusy(true); setError("");
       const saved = await control({ ...previewDraft, action: "CONFIRM", previewHash: preview.previewHash });
@@ -527,7 +527,9 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
           {" "}{preview.presetSelection.openSlots} OPEN + {preview.presetSelection.followingSlots} abaixo ·
           {" "}{preview.presetSelection.resolvedSlotNumbers.map((slot) => `#${slot}`).join(" → ")}</p> : null}
         <p>{preview.allocations.length} slot(s) · {preview.openCount} OPEN · {format(preview.pendingForNextOperation, quote)} pendente da próxima operação em slots OPEN.</p>
-        <p>Nenhuma posição OPEN, preço médio, quantidade ou TP será alterado. Nenhuma ordem será criada pelo ajuste.</p>
+        <p>Nenhuma posição OPEN, preço médio, quantidade ou TP será alterado. O aporte não cria BUY adicional nem MARKET.
+          A próxima BUY ainda sem fill será atualizada pelo motor com o capital aplicado, mantendo o preço da estratégia.
+          Se começar a preencher, a posição é preservada e o capital extra fica para a próxima utilização.</p>
         <details><summary>Ver todos os slots afetados</summary><div className="lac-items">{preview.allocations.map((item) =>
           <p key={`${item.engineId}:${item.slotNumber}`}><b>{inQuote.find((engine) => engine.id === item.engineId)?.symbol} · #{item.slotNumber}</b>
             <span>{item.open ? "OPEN" : "sem posição"} · {format(item.balanceBefore, quote)}

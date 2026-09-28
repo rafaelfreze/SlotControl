@@ -1,5 +1,6 @@
 import type { AuditDatasets, AuditFilters } from "./report-engine.ts";
 import type { AuditRow } from "./trigger-audit.ts";
+import { auditNextBuyCapitalRefresh } from "./next-buy-capital-refresh-audit.ts";
 
 type CheckContext = { source: Record<string, AuditRow[]>; incompleteSources: string[]; generatedAt: string; filters: AuditFilters; allOperations: AuditRow[]; allCapital: AuditRow[] };
 const n = (value: unknown) => Number(value ?? 0);
@@ -138,6 +139,7 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
   }
   if (context.filters.environments.includes("TESTNET")) add("TESTNET_OWNERSHIP", !datasets.orders.length || incomplete("robot_v1_testnet_orders", "robot_v1_testnet_slots") ? "WARNING" : datasets.orders.some((order) => order.ownership_verified !== true) ? "FAIL" : "PASS", "clientOrderId recalculado com run, slot, lado e revisão; vínculo ao slot/run verificado. Ordens manuais não são assumidas como CoinOps.", { environment: "TESTNET" });
   if (context.filters.environments.includes("REAL")) {
+    checks.push(...auditNextBuyCapitalRefresh(datasets.live_execution, context.incompleteSources));
     const enabled = datasets.rules.some((rule) => ["production_write_enabled", "live_enabled"].includes(s(rule.parameter)) && rule.value === true);
     const liveRuns = datasets.live_execution.filter((row) => row.row_type === "RUN");
     const priceAlerts = datasets.live_execution.filter((row) => row.row_type === "ALERT"

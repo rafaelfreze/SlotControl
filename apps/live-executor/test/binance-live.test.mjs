@@ -7,7 +7,7 @@ const NOW = Date.parse("2026-09-24T03:00:00.000Z");
 const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
 
 function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false,
-  restrictionsStatus = 200 } = {}) {
+  restrictionsStatus = 200, deleteOutcome = null, loseDeleteAck = false } = {}) {
   const calls = [];
   let order = existingOrder;
   let openOrderFailures = 0;
@@ -55,7 +55,9 @@ function fixture({ openOrders = [], existingOrder = null, trades = [], failFirst
       return Response.json(order);
     }
     if (parsed.pathname === "/api/v3/order" && init.method === "DELETE") {
-      order = { ...order, status: "CANCELED" };
+      order = deleteOutcome ? { ...order, ...deleteOutcome } : { ...order, status: "CANCELED" };
+      if (loseDeleteAck) throw new Error("LOST_DELETE_ACK");
+      if (order.status !== "CANCELED") return Response.json({ code: -2011 }, { status: 400 });
       return Response.json({ ...order, origClientOrderId: BTC_ID });
     }
     throw new Error(`Unexpected ${parsed.pathname}`);
@@ -156,6 +158,72 @@ test("Protective cancellation of partially filled own BUY works with kill switch
     { tradingEnabled: true, killSwitch: true });
   assert.equal(result.status, "CANCELED");
   assert.equal(calls.find((call) => call.method === "DELETE")?.params.has("cancelRestrictions"), false);
+});
+
+const unfilledIntent = { symbol: "BTCBRL", clientOrderId: BTC_ID, orderId: "123", onlyUnfilled: true };
+const newBuy = { symbol: "BTCBRL", clientOrderId: BTC_ID, orderId: 123, side: "BUY", status: "NEW",
+  executedQty: "0", cummulativeQuoteQty: "0", price: "437000" };
+const enabled = { tradingEnabled: true, killSwitch: false };
+
+test("capital resize cancellation accepts only NEW and returns proven zero-fill cancel", async () => {
+  const { transport, calls } = fixture({ existingOrder: newBuy });
+  const result = await transport.cancelOwnedBuy(unfilledIntent, enabled);
+  assert.equal(result.status, "CANCELED");
+  assert.equal(result.executedQuantity, 0);
+  assert.equal(result.cumulativeQuoteQuantity, 0);
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
+  assert.equal(calls.find((call) => call.method === "DELETE").params.get("cancelRestrictions"), "ONLY_NEW");
+});
+
+for (const status of ["PARTIALLY_FILLED", "FILLED"]) {
+  test(`capital resize preserves ${status} observed before cancellation`, async () => {
+    const { transport, calls } = fixture({ existingOrder: { ...newBuy, status,
+      executedQty: "0.00001", cummulativeQuoteQty: "4.37" } });
+    const result = await transport.cancelOwnedBuy(unfilledIntent, enabled);
+    assert.equal(result.status, status);
+    assert.equal(result.executedQuantity, 0.00001);
+    assert.ok(calls.every((call) => call.method === "GET"));
+  });
+  test(`capital resize reconciles ${status} racing ONLY_NEW rejection without another DELETE`, async () => {
+    const { transport, calls } = fixture({ existingOrder: newBuy,
+      deleteOutcome: { status, executedQty: "0.00001", cummulativeQuoteQty: "4.37" } });
+    const result = await transport.cancelOwnedBuy(unfilledIntent, enabled);
+    assert.equal(result.status, status);
+    assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
+    assert.equal(calls.find((call) => call.method === "DELETE").params.get("cancelRestrictions"), "ONLY_NEW");
+  });
+}
+
+test("capital resize queries exact order after lost cancellation acknowledgement", async () => {
+  const { transport, calls } = fixture({ existingOrder: newBuy, loseDeleteAck: true });
+  const result = await transport.cancelOwnedBuy(unfilledIntent, enabled);
+  assert.equal(result.status, "CANCELED");
+  assert.equal(result.executedQuantity, 0);
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
+});
+
+test("capital resize stays uncertain if the exact order remains NEW after lost acknowledgement", async () => {
+  const { transport, calls } = fixture({ existingOrder: newBuy, loseDeleteAck: true,
+    deleteOutcome: { status: "NEW" } });
+  await assert.rejects(transport.cancelOwnedBuy(unfilledIntent, enabled), /EXECUTOR_CANCEL_OUTCOME_UNKNOWN/);
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
+});
+
+test("a cancellation observation with fills never erases executed quantities", async () => {
+  const { transport, calls } = fixture({ existingOrder: newBuy,
+    deleteOutcome: { status: "CANCELED", executedQty: "0.00001", cummulativeQuoteQty: "4.37" } });
+  const result = await transport.cancelOwnedBuy(unfilledIntent, enabled);
+  assert.equal(result.status, "CANCELED");
+  assert.equal(result.executedQuantity, 0.00001);
+  assert.equal(result.cumulativeQuoteQuantity, 4.37);
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
+});
+
+test("capital resize rejects unproven NEW-with-fill data and invalid cancellation mode", async () => {
+  const { transport, calls } = fixture({ existingOrder: { ...newBuy, executedQty: "0.00001" } });
+  await assert.rejects(transport.cancelOwnedBuy(unfilledIntent, enabled), /EXECUTOR_CANCEL_UNFILLED_UNPROVEN/);
+  await assert.rejects(transport.cancelOwnedBuy({ ...unfilledIntent, onlyUnfilled: "true" }, enabled), /EXECUTOR_CANCEL_MODE_INVALID/);
+  assert.ok(calls.every((call) => call.method === "GET"));
 });
 
 test("legacy Production reconciliation reads manual USDT pairs only from fixed-IP GET transport", async () => {

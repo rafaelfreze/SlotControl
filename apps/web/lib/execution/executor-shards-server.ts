@@ -8,8 +8,52 @@ type Environment = Record<string, string | undefined>;
 const SHARD = /^executor-[0-9]{2,}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** One validated release, or two exact releases during an explicit rolling
+ * deployment. Malformed lists never relax a shard's version gate. */
+export function parseExecutorValidatedVersions(value: unknown): string[] | null {
+  if (typeof value !== "string") return null;
+  const versions = value.split(",");
+  return versions.length <= 2 && new Set(versions).size === versions.length
+    && versions.every((version) => version.length >= 1 && version.length <= 100
+      && !/[^a-zA-Z0-9._-]/.test(version)) ? versions : null;
+}
+
+/** Version-only rollout configuration, evaluated on every request. Explicit UTC
+ * bounds cannot be prolonged by a process restart or a redeploy. */
+export function resolveExecutorValidatedVersion(shardId: string, value: unknown,
+  env: Environment = process.env, now = Date.now()): string | undefined {
+  if (!SHARD.test(shardId)) throw new Error("EXECUTOR_SHARD_INVALID");
+  const prefix = `COINOPS_${shardId.toUpperCase().replaceAll("-", "_")}`;
+  const nextValue = env[`${prefix}_NEXT_VALIDATED_VERSION`];
+  const startValue = env[`${prefix}_VERSION_TRANSITION_START`];
+  const untilValue = env[`${prefix}_VERSION_TRANSITION_UNTIL`];
+  const base = value === undefined ? undefined : parseExecutorValidatedVersions(value);
+  if (base === null) throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
+  const transition = nextValue !== undefined || startValue !== undefined || untilValue !== undefined
+    || base?.length === 2;
+  if (!transition) return base?.[0];
+  const next = nextValue === undefined ? undefined : parseExecutorValidatedVersions(nextValue);
+  if (!base || nextValue !== undefined && (base.length !== 1 || next?.length !== 1)
+    || nextValue === undefined && base.length !== 2)
+    throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
+  const utc = (input: string | undefined) => {
+    if (!input || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(input)) return NaN;
+    const time = Date.parse(input);
+    if (!Number.isFinite(time)) return NaN;
+    const canonical = new Date(time).toISOString();
+    return input === canonical || input === canonical.replace(".000Z", "Z") ? time : NaN;
+  };
+  const start = utc(startValue), until = utc(untilValue);
+  if (![now, start, until].every(Number.isFinite) || until <= start || until - start > 6 * 60 * 60 * 1000)
+    throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
+  const previous = base[0], upcoming = next?.[0] ?? base[1];
+  if (now < start) return previous;
+  if (now >= until || previous === upcoming) return upcoming;
+  return `${previous},${upcoming}`;
+}
+
 /** Server configuration only. A missing shard never falls back to a different IP. */
-export function resolveExecutorShard(shardId: string, env: Environment = process.env): ExecutorShardConfig {
+export function resolveExecutorShard(shardId: string, env: Environment = process.env, now = Date.now()): ExecutorShardConfig {
   if (!SHARD.test(shardId)) throw new Error("EXECUTOR_SHARD_INVALID");
   let configured: unknown;
   let mapping: Record<string, unknown> = {};
@@ -34,9 +78,9 @@ export function resolveExecutorShard(shardId: string, env: Environment = process
   if (typeof row.egressIp !== "string" || isIP(row.egressIp) !== 4
     || row.baseUrl !== `https://${row.egressIp}` || typeof row.hmacSecret !== "string"
     || Buffer.byteLength(row.hmacSecret) < 32
-    || row.validatedVersion !== undefined && (typeof row.validatedVersion !== "string"
-      || !/^[a-zA-Z0-9._-]{1,100}$/.test(row.validatedVersion)))
+    || row.validatedVersion !== undefined && !parseExecutorValidatedVersions(row.validatedVersion))
     throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
+  const validatedVersion = resolveExecutorValidatedVersion(shardId, row.validatedVersion, env, now);
   // Reject a new shard aliasing an existing IP or HMAC domain, while never
   // breaking the established01 route because another shard is misconfigured.
   if (shardId !== "executor-01") {
@@ -48,7 +92,7 @@ export function resolveExecutorShard(shardId: string, env: Environment = process
       throw new Error("EXECUTOR_SHARD_CONFIG_COLLISION");
   }
   return { shardId, ip: row.egressIp, base: row.baseUrl, secret: row.hmacSecret,
-    validatedVersion: row.validatedVersion as string | undefined };
+    validatedVersion };
 }
 
 type BoundAccount = { id: string; operator_id: string; executor_shard_id: string };

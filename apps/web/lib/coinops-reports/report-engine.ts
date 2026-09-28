@@ -368,6 +368,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       slot[key] = monthly[key];
   }
   const rules: AuditRow[] = [];
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "next_buy_applied_capital_refresh", value: "OWNED_UNFILLED_ENTRY_SAME_PRICE_ONLY", unit: "enum", version: 1,
+    source: "robot_v1_live_events + robot_v1_live_orders", evidence_scope: "CURRENT_CODE_CONTRACT",
+    notes: "Aporte aplicado pode redimensionar somente NEXT BUY própria sem fill via reconciliador oficial. OPEN e TP não são redimensionados; ausência de eventos não comprova execução histórica. Consulte NEXT_BUY_CAPITAL_REFRESH_AUDIT." });
   const definitions = [...REPORT_RULE_CONTRACT, ...extensions];
   if (new Set(definitions.map((definition) => definition.parameter)).size !== definitions.length) throw new Error("COINOPS_REPORT_RULE_DUPLICATE");
   for (const config of configs) for (const definition of definitions) if (config[definition.field] !== undefined) rules.push({

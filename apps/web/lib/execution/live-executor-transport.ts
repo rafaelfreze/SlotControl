@@ -24,6 +24,8 @@ export type LiveExecutorState = ExecutorEngineScope & { symbol: string;
   price: { symbol: string; price: number; observedAt: string };
   bnb_brl_price: { symbol: string; price: number; observedAt: string } | null;
   bnb_quote_price?: { symbol: string; price: number; observedAt: string } | null;
+  supports_unfilled_buy_cancel?: boolean;
+  execution_caps?: { engine: number; account: number; max_order: number };
   open_orders: Array<{ id: string; symbol: string; side: string; status: string;
     executedQuantity: number; price: number | null; clientOrderId: string | null }>;
   observed_at: string };
@@ -141,9 +143,9 @@ export async function createLiveExecutorOrder(input: Record<string, unknown> & {
     input.clientOrderId, fetcher, resolver);
 }
 export async function cancelLiveExecutorOrder(input: { symbol: string;
-  clientOrderId: string; orderId: string }, engine: ExecutorEngineScope, fetcher?: typeof fetch,
+  clientOrderId: string; orderId: string; onlyUnfilled?: boolean }, engine: ExecutorEngineScope, fetcher?: typeof fetch,
   resolver?: ExecutorAccountResolver) {
+  const key = `${input.onlyUnfilled === true ? "CANCEL_UNFILLED" : "CANCEL"}:${input.clientOrderId}`;
   return request<{ order: LiveOrder; replayed: boolean }>("/v1/cancel-order", { ...input,
-    ...executorContext(engine, `CANCEL:${input.clientOrderId}`, `CANCEL:${input.clientOrderId}`) },
-    `CANCEL:${input.clientOrderId}`, fetcher, resolver);
+    ...executorContext(engine, key, key) }, key, fetcher, resolver);
 }

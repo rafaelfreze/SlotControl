@@ -4,7 +4,9 @@
 
 `Aporte em slots selecionados` é uma operação administrativa de capital no
 ledger CoinOps. Não é uma ordem Binance e não chama BUY, SELL, MARKET, TP ou
-cancelamento. Os modos preexistentes de gain, saldo individual e aporte em
+cancelamento diretamente. Após aporte aplicado, o reconciliador oficial
+atualiza a NEXT BUY ainda sem fill no mesmo preço, conforme o
+[protocolo de refresh](./COINOPS_NEXT_BUY_CAPITAL_REFRESH.md). Os modos preexistentes de gain, saldo individual e aporte em
 todos os slots permanecem disponíveis.
 
 O ADMIN escolhe uma conta, um único motor e de 1 a 25 slots físicos. A
@@ -21,7 +23,9 @@ soma das parcelas precisa ser exatamente igual ao total do batch.
   slot, com valor, estado observado, sequência da operação e estado
   `PENDING`, `APPLIED` ou `CANCELLED`.
 - Um slot sem posição OPEN recebe o crédito em `balance_quote` e
-  `contribution_quote` imediatamente. Isso não agenda nem cria uma entrada.
+  `contribution_quote` imediatamente. Isso não cria BUY adicional. Se já houver
+  NEXT BUY sem fill nesse slot, o reconciliador redimensiona a ordem após
+  confirmar caps, saldo e cancelamento seguro; os demais aguardam a estratégia.
 - Um slot OPEN permanece byte a byte com o mesmo saldo operacional,
   quantidade, entry, TP, NEXT BUY, P&L e gain do ciclo. Sua alocação fica
   `PENDING`.

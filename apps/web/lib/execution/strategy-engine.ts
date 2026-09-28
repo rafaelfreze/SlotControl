@@ -23,7 +23,9 @@ export type StrategyCandidate = {
   entryOrigin?: "GRID" | "REENTRY";
   state: "PLANNED" | "ARMED" | "PARTIALLY_FILLED" | "OPEN" | "CLOSED" | "MISSED";
 };
-export type StrategyResidentBuy = { candidateId: string; executedQuantity: number };
+export type StrategyResidentBuy = { candidateId: string; executedQuantity: number;
+  /** LIVE adapter supplies this only after ledger contribution, sizing and executor preflight. */
+  capitalRefresh?: { quantityBefore: number; quantityAfter: number; notional: number } };
 export type StrategyDecision = {
   decision_id: string;
   strategy_version: typeof STRATEGY_VERSION;
@@ -199,7 +201,19 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
   }
   const next = ranked.find((candidate) => candidate.buyPrice < observedFloor);
   if (!next) return { decision: wait(context, null, "NO_UNCROSSED_ENTRY_CANDIDATE"), missedCandidateIds, nextCandidateId: null };
-  if (current?.id === next.id) return { decision: wait(context, current, "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT"), missedCandidateIds, nextCandidateId: current.id };
+  if (current?.id === next.id) {
+    const refresh = residentBuy?.capitalRefresh;
+    if (refresh) {
+      if (![refresh.quantityBefore, refresh.quantityAfter, refresh.notional].every((v) => Number.isFinite(v) && v > 0)
+        || refresh.quantityAfter <= refresh.quantityBefore || refresh.notional > candidateBalance(next) + 1e-8
+        || Math.abs(refresh.quantityAfter * next.buyPrice - refresh.notional) > 1e-8)
+        throw new Error("COINOPS_STRATEGY_CAPITAL_REFRESH_INVALID");
+      return { decision: decision(context, next, "CANCEL_REPLACE_NEXT_BUY", next.buyPrice,
+        refresh.notional, 50, "APPLIED_CONTRIBUTION_UPDATES_RESIDENT_BUY", "ARMED"),
+        missedCandidateIds, nextCandidateId: current.id };
+    }
+    return { decision: wait(context, current, "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT"), missedCandidateIds, nextCandidateId: current.id };
+  }
   return {
     decision: decision(context, next, current ? "CANCEL_REPLACE_NEXT_BUY" : "ARM_NEXT_BUY", next.buyPrice, candidateBalance(next), 50,
       current ? "HIGHER_VALID_ENTRY_HAS_PRIORITY" : "HIGHEST_VALID_ENTRY_BELOW_MARKET", "ARMED"),

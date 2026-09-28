@@ -3,7 +3,8 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import ts from "typescript";
-import { assertExecutorAccountBinding, resolveExecutorShard, withExecutorShard } from "./executor-shards-server.ts";
+import { assertExecutorAccountBinding, parseExecutorValidatedVersions, resolveExecutorShard,
+  resolveExecutorValidatedVersion, withExecutorShard } from "./executor-shards-server.ts";
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import { readLiveExecutorState, createLiveExecutorOrder } from "./live-executor-transport.ts";
 import { loadLiveExecutorStatus } from "./live-executor-health.ts";
@@ -16,6 +17,108 @@ const environment = { LIVE_EXECUTOR_EGRESS_IP: "46.101.104.48", LIVE_EXECUTOR_BA
 const target = resolveExecutorShard("executor-02", environment);
 const engine = { operator_id: "operator-fixture", exchange_account_id: "account-fixture",
   trading_engine_id: "engine-fixture", symbol: "BTCBRL", quote_asset: "BRL" };
+const rolloutStart = "2026-09-28T04:00:00.000Z", rolloutUntil = "2026-09-28T05:00:00.000Z";
+const rolloutNow = Date.parse(rolloutStart) + 30_000;
+const rolloutBounds = { COINOPS_EXECUTOR_01_VERSION_TRANSITION_START: rolloutStart,
+  COINOPS_EXECUTOR_01_VERSION_TRANSITION_UNTIL: rolloutUntil,
+  COINOPS_EXECUTOR_02_VERSION_TRANSITION_START: rolloutStart,
+  COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL: rolloutUntil };
+
+test("validated releases allow at most two exact bounded versions and reject malformed lists per shard", () => {
+  for (const valid of ["release-a", "release-a,release-b", "a".repeat(100), `${"a".repeat(100)},${"b".repeat(100)}`]) {
+    assert.deepEqual(parseExecutorValidatedVersions(valid), valid.split(","));
+    assert.equal(resolveExecutorShard("executor-01", { ...environment,
+      ...(valid.includes(",") ? rolloutBounds : {}), LIVE_EXECUTOR_VALIDATED_VERSION: valid }, rolloutNow).validatedVersion, valid);
+    assert.equal(resolveExecutorShard("executor-02", { ...environment,
+      ...(valid.includes(",") ? rolloutBounds : {}),
+      COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify({ "executor-02": {
+        ...configs["executor-02"], validatedVersion: valid } }) }, rolloutNow).validatedVersion, valid);
+  }
+  for (const invalid of ["", "a,b,c", "a,", ",a", "a,,b", "a,a", "a, b", "a,b\n", "a,*",
+    "a,b/other", "a".repeat(101), ["a", "b"], null, 123]) {
+    assert.equal(parseExecutorValidatedVersions(invalid), null);
+    assert.throws(() => resolveExecutorShard("executor-02", { ...environment,
+      COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify({ "executor-02": {
+        ...configs["executor-02"], validatedVersion: invalid } }) }), /CONFIG_INVALID/);
+    assert.equal(resolveExecutorShard("executor-01", { ...environment,
+      COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify({ "executor-02": {
+        ...configs["executor-02"], validatedVersion: invalid } }) }).validatedVersion, "legacy01");
+  }
+});
+
+test("per-shard next release combines two exact versions without changing protected routing configuration", () => {
+  const rolling = { ...environment, ...rolloutBounds, COINOPS_EXECUTOR_01_NEXT_VALIDATED_VERSION: "new01",
+    COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: "new02", COINOPS_EXECUTOR_03_NEXT_VALIDATED_VERSION: "malformed,*" };
+  const original = structuredClone(rolling);
+  const first = resolveExecutorShard("executor-01", rolling, rolloutNow);
+  const second = resolveExecutorShard("executor-02", rolling, rolloutNow);
+  assert.equal(first.validatedVersion, "legacy01,new01");
+  assert.equal(second.validatedVersion, "shard02,new02");
+  assert.deepEqual({ ...first, validatedVersion: "legacy01" }, resolveExecutorShard("executor-01", environment));
+  assert.deepEqual({ ...second, validatedVersion: "shard02" }, target);
+  assert.deepEqual(rolling, original, "resolving the next version never rewrites env/secrets");
+  assert.equal(resolveExecutorShard("executor-02", { ...rolling,
+    COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: "shard02" }, rolloutNow).validatedVersion, "shard02");
+});
+
+test("malformed next release blocks only its own shard and cannot bootstrap a missing base", () => {
+  for (const invalid of ["", " ", "a,b", "a,a", "new*", "new\n", "a".repeat(101)]) {
+    const badSecond = { ...environment, COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: invalid,
+      COINOPS_EXECUTOR_02_VERSION_TRANSITION_START: rolloutStart,
+      COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL: rolloutUntil };
+    assert.throws(() => resolveExecutorShard("executor-02", badSecond), /CONFIG_INVALID/);
+    assert.equal(resolveExecutorShard("executor-01", badSecond).validatedVersion, "legacy01");
+    const badFirst = { ...environment, COINOPS_EXECUTOR_01_NEXT_VALIDATED_VERSION: invalid,
+      COINOPS_EXECUTOR_01_VERSION_TRANSITION_START: rolloutStart,
+      COINOPS_EXECUTOR_01_VERSION_TRANSITION_UNTIL: rolloutUntil };
+    assert.throws(() => resolveExecutorShard("executor-01", badFirst), /CONFIG_INVALID/);
+    assert.equal(resolveExecutorShard("executor-02", badFirst).validatedVersion, "shard02");
+  }
+  for (const base of [undefined, "old,other"]) {
+    assert.throws(() => resolveExecutorShard("executor-01", { ...environment,
+      ...rolloutBounds,
+      LIVE_EXECUTOR_VALIDATED_VERSION: base, COINOPS_EXECUTOR_01_NEXT_VALIDATED_VERSION: "next" }), /CONFIG_INVALID/);
+    assert.throws(() => resolveExecutorShard("executor-02", { ...environment,
+      ...rolloutBounds,
+      COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: "next",
+      COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify({ "executor-02": {
+        ...configs["executor-02"], validatedVersion: base } }) }), /CONFIG_INVALID/);
+  }
+});
+
+test("version transition is explicit, bounded, per request and becomes only the new release at the exact cutoff", () => {
+  const env = { ...environment, ...rolloutBounds, COINOPS_EXECUTOR_01_NEXT_VALIDATED_VERSION: "new01",
+    COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: "new02" };
+  const start = Date.parse(rolloutStart), until = Date.parse(rolloutUntil);
+  for (const [time, expected] of [[start - 1, "legacy01"], [start, "legacy01,new01"],
+    [until - 1, "legacy01,new01"], [until, "new01"], [until + 365 * 86_400_000, "new01"]] as const)
+    assert.equal(resolveExecutorShard("executor-01", env, time).validatedVersion, expected);
+  assert.equal(resolveExecutorShard("executor-02", env, until).validatedVersion, "new02");
+  assert.equal(resolveExecutorValidatedVersion("executor-01", "legacy01,new01", rolloutBounds, until), "new01");
+  assert.equal(resolveExecutorValidatedVersion("executor-01", "legacy01", {}, until), "legacy01");
+  assert.equal(resolveExecutorValidatedVersion("executor-01", undefined, {}, until), undefined);
+  const sixHours = { ...env, COINOPS_EXECUTOR_01_VERSION_TRANSITION_UNTIL: "2026-09-28T10:00:00Z" };
+  assert.equal(resolveExecutorShard("executor-01", sixHours, start).validatedVersion, "legacy01,new01");
+  assert.equal(resolveExecutorShard("executor-01", { ...env,
+    COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL: "malformed" }, start).validatedVersion, "legacy01,new01");
+});
+
+test("invalid or incomplete transition bounds never create an indefinite or cross-shard version exception", () => {
+  const env = { ...environment, ...rolloutBounds, COINOPS_EXECUTOR_01_NEXT_VALIDATED_VERSION: "new01" };
+  for (const until of [undefined, "", "2026-09-28T05:00:00", "2026-09-28T05:00:00+00:00",
+    "2026-02-30T05:00:00Z", "2026-09-28T05:00:00Z\n", rolloutStart, "2026-09-28T03:59:59Z",
+    "2026-09-28T10:00:00.001Z"])
+    assert.throws(() => resolveExecutorShard("executor-01", { ...env,
+      COINOPS_EXECUTOR_01_VERSION_TRANSITION_UNTIL: until }, rolloutNow), /CONFIG_INVALID/);
+  assert.throws(() => resolveExecutorShard("executor-01", { ...env,
+    COINOPS_EXECUTOR_01_VERSION_TRANSITION_START: undefined }, rolloutNow), /CONFIG_INVALID/);
+  assert.throws(() => resolveExecutorShard("executor-01", env, NaN), /CONFIG_INVALID/);
+  assert.throws(() => resolveExecutorShard("executor-01", { ...environment,
+    LIVE_EXECUTOR_VALIDATED_VERSION: "legacy01,new01" }, rolloutNow), /CONFIG_INVALID/);
+  assert.throws(() => resolveExecutorShard("executor-01", { ...environment,
+    COINOPS_EXECUTOR_01_NEXT_VALIDATED_VERSION: "new01" }, rolloutNow), /CONFIG_INVALID/);
+  assert.throws(() => resolveExecutorShard("executor-01", { ...environment, ...rolloutBounds }, rolloutNow), /CONFIG_INVALID/);
+});
 
 test("shard configuration has explicit01 compatibility and never falls back02", () => {
   assert.equal(resolveExecutorShard("executor-01", environment).ip, "46.101.104.48");

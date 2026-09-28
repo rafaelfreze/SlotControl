@@ -10,6 +10,14 @@ const BASE = "https://api.binance.com";
 const OWNED_ID = /^COR1-(BTC|SOL)-([1-9]|1[0-9]|2[0-5])-([1-9][0-9]*)-(BUY|SELL)-[a-f0-9]{14}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,12})?$/;
 const ACTIVE = new Set(["NEW", "PARTIALLY_FILLED"]);
+const TERMINAL = new Set(["FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"]);
+
+/** Facts that safely end an ONLY_NEW cancellation attempt. A fill is returned
+ * for reconciliation, never represented as a successful zero-fill cancel. */
+export function unfilledCancelResolved(order) {
+  return Boolean(order && (TERMINAL.has(order.status)
+    || order.status === "PARTIALLY_FILLED" && order.executedQuantity > 0));
+}
 
 function positive(value) { return typeof value === "number" && Number.isFinite(value) && value > 0; }
 function exactStep(value, step) { return Math.abs(value / step - Math.round(value / step)) < 1e-7; }
@@ -254,21 +262,36 @@ export class BinanceLiveTransport {
     throw new ExecutorRejection("EXECUTOR_ORDER_POST_UNKNOWN", 503);
   }
 
-  async cancelOwnedBuy({ symbol, clientOrderId, orderId }, { tradingEnabled, killSwitch }) {
+  async cancelOwnedBuy({ symbol, clientOrderId, orderId, onlyUnfilled = false }, { tradingEnabled, killSwitch }) {
     this.ownership(symbol, clientOrderId, "BUY");
+    if (typeof onlyUnfilled !== "boolean") throw new ExecutorRejection("EXECUTOR_CANCEL_MODE_INVALID", 400);
     if (!tradingEnabled) throw new ExecutorRejection("EXECUTOR_TRADING_DISABLED", 403);
     const current = await this.queryOrder(symbol, clientOrderId, orderId);
     if (!current) throw new ExecutorRejection("EXECUTOR_ORDER_NOT_FOUND", 503);
+    if (onlyUnfilled && unfilledCancelResolved(current)) return current;
+    if (onlyUnfilled && (current.status !== "NEW" || current.executedQuantity !== 0
+      || current.cumulativeQuoteQuantity !== 0))
+      throw new ExecutorRejection("EXECUTOR_CANCEL_UNFILLED_UNPROVEN", 503);
     if (!ACTIVE.has(current.status)) throw new ExecutorRejection("EXECUTOR_CANCEL_NOT_ACTIVE", 403);
     await this.safetySnapshot(symbol);
-    const response = await this.signed("DELETE", "/api/v3/order", {
-      symbol, orderId: String(orderId), origClientOrderId: clientOrderId,
-      ...(current.status === "NEW" ? { cancelRestrictions: "ONLY_NEW" } : {}) });
+    let response;
+    try {
+      response = await this.signed("DELETE", "/api/v3/order", {
+        symbol, orderId: String(orderId), origClientOrderId: clientOrderId,
+        ...(onlyUnfilled || current.status === "NEW" ? { cancelRestrictions: "ONLY_NEW" } : {}) });
+    } catch (error) {
+      if (!onlyUnfilled) throw error;
+      // A lost DELETE acknowledgement is observed by exact order identity;
+      // no retry DELETE or replacement order is authorized here.
+      const recovered = await this.queryOrder(symbol, clientOrderId, orderId);
+      if (unfilledCancelResolved(recovered)) return recovered;
+      throw new ExecutorRejection("EXECUTOR_CANCEL_OUTCOME_UNKNOWN", 503);
+    }
     if (response.ok && response.body.origClientOrderId === clientOrderId
       && String(response.body.orderId) === String(orderId) && response.body.status === "CANCELED")
       return normalizeOrder({ ...response.body, clientOrderId }, clientOrderId, this.engine);
     const recovered = await this.queryOrder(symbol, clientOrderId, orderId);
-    if (recovered?.status === "CANCELED") return recovered;
+    if (recovered?.status === "CANCELED" || onlyUnfilled && unfilledCancelResolved(recovered)) return recovered;
     throw new ExecutorRejection("EXECUTOR_CANCEL_OUTCOME_UNKNOWN", 503);
   }
 }

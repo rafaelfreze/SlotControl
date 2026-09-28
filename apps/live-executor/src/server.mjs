@@ -7,7 +7,7 @@ import { assertPrivateDirectory, ExecutorRejection, sha256, verifySignedRequest,
   withDryRunIdempotency, withWriteIdempotency } from "./security.mjs";
 import { getProductionRestrictedSpotStatus, getPublicMarket, observeEgressIp } from "./binance-readonly.mjs";
 import { buildExecutorDryRun, EXECUTOR_CAPS } from "./preparation.mjs";
-import { BinanceLiveTransport } from "./binance-live.mjs";
+import { BinanceLiveTransport, unfilledCancelResolved } from "./binance-live.mjs";
 import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableIntent,
   assertExecutorShardContext, assertRegistryShard } from "./account-registry.mjs";
 import { assertCredentialScope, assertNoExchangeOpenOrders, credentialAccountIds, inspectBinanceCredential, loadCredential, refreshCredential,
@@ -413,6 +413,9 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           writeJson(response, 200, { ...scope, symbol, balances, filters: snapshot.filters,
             price: snapshot.price, bnb_brl_price: snapshot.bnbBrlPrice,
             bnb_quote_price: snapshot.bnbBrlPrice,
+            supports_unfilled_buy_cancel: true,
+            execution_caps: { engine: engine.hard_cap_quote,
+              account: engine.account_cap_quote, max_order: engine.max_order_quote },
             open_orders: snapshot.openOrders, observed_at: new Date(now()).toISOString() });
           return;
         }
@@ -441,7 +444,10 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           return;
         }
         if (path === "/v1/cancel-order") {
-          if (key !== `CANCEL:${input.clientOrderId}`) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_KEY_INVALID", 400);
+          if (input.onlyUnfilled !== undefined && typeof input.onlyUnfilled !== "boolean")
+            throw new ExecutorRejection("EXECUTOR_CANCEL_MODE_INVALID", 400);
+          const cancelKey = `${input.onlyUnfilled === true ? "CANCEL_UNFILLED" : "CANCEL"}:${input.clientOrderId}`;
+          if (key !== cancelKey) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_KEY_INVALID", 400);
           if (!flags.tradingEnabled) throw new ExecutorRejection("EXECUTOR_TRADING_DISABLED", 403);
           if (!expectedEgressIp || await observeEgressIp(fetcher) !== expectedEgressIp)
             throw new ExecutorRejection("EXECUTOR_SAFETY_GATE_NOT_READY", 503);
@@ -449,9 +455,10 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           const { result, replayed } = await withWriteIdempotency({ directory: join(stateDirectory, "cancels"),
             ...claim,
             recover: async () => { const order = await transport.queryOrder(symbol, input.clientOrderId, input.orderId);
-              return order?.status === "CANCELED" ? order : null; },
+              return order?.status === "CANCELED" || input.onlyUnfilled === true && unfilledCancelResolved(order)
+                ? order : null; },
             execute: () => transport.cancelOwnedBuy(input, flags) });
-          outcome = replayed ? "REPLAYED" : "CANCELED"; status = 200;
+          outcome = replayed ? "REPLAYED" : result.status === "CANCELED" ? "CANCELED" : "FILL_PRESERVED"; status = 200;
           writeJson(response, 200, { ...scope, order: result, replayed });
           return;
         }

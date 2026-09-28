@@ -25,6 +25,7 @@ import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
+import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -64,7 +65,7 @@ type Order = Scope & LedgerScope & { id: string; run_id: string; slot_id: string
   cumulative_quote: number | string; fee_base: number | string;
   fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>;
   trades_reconciled: boolean; submission_guarded_at: string | null;
-  strategy_decision_id: string | null };
+  strategy_decision_id: string | null; created_at: string };
 
 type Ledger = Awaited<ReturnType<typeof runRows>>;
 
@@ -454,16 +455,27 @@ function operationOrders(orders: Order[], slot: Slot) {
     && order.operation_sequence === slot.operation_sequence);
 }
 
-async function cancelOwnedEntry(service: Service, run: Run, order: Order) {
+async function cancelOwnedEntry(service: Service, run: Run, order: Order, onlyUnfilled = false) {
   if (order.side !== "BUY" || !order.exchange_order_id
     || !["NEW", "PARTIALLY_FILLED"].includes(order.status))
     throw new Error("COINOPS_LIVE_BUY_NOT_CANCELABLE");
   await renewLease(service, run);
-  const result = await cancelLiveExecutorOrder({ symbol: run.symbol,
-    clientOrderId: order.client_order_id, orderId: order.exchange_order_id }, run);
-  if (result.order.status !== "CANCELED") throw new Error("COINOPS_LIVE_BUY_CANCEL_UNCERTAIN");
+  try {
+    const result = await cancelLiveExecutorOrder({ symbol: run.symbol,
+      clientOrderId: order.client_order_id, orderId: order.exchange_order_id,
+      ...(onlyUnfilled ? { onlyUnfilled: true } : {}) }, run);
+    if (!onlyUnfilled && result.order.status !== "CANCELED") throw new Error("COINOPS_LIVE_BUY_CANCEL_UNCERTAIN");
+  } catch (error) {
+    if (!onlyUnfilled) throw error;
+    // A timeout is not a failed cancellation. Read the SAME order; never send
+    // another cancel/create based on the error alone.
+    await reconcileOrder(service, run, order);
+    if (order.status !== "CANCELED" && amount(order.executed_quantity) === 0) throw error;
+  }
   await reconcileOrder(service, run, order);
+  if (onlyUnfilled && amount(order.executed_quantity) > 0) return false;
   if (order.status !== "CANCELED") throw new Error("COINOPS_LIVE_BUY_CANCEL_UNRECONCILED");
+  return amount(order.executed_quantity) === 0 && amount(order.cumulative_quote) === 0 && order.trades_reconciled;
 }
 
 async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
@@ -770,6 +782,46 @@ async function assertAllPositionsProtected(run: Run, ledger: Ledger,
   await assertExchangeMatchesLedger(run, ledger.orders, state);
 }
 
+async function appliedCapitalSources(service: Service, run: Run, order: Order) {
+  const scopeQuery = (table: string) => service.from(table).select("id")
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("slot_number", order.slot_number)
+    .eq("quote_asset", run.quote_asset).gt("amount_quote", 0);
+  const [selective, allSlots] = await Promise.all([
+    scopeQuery("robot_v1_live_selective_contribution_allocations").eq("status", "APPLIED")
+      .gt("applied_at", order.created_at),
+    scopeQuery("robot_v1_live_adjustment_items").gt("created_at", order.created_at),
+  ]);
+  if (selective.error || allSlots.error) throw new Error("COINOPS_LIVE_CAPITAL_SOURCE_UNAVAILABLE");
+  return [...(selective.data ?? []).map((r) => `allocation:${r.id}`),
+    ...(allSlots.data ?? []).map((r) => `adjustment:${r.id}`)];
+}
+
+/** Audit completion is recoverable after a crash: the order ledger, not the
+ * presence/absence of an event, is the authoritative cancellation checkpoint. */
+async function confirmCapitalRefreshes(service: Service, run: Run, ledger: Ledger) {
+  const result = await service.from("robot_v1_live_events").select("event_type,slot_number,details")
+    .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+    .in("event_type", ["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"]);
+  if (result.error) throw new Error("COINOPS_LIVE_CAPITAL_AUDIT_UNAVAILABLE");
+  const confirmed = new Set((result.data ?? []).filter((r) => r.event_type.endsWith("CONFIRMED"))
+    .map((r) => r.details?.refresh_key));
+  for (const row of result.data ?? []) {
+    const d = row.details;
+    if (row.event_type !== "NEXT_BUY_CAPITAL_REFRESH_PLANNED" || !d || confirmed.has(d.refresh_key)) continue;
+    const old = ledger.orders.find((o) => o.client_order_id === d.old_client_order_id);
+    const next = ledger.orders.find((o) => o.client_order_id === d.new_client_order_id);
+    if (!old || !next || old.side !== "BUY" || next.side !== "BUY" || next.purpose !== "ENTRY"
+      || old.slot_id !== next.slot_id || old.operation_sequence !== next.operation_sequence
+      || old.status !== "CANCELED" || amount(old.executed_quantity) !== 0 || !old.trades_reconciled
+      || !next.exchange_order_id || !["NEW", "PARTIALLY_FILLED", "FILLED"].includes(next.status)
+      || amount(next.requested_quantity) !== d.new_quantity || amount(next.price) !== d.price) continue;
+    await event(service, run, `CAPITAL_REFRESH:${d.refresh_key}:CONFIRMED`, "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED",
+      row.slot_number, { ...d, old_status: old.status, old_executed_quantity: 0, new_status: next.status,
+        exchange_reconciled_at: new Date().toISOString() });
+  }
+}
+
 async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState) {
   await validateRunEngine(service, run);
@@ -787,6 +839,12 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   const activeBuys = ledger.orders.filter((item) => item.side === "BUY"
     && LIVE_ACTIVE_ORDER_STATUSES.has(item.status));
   if (activeBuys.length > 1) throw new Error("COINOPS_LIVE_DUPLICATE_ACTIVE_BUY");
+  for (const slot of ledger.slots) {
+    if (canRestoreUnfilledEntry(slot, operationOrders(ledger.orders, slot))) {
+      await renewLease(service, run);
+      await updateSlot(service, run, slot, { entry_state: "PLANNED" });
+    }
+  }
   const first = !ledger.orders.some((item) => item.side === "BUY");
   if (first) {
     const selected = ledger.slots.filter((item) => ranks.get(item.slot_number)?.eligibleForNewEntry)
@@ -807,6 +865,32 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   }
   const active = activeBuys[0];
   if (active && amount(active.executed_quantity) > 0) return "BUY_PARTIAL";
+  const reclaimed = active ? Math.max(0, amount(active.reserved_notional_brl) - amount(active.cumulative_quote)) : 0;
+  const activeSlot = ledger.slots.find((s) => s.id === active?.slot_id);
+  const observedActive = state.open_orders.find((o) => o.clientOrderId === active?.client_order_id
+    && o.id === active?.exchange_order_id && o.side === "BUY" && o.status === "NEW"
+    && o.executedQuantity === 0 && o.price === amount(active?.price));
+  if (active?.status === "NEW" && active.purpose === "ENTRY" && active.exchange_order_id
+    && observedActive && Math.abs(Date.now() - Date.parse(state.observed_at)) <= 30_000
+    && activeSlot?.entry_state === "PLANNED"
+    && amount(activeSlot.position_quantity) === 0 && active.operation_sequence === activeSlot.operation_sequence
+    && operationOrders(ledger.orders, activeSlot).every((o) => o.side === "BUY" && amount(o.executed_quantity) === 0)) {
+    // PREPARED was persisted before the ARMED update when a process died.
+    // Restore only a confirmed resident of this exact current operation.
+    await renewLease(service, run);
+    await updateSlot(service, run, activeSlot, { entry_state: "ARMED" });
+  }
+  const activeAccount = ledger.accounts.find((a) => a.slot_number === activeSlot?.slot_number);
+  const refresh = active && activeSlot && activeAccount ? planLiveEntryCapitalRefresh({
+    order: active, slotState: activeSlot.entry_state, positionQuantity: amount(activeSlot.position_quantity),
+    balance: amount(activeAccount.balance_brl), price: amount(activeSlot.target_buy_price),
+    ...state.filters, spendable: spendable(amount(activeAccount.balance_brl), reclaimed),
+    freeQuoteAfterCancel: (state.balances.find((b) => b.asset === run.quote_asset)?.free ?? 0) + reclaimed,
+    engineCap: amount(prep.max_total_exposure_brl), accountCap: globalCap, maxOrder: amount(prep.max_order_notional_brl),
+    supportsUnfilledCancel: state.supports_unfilled_buy_cancel, executorCaps: state.execution_caps,
+  }) : null;
+  const capitalSources = refresh?.status === "REPLACE" && active
+    ? await appliedCapitalSources(service, run, active) : [];
   const candidates = ledger.slots.map((slot) => {
     const account = ledger.accounts.find((row) => row.slot_number === slot.slot_number)!;
     const rank = ranks.get(slot.slot_number)!;
@@ -817,7 +901,10 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   });
   const contextKey = `QUEUE:${ledger.orders.filter((item) => item.side === "BUY").length}`;
   const observedFloor = state.price.price;
-  const resident = active ? { candidateId: active.slot_id, executedQuantity: amount(active.executed_quantity) } : null;
+  const resident = active ? { candidateId: active.slot_id, executedQuantity: amount(active.executed_quantity),
+    ...(refresh?.status === "REPLACE" && capitalSources.length ? { capitalRefresh: {
+      quantityBefore: amount(active.requested_quantity), quantityAfter: refresh.quantity, notional: refresh.notional,
+    } } : {}) } : null;
   const planned = run.entry_regime === "POST_ATH"
     ? planStrategyPostAthNextEntry(context(run, contextKey), candidates, observedFloor, resident)
     : planStrategyNextEntry(context(run, contextKey), candidates, observedFloor, resident);
@@ -835,25 +922,48 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   if (!selected) throw new Error("COINOPS_LIVE_NEXT_SLOT_MISSING");
   await persistStrategyDecision(service, owned(run), "REAL", planned.decision,
     selected.operation_sequence);
+  const revision = Math.max(0, ...ledger.orders.filter((item) => item.slot_id === selected.id
+    && item.side === "BUY").map((item) => item.revision)) + 1;
+  if (active && refresh?.status === "REPLACE"
+    && planned.decision.reason === "APPLIED_CONTRIBUTION_UPDATES_RESIDENT_BUY") {
+    const nextClientId = liveClientOrderId(run.id, run.asset, selected.slot_number,
+      selected.operation_sequence, "BUY", revision, run.engine);
+    const refreshKey = `${active.client_order_id}:${nextClientId}:${refresh.quantity}`;
+    await event(service, run, `CAPITAL_REFRESH:${refreshKey}:PLANNED`, "NEXT_BUY_CAPITAL_REFRESH_PLANNED",
+      selected.slot_number, { refresh_key: refreshKey, old_client_order_id: active.client_order_id,
+        new_client_order_id: nextClientId, old_quantity: amount(active.requested_quantity),
+        new_quantity: refresh.quantity, price: amount(selected.target_buy_price),
+        old_notional_quote: amount(active.reserved_notional_brl), new_notional_quote: refresh.notional,
+        slot_balance_quote: amount(activeAccount!.balance_brl), quote_asset: run.quote_asset,
+        operation_sequence: selected.operation_sequence, capital_sources: capitalSources });
+  }
   if (active) {
     if (active.status === "PREPARED") throw new Error("COINOPS_LIVE_PREPARED_BUY_UNRESOLVED");
-    await cancelOwnedEntry(service, run, active);
+    const canceledEmpty = await cancelOwnedEntry(service, run, active, state.supports_unfilled_buy_cancel === true);
+    // A fill racing the cancel wins. Do not mark its slot PLANNED, reclaim its
+    // capital, or send a supplemental BUY. The same official flow protects it.
+    if (!canceledEmpty) return "ENTRY_FILLED_DURING_REPLACEMENT";
     const previous = ledger.slots.find((item) => item.id === active.slot_id)!;
+    await renewLease(service, run);
     await updateSlot(service, run, previous, { entry_state: "PLANNED" });
   }
-  const reclaimed = active ? Math.max(0, amount(active.reserved_notional_brl) - amount(active.cumulative_quote)) : 0;
   const quantity = floorStep(spendable(amount(ledger.accounts.find((item) => item.slot_number === selected.slot_number)!.balance_brl), reclaimed)
     / amount(selected.target_buy_price), state.filters.quantityStep);
   if (quantity * amount(selected.target_buy_price) < state.filters.minNotional) return "CAPACITY_HOLD";
   if (quantity < state.filters.minQuantity || quantity > state.filters.maxQuantity)
     throw new Error("COINOPS_LIVE_NEXT_ENTRY_FILTER_INVALID");
-  const revision = Math.max(0, ...ledger.orders.filter((item) => item.slot_id === selected.id
-    && item.side === "BUY").map((item) => item.revision)) + 1;
   const order = await prepareOrder(service, run, selected, planned.decision, "BUY", "ENTRY",
     revision, quantity, null, amount(selected.target_buy_price));
   ledger.orders.push(order);
   await updateSlot(service, run, selected, { entry_state: "ARMED" });
-  await reconcileOrder(service, run, order);
+  try {
+    await reconcileOrder(service, run, order);
+  } catch (error) {
+    if (planned.decision.reason !== "APPLIED_CONTRIBUTION_UPDATES_RESIDENT_BUY" || !order.submission_guarded_at) throw error;
+    // Query the persisted ID after a lost response; submission_guarded_at
+    // prevents a second dispatch when the outcome cannot be proven.
+    await reconcileOrder(service, run, order);
+  }
   return "NEXT_BUY_ARMED";
 }
 
@@ -899,7 +1009,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     state = await readLiveExecutorState(run);
     const next = await armNextEntry(service, run, entered, state);
     // A MARKET can fill in the same invocation. Protect it before returning.
-    if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED") {
+    if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED" || next === "ENTRY_FILLED_DURING_REPLACEMENT") {
       stage = "ASSERT_NEW_POSITION";
       const after = await runRows(service, run);
       state = await readLiveExecutorState(run);
@@ -907,6 +1017,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       state = await readLiveExecutorState(run);
       await assertAllPositionsProtected(run, after, state);
     }
+    await confirmCapitalRefreshes(service, run, await runRows(service, run));
     stage = "AUDIT_EVENT";
     await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
       "RECONCILED", null, { source, next, strategy_version: STRATEGY_VERSION });

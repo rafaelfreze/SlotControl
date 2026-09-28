@@ -1,5 +1,6 @@
 import { readLiveExecutorHealth, type ExecutorEngineScope } from "./live-executor-transport.ts";
-import { resolveExecutorForAccount, type ExecutorAccountResolver } from "./executor-shards-server.ts";
+import { parseExecutorValidatedVersions, resolveExecutorForAccount, resolveExecutorValidatedVersion,
+  type ExecutorAccountResolver } from "./executor-shards-server.ts";
 
 export type LiveExecutorHealth = {
   healthy: boolean;
@@ -48,8 +49,13 @@ export async function loadLiveExecutorStatus(
     });
     const health = engine ? await readLiveExecutorHealth(engine, fetcher, async () => target!)
       : await response!.json() as LiveExecutorHealth;
+    // The unscoped legacy banner must use the same bounded version policy as
+    // engine-scoped health. Never mistake its compatibility alias for a release.
+    const acceptedVersions = parseExecutorValidatedVersions(engine ? validatedVersion
+      : resolveExecutorValidatedVersion("executor-01", validatedVersion));
+    const actualVersion = health.actual_executor_version === undefined ? health.version : health.actual_executor_version;
     const verified = (engine || response!.ok) && health.healthy === true
-      && Boolean(validatedVersion) && health.version === validatedVersion
+      && acceptedVersions !== null && acceptedVersions.includes(actualVersion)
       && health.environment === (engine ? "REAL" : "BINANCE_PRODUCTION_PREPARED")
       && health.binance_connectivity === "OK"
       && health.account_permission === "SPOT_RESTRICTED"
