@@ -8,7 +8,8 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
   const calls: string[] = [];
   const operator = { id: "operator", product_id: "product", tenant_id: "tenant", user_id: "user", kill_switch: false };
   const account = { id: "account", status: accountStatus, kill_switch: accountStatus !== "ACTIVE",
-    is_legacy_default: false, credential_ref: "fixture-vault" };
+    is_legacy_default: false, credential_ref: "fixture-vault", executor_shard_id: "executor-02",
+    onboarding_environment: environment };
   const engine = { operator_id: "operator", exchange_account_id: "account", trading_engine_id: "engine",
     environment, base_asset: "SOL", symbol: environment === "REAL" ? "SOLBRL" : "SOLUSDT",
     quote_asset: environment === "REAL" ? "BRL" : "USDT", hard_cap_quote: 100,
@@ -44,6 +45,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
       operatorExecutorAdmin: async () => { calls.push("promote"); return { status: "ACTIVE", trading_engine_id: "engine" }; },
     },
     "@/lib/execution/operator-engine-plan": {},
+    "@/lib/execution/engine-account-catalog": {},
     "@/lib/execution/operator-context-server": { resolveOperatorEngine: async () => engine },
     "@/lib/execution/robot-v1-live-server": { advanceLiveRun: async () => { calls.push("start"); return {}; } },
     "@/lib/execution/robot-v1-testnet-server": { startTestnetRun: async () => { calls.push("start"); return "cycle"; } },
@@ -84,7 +86,7 @@ for (const environment of ["REAL", "TESTNET"] as const) {
     const healthy = fixture(environment);
     assert.equal((await healthy.run()).body.status, "ACTIVATING");
     assert.deepEqual(healthy.calls.slice(0, 3), ["identity", "capacity", "write:exchange_accounts"]);
-    assert.ok(healthy.calls.includes("start"));
+    assert.equal(healthy.calls.includes("start"), environment === "TESTNET");
   });
   test(`${environment} existing ACTIVE run never depends on capacity or identity admission`, async () => {
     const scenario = fixture(environment, "CAPACITY_UNKNOWN", true, "COINOPS_BINANCE_IDENTITY_REQUIRED");

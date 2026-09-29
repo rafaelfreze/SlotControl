@@ -6,7 +6,7 @@ export const revalidate = 0;
 export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 export const preferredRegion = "gru1";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function GET(request: NextRequest) {
   return handleLiveCron(request, "EXECUTION");

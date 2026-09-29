@@ -5,6 +5,9 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
   return status === "ACTIVE" && reconciledStatus === "OK"
     && ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
       "COINOPS_LIVE_EXECUTOR_READ_STALE",
+      // Only after the guarded reconciler has proved an undispatched TP,
+      // created it with the original client ID, and protected every position.
+      "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN",
       // Eligibility only: the guarded resume must still prove fresh executor
       // health, exchange/ledger agreement, protected positions and hard caps.
       "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",

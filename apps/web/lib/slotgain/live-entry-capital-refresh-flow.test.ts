@@ -8,6 +8,7 @@ import * as strategy from "../execution/strategy-engine.ts";
 import * as capitalRefresh from "../execution/live-entry-capital-refresh.ts";
 import * as priceInvariant from "../execution/strategy-price-invariant.ts";
 import * as shortcut from "../execution/live-reconciliation-shortcut.ts";
+import * as unsentTp from "../execution/live-unsent-tp-recovery.ts";
 import * as scope from "../execution/operator-context.ts";
 
 type Row = Record<string, unknown>;
@@ -67,6 +68,7 @@ function harness(options: Options = {}) {
   const tables: Record<string, Row[]> = {
     operators: [{ ...identity, status: "ACTIVE" }], trading_engines: [engine], robot_v1_live_runs: [run],
     robot_v1_live_slots: slots, robot_v1_live_slot_accounts: accounts, robot_v1_live_orders: orders,
+    robot_v1_strategy_decisions: [],
     robot_v1_live_preparations: [{ ...identity, live_enabled: true, kill_switch: false,
       max_order_notional_brl: 100, max_total_exposure_brl: 1000 }],
     account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [],
@@ -178,6 +180,7 @@ function harness(options: Options = {}) {
   const dependencies: Record<string, unknown> = {
     "./robot-v1-live-cycle": cycle, "./strategy-engine": strategy, "./live-entry-capital-refresh": capitalRefresh,
     "./strategy-price-invariant": priceInvariant, "./live-reconciliation-shortcut": shortcut,
+    "./live-unsent-tp-recovery": unsentTp,
     "./operator-context": scope,
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
     "./operator-context-server": { resolveOperatorEngine: async () => engine },
@@ -219,8 +222,8 @@ function harness(options: Options = {}) {
       },
       createLiveExecutorOrder: async (input: Row) => {
         calls.push({ kind: "create", input });
-        assert.equal(input.side, "BUY");
-        assert.equal(input.purpose, "ENTRY");
+        assert.ok(["BUY", "SELL"].includes(String(input.side)));
+        assert.ok(["ENTRY", "TP"].includes(String(input.purpose)));
         assert.equal(input.type, "LIMIT");
         assert.ok(!exchange.has(String(input.clientOrderId)), "duplicate exchange write");
         const created = { symbol: input.symbol, clientOrderId: input.clientOrderId, side: input.side,
@@ -377,6 +380,48 @@ test("LIVE guarded PREPARED missing on exchange is unknown, not permission to re
   await assert.rejects(h.runtime.reconcileOrder(h.service, h.run, prepared), /COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN/);
   assert.deepEqual(h.calls.map((c) => c.kind), ["read"]);
   h.unchangedOpen();
+});
+
+test("LIVE old guarded TP with exact PENDING decision uses the original client ID once", async () => {
+  const h = harness();
+  const tp = h.orders[1];
+  tp.status = "PREPARED";
+  tp.exchange_order_id = null;
+  tp.submission_guarded_at = new Date(Date.now() - 4 * 60_000).toISOString();
+  h.exchange.delete(String(tp.client_order_id));
+  h.tables.robot_v1_strategy_decisions.push({ ...h.run,
+    id: "decision-row", decision_id: tp.strategy_decision_id,
+    cycle_id: h.run.id, slot_id: tp.slot_id,
+    operation_sequence: tp.operation_sequence, action_type: "CREATE_TP",
+    environment: "REAL", result: "PENDING", dispatched_at: null,
+    exchange_ack_at: null, completed_at: null });
+  const recovered = await h.runtime.reconcileOrder(h.service, h.run, tp);
+  assert.equal(recovered.status, "NEW");
+  assert.equal(h.calls.filter((call) => call.kind === "create").length, 1);
+  assert.equal(h.calls.find((call) => call.kind === "create")?.input?.clientOrderId,
+    tp.client_order_id);
+  assert.equal(h.writes.filter((write) => write.table === "robot_v1_live_orders"
+    && write.values.submission_guarded_at).length, 0, "immutable guard stays untouched");
+  await h.runtime.reconcileOrder(h.service, h.run, tp);
+  assert.equal(h.calls.filter((call) => call.kind === "create").length, 1);
+});
+
+test("LIVE guarded TP with dispatched decision remains blocked", async () => {
+  const h = harness();
+  const tp = h.orders[1];
+  tp.status = "PREPARED";
+  tp.exchange_order_id = null;
+  tp.submission_guarded_at = new Date(Date.now() - 4 * 60_000).toISOString();
+  h.exchange.delete(String(tp.client_order_id));
+  h.tables.robot_v1_strategy_decisions.push({ ...h.run,
+    id: "decision-row", decision_id: tp.strategy_decision_id,
+    cycle_id: h.run.id, slot_id: tp.slot_id,
+    operation_sequence: tp.operation_sequence, action_type: "CREATE_TP",
+    environment: "REAL", result: "DISPATCHED", dispatched_at: tp.submission_guarded_at,
+    exchange_ack_at: null, completed_at: null });
+  await assert.rejects(h.runtime.reconcileOrder(h.service, h.run, tp),
+    /COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN/);
+  assert.equal(h.calls.filter((call) => call.kind === "create").length, 0);
 });
 
 for (const options of [{ staleCaps: true }, { noContribution: true }, { openContributionOnly: true }]) {

@@ -101,3 +101,23 @@ todos os shards, incidentes/deliveries e os nove engines LIVE sem mudança de
 ordens, kill switches ou estratégia. Para rollback, retornar a Vercel ao SHA
 anterior (removendo o cron); manter as duas tabelas como trilha histórica.
 Nunca fazer DROP de incidente ou reverter ordens por causa do watchdog.
+# TP PREPARED após timeout na ativação (COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN)
+
+Se a ativação REAL expirar, o primeiro processamento financeiro ocorre no cron,
+com prazo próprio. O reconciliador mantém o motor isolado enquanto não houver
+prova de resultado. Para um TP protegido por `submission_guarded_at` sem ordem
+na Binance, recuperação automática só é permitida com o **mesmo**
+`clientOrderId`, lease exclusivo, guard antigo (ao menos 3 minutos) e decisão
+`CREATE_TP` do mesmo ciclo/slot/operação ainda `PENDING`, sem
+`dispatched_at`, ACK ou conclusão. Isso prova que o fluxo oficial não chegou
+ao executor: o marcador de despacho é persistido antes de qualquer pedido
+`/v1/create-order`. O executor consulta a Binance primeiro e mantém seu claim
+durável contra segundo POST incerto. BUY guardado, decisão já despachada,
+evidência ausente, identidade divergente ou leitura falha continuam
+`BLOCKED_SAFE`; nunca liberar apenas porque GET retornou vazio.
+
+Após o TP aparecer no executor e no ledger, validar posição coberta, preço,
+reconciliation e alertas. O resume server-side só abre o BUY gate depois da
+checagem completa; o Watchdog confirma e encerra o incidente separadamente.
+Regressões: `live-unsent-tp-recovery.test.ts`,
+`live-entry-capital-refresh-flow.test.ts`, `live-read-recovery.test.ts`.

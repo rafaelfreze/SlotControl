@@ -77,6 +77,7 @@ function database(legacy = false) {
       in(key: string, values: unknown[]) { predicates.push((row) => values.includes(row[key])); return builder; },
       order() { return builder; },
       single() { single = true; return builder; },
+      maybeSingle() { single = true; return builder; },
       then(resolve: (value: unknown) => unknown) {
         const selected = source.filter((row) => predicates.every((predicate) => predicate(row)));
         const failed = fail && name === "robot_v1_strategy_decisions";
@@ -109,7 +110,8 @@ test("recovery deduplicates intent and preserves first dispatch/completion/ack",
   await completeStrategyDecision(db.service, scope, "TESTNET", decision.decision_id, { state: "OPEN", exchange_order_id: "42" }, true);
   const completed = structuredClone(db.rows[0]);
   await persistStrategyDecision(db.service, scope, "TESTNET", { ...decision, created_at: new Date().toISOString() }, 1);
-  await dispatchStrategyDecision(db.service, scope, "TESTNET", decision.decision_id);
+  await assert.rejects(dispatchStrategyDecision(db.service, scope, "TESTNET", decision.decision_id),
+    /COINOPS_STRATEGY_DECISION_UPDATE_FAILED/);
   await completeStrategyDecision(db.service, scope, "TESTNET", decision.decision_id, { state: "wrong" }, true);
   await failStrategyDecision(db.service, scope, "TESTNET", decision.decision_id, "COINOPS_TIMEOUT");
   assert.equal(db.rows.length, 1);

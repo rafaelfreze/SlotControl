@@ -24,6 +24,7 @@ import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
+import { isProvablyUnsentTakeProfit } from "./live-unsent-tp-recovery";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
@@ -385,8 +386,17 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
   let observed = (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
   if (observed && unchangedUnfilledResidentOrder(order, observed, run.symbol)) return order;
   if (!observed) {
-    if (order.submission_guarded_at !== null || order.status !== "PREPARED")
-      throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
+    if (order.status !== "PREPARED") throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
+    if (order.submission_guarded_at !== null) {
+      const decision = await service.from("robot_v1_strategy_decisions")
+        .select("decision_id,cycle_id,slot_id,operation_sequence,action_type,result,dispatched_at,exchange_ack_at,completed_at")
+        .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+        .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+        .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
+        .eq("decision_id", order.strategy_decision_id ?? "").maybeSingle();
+      if (decision.error || !isProvablyUnsentTakeProfit(order, decision.data, Date.now()))
+        throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
+    }
     await validateRunEngine(service, run);
     if (order.side === "BUY" && entryBlocked(run)) return order;
     const health = await loadLiveEngineExecutorStatus(run);
@@ -398,12 +408,6 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
     assertLiveOrderPrice(run, rows, order, state.filters.priceTick);
     const expectedOwnedOpenIds = await assertExchangeMatchesLedger(run, rows.orders, state,
       order.client_order_id);
-    const guard = await service.from("robot_v1_live_orders")
-      .update({ submission_guarded_at: new Date().toISOString() })
-      .eq("id", order.id).eq("run_id", run.id).eq("status", "PREPARED")
-      .is("submission_guarded_at", null).select("submission_guarded_at").maybeSingle();
-    if (guard.error || !guard.data) throw new Error("COINOPS_LIVE_SUBMISSION_GUARD_FAILED");
-    order.submission_guarded_at = guard.data.submission_guarded_at;
     const caps = await service.from("robot_v1_live_preparations")
       .select("max_total_exposure_brl,kill_switch,live_enabled")
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
@@ -431,6 +435,14 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
         sourceBuyOrderId: buy?.exchange_order_id } : {}) };
     if (order.side === "SELL" && !buy) throw new Error("COINOPS_LIVE_TP_BUY_SOURCE_MISSING");
     await renewLease(service, run);
+    if (order.submission_guarded_at === null) {
+      const guard = await service.from("robot_v1_live_orders")
+        .update({ submission_guarded_at: new Date().toISOString() })
+        .eq("id", order.id).eq("run_id", run.id).eq("status", "PREPARED")
+        .is("submission_guarded_at", null).select("submission_guarded_at").maybeSingle();
+      if (guard.error || !guard.data) throw new Error("COINOPS_LIVE_SUBMISSION_GUARD_FAILED");
+      order.submission_guarded_at = guard.data.submission_guarded_at;
+    }
     await dispatchStrategyDecision(service, owned(run), "REAL", order.strategy_decision_id!);
     observed = (await createLiveExecutorOrder(input, run, order.strategy_decision_id!)).order;
   }

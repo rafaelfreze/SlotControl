@@ -9,7 +9,7 @@ import { buildLiveSizing, parseLiveRules } from "@/lib/execution/live-preparatio
 import { operatorAccountSnapshot, operatorExecutorAdmin } from "@/lib/execution/operator-executor-admin";
 import { validateEnginePlan, type EnginePlanInput } from "@/lib/execution/operator-engine-plan";
 import { resolveOperatorEngine } from "@/lib/execution/operator-context-server";
-import { advanceLiveRun, pauseLiveRun, prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
+import { pauseLiveRun, prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { pauseTestnetRun, resumeTestnetRun, startTestnetRun } from "@/lib/execution/robot-v1-testnet-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
@@ -514,10 +514,9 @@ export async function POST(request: NextRequest) {
     const activated = await scope.service.rpc("activate_robot_v1_live_cycle", { p_run_id: run.id });
     if (activated.error || activated.data?.status !== "ACTIVE")
       throw new Error("COINOPS_ENGINE_ACTIVATION_FAILED");
-    // The normal server-side worker owns order dispatch/recovery. Kick it once;
-    // a timeout cannot replay an order because client IDs and ledger are durable.
-    const first = await advanceLiveRun(run.id, "OPERATOR_ACTIVATE");
-    return json({ status: "ACTIVATING", cycleId: run.id, reconciliation: first });
+    // Activation can already consume most of this request's 60-second budget.
+    // The scheduled worker owns first dispatch with a fresh function deadline.
+    return json({ status: "ACTIVATING", cycleId: run.id });
   } catch (error) {
     const code = error instanceof Error && /^(?:COINOPS|EXECUTOR)_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "COINOPS_ENGINE_CONTROL_FAILED";
