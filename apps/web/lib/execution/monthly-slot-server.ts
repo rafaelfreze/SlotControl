@@ -20,6 +20,12 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
   if (slots.length !== 25) throw new Error("COINOPS_MONTHLY_SLOT_COUNT_INVALID");
   const engine = await resolveOperatorEngine(service, scope, { environment, asset: scope.asset,
     operator_id: scope.operator_id, exchange_account_id: scope.exchange_account_id, trading_engine_id: scope.trading_engine_id });
+  const configuredTarget = environment === "REAL"
+    ? await service.from("robot_v1_live_preparations").select("monthly_target")
+      .eq("trading_engine_id", engine.trading_engine_id).eq("exchange_account_id", engine.exchange_account_id)
+      .single()
+    : { data: null, error: null };
+  if (configuredTarget.error) throw new Error("COINOPS_MONTHLY_TARGET_UNAVAILABLE");
   const { data, error } = await service.from("robot_v1_slot_gain_totals")
     .select("slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count")
     .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
@@ -45,5 +51,5 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
       marketGainCount: Number(row?.market_gain_count ?? 0), manualGainCount: Number(row?.manual_gain_count ?? 0),
       monthlyMarketGainCount: Number(row?.monthly_market_gain_count ?? 0),
       monthlyManualGainCount: Number(row?.monthly_manual_gain_count ?? 0) };
-  }));
+  }), Number(configuredTarget.data?.monthly_target ?? (scope.asset === "BTC" ? 7 : 2)));
 }

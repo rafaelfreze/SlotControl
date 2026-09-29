@@ -118,7 +118,8 @@ export type PostAthSlot = AthSlot & {
   operationalRank: number | null;
 };
 
-export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[]): PostAthSlot[] {
+export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[],
+  monthlyTarget = MONTHLY_SLOT_TARGET[asset]): PostAthSlot[] {
   if (slots.length !== 25) throw new Error("COINOPS_ATH_SLOT_COUNT_INVALID");
   const ids = new Set<string>(), numbers = new Set<number>();
   for (const slot of slots) {
@@ -130,9 +131,9 @@ export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[]): Po
     ids.add(slot.physicalSlotId); numbers.add(slot.physicalSlotNumber);
   }
   const eligibleStates = new Set(["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"]);
-  const completed = monthlyGoalsComplete(asset, slots);
+  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget);
   const eligible = slots.filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-    && (completed || slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset]) && eligibleStates.has(slot.entryState));
+    && (completed || slot.monthlyGainCount < monthlyTarget) && eligibleStates.has(slot.entryState));
   const byPhysicalId = (left: AthSlot, right: AthSlot) => left.physicalSlotId.localeCompare(right.physicalSlotId);
   const byHighestGain = (left: AthSlot, right: AthSlot) => right.lifetimeGainCount - left.lifetimeGainCount
     || byPhysicalId(left, right);
@@ -147,7 +148,7 @@ export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[]): Po
   return slots.map((slot) => {
     const rank = position.get(slot.physicalSlotId);
     return { ...slot, eligible: Boolean(rank), monthlyTargetReached: slot.monthlyGainCount !== null
-      && slot.monthlyGainCount >= MONTHLY_SLOT_TARGET[asset], postAthGroup: rank?.group ?? null,
+      && slot.monthlyGainCount >= monthlyTarget, postAthGroup: rank?.group ?? null,
       postAthGroupRank: rank?.groupRank ?? null, operationalRank: rank?.rank ?? null };
   });
 }

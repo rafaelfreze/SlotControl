@@ -82,7 +82,7 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
         .in("status", ["PENDING", "APPLIED"]).order("created_at"),
       query("robot_v1_live_events", "event_type,slot_number,observed_at,details").eq("run_id", run.data.id).order("observed_at", { ascending: false }).limit(40),
       query("robot_v1_live_alerts", "severity,code,last_seen_at").is("resolved_at", null).limit(20),
-      query("robot_v1_live_preparations", "live_enabled,kill_switch").maybeSingle(),
+      query("robot_v1_live_preparations", "live_enabled,kill_switch,monthly_target").maybeSingle(),
     ]);
     assertEngineReads([
       { name: "LIVE_SLOTS", error: slots.error }, { name: "LIVE_ORDERS", error: orders.error },
@@ -92,7 +92,7 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
     ]);
     if (!preparation.data) throw new Error("COINOPS_ENGINE_LIVE_PREPARATION_UNAVAILABLE");
     result.nativeLiveControl = { liveEnabled: preparation.data.live_enabled,
-      killSwitch: preparation.data.kill_switch, executor: null };
+      killSwitch: preparation.data.kill_switch, monthlyTarget: preparation.data.monthly_target, executor: null };
     result.liveAssetData = { [asset]: { run: run.data, slots: slots.data ?? [], orders: orders.data ?? [],
       accounts: accounts.data ?? [], selectiveAllocations: allocations.data ?? [], events: events.data ?? [], alerts: alerts.data ?? [],
       monthlyGains: (totals.data ?? []).filter((row) => row.period_key === monthlyPeriodKey(new Date())) } };

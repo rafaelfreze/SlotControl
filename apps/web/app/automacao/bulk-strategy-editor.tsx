@@ -5,26 +5,34 @@ import { AccountSelector } from "./account-selector";
 import { accountOptions } from "./account-selector-model";
 import { selectBulkEngineIds } from "./bulk-strategy-selection";
 import type { PremiumOperatorPresentation } from "./premium-operator";
+import { STRATEGY_PARAMETERS, type StrategyParameterDefinition,
+  type StrategyParameterKey } from "@/lib/execution/strategy-parameter-registry";
 
 type PreviewRow = { engineId: string; account: string; symbol: string; versionBefore: number | null;
-  oldRate: number | null; newRate: number; regime: string | null; openPositions: number;
-  activeTps: number; residentBuys: number; preparedBuys: number; partialBuys: number; reasons: string[] };
+  currentValue: number | null; newValue: number; currentDisplay: string; newDisplay: string;
+  changeRequired: boolean; regime: string | null; openPositions: number; activeTps: number;
+  residentBuys: number; preparedBuys: number; partialBuys: number;
+  nextBuyReconciliations: number; reasons: string[] };
 type Preview = { status: string; accountCount: number; engineCount: number; rows: PreviewRow[];
-  previewHash: string; canApply: boolean; changed: string; preserved: string; rollbackOf: string | null };
-type Progress = { batch: { id: string; status: string; rollback_of: string | null };
+  changedEngineCount: number; unchangedEngineCount: number; parameter: StrategyParameterDefinition;
+  marketSummary: Array<{ asset: string; current: string; next: string; engineCount: number }>;
+  nextBuyReconciliations: number; previewHash: string; canApply: boolean; changed: string;
+  preserved: string; rollbackOf: string | null };
+type Progress = { batch: { id: string; status: string; rollback_of: string | null; parameter_key?: string };
   engines: Array<{ trading_engine_id: string; symbol: string; status: string; error_code: string | null }>;
   counts: { selected: number; applied: number; pending: number; blocked: number; failed: number } };
 type ActiveBatch = { id: string; status: string; created_at: string; admission_cursor: number;
-  selected_count: number; rollback_of: string | null };
-
-const pct = (rate: number | null) => rate === null ? "—" : `${(rate * 100).toLocaleString("pt-BR", { maximumFractionDigits: 4 })}%`;
+  selected_count: number; rollback_of: string | null; parameter_key?: string | null };
 
 export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPresentation }) {
   const engines = useMemo(() => operator.engines.filter((engine) => engine.environment === "REAL"), [operator.engines]);
   const options = useMemo(() => accountOptions(operator.accounts, engines), [operator.accounts, engines]);
   const shards = useMemo(() => [...new Set(operator.accounts.map((account) => account.shardId).filter((id): id is string => !!id))].sort(), [operator.accounts]);
   const [selected, setSelected] = useState<string[]>([]);
-  const [percent, setPercent] = useState("");
+  const [parameterKey, setParameterKey] = useState<StrategyParameterKey>("gain_rate");
+  const [value, setValue] = useState("");
+  const [perMarket, setPerMarket] = useState(false);
+  const [marketValues, setMarketValues] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(40);
   const [previewLimit, setPreviewLimit] = useState(40);
@@ -39,9 +47,18 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const definition = STRATEGY_PARAMETERS.find((item) => item.key === parameterKey)!;
+  const assets = useMemo(() => [...new Set(engines.filter((engine) => selectedSet.has(engine.engineId))
+    .map((engine) => engine.asset))].sort(), [engines, selectedSet]);
+  const availableAssets = useMemo(() => [...new Set(engines.map((engine) => engine.asset))].sort(), [engines]);
   const filtered = useMemo(() => engines.filter((engine) => `${engine.accountDisplayName} ${engine.symbol} ${engine.engineId}`
     .toLocaleLowerCase("pt-BR").includes(query.trim().toLocaleLowerCase("pt-BR"))), [engines, query]);
   const setScope = (ids: string[]) => { setSelected(ids); setPreview(null); setRollbackOf(null); setProgress(null); setError(""); };
+  const editPayload = () => perMarket && assets.length > 1
+    ? { parameterKey, valuesByAsset: Object.fromEntries(assets.map((asset) => [asset, marketValues[asset] ?? ""])) }
+    : { parameterKey, value };
+  const hasValue = perMarket && assets.length > 1
+    ? assets.every((asset) => Boolean(marketValues[asset]?.trim())) : Boolean(value.trim());
   const call = useCallback(async (payload: Record<string, unknown>) => {
     const response = await fetch("/api/coinops-bulk-strategy", { method: "POST", cache: "no-store",
       credentials: "same-origin", headers: { "content-type": "application/json",
@@ -62,7 +79,7 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
     try {
       const isRollback = !!rollbackId;
       const result = await call(isRollback ? { action: "rollback_preview", rollbackOf: rollbackId }
-        : { action: "preview", engineIds: selected, postAthPercent: percent });
+        : { action: "preview", engineIds: selected, ...editPayload() });
       setPreview(result as Preview);
       setPreviewLimit(40);
       setRollbackOf(rollbackId ?? null);
@@ -76,7 +93,7 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
     try {
       const payload = rollbackOf ? { action: "rollback_apply", rollbackOf,
         previewHash: preview.previewHash, requestId }
-        : { action: "apply", engineIds: selected, postAthPercent: percent,
+        : { action: "apply", engineIds: selected, ...editPayload(),
           previewHash: preview.previewHash, requestId };
       let result: { batchId: string; status: string; selected: number; admitted: number; failed: number };
       let previous = -1;
@@ -170,7 +187,7 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
       </div> : null}
       {recentBatches.length ? <details className="px-bulk-history"><summary>Histórico de alterações</summary>
         {recentBatches.map((batch) => <div key={batch.id}>
-          <span>{new Date(batch.created_at).toLocaleString("pt-BR")} · {batch.status} · {batch.selected_count} motores</span>
+          <span>{new Date(batch.created_at).toLocaleString("pt-BR")} · {batch.status} · {batch.selected_count} motores · {STRATEGY_PARAMETERS.find((item) => item.key === batch.parameter_key)?.label ?? batch.parameter_key ?? "estratégia"}</span>
           <button type="button" onClick={() => void openBatch(batch.id)}>Abrir resultado</button>
           {["APPLIED", "PARTIAL"].includes(batch.status) ? <button type="button" disabled={working}
             onClick={() => void previewChange(batch.id)}>Pré-visualizar rollback</button> : null}
@@ -180,7 +197,7 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
         <button type="button" onClick={() => setScope(selectBulkEngineIds(engines, operator.accounts,
           { kind: "ALL" }))}>Selecionar todos</button>
         <button type="button" onClick={() => setScope([])}>Limpar seleção</button>
-        {(["BTC", "SOL"] as const).map((asset) => <button type="button" key={asset}
+        {availableAssets.map((asset) => <button type="button" key={asset}
           onClick={() => setScope(selectBulkEngineIds(engines, operator.accounts,
             { kind: "ASSET", value: asset }))}>Somente {asset}</button>)}
         <button type="button" onClick={() => setScope(selectBulkEngineIds(engines, operator.accounts,
@@ -202,16 +219,37 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
       {filtered.length > limit ? <button type="button" onClick={() => setLimit((current) => current + 40)}>Mostrar mais ({filtered.length - limit})</button> : null}
       <p>{selected.length} motor(es) selecionado(s) · {new Set(engines.filter((engine) => selectedSet.has(engine.engineId))
         .map((engine) => engine.accountId)).size} conta(s)</p>
-      <label className="px-bulk-rate">Spacing pós-ATH novo (%)<input type="text" inputMode="decimal" value={percent}
-        placeholder="Ex.: 5" onChange={(event) => { setPercent(event.target.value); setPreview(null); setError(""); }} /></label>
-      <button type="button" disabled={working || !selected.length || !percent} onClick={() => void previewChange()}>Pré-visualizar · sem ordens</button>
+      <label className="px-bulk-rate">Parâmetro<select value={parameterKey} onChange={(event) => {
+        setParameterKey(event.target.value as StrategyParameterKey); setPreview(null); setError("");
+      }}>{STRATEGY_PARAMETERS.filter((item) => item.editable).map((item) => <option key={item.key}
+        value={item.key}>{item.label}</option>)}</select></label>
+      <p><strong>{definition.applyPolicy}</strong> · {definition.description}</p>
+      {assets.length > 1 ? <div className="px-bulk-actions" role="group" aria-label="Forma de aplicação">
+        <button type="button" aria-pressed={!perMarket} onClick={() => { setPerMarket(false); setPreview(null); }}>
+          Mesmo valor para todos</button>
+        <button type="button" aria-pressed={perMarket} onClick={() => { setPerMarket(true); setPreview(null); }}>
+          Valores por mercado</button>
+      </div> : null}
+      {perMarket && assets.length > 1 ? assets.map((asset) => <label className="px-bulk-rate" key={asset}>
+        {asset} · novo valor ({definition.unit})<input type="text" inputMode={definition.type === "INTEGER" ? "numeric" : "decimal"}
+          value={marketValues[asset] ?? ""} placeholder={`Entre ${definition.min} e ${definition.max}`}
+          onChange={(event) => { setMarketValues((current) => ({ ...current, [asset]: event.target.value })); setPreview(null); setError(""); }} />
+      </label>) : <label className="px-bulk-rate">Novo valor ({definition.unit})<input type="text"
+        inputMode={definition.type === "INTEGER" ? "numeric" : "decimal"} value={value}
+        placeholder={`Entre ${definition.min} e ${definition.max}`}
+        onChange={(event) => { setValue(event.target.value); setPreview(null); setError(""); }} /></label>}
+      <button type="button" disabled={working || !selected.length || !hasValue} onClick={() => void previewChange()}>
+        Pré-visualizar · sem ordens</button>
       {preview ? <div className="px-bulk-preview" role="status"><h3>Prévia obrigatória</h3>
-        <p>Escopo: {preview.accountCount} contas · {preview.engineCount} motores</p>
+        <p>Escopo: {preview.accountCount} contas · {preview.engineCount} motores · {preview.changedEngineCount} alterações · {preview.unchangedEngineCount} já iguais</p>
+        <p><strong>PARÂMETRO</strong><br />{preview.parameter.label} · {preview.parameter.applyPolicy}</p>
+        {preview.marketSummary.map((summary) => <p key={summary.asset}><strong>{summary.asset}</strong>: {summary.current} → {summary.next} · {summary.engineCount} motor(es)</p>)}
         <p><strong>O QUE SERÁ ALTERADO</strong><br />{preview.changed}</p>
         <p><strong>O QUE SERÁ PRESERVADO</strong><br />{preview.preserved}</p>
+        <p><strong>NEXT BUY</strong><br />{preview.nextBuyReconciliations} ordem(ns) futura(s) serão reconciliadas pelo fluxo oficial.</p>
         <div className="px-bulk-preview-rows">{preview.rows.slice(0, previewLimit).map((row) => <div key={row.engineId}>
-          <strong>{row.account} · {row.symbol}</strong><span>{pct(row.oldRate)} → {pct(row.newRate)} · v{row.versionBefore ?? "?"} → v{row.versionBefore === null ? "?" : row.versionBefore + 1}</span>
-          <small>{row.openPositions} OPEN · {row.activeTps} TP · {row.residentBuys} BUY residente · {row.partialBuys} parcial · {row.preparedBuys} preparada · {row.regime}</small>
+          <strong>{row.account} · {row.symbol}</strong><span>{row.currentDisplay} → {row.newDisplay} · v{row.versionBefore ?? "?"} → {row.changeRequired ? `v${row.versionBefore === null ? "?" : row.versionBefore + 1}` : "sem alteração"}</span>
+          <small>{row.openPositions} OPEN · {row.activeTps} TP preservado(s) · {row.nextBuyReconciliations} NEXT BUY a reconciliar · {row.partialBuys} parcial · {row.regime}</small>
           {row.reasons.length ? <small className="px-warning">Não elegível: {row.reasons.join(", ")}</small> : null}
         </div>)}{preview.rows.length > previewLimit ? <button type="button"
           onClick={() => setPreviewLimit((current) => current + 40)}>Mostrar mais ({preview.rows.length - previewLimit})</button> : null}</div>

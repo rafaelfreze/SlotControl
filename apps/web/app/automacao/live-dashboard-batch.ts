@@ -5,7 +5,7 @@ import type { LiveAssetData } from "./automation-mobile";
 export type DashboardLiveRead = Omit<LiveAssetData, "run" | "monthlyGains"> & {
   run: LiveAssetData["run"] | null;
   monthlyGains: Array<LiveAssetData["monthlyGains"][number] & { period_key: string }>;
-  preparation: { liveEnabled: boolean; killSwitch: boolean } | null;
+  preparation: { liveEnabled: boolean; killSwitch: boolean; monthlyTarget?: number } | null;
 };
 
 /** One bounded request per group, not nine requests per engine. RLS stays on. */

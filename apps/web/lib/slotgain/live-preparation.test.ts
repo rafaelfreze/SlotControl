@@ -85,6 +85,18 @@ test("config and live gate fail closed on stale price, insufficient BRL and exce
   assert.equal(livePreparationGate({ ...base, reconciliationVerified: false }), "BLOCKED");
 });
 
+test("custom monthly target is valid strategy metadata and does not change LIVE sizing", () => {
+  const baseline = sizing("SOL");
+  const custom = buildLiveSizing(parseLiveRules(raw("SOL")), 595.2,
+    { ...config("SOL"), monthly_target: 3 }, 716.75, observedAt, Date.parse(observedAt) + 1000);
+  assert.equal(custom.recommendedSlotBrl, baseline.recommendedSlotBrl);
+  assert.deepEqual(custom.slots, baseline.slots);
+  assert.throws(() => buildLiveSizing(parseLiveRules(raw("SOL")), 595.2,
+    { ...config("SOL"), monthly_target: 0 }, 716.75, observedAt, Date.parse(observedAt) + 1000), /CAP_INVALID/);
+  assert.throws(() => buildLiveSizing(parseLiveRules(raw("SOL")), 595.2,
+    { ...config("SOL"), monthly_target: 2.5 }, 716.75, observedAt, Date.parse(observedAt) + 1000), /CAP_INVALID/);
+});
+
 test("Production create and cancel remain structurally unavailable", async () => {
   const adapter = new BinanceSpotAdapter(null, { fetcher: async () => { throw new Error("GET should not run"); } });
   await assert.rejects(adapter.createOrder({ symbol: "BTCBRL", side: "BUY", quantity: 1, clientOrderId: "never" }), LiveExecutionBlockedError);

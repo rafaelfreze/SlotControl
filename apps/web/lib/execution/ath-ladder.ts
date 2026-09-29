@@ -52,17 +52,18 @@ export function validateAthTransitionedGrid(slots: ReadonlyArray<{ physicalSlotN
  * reentries remain frozen. A caller must atomically persist all future GRID
  * targets under its cycle/run lease before allowing another BUY. */
 export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: number,
-  parameters: AthParameters, tick: number, slots: readonly AthLadderSlot[]): AthLadderDecision[] {
+  parameters: AthParameters, tick: number, slots: readonly AthLadderSlot[],
+  monthlyTarget = MONTHLY_SLOT_TARGET[asset]): AthLadderDecision[] {
   if (!Number.isFinite(anchorPrice) || anchorPrice <= 0 || !Number.isFinite(tick) || tick <= 0
     || slots.length !== 25) throw new Error("COINOPS_ATH_LADDER_INPUT_INVALID");
   validateAthParameters(parameters);
   // Both regimes require the same physical identity and gain evidence checks.
-  const validatedQueue = buildPostAthQueue(asset, slots);
-  const completed = monthlyGoalsComplete(asset, slots);
+  const validatedQueue = buildPostAthQueue(asset, slots, monthlyTarget);
+  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget);
   const queue = regime === "POST_ATH" ? validatedQueue : null;
   const ordered = queue ? orderedPostAthSlots(queue) : [...slots]
     .filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-      && (completed || slot.monthlyGainCount < MONTHLY_SLOT_TARGET[asset])
+      && (completed || slot.monthlyGainCount < monthlyTarget)
       && ["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"].includes(slot.entryState))
     .sort((left, right) => right.lifetimeGainCount - left.lifetimeGainCount
       || left.physicalSlotNumber - right.physicalSlotNumber);
@@ -83,7 +84,7 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   const priceKeys = new Set<string>();
   const decisions = slots.map((slot): AthLadderDecision => {
     const group = grouped.get(slot.physicalSlotId);
-    const reached = slot.monthlyGainCount !== null && slot.monthlyGainCount >= MONTHLY_SLOT_TARGET[asset];
+    const reached = slot.monthlyGainCount !== null && slot.monthlyGainCount >= monthlyTarget;
     const frozenReason = ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status) ? "OPEN_OR_TP" as const
       : slot.entryOrigin === "REENTRY" ? "LOCAL_REENTRY" as const
         : reached && !completed ? "MONTHLY_TARGET" as const : !rankById.has(slot.physicalSlotId) ? "INELIGIBLE" as const : null;

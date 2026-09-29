@@ -12,6 +12,7 @@ import * as unsentTp from "../execution/live-unsent-tp-recovery.ts";
 import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
+import * as strategyParameterRegistry from "../execution/strategy-parameter-registry.ts";
 import * as scope from "../execution/operator-context.ts";
 
 type Row = Record<string, unknown>;
@@ -79,7 +80,7 @@ function harness(options: Options = {}) {
     robot_v1_live_slots: slots, robot_v1_live_slot_accounts: accounts, robot_v1_live_orders: orders,
     robot_v1_strategy_decisions: [],
     robot_v1_live_preparations: [{ ...identity, live_enabled: true, kill_switch: false,
-      max_order_notional_brl: 100, max_total_exposure_brl: 1000 }],
+      monthly_target: asset === "BTC" ? 7 : 2, max_order_notional_brl: 100, max_total_exposure_brl: 1000 }],
     account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [],
     robot_v1_ath_profiles: [profile],
     strategy_bulk_batches: [], strategy_bulk_engine_updates: [],
@@ -205,6 +206,7 @@ function harness(options: Options = {}) {
     "./live-unsent-tp-recovery": unsentTp,
     "./live-strategy-snapshot": strategySnapshot,
     "./ath-ladder": athLadder, "./monthly-slot-policy": monthlyPolicy,
+    "./strategy-parameter-registry": strategyParameterRegistry,
     "./ath-profile-server": { loadAthProfile: async () => profile, refreshAthProfile: async () => profile },
     "./operator-context": scope,
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
@@ -213,6 +215,7 @@ function harness(options: Options = {}) {
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => slots.map((s) => ({
       physicalSlotId: s.id, physicalSlotNumber: s.slot_number, operationalRank: s.operational_rank,
       lifetimeGainCount: 0, monthlyGainCount: 0,
+      monthlyGainTarget: asset === "BTC" ? 7 : 2,
       eligibleForNewEntry: true, monthlyTargetReached: false })) },
     "./strategy-decision-server": {
       persistStrategyDecision: async (_s: unknown, _scope: unknown, _env: unknown, decision: Row) => calls.push({ kind: "decision", input: decision }),

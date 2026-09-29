@@ -1,6 +1,15 @@
 # CoinOps: edição de estratégia em massa (REAL)
 
-Escopo inicial: `post_ath_spacing_rate` dos perfis oficiais, nunca uma configuração paralela. O seletor e a prévia são leituras; só a confirmação do proprietário do operador chama `coinops.enqueue_strategy_bulk_post_ath`. Uma requisição duplicada com o mesmo `idempotency_key` retorna o mesmo lote ou falha se o payload divergir.
+O Bulk Strategy Editor é a interface genérica dos parâmetros oficiais; não existe Strategy Engine paralelo. O registry canônico é `strategy-parameter-registry.ts` e hoje contém somente os campos efetivamente usados pelo runtime:
+
+| Parâmetro | Fonte | Política | Ordem futura |
+|---|---|---|---|
+| `gain_rate` | perfil ATH oficial | `NEXT_CYCLE_ONLY` | não altera ciclo/TP atual |
+| `normal_spacing_rate` | perfil ATH oficial | `NEXT_BUY_RECONCILE` | reconcilia BUY GRID somente quando o regime atual é NORMAL |
+| `post_ath_spacing_rate` | perfil ATH oficial | `NEXT_BUY_RECONCILE` | reconcilia BUY GRID somente quando o regime atual é POST_ATH |
+| `monthly_target` | preparação LIVE oficial | `FUTURE_ENTRIES_ONLY` | muda a prioridade futura; nunca é stop |
+
+O seletor e a prévia são leituras; só a confirmação do proprietário chama `coinops.enqueue_strategy_bulk_update`. A prévia aceita o mesmo valor ou valores por mercado, mostra configurações heterogêneas, posições, TP e quantidade exata de NEXT BUY a reconciliar. Uma requisição duplicada com o mesmo `idempotency_key` retorna o mesmo lote ou falha se o payload divergir.
 
 ## Ordem de publicação e rollback técnico
 
@@ -11,7 +20,9 @@ Escopo inicial: `post_ath_spacing_rate` dos perfis oficiais, nunca uma configura
 
 ## Estados e invariantes
 
-`PENDING` fecha a admissão de BUY na tabela `trading_engines`, inclusive para uma ordem `PREPARED` ainda sem guarda. O reconciliador oficial adquire lease do run, reconcilia ordens e fills, protege toda posição OPEN com TP e só então entra em `APPLYING`. A versão do perfil é atualizada por CAS, e o run guarda a mesma versão/snapshot. Em regime POST_ATH, somente BUY de entrada ainda não preenchida pode ser cancelada sob `onlyUnfilled`; timeout exige leitura do mesmo `clientOrderId` na Binance. O ladder oficial reordena/reprecifica apenas slots futuros, e `finish_strategy_bulk_engine_update` só abre o gate depois de versão/lease e ausência de BUY antiga ativa. Em regime NORMAL o parâmetro pós-ATH muda, mas a BUY NORMAL compatível permanece.
+`PENDING` fecha a admissão de BUY na tabela `trading_engines`, inclusive para uma ordem `PREPARED` ainda sem guarda. O reconciliador oficial adquire lease do run, reconcilia ordens e fills, protege toda posição OPEN com TP e só então entra em `APPLYING`. A versão do perfil é atualizada por CAS; cada run e ordem retém seu `config_snapshot`, inclusive quando gain prospectivo ainda não pertence ao ciclo atual. Em spacing do regime ativo, somente BUY de entrada ainda não preenchida pode ser cancelada sob `onlyUnfilled`; timeout exige leitura do mesmo `clientOrderId` na Binance. O ladder oficial reordena/reprecifica apenas slots futuros, e `finish_strategy_bulk_engine_update` só abre o gate depois de versão/lease e ausência de BUY antiga ativa. Spacing do regime inativo não toca na BUY residente.
+
+Meta mensal usa mês-calendário em `America/Campo_Grande`, preserva ledger e histórico e aceita contagem acima da meta. Quando 25/25 atingem o objetivo, todos voltam a ser elegíveis. Alterar a meta não fecha, cancela, recria ou reprecifica posição/TP/NEXT BUY; apenas decisões futuras consultam o novo valor persistido por motor.
 
 OPEN, fills, quantidade, custo, ganho e TP existente não são reescritos pela atualização. O snapshot da ordem preserva as taxas vigentes na decisão original. Uma BUY preenchida ou parcialmente preenchida vence a corrida: reconciliar e proteger a posição, sem substituição especulativa. Sem verdade verificável, `BLOCKED_SAFE` e bloqueio de novas entradas apenas no engine; TP continua gerenciado. Não usar cancel-all, MARKET cega ou edição manual do ledger.
 
@@ -23,13 +34,13 @@ Se navegador, aplicativo ou PC fechar durante a admissão de um lote já confirm
 
 - `COINOPS_OPERATOR_REGISTRY_UNAVAILABLE` com HTTP 403/SQLSTATE `42501` em `exchange_accounts`: conferir privilégios por coluna da role `authenticated`. Campos novos usados pelo registry precisam de `GRANT SELECT (campo)` versionado; não conceder `SELECT` irrestrito na tabela. A policy `operator_owned` e RLS devem permanecer ativas.
 - `COINOPS_BULK_PREVIEW_CONFLICT`: seleção, valor, run, perfil ou versão mudou entre preview e confirmação. Repetir preview; não reutilizar o hash anterior.
-- `COINOPS_BULK_PROFILE_CONFLICT` / `COINOPS_BULK_VERSION_MISMATCH`: conferir `profile_id`, `run_id`, versão, valores e edição individual pendente. Nunca forçar versão.
+- `COINOPS_BULK_PROFILE_CONFLICT` / `COINOPS_BULK_PREPARATION_CONFLICT` / `COINOPS_BULK_VERSION_MISMATCH`: conferir `profile_id`, `run_id`, parâmetro, versão, valores e edição individual pendente. Nunca forçar versão.
 - `COINOPS_BULK_PREPARED_BUY_AMBIGUOUS`, `COINOPS_LIVE_FILLED_DURING_SNAPSHOT`, `COINOPS_LIVE_BUY_CANCEL_UNRECONCILED`: obter estado exato da ordem por `clientOrderId`, fills e ledger antes de qualquer nova ação.
 - `COINOPS_BULK_TRANSIENT_EXECUTOR_READ`: retry do mesmo checkpoint enquanto recente; após janela segura, bloquear apenas este engine e investigar.
 - `WATCHDOG_CONFIG_UPDATE_STALE`: conferir lease, status do item, perfil/run/ordens e saúde do executor; retomar exclusivamente pelo reconciliador oficial.
 - `ROLLBACK_DIVERGED`: lote anterior não é mais versão atual. Rollback cego é proibido; nova prévia explícita e decisão do operador são necessárias.
 
-O rollback é outra atualização versionada sobre o estado **atual**, não ressuscita ordens antigas. Só é elegível se o perfil ainda estiver exatamente na versão e valor produzidos pelo lote original.
+O rollback é outra atualização versionada e prospectiva sobre o estado **atual**, respeitando a mesma `apply_policy`; não ressuscita ordens antigas. Só é elegível se a fonte canônica ainda estiver exatamente na versão e valor produzidos pelo lote original.
 
 ## Evidência de conclusão
 

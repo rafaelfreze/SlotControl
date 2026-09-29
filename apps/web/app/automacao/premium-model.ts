@@ -94,10 +94,13 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
   const price = number(sizing?.priceBrl);
   base.price = price; base.cap = native ? number(data.engineContext?.hard_cap_quote)
     : number(config?.max_total_exposure_brl); base.regime = config?.regime ?? null;
+  base.goal = number(native ? data.nativeLiveControl?.monthlyTarget : config?.monthly_target)
+    ?? MONTHLY_SLOT_TARGET[asset];
   if (!live) return base;
   const orders = live.orders.map(normalizeOrder), events = eventsFor(live.events);
   const complete = new Set(live.monthlyGains.map((row) => row.slot_number)).size === 25
-    && monthlyGoalsComplete(asset, live.monthlyGains.map((row) => ({ monthlyGainCount: number(row.monthly_gain_count) })));
+    && monthlyGoalsComplete(asset,
+      live.monthlyGains.map((row) => ({ monthlyGainCount: number(row.monthly_gain_count) })), base.goal);
   const slots = live.slots.map((row): PremiumSlot => {
     const account = live.accounts.find((item) => item.slot_number === row.slot_number);
     const monthly = live.monthlyGains.find((item) => item.slot_number === row.slot_number);

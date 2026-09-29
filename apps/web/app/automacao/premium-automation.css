@@ -76,7 +76,8 @@
 .px-bulk-editor button:disabled{opacity:.5;cursor:not-allowed}
 .px-bulk-actions{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
 .px-bulk-search,.px-bulk-rate{display:grid;gap:5px;margin:10px 0;color:#b9c9d8;font-size:12px}
-.px-bulk-search input,.px-bulk-rate input{width:100%;min-height:38px;border:1px solid #2d5a73;border-radius:6px;padding:7px 9px;background:#071522;color:#e8f5ff}
+.px-bulk-search input,.px-bulk-rate input,.px-bulk-rate select{width:100%;min-height:38px;border:1px solid #2d5a73;border-radius:6px;padding:7px 9px;background:#071522;color:#e8f5ff;font-size:16px}
+.px-bulk-actions button[aria-pressed="true"]{border-color:#39dcb1;background:#123f43;color:#75f2d1}
 .px-bulk-engine-list{max-height:300px;overflow-y:auto;display:grid;gap:4px;margin:8px 0}
 .px-bulk-engine-list label{display:flex;align-items:center;gap:8px;padding:7px;border:1px solid #254258;border-radius:5px;font-size:12px}
 .px-bulk-engine-list label input{flex:none;width:16px;height:16px}

@@ -30,6 +30,8 @@ import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-contin
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
 import { strategyRatesForOrder } from "./live-strategy-snapshot";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
+import { strategyParameter, strategyParameterAffectsCurrentLadder,
+  type StrategyApplyPolicy, type StrategyParameterKey } from "./strategy-parameter-registry";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
@@ -75,8 +77,10 @@ type Ledger = Awaited<ReturnType<typeof runRows>>;
 type BulkUpdate = { id: string; batch_id: string; run_id: string; profile_id: string;
   operator_id: string; exchange_account_id: string; trading_engine_id: string;
   strategy_version_before: number; strategy_version_after: number;
-  old_values: { post_ath_spacing_rate: number | string };
-  new_values: { post_ath_spacing_rate: number | string }; status: string };
+  parameter_key?: StrategyParameterKey; apply_policy?: StrategyApplyPolicy;
+  requires_order_reconciliation?: boolean;
+  old_values: Record<string, number | string>;
+  new_values: Record<string, number | string>; status: string };
 
 const PUBLIC_SPOT = "https://data-api.binance.vision";
 // A reconciliation may perform several sequential Binance GETs and database
@@ -731,7 +735,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
           : slot.entry_state === "MISSED" ? "CANCELLED" : slot.entry_state,
         buyPrice: amount(slot.target_buy_price), entryOrigin: slot.entry_origin,
         operationSequence: slot.operation_sequence };
-    }));
+    }), statuses[0]!.monthlyGainTarget);
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   for (const item of decisions) {
     const slot = ledger.slots.find((row) => row.slot_number === item.physicalSlotNumber)!;
@@ -758,8 +762,9 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
       ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
     config_version: profile.config_version,
     config_snapshot: { ...run.config_snapshot, ladder_anchor_price: state.price.price,
-      gain_rate: Number(profile.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
+      gain_rate: Number(run.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
       post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
+      monthly_target: statuses[0]!.monthlyGainTarget,
       entry_spacing: profile.regime === "POST_ATH"
         ? Number(profile.post_ath_spacing_rate) : Number(profile.normal_spacing_rate) },
     ath_transition_key: profile.transition_key, ath_period_key: period,
@@ -786,14 +791,28 @@ async function applyPendingStrategyUpdate(service: Service, run: Run, ledger: Le
   if (pending.error) throw new Error("COINOPS_BULK_CHECKPOINT_UNAVAILABLE");
   if (!pending.data) return "NONE";
   const item = pending.data as BulkUpdate;
+  // Rows admitted by the immediately previous post-ATH-only release receive
+  // these exact defaults in the additive migration. Keep the runtime tolerant
+  // during the zero-downtime deploy window as well.
+  const parameterKey = item.parameter_key ?? "post_ath_spacing_rate";
+  const definition = strategyParameter(parameterKey);
+  const applyPolicy = item.apply_policy ?? definition.applyPolicy;
+  const requiresOrderReconciliation = item.requires_order_reconciliation
+    ?? definition.requiresOrderReconciliation;
   if (item.operator_id !== run.operator_id || item.exchange_account_id !== run.exchange_account_id
     || item.trading_engine_id !== run.trading_engine_id || item.run_id !== run.id
     || item.strategy_version_after !== item.strategy_version_before + 1
+    || applyPolicy !== definition.applyPolicy
+    || requiresOrderReconciliation !== definition.requiresOrderReconciliation
     || !await configUpdatePending(service, run))
     throw new Error("COINOPS_BULK_SCOPE_OR_GATE_INVALID");
-  const desired = Number(item.new_values.post_ath_spacing_rate);
-  if (!Number.isFinite(desired) || desired < 0.001 || desired > 0.2)
-    throw new Error("COINOPS_BULK_RATE_INVALID");
+  const desired = Number(item.new_values[parameterKey]);
+  const previous = Number(item.old_values[parameterKey]);
+  const minimum = definition.type === "PERCENT" ? definition.min / 100 : definition.min;
+  const maximum = definition.type === "PERCENT" ? definition.max / 100 : definition.max;
+  if (!Number.isFinite(desired) || !Number.isFinite(previous) || desired < minimum || desired > maximum
+    || definition.type === "INTEGER" && !Number.isInteger(desired))
+    throw new Error("COINOPS_BULK_VALUE_INVALID");
   if (item.status === "PENDING") {
     const started = await service.from("strategy_bulk_engine_updates")
       .update({ status: "APPLYING", updated_at: new Date().toISOString() })
@@ -806,34 +825,57 @@ async function applyPendingStrategyUpdate(service: Service, run: Run, ledger: Le
   let profile = await loadAthProfile(service, athScope(run), "REAL", run.asset);
   if (profile.id !== item.profile_id) throw new Error("COINOPS_BULK_PROFILE_SCOPE_INVALID");
   if (profile.config_version === item.strategy_version_before) {
-    if (Math.abs(Number(profile.post_ath_spacing_rate)
-      - Number(item.old_values.post_ath_spacing_rate)) > 1e-8
-      || profile.next_config_version !== null)
+    if (profile.next_config_version !== null)
       throw new Error("COINOPS_BULK_PROFILE_CONFLICT");
+    const profileRecord = profile as unknown as Record<string, unknown>;
+    if (definition.storage.table === "PROFILE"
+      && Math.abs(Number(profileRecord[definition.storage.column]) - previous) > 1e-8)
+      throw new Error("COINOPS_BULK_PROFILE_CONFLICT");
+    if (definition.storage.table === "PREPARATION") {
+      const currentPreparation = await service.from("robot_v1_live_preparations").select("monthly_target")
+        .eq("trading_engine_id", run.trading_engine_id).eq("operator_id", run.operator_id).single();
+      if (currentPreparation.error || !currentPreparation.data
+        || ![previous, desired].some((value) => Number(currentPreparation.data.monthly_target) === value))
+        throw new Error("COINOPS_BULK_PREPARATION_CONFIG_CONFLICT");
+      if (Number(currentPreparation.data.monthly_target) !== desired) {
+        const changed = await service.from("robot_v1_live_preparations").update({ monthly_target: desired,
+          updated_at: new Date().toISOString() }).eq("trading_engine_id", run.trading_engine_id)
+          .eq("operator_id", run.operator_id).eq("monthly_target", previous).select("id").maybeSingle();
+        if (changed.error || !changed.data) throw new Error("COINOPS_BULK_PREPARATION_CONFIG_CONFLICT");
+      }
+    }
     await renewLease(service, run);
-    const updated = await service.from("robot_v1_ath_profiles").update({
-      post_ath_spacing_rate: desired, config_version: item.strategy_version_after,
-      updated_at: new Date().toISOString(),
-    }).eq("id", item.profile_id).eq("trading_engine_id", run.trading_engine_id)
+    const profileUpdate: Record<string, unknown> = { config_version: item.strategy_version_after,
+      updated_at: new Date().toISOString() };
+    if (definition.storage.table === "PROFILE") profileUpdate[definition.storage.column] = desired;
+    const updated = await service.from("robot_v1_ath_profiles").update(profileUpdate)
+      .eq("id", item.profile_id).eq("trading_engine_id", run.trading_engine_id)
       .eq("config_version", item.strategy_version_before).eq("updated_at", profile.updated_at)
       .select("id").maybeSingle();
     if (updated.error || !updated.data) throw new Error("COINOPS_BULK_PROFILE_UPDATE_CONFLICT");
     profile = await loadAthProfile(service, athScope(run), "REAL", run.asset);
   }
-  if (profile.config_version !== item.strategy_version_after
-    || Math.abs(Number(profile.post_ath_spacing_rate) - desired) > 1e-8)
+  const preparation = definition.storage.table === "PREPARATION"
+    ? await service.from("robot_v1_live_preparations").select("monthly_target")
+      .eq("trading_engine_id", run.trading_engine_id).eq("operator_id", run.operator_id).single()
+    : { data: null, error: null };
+  if (preparation.error) throw new Error("COINOPS_BULK_PREPARATION_CONFIG_CONFLICT");
+  const stored = definition.storage.table === "PROFILE"
+    ? Number((profile as unknown as Record<string, unknown>)[definition.storage.column])
+    : Number(preparation.data?.monthly_target);
+  if (profile.config_version !== item.strategy_version_after || Math.abs(stored - desired) > 1e-8)
     throw new Error("COINOPS_BULK_VERSION_MISMATCH");
-  if (profile.regime === "POST_ATH" || run.entry_regime === "POST_ATH") {
-    // The official ladder owns cancellation, fill-wins and future GRID prices.
-    // Existing OPEN and TP slots are frozen by planAthLadder.
+  const affectsCurrentLadder = strategyParameterAffectsCurrentLadder(definition, run.entry_regime);
+  if (affectsCurrentLadder) {
+    // The official ladder owns zero-fill cancellation, fill-wins and future GRID
+    // prices. Existing OPEN, partial positions and TP slots stay frozen.
     await applyAthTransition(service, run, ledger, state, true);
-  } else {
-    // A NORMAL-regime resident BUY is compatible: only the future POST_ATH
-    // parameter changes. No exchange order is touched.
+  } else if (definition.applyPolicy !== "NEXT_CYCLE_ONLY") {
     await renewLease(service, run);
     const saved = await service.from("robot_v1_live_runs").update({
       config_version: item.strategy_version_after,
-      config_snapshot: { ...run.config_snapshot, post_ath_spacing_rate: desired },
+      config_snapshot: { ...run.config_snapshot, [parameterKey]: desired,
+        source_config_version: item.strategy_version_after },
     }).eq("id", run.id).eq("trading_engine_id", run.trading_engine_id)
       .eq("lease_owner", run.lease_owner).select("*").single();
     if (saved.error || !saved.data) throw new Error("COINOPS_BULK_RUN_VERSION_FAILED");
@@ -847,8 +889,8 @@ async function applyPendingStrategyUpdate(service: Service, run: Run, ledger: Le
     await event(service, run, `STRATEGY_BULK_APPLIED:${item.id}`, "STRATEGY_BULK_APPLIED", null,
       { batch_id: item.batch_id, strategy_version_before: item.strategy_version_before,
         strategy_version_after: item.strategy_version_after,
-        post_ath_spacing_rate_before: Number(item.old_values.post_ath_spacing_rate),
-        post_ath_spacing_rate_after: desired });
+        parameter_key: parameterKey, apply_policy: applyPolicy,
+        value_before: previous, value_after: desired });
   } catch {
     // The batch/item rows are the durable atomic audit. A redundant event
     // write must never turn an already-applied strategy into a trading stop.
@@ -912,7 +954,7 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
         lifetimeGainCount: month.lifetimeGainCount, monthlyGainCount: month.monthlyGainCount,
         entryState: "PLANNED", status: "PENDING", buyPrice: amount(slot.target_buy_price),
         entryOrigin: "GRID" as const, operationSequence: 1 };
-    }));
+    }), statuses[0]!.monthlyGainTarget);
   const accounts = new Map(latest.accounts.map((item) => [item.slot_number, item]));
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   for (const item of planned.filter((item) => item.operationalRank !== null)) {
@@ -937,6 +979,7 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
   const snapshot = { gain_rate: gain, ladder_anchor_price: state.price.price,
     normal_spacing_rate: amount(profile.normal_spacing_rate),
     post_ath_spacing_rate: amount(profile.post_ath_spacing_rate), regime: profile.regime,
+    monthly_target: statuses[0]!.monthlyGainTarget,
     ath_price: profile.ath_price, ath_source: profile.ath_source };
   await renewLease(service, run);
   const result = await service.rpc("restart_robot_v1_live_cycle", {
@@ -1580,6 +1623,7 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
   const snapshot = { gain_rate: Number(profile.gain_rate), ladder_anchor_price: anchor,
     normal_spacing_rate: Number(profile.normal_spacing_rate),
     post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
+    monthly_target: prep.monthly_target,
     ath_price: profile.ath_price, ath_source: profile.ath_source };
   const inserted = existing.data ? { data: existing.data, error: null }
     : await service.from("robot_v1_live_runs").insert({

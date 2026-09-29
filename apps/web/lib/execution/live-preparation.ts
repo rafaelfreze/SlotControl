@@ -83,7 +83,7 @@ export function validateLiveConfig(config: LiveConfig, globalCapBrl: number, lim
   const orderHardCap = limits?.orderCap ?? (config.asset === "BTC" ? 18 : 11);
   const quote = limits?.quoteAsset ?? "BRL";
   if (config.symbol !== `${config.asset}${quote}` || config.slot_count !== LIVE_SLOT_COUNT
-    || config.monthly_target !== (config.asset === "BTC" ? 7 : 2)
+    || !Number.isInteger(config.monthly_target) || config.monthly_target < 1 || config.monthly_target > 1000
     || ![config.gain_rate, config.normal_spacing_rate, config.post_ath_spacing_rate].every((v) => Number(v) > 0 && Number(v) < 1)
     || orderCap > exposure || orderCap > orderHardCap || exposure > capital
     || capital > assetHardCap || exposure > assetHardCap

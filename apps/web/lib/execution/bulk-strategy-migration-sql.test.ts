@@ -41,6 +41,7 @@ before(() => {
   runFile(fixture("bulk-strategy-migration-setup.sql"));
   runFile(resolve("../../supabase/migrations/20260929105000_add_coinops_bulk_strategy_updates.sql"));
   runFile(resolve("../../supabase/migrations/20260929181500_grant_coinops_executor_shard_registry_read.sql"));
+  runFile(resolve("../../supabase/migrations/20260929214159_generalize_coinops_bulk_strategy_editor.sql"));
 });
 
 after(() => {
@@ -57,6 +58,8 @@ check("bulk SQL: RLS, grants and BUY gate remain service-scoped", () => {
   assert.equal(psql("select has_table_privilege('anon','coinops.strategy_bulk_batches','SELECT')"), "f");
   assert.equal(psql("select has_function_privilege('authenticated','coinops.admit_strategy_bulk_next(uuid,uuid)','EXECUTE')"), "f");
   assert.equal(psql("select has_function_privilege('service_role','coinops.admit_strategy_bulk_next(uuid,uuid)','EXECUTE')"), "t");
+  assert.equal(psql("select has_function_privilege('authenticated','coinops.enqueue_strategy_bulk_update(uuid,uuid,uuid,jsonb,jsonb,uuid)','EXECUTE')"), "f");
+  assert.equal(psql("select has_function_privilege('service_role','coinops.enqueue_strategy_bulk_update(uuid,uuid,uuid,jsonb,jsonb,uuid)','EXECUTE')"), "t");
   assert.equal(psql("select count(*) from pg_trigger where tgrelid='coinops.robot_v1_live_orders'::regclass and tgname='coinops_strategy_buy_gate' and not tgisinternal"), "1");
   assert.equal(psql("select has_column_privilege('authenticated','coinops.exchange_accounts','executor_shard_id','SELECT')"), "t");
   assert.equal(psql("select has_table_privilege('authenticated','coinops.exchange_accounts','SELECT')"), "f");

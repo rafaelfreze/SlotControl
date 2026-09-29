@@ -58,15 +58,19 @@ export type MonthlySlotStatus = MonthlySlotInput & {
 /** A monthly goal is a floor, not a ceiling. Only a complete, evidenced
  * physical set can release the goal-based priority for the rest of the month. */
 export function monthlyGoalsComplete(asset: V1Asset,
-  slots: readonly { monthlyGainCount: number | null }[]): boolean {
+  slots: readonly { monthlyGainCount: number | null }[], target = MONTHLY_SLOT_TARGET[asset]): boolean {
+  if (!Number.isInteger(target) || target < 1 || target > 1000)
+    throw new Error("COINOPS_MONTHLY_TARGET_INVALID");
   return slots.length === V1_SLOT_COUNT && slots.every((slot) => slot.monthlyGainCount !== null
-    && Number.isInteger(slot.monthlyGainCount) && slot.monthlyGainCount >= MONTHLY_SLOT_TARGET[asset]);
+    && Number.isInteger(slot.monthlyGainCount) && slot.monthlyGainCount >= target);
 }
 
 /** Gain rank is independent of price. The engine still decides which priced
  * opportunity is valid; an OPEN position can finish after reaching its goal. */
-export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs: readonly MonthlySlotInput[]): MonthlySlotStatus[] {
-  const target = MONTHLY_SLOT_TARGET[asset];
+export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs: readonly MonthlySlotInput[],
+  target = MONTHLY_SLOT_TARGET[asset]): MonthlySlotStatus[] {
+  if (!Number.isInteger(target) || target < 1 || target > 1000)
+    throw new Error("COINOPS_MONTHLY_TARGET_INVALID");
   const periodKey = monthlyPeriodKey(instant);
   const ids = new Set<string>(), numbers = new Set<number>();
   const statuses = inputs.map((input): MonthlySlotStatus => {
@@ -87,7 +91,7 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
     return { ...input, monthlyGainTarget: target, periodKey, timezone: MONTHLY_SLOT_TIMEZONE,
       monthlyTargetReached: reached, eligibleForNewEntry: blockedReason === null, blockedReason, operationalRank: null };
   });
-  if (monthlyGoalsComplete(asset, statuses)) for (const slot of statuses) {
+  if (monthlyGoalsComplete(asset, statuses, target)) for (const slot of statuses) {
     slot.eligibleForNewEntry = true;
     slot.blockedReason = null;
   }
