@@ -4,12 +4,13 @@ export type OperatorScope = { product_id: string; tenant_id: string; user_id: st
 export type OperatorRow = OperatorScope & { id: string; status: string; kill_switch: boolean };
 export type ExchangeAccountRow = {
   id: string; operator_id: string; display_name: string; status: string;
-  is_legacy_default: boolean; kill_switch: boolean;
+  is_legacy_default: boolean; kill_switch: boolean; executor_shard_id?: string | null;
 };
 export type TradingEngineRow = {
   id: string; operator_id: string; exchange_account_id: string; environment: EngineEnvironment;
   symbol: string; base_asset: string; quote_asset: string; status: string;
-  kill_switch: boolean; hard_cap_quote: number | string; legacy_compatible: boolean;
+  kill_switch: boolean; strategy_config_pending?: boolean;
+  hard_cap_quote: number | string; legacy_compatible: boolean;
   ath_reference_symbol?: string;
 };
 export type DomainRegistry = {
@@ -20,6 +21,7 @@ export type EngineContext = {
   account_display_name: string; environment: EngineEnvironment; symbol: string;
   base_asset: string; quote_asset: string; is_legacy_default: boolean;
   global_kill_switch: boolean; account_kill_switch: boolean; engine_kill_switch: boolean;
+  strategy_config_pending?: boolean;
   status: string; hard_cap_quote: number | string; legacy_compatible: boolean;
   ath_reference_symbol: string;
 };
@@ -92,7 +94,8 @@ export function resolveEngineContext(registry: DomainRegistry, selection: Engine
     account_display_name: account.display_name, environment: engine.environment, symbol: engine.symbol,
     base_asset: engine.base_asset, quote_asset: engine.quote_asset, is_legacy_default: account.is_legacy_default,
     global_kill_switch: registry.operator.kill_switch, account_kill_switch: account.kill_switch || account.status !== "ACTIVE",
-    engine_kill_switch: engine.kill_switch, status: engine.status, hard_cap_quote: engine.hard_cap_quote,
+    engine_kill_switch: engine.kill_switch, strategy_config_pending: engine.strategy_config_pending,
+    status: engine.status, hard_cap_quote: engine.hard_cap_quote,
     legacy_compatible: engine.legacy_compatible,
     ath_reference_symbol: engine.ath_reference_symbol ?? (engine.legacy_compatible ? `${engine.base_asset}USDC` : engine.symbol) };
 }

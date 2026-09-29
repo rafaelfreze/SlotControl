@@ -9,6 +9,9 @@ import * as capitalRefresh from "../execution/live-entry-capital-refresh.ts";
 import * as priceInvariant from "../execution/strategy-price-invariant.ts";
 import * as shortcut from "../execution/live-reconciliation-shortcut.ts";
 import * as unsentTp from "../execution/live-unsent-tp-recovery.ts";
+import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
+import * as athLadder from "../execution/ath-ladder.ts";
+import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
 import * as scope from "../execution/operator-context.ts";
 
 type Row = Record<string, unknown>;
@@ -16,6 +19,8 @@ type Runtime = {
   armNextEntry: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<string>;
   reconcileOrder: (service: unknown, run: Row, order: Row) => Promise<Row>;
   confirmCapitalRefreshes: (service: unknown, run: Row, ledger: unknown) => Promise<void>;
+  applyAthTransition: (service: unknown, run: Row, ledger: unknown, state: Row, force: boolean) => Promise<boolean>;
+  applyPendingStrategyUpdate: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<string>;
 };
 type Options = { asset?: "BTC" | "SOL"; currency?: "BRL" | "USDT"; legacy?: boolean;
   cancel?: "FILLED" | "PARTIALLY_FILLED" | "TIMEOUT_CANCELED" | "TIMEOUT_NEW";
@@ -31,11 +36,15 @@ function harness(options: Options = {}) {
   const engine = { ...identity, id: identity.trading_engine_id, base_asset: asset, environment: "REAL",
     symbol: `${asset}${identity.quote_asset}`, status: "ACTIVE", global_kill_switch: false,
     account_kill_switch: false, engine_kill_switch: false, legacy_compatible: options.legacy ?? false,
-    hard_cap_quote: 1000 };
+    hard_cap_quote: 1000, strategy_config_pending: false };
   const run: Row = { ...identity, id: "12345678-1234-1234-1234-123456789abc", asset, symbol: engine.symbol,
     engine, status: "ACTIVE", lease_owner: "lease-fixture", lease_until: new Date(Date.now() + 180_000).toISOString(),
     entry_regime: "NORMAL", entry_spacing: 0.03, gain_rate: 0.05, anchor_price: 110, config_snapshot: {},
     strategy_version: strategy.STRATEGY_VERSION };
+  const profile: Row = { ...identity, id: "profile-fixture", asset, environment: "REAL",
+    regime: "POST_ATH", config_version: 2, gain_rate: 0.05, normal_spacing_rate: 0.03,
+    post_ath_spacing_rate: 0.05, next_config_version: null,
+    transition_key: "transition-fixture", updated_at: new Date().toISOString() };
   const slots: Row[] = Array.from({ length: 25 }, (_, index) => ({ ...identity,
     id: `slot-${index + 1}`, run_id: run.id, slot_number: index + 1, operation_sequence: 1,
     entry_state: index === 0 ? "OPEN" : index === 1 ? "ARMED" : "PLANNED",
@@ -72,6 +81,8 @@ function harness(options: Options = {}) {
     robot_v1_live_preparations: [{ ...identity, live_enabled: true, kill_switch: false,
       max_order_notional_brl: 100, max_total_exposure_brl: 1000 }],
     account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [],
+    robot_v1_ath_profiles: [profile],
+    strategy_bulk_batches: [], strategy_bulk_engine_updates: [],
     robot_v1_live_selective_contribution_allocations: [
       { ...applied, id: "open-slot-pending", slot_number: 1, status: "PENDING", applied_at: null },
       ...(!options.noContribution && !options.openContributionOnly && options.contributionSource !== "ALL_SLOTS" ? [applied] : []),
@@ -119,7 +130,7 @@ function harness(options: Options = {}) {
         return { data: structuredClone(matches), error: null };
       };
       const query = {
-        select() { return query; }, order() { return query; },
+        select() { return query; }, order() { return query; }, limit() { return query; },
         eq(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         is(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         in(key: string, value: unknown[]) { predicates.push((row) => value.includes(row[key])); return query; },
@@ -151,6 +162,17 @@ function harness(options: Options = {}) {
         orders.push(prepared);
         return { data: structuredClone(prepared), error: null };
       }
+      if (name === "finish_strategy_bulk_engine_update") {
+        const item = tables.strategy_bulk_engine_updates.find((row) => row.id === params.p_item_id)!;
+        assert.equal(item.status, "APPLYING");
+        assert.equal(run.config_version, item.strategy_version_after);
+        if (run.entry_regime === "POST_ATH") assert.equal(orders.filter((row) => row.side === "BUY"
+          && ["PREPARED", "NEW", "PARTIALLY_FILLED"].includes(String(row.status))).length, 0);
+        item.status = "APPLIED";
+        engine.strategy_config_pending = false;
+        tables.strategy_bulk_batches[0].status = "APPLIED";
+        return { data: null, error: null };
+      }
       assert.equal(name, "sync_robot_v1_live_order");
       const saved = orders.find((o) => o.id === params.p_order_id)!;
       const trades = params.p_trades as Row[];
@@ -181,12 +203,16 @@ function harness(options: Options = {}) {
     "./robot-v1-live-cycle": cycle, "./strategy-engine": strategy, "./live-entry-capital-refresh": capitalRefresh,
     "./strategy-price-invariant": priceInvariant, "./live-reconciliation-shortcut": shortcut,
     "./live-unsent-tp-recovery": unsentTp,
+    "./live-strategy-snapshot": strategySnapshot,
+    "./ath-ladder": athLadder, "./monthly-slot-policy": monthlyPolicy,
+    "./ath-profile-server": { loadAthProfile: async () => profile, refreshAthProfile: async () => profile },
     "./operator-context": scope,
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
     "./operator-context-server": { resolveOperatorEngine: async () => engine },
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE" }) },
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => slots.map((s) => ({
-      physicalSlotNumber: s.slot_number, operationalRank: s.operational_rank,
+      physicalSlotId: s.id, physicalSlotNumber: s.slot_number, operationalRank: s.operational_rank,
+      lifetimeGainCount: 0, monthlyGainCount: 0,
       eligibleForNewEntry: true, monthlyTargetReached: false })) },
     "./strategy-decision-server": {
       persistStrategyDecision: async (_s: unknown, _scope: unknown, _env: unknown, decision: Row) => calls.push({ kind: "decision", input: decision }),
@@ -236,14 +262,14 @@ function harness(options: Options = {}) {
     },
   };
   const source = readFileSync(new URL("../execution/robot-v1-live-server.ts", import.meta.url), "utf8")
-    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes };";
+    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate };";
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ES2022 } }).outputText;
   const runtime = {} as Runtime;
   const require = createRequire(import.meta.url);
   new Function("require", "exports", compiled)((name: string) => name === "node:crypto" ? require(name) : dependencies[name] ?? {}, runtime);
   const ledger = () => structuredClone({ slots, orders, accounts });
-  return { runtime, service, run, slots, accounts, orders, exchange, calls, writes, tables, state,
+  return { runtime, service, run, slots, accounts, orders, exchange, calls, writes, tables, state, profile,
     async arm() { return runtime.armNextEntry(service, run, ledger(), state()); },
     async confirm() { await runtime.confirmCapitalRefreshes(service, run, ledger()); },
     unchangedOpen() { assert.deepEqual({ slot: slots[0], account: accounts[0], tp: orders[1], buy: orders[0] }, initialOpen); },
@@ -270,6 +296,172 @@ for (const asset of ["BTC", "SOL"] as const) for (const currency of ["BRL", "USD
     h.unchangedOpen();
   });
 }
+
+test("bulk POST_ATH transition re-reads canceled BUY checkpoint, reprices its GRID slot and preserves OPEN/TP", async () => {
+  const h = harness({ asset: "SOL", currency: "BRL" });
+  const priorFetch = globalThis.fetch;
+  const openBefore = structuredClone({ slot: h.slots[0], buy: h.orders[0], tp: h.orders[1] });
+  h.run.entry_regime = "POST_ATH";
+  h.run.anchor_price = 100;
+  h.run.config_version = 1;
+  h.run.config_snapshot = { gain_rate: 0.05, post_ath_spacing_rate: 0.08,
+    normal_spacing_rate: 0.03, regime: "POST_ATH", ladder_anchor_price: 100 };
+  (h.run.engine as Row).ath_reference_symbol = "SOLUSDC";
+  h.slots[1].entry_origin = "GRID";
+  h.slots[1].target_buy_price = 100;
+  h.slots[1].entry_reference_price = 100;
+  h.orders[2].config_version = 1;
+  h.orders[2].config_snapshot = structuredClone(h.run.config_snapshot);
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ price: "120" }) }) as Response;
+  try {
+    assert.equal(await h.runtime.applyAthTransition(h.service, h.run,
+      { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state(), true), true);
+  } finally { globalThis.fetch = priorFetch; }
+  assert.equal(h.orders[2].status, "CANCELED");
+  assert.equal(h.slots[1].entry_state, "PLANNED");
+  assert.notEqual(h.slots[1].target_buy_price, 100, "canceled resident must not retain old price");
+  assert.equal(h.slots[1].target_buy_price, h.slots[1].entry_reference_price);
+  assert.equal(h.run.config_version, 2);
+  assert.equal((h.run.config_snapshot as Row).post_ath_spacing_rate, 0.05);
+  assert.deepEqual({ slot: h.slots[0], buy: h.orders[0], tp: h.orders[1] }, openBefore);
+  assert.equal(h.calls.filter((item) => item.kind === "cancel").length, 1);
+  assert.equal(h.calls.filter((item) => item.kind === "create").length, 0);
+});
+
+function pendingBulkHarness(cancel?: Options["cancel"], crashAfterCancel = false) {
+  const h = harness({ asset: "SOL", currency: "BRL", cancel, crashAfterCancel });
+  h.run.entry_regime = "POST_ATH";
+  h.run.anchor_price = 100;
+  h.run.config_version = 1;
+  h.run.config_snapshot = { gain_rate: 0.05, post_ath_spacing_rate: 0.08,
+    normal_spacing_rate: 0.03, regime: "POST_ATH", ladder_anchor_price: 100 };
+  (h.run.engine as Row).ath_reference_symbol = "SOLUSDC";
+  h.slots[1].entry_origin = "GRID";
+  h.slots[1].target_buy_price = 100;
+  h.slots[1].entry_reference_price = 100;
+  h.orders[2].config_version = 1;
+  h.orders[2].config_snapshot = structuredClone(h.run.config_snapshot);
+  h.profile.config_version = 1;
+  h.profile.post_ath_spacing_rate = 0.08;
+  h.tables.trading_engines[0].strategy_config_pending = true;
+  h.tables.strategy_bulk_batches.push({ id: "batch-fixture", status: "PENDING" });
+  h.tables.strategy_bulk_engine_updates.push({ id: "item-fixture", batch_id: "batch-fixture",
+    operator_id: h.run.operator_id, exchange_account_id: h.run.exchange_account_id,
+    trading_engine_id: h.run.trading_engine_id, run_id: h.run.id, profile_id: h.profile.id,
+    status: "PENDING", strategy_version_before: 1, strategy_version_after: 2,
+    old_values: { post_ath_spacing_rate: 0.08 }, new_values: { post_ath_spacing_rate: 0.05 },
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  return h;
+}
+
+test("bulk checkpoint applies once, clears only its engine BUY gate after guarded reprice", async () => {
+  const h = pendingBulkHarness();
+  const priorFetch = globalThis.fetch;
+  const openBefore = structuredClone({ slot: h.slots[0], buy: h.orders[0], tp: h.orders[1] });
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ price: "120" }) }) as Response;
+  try {
+    assert.equal(await h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+      { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()), "APPLIED");
+    assert.equal(await h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+      { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()), "NONE");
+  } finally { globalThis.fetch = priorFetch; }
+  assert.equal(h.profile.config_version, 2);
+  assert.equal(h.run.config_version, 2);
+  assert.equal(h.tables.strategy_bulk_engine_updates[0].status, "APPLIED");
+  assert.equal(h.tables.strategy_bulk_batches[0].status, "APPLIED");
+  assert.equal(h.tables.trading_engines[0].strategy_config_pending, false);
+  assert.equal(h.slots[1].entry_state, "PLANNED");
+  assert.notEqual(h.slots[1].target_buy_price, 100);
+  assert.deepEqual({ slot: h.slots[0], buy: h.orders[0], tp: h.orders[1] }, openBefore);
+  assert.equal(h.calls.filter((item) => item.kind === "cancel").length, 1);
+  assert.equal(h.calls.filter((item) => item.kind === "create").length, 0);
+});
+
+for (const cancel of ["FILLED", "PARTIALLY_FILLED", "TIMEOUT_NEW"] as const) {
+  test(`bulk ${cancel} race keeps gate closed and never creates a speculative BUY`, async () => {
+    const h = pendingBulkHarness(cancel);
+    const priorFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ price: "120" }) }) as Response;
+    try {
+      await assert.rejects(h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+        { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()));
+    } finally { globalThis.fetch = priorFetch; }
+    assert.equal(h.tables.trading_engines[0].strategy_config_pending, true);
+    assert.equal(h.tables.strategy_bulk_engine_updates[0].status, "APPLYING");
+    assert.equal(h.calls.filter((item) => item.kind === "create").length, 0);
+    assert.equal(h.orders[1].status, "NEW", "existing TP is not canceled");
+  });
+}
+
+test("bulk NORMAL update leaves a compatible resident BUY and existing TP untouched", async () => {
+  const h = pendingBulkHarness();
+  const before = structuredClone({ open: h.slots[0], buy: h.orders[2], tp: h.orders[1] });
+  h.run.entry_regime = "NORMAL";
+  h.run.config_snapshot = { ...(h.run.config_snapshot as Row), regime: "NORMAL", entry_spacing: 0.03 };
+  h.profile.regime = "NORMAL";
+  assert.equal(await h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+    { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()), "APPLIED");
+  assert.equal(h.run.config_version, 2);
+  assert.equal(h.profile.post_ath_spacing_rate, 0.05);
+  assert.equal(h.tables.trading_engines[0].strategy_config_pending, false);
+  assert.deepEqual({ open: h.slots[0], buy: h.orders[2], tp: h.orders[1] }, before);
+  assert.equal(h.calls.filter((item) => item.kind === "cancel" || item.kind === "create").length, 0);
+});
+
+test("bulk retry recovers only a proven canceled zero-fill ARMED checkpoint after a crash", async () => {
+  const h = pendingBulkHarness(undefined, true);
+  const priorFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ price: "120" }) }) as Response;
+  try {
+    await assert.rejects(h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+      { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()));
+    assert.equal(h.orders[2].status, "CANCELED");
+    assert.equal(h.slots[1].entry_state, "ARMED");
+    assert.equal(h.tables.trading_engines[0].strategy_config_pending, true);
+    assert.equal(await h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+      { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()), "APPLIED");
+  } finally { globalThis.fetch = priorFetch; }
+  assert.equal(h.slots[1].entry_state, "PLANNED");
+  assert.notEqual(h.slots[1].target_buy_price, 100);
+  assert.equal(h.calls.filter((entry) => entry.kind === "cancel").length, 1);
+  assert.equal(h.calls.filter((entry) => entry.kind === "create").length, 0);
+});
+
+test("bulk POST_ATH update without a resident BUY reprices futures and preserves OPEN/TP", async () => {
+  const h = pendingBulkHarness();
+  h.orders.splice(2, 1);
+  h.slots[1].entry_state = "PLANNED";
+  const openBefore = structuredClone({ slot: h.slots[0], buy: h.orders[0], tp: h.orders[1] });
+  const priorFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ price: "120" }) }) as Response;
+  try {
+    assert.equal(await h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+      { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()), "APPLIED");
+  } finally { globalThis.fetch = priorFetch; }
+  assert.notEqual(h.slots[1].target_buy_price, 100);
+  assert.equal(h.calls.filter((item) => item.kind === "cancel" || item.kind === "create").length, 0);
+  assert.deepEqual({ slot: h.slots[0], buy: h.orders[0], tp: h.orders[1] }, openBefore);
+});
+
+test("rollback is a new version on current ledger and never resurrects the canceled BUY", async () => {
+  const h = pendingBulkHarness();
+  h.run.entry_regime = "NORMAL";
+  h.profile.regime = "NORMAL";
+  h.run.config_version = 2;
+  h.profile.config_version = 2;
+  h.profile.post_ath_spacing_rate = 0.05;
+  const item = h.tables.strategy_bulk_engine_updates[0];
+  item.strategy_version_before = 2;
+  item.strategy_version_after = 3;
+  item.old_values = { post_ath_spacing_rate: 0.05 };
+  item.new_values = { post_ath_spacing_rate: 0.08 };
+  assert.equal(await h.runtime.applyPendingStrategyUpdate(h.service, h.run,
+    { slots: h.slots, orders: h.orders, accounts: h.accounts }, h.state()), "APPLIED");
+  assert.equal(h.profile.config_version, 3);
+  assert.equal(h.profile.post_ath_spacing_rate, 0.08);
+  assert.equal(h.run.config_version, 3);
+  assert.equal(h.calls.filter((entry) => entry.kind === "cancel" || entry.kind === "create").length, 0);
+});
 
 for (const cancel of ["FILLED", "PARTIALLY_FILLED"] as const) {
   test(`LIVE cancel race ${cancel}: reconciles execution without marking PLANNED or replacing the position`, async () => {

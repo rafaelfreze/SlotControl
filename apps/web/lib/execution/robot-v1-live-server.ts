@@ -28,6 +28,7 @@ import { isProvablyUnsentTakeProfit } from "./live-unsent-tp-recovery";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
+import { strategyRatesForOrder } from "./live-strategy-snapshot";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import type { ExecutorEngineScope } from "./live-executor-transport";
 
@@ -67,9 +68,15 @@ type Order = Scope & LedgerScope & { id: string; run_id: string; slot_id: string
   cumulative_quote: number | string; fee_base: number | string;
   fee_quote: number | string; fee_other: Array<{ asset: string; amount: number }>;
   trades_reconciled: boolean; submission_guarded_at: string | null;
-  strategy_decision_id: string | null; created_at: string };
+  strategy_decision_id: string | null; config_version: number;
+  config_snapshot: Record<string, unknown>; created_at: string };
 
 type Ledger = Awaited<ReturnType<typeof runRows>>;
+type BulkUpdate = { id: string; batch_id: string; run_id: string; profile_id: string;
+  operator_id: string; exchange_account_id: string; trading_engine_id: string;
+  strategy_version_before: number; strategy_version_after: number;
+  old_values: { post_ath_spacing_rate: number | string };
+  new_values: { post_ath_spacing_rate: number | string }; status: string };
 
 const PUBLIC_SPOT = "https://data-api.binance.vision";
 // A reconciliation may perform several sequential Binance GETs and database
@@ -102,6 +109,13 @@ async function quoteCap(service: Service, run: Run | Preparation) {
 function entryBlocked(run: Run) {
   return !run.engine || run.engine.status !== "ACTIVE" || run.engine.global_kill_switch
     || run.engine.account_kill_switch || run.engine.engine_kill_switch;
+}
+async function configUpdatePending(service: Service, run: Run) {
+  const result = await service.from("trading_engines").select("strategy_config_pending")
+    .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
+    .eq("exchange_account_id", run.exchange_account_id).single();
+  if (result.error || !result.data) throw new Error("COINOPS_BULK_GATE_UNAVAILABLE");
+  return result.data.strategy_config_pending === true;
 }
 const context = (run: Run, transitionKey?: string) => ({ asset: run.asset, cycleId: run.id,
   observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey });
@@ -341,7 +355,8 @@ async function prepareOrder(service: Service, run: Run, slot: Slot, decision: St
   });
   const order = (Array.isArray(result.data) ? result.data[0] : result.data) as Order | null;
   if (result.error || !order || order.client_order_id !== clientId || order.run_id !== run.id)
-    throw new Error("COINOPS_LIVE_ORDER_PREPARE_FAILED");
+    throw new Error(result.error?.message?.includes("COINOPS_STRATEGY_CONFIG_UPDATE_PENDING")
+      ? "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING" : "COINOPS_LIVE_ORDER_PREPARE_FAILED");
   await event(service, run, `${clientId}:PREPARED`, "ORDER_PREPARED", slot.slot_number,
     { side, purpose, revision, decision_id: decision.decision_id });
   return order;
@@ -354,9 +369,9 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
   if (!slot || !order.price) throw new Error("COINOPS_STRATEGY_PRICE_INVARIANT_FAILED");
   const check = (price: number) => {
     if (order.side === "BUY") {
+      const rates = strategyRatesForOrder(order, run);
       assertStrategyBuyPrice({ price, referencePrice: amount(slot.entry_reference_price),
-        anchorPrice: Number(run.config_snapshot?.ladder_anchor_price ?? run.anchor_price),
-        spacing: amount(run.entry_spacing), tick, entryOrigin: slot.entry_origin });
+        anchorPrice: rates.anchor, spacing: rates.spacing, tick, entryOrigin: slot.entry_origin });
     } else {
       const buys = ledger.orders.filter((item) => item.slot_id === slot.id
         && item.operation_sequence === order.operation_sequence && item.side === "BUY"
@@ -364,8 +379,9 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
       const quantity = buys.reduce((sum, item) => sum + amount(item.executed_quantity), 0);
       if (!quantity) throw new Error("COINOPS_STRATEGY_PRICE_INVARIANT_FAILED");
       const averageFillPrice = buys.reduce((sum, item) => sum + amount(item.cumulative_quote), 0) / quantity;
+      const rates = strategyRatesForOrder(order, run);
       assertStrategyTakeProfitPrice({ price, averageFillPrice,
-        gainRate: amount(run.gain_rate), spacing: amount(run.entry_spacing), tick });
+        gainRate: rates.gain, spacing: rates.spacing, tick });
     }
   };
   check(amount(order.price));
@@ -398,7 +414,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
         throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
     }
     await validateRunEngine(service, run);
-    if (order.side === "BUY" && entryBlocked(run)) return order;
+    if (order.side === "BUY" && (entryBlocked(run) || await configUpdatePending(service, run))) return order;
     const health = await loadLiveEngineExecutorStatus(run);
     if (order.side === "BUY" && health.gate !== "LIVE_EXECUTOR_ACTIVE") return order;
     if (order.side === "SELL" && !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
@@ -505,6 +521,26 @@ async function cancelOwnedEntry(service: Service, run: Run, order: Order, onlyUn
   return amount(order.executed_quantity) === 0 && amount(order.cumulative_quote) === 0 && order.trades_reconciled;
 }
 
+async function retireNeverSubmittedEntry(service: Service, run: Run, order: Order) {
+  if (order.side !== "BUY" || order.status !== "PREPARED" || order.exchange_order_id
+    || order.submission_guarded_at || amount(order.executed_quantity) > 0
+    || !await configUpdatePending(service, run))
+    throw new Error("COINOPS_BULK_PREPARED_BUY_AMBIGUOUS");
+  const observed = await readLiveExecutorOrder(run, order.client_order_id, null);
+  if (observed.order) throw new Error("COINOPS_LIVE_FILLED_DURING_SNAPSHOT");
+  await renewLease(service, run);
+  const retired = await service.from("robot_v1_live_orders")
+    .update({ status: "CANCELED", trades_reconciled: true, reserved_notional_brl: 0 })
+    .eq("id", order.id).eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+    .eq("status", "PREPARED").is("submission_guarded_at", null)
+    .is("exchange_order_id", null).eq("executed_quantity", 0)
+    .select("id,status").maybeSingle();
+  if (retired.error || !retired.data) throw new Error("COINOPS_BULK_PREPARED_BUY_CONFLICT");
+  order.status = "CANCELED";
+  await event(service, run, `CONFIG_PREPARED_BUY_RETIRED:${order.client_order_id}`,
+    "CONFIG_PREPARED_BUY_RETIRED", order.slot_number, { client_order_id: order.client_order_id });
+}
+
 async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState) {
   const filters = symbolFilters(state);
@@ -537,7 +573,8 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
       { ...candidate(slot, ledger.accounts.find((item) => item.slot_number === slot.slot_number)!,
         status.operationalRank, status.monthlyTargetReached, status.eligibleForNewEntry), state: "OPEN" },
       buyQuote / buyQuantity, filters,
-      { gainRate: amount(run.gain_rate), entrySpacing: amount(run.entry_spacing) });
+      { gainRate: strategyRatesForOrder(buys[0], run).gain,
+        entrySpacing: strategyRatesForOrder(buys[0], run).spacing });
     const price = tp.target_price;
     if (tp.action_type !== "CREATE_TP" || price === null
       || uncovered * price + 1e-8 < state.filters.minNotional)
@@ -647,19 +684,39 @@ async function activateQueuedRealProfile(service: Service, run: Run, profile: At
 }
 
 async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
-  state: LiveExecutorState) {
+  state: LiveExecutorState, force = false) {
   const profile = await refreshRealAthProfile(service, run);
   const period = monthlyPeriodKey(new Date());
-  if (run.entry_regime === profile.regime && run.ath_transition_key === profile.transition_key
+  if (!force && run.entry_regime === profile.regime && run.ath_transition_key === profile.transition_key
     && run.ath_period_key === period) return false;
   const active = ledger.orders.find((item) => item.side === "BUY"
     && LIVE_ACTIVE_ORDER_STATUSES.has(item.status));
   if (active) {
-    if (active.status === "PREPARED" || amount(active.executed_quantity) > 0)
+    if (active.status === "PREPARED" && force) await retireNeverSubmittedEntry(service, run, active);
+    else if (active.status === "PREPARED" || amount(active.executed_quantity) > 0)
       throw new Error("COINOPS_LIVE_ATH_BUY_RECONCILIATION_REQUIRED");
-    await cancelOwnedEntry(service, run, active);
+    else if (!await cancelOwnedEntry(service, run, active, true))
+      throw new Error("COINOPS_LIVE_FILLED_DURING_SNAPSHOT");
     const resident = ledger.slots.find((item) => item.id === active.slot_id)!;
     await updateSlot(service, run, resident, { entry_state: "PLANNED" });
+    // Re-read the durable slot/order checkpoint before planning. The original
+    // in-memory ledger still says ARMED and would retain the old BUY price.
+    ledger = await runRows(service, run);
+  }
+  if (force) {
+    // A worker may have crashed after a zero-fill cancel but before recording
+    // PLANNED. Recover only that exact durable checkpoint; never infer that a
+    // missing/partial/uncertain order authorizes a replacement BUY.
+    for (const slot of ledger.slots.filter((item) => item.entry_state === "ARMED")) {
+      const prior = ledger.orders.filter((item) => item.slot_id === slot.id && item.side === "BUY"
+        && item.operation_sequence === slot.operation_sequence)
+        .sort((left, right) => right.revision - left.revision)[0];
+      if (!prior || prior.status !== "CANCELED" || !prior.trades_reconciled
+        || amount(prior.executed_quantity) > 0 || amount(prior.cumulative_quote) > 0)
+        throw new Error("COINOPS_BULK_ARMED_BUY_AMBIGUOUS");
+      await updateSlot(service, run, slot, { entry_state: "PLANNED" });
+    }
+    ledger = await runRows(service, run);
   }
   const statuses = await monthly(service, run, ledger.slots, ledger.accounts);
   const decisions = planAthLadder(run.asset, profile.regime, state.price.price,
@@ -689,6 +746,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   }
   for (const item of decisions) {
     const slot = ledger.slots.find((row) => row.slot_number === item.physicalSlotNumber)!;
+    if (item.frozenReason === "OPEN_OR_TP") continue;
     await updateSlot(service, run, slot, { operational_rank: item.operationalRank,
       post_ath_group: item.postAthGroup, post_ath_group_rank: item.postAthGroupRank,
       ...(!item.frozenReason && slot.entry_state === "PLANNED"
@@ -698,7 +756,12 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   const result = await service.from("robot_v1_live_runs").update({
     entry_regime: profile.regime, entry_spacing: profile.regime === "POST_ATH"
       ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
-    config_snapshot: { ...run.config_snapshot, ladder_anchor_price: state.price.price },
+    config_version: profile.config_version,
+    config_snapshot: { ...run.config_snapshot, ladder_anchor_price: state.price.price,
+      gain_rate: Number(profile.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
+      post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
+      entry_spacing: profile.regime === "POST_ATH"
+        ? Number(profile.post_ath_spacing_rate) : Number(profile.normal_spacing_rate) },
     ath_transition_key: profile.transition_key, ath_period_key: period,
   }).eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner)
     .select("*").single();
@@ -706,9 +769,110 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   Object.assign(run, result.data);
   await event(service, run, `ATH_TRANSITION:${profile.transition_key ?? "NORMAL"}:${period}`,
     "ATH_TRANSITION", null, { regime: profile.regime, transition_key: profile.transition_key,
+      config_version: profile.config_version,
       primary: decisions.filter((item) => item.postAthGroup === "PRIMARY").length,
       reserve: decisions.filter((item) => item.postAthGroup === "RESERVE").length });
   return true;
+}
+
+/** The only LIVE consumer of bulk edits. It runs after reconciliation and TP
+ * protection under this run's lease. A pending BUY gate remains closed until
+ * both the profile and current ladder have been reconciled. */
+async function applyPendingStrategyUpdate(service: Service, run: Run, ledger: Ledger,
+  state: LiveExecutorState): Promise<"NONE" | "APPLIED"> {
+  const pending = await service.from("strategy_bulk_engine_updates").select("*")
+    .eq("trading_engine_id", run.trading_engine_id).eq("run_id", run.id)
+    .in("status", ["PENDING", "APPLYING"]).order("created_at", { ascending: true }).limit(1).maybeSingle();
+  if (pending.error) throw new Error("COINOPS_BULK_CHECKPOINT_UNAVAILABLE");
+  if (!pending.data) return "NONE";
+  const item = pending.data as BulkUpdate;
+  if (item.operator_id !== run.operator_id || item.exchange_account_id !== run.exchange_account_id
+    || item.trading_engine_id !== run.trading_engine_id || item.run_id !== run.id
+    || item.strategy_version_after !== item.strategy_version_before + 1
+    || !await configUpdatePending(service, run))
+    throw new Error("COINOPS_BULK_SCOPE_OR_GATE_INVALID");
+  const desired = Number(item.new_values.post_ath_spacing_rate);
+  if (!Number.isFinite(desired) || desired < 0.001 || desired > 0.2)
+    throw new Error("COINOPS_BULK_RATE_INVALID");
+  if (item.status === "PENDING") {
+    const started = await service.from("strategy_bulk_engine_updates")
+      .update({ status: "APPLYING", updated_at: new Date().toISOString() })
+      .eq("id", item.id).eq("status", "PENDING").select("id").maybeSingle();
+    if (started.error || !started.data) throw new Error("COINOPS_BULK_CLAIM_FAILED");
+    const batch = await service.from("strategy_bulk_batches").update({ status: "APPLYING",
+      updated_at: new Date().toISOString() }).eq("id", item.batch_id).eq("status", "PENDING");
+    if (batch.error) throw new Error("COINOPS_BULK_BATCH_STATUS_FAILED");
+  }
+  let profile = await loadAthProfile(service, athScope(run), "REAL", run.asset);
+  if (profile.id !== item.profile_id) throw new Error("COINOPS_BULK_PROFILE_SCOPE_INVALID");
+  if (profile.config_version === item.strategy_version_before) {
+    if (Math.abs(Number(profile.post_ath_spacing_rate)
+      - Number(item.old_values.post_ath_spacing_rate)) > 1e-8
+      || profile.next_config_version !== null)
+      throw new Error("COINOPS_BULK_PROFILE_CONFLICT");
+    await renewLease(service, run);
+    const updated = await service.from("robot_v1_ath_profiles").update({
+      post_ath_spacing_rate: desired, config_version: item.strategy_version_after,
+      updated_at: new Date().toISOString(),
+    }).eq("id", item.profile_id).eq("trading_engine_id", run.trading_engine_id)
+      .eq("config_version", item.strategy_version_before).eq("updated_at", profile.updated_at)
+      .select("id").maybeSingle();
+    if (updated.error || !updated.data) throw new Error("COINOPS_BULK_PROFILE_UPDATE_CONFLICT");
+    profile = await loadAthProfile(service, athScope(run), "REAL", run.asset);
+  }
+  if (profile.config_version !== item.strategy_version_after
+    || Math.abs(Number(profile.post_ath_spacing_rate) - desired) > 1e-8)
+    throw new Error("COINOPS_BULK_VERSION_MISMATCH");
+  if (profile.regime === "POST_ATH" || run.entry_regime === "POST_ATH") {
+    // The official ladder owns cancellation, fill-wins and future GRID prices.
+    // Existing OPEN and TP slots are frozen by planAthLadder.
+    await applyAthTransition(service, run, ledger, state, true);
+  } else {
+    // A NORMAL-regime resident BUY is compatible: only the future POST_ATH
+    // parameter changes. No exchange order is touched.
+    await renewLease(service, run);
+    const saved = await service.from("robot_v1_live_runs").update({
+      config_version: item.strategy_version_after,
+      config_snapshot: { ...run.config_snapshot, post_ath_spacing_rate: desired },
+    }).eq("id", run.id).eq("trading_engine_id", run.trading_engine_id)
+      .eq("lease_owner", run.lease_owner).select("*").single();
+    if (saved.error || !saved.data) throw new Error("COINOPS_BULK_RUN_VERSION_FAILED");
+    Object.assign(run, saved.data);
+  }
+  const finished = await service.rpc("finish_strategy_bulk_engine_update", {
+    p_item_id: item.id, p_lease_owner: run.lease_owner,
+  });
+  if (finished.error) throw new Error("COINOPS_BULK_FINISH_FAILED");
+  try {
+    await event(service, run, `STRATEGY_BULK_APPLIED:${item.id}`, "STRATEGY_BULK_APPLIED", null,
+      { batch_id: item.batch_id, strategy_version_before: item.strategy_version_before,
+        strategy_version_after: item.strategy_version_after,
+        post_ath_spacing_rate_before: Number(item.old_values.post_ath_spacing_rate),
+        post_ath_spacing_rate_after: desired });
+  } catch {
+    // The batch/item rows are the durable atomic audit. A redundant event
+    // write must never turn an already-applied strategy into a trading stop.
+    console.error("COINOPS_BULK_OPTIONAL_EVENT_FAILED", { batchId: item.batch_id,
+      engineId: run.trading_engine_id });
+  }
+  return "APPLIED";
+}
+
+async function markBulkUpdateBlocked(service: Service, run: Run, code: string) {
+  const rows = await service.from("strategy_bulk_engine_updates")
+    .update({ status: "BLOCKED_SAFE", error_code: code, updated_at: new Date().toISOString() })
+    .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+    .in("status", ["PENDING", "APPLYING"]).select("batch_id");
+  if (rows.error) throw new Error("COINOPS_BULK_BLOCK_PERSIST_FAILED");
+  for (const row of rows.data ?? []) {
+    const siblings = await service.from("strategy_bulk_engine_updates").select("status")
+      .eq("batch_id", row.batch_id);
+    if (siblings.error || !siblings.data) throw new Error("COINOPS_BULK_BATCH_STATUS_FAILED");
+    const batch = await service.from("strategy_bulk_batches")
+      .update({ status: siblings.data.some((item) => item.status === "APPLIED") ? "PARTIAL" : "BLOCKED_SAFE",
+        updated_at: new Date().toISOString() }).eq("id", row.batch_id);
+    if (batch.error) throw new Error("COINOPS_BULK_BATCH_STATUS_FAILED");
+  }
 }
 
 async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
@@ -1028,14 +1192,19 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     stage = "ASSERT_PROTECTION";
     state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, current, state);
+    stage = "CONFIG_UPDATE";
+    await applyPendingStrategyUpdate(service, run, current, state);
+    if (await configUpdatePending(service, run)) return { status: "RETRY", code: "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING" };
+    const configured = await runRows(service, run);
     stage = "RESTART_CYCLE";
-    const successor = await restartClosedCycle(service, run, current, state);
+    const successor = await restartClosedCycle(service, run, configured, state);
     if (successor) return { status: "RESTARTED", nextRunId: successor };
     stage = "ATH_TRANSITION";
-    await applyAthTransition(service, run, current, state);
+    await applyAthTransition(service, run, configured, state);
     const entered = await runRows(service, run);
     stage = "ARM_ENTRY";
     state = await readLiveExecutorState(run);
+    if (await configUpdatePending(service, run)) return { status: "RETRY", code: "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING" };
     const next = await armNextEntry(service, run, entered, state);
     // A MARKET can fill in the same invocation. Protect it before returning.
     if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED" || next === "ENTRY_FILLED_DURING_REPLACEMENT") {
@@ -1083,6 +1252,17 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       // exactly once. No alert, kill switch, or second strategy implementation.
       return { status: "RETRY", code: error.message };
     }
+    if (error instanceof Error && error.message === "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING")
+      return { status: "RETRY", code: error.message };
+    if (stage === "CONFIG_UPDATE" && error instanceof Error
+      && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
+      const pending = await service.from("strategy_bulk_engine_updates").select("updated_at")
+        .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+        .in("status", ["PENDING", "APPLYING"]).limit(1).maybeSingle();
+      if (!pending.error && pending.data
+        && Date.now() - Date.parse(pending.data.updated_at) < 10 * 60_000)
+        return { status: "RETRY", code: "COINOPS_BULK_TRANSIENT_EXECUTOR_READ" };
+    }
     if (["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
       && error instanceof Error && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
       errorCode = "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
@@ -1098,6 +1278,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     }
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : `COINOPS_LIVE_${stage}_FAILED`;
+    if (stage === "CONFIG_UPDATE") await markBulkUpdateBlocked(service, run, errorCode);
     await preventNewBuys(service, run, errorCode);
     throw new Error(errorCode);
   } finally {
@@ -1147,9 +1328,10 @@ export async function auditLiveRun(runId: string) {
     const ownBuys = ledger.orders.filter((item) => item.side === "BUY"
       && LIVE_ACTIVE_ORDER_STATUSES.has(item.status));
     if (ownBuys.length > 1) throw new Error("COINOPS_LIVE_MONITOR_DUPLICATE_BUY");
+    const configPending = await configUpdatePending(service, run);
     if (!ledger.slots.some((item) => amount(item.position_quantity) > 0)
       && ownBuys.length === 0 && monthlyStatuses.some((item) => item.eligibleForNewEntry)
-      && run.status === "ACTIVE" && !run.engine?.engine_kill_switch)
+      && run.status === "ACTIVE" && !run.engine?.engine_kill_switch && !configPending)
       throw new Error("COINOPS_LIVE_MONITOR_ORPHANED_ENGINE");
     if (run.last_error || !run.last_reconciled_at
       || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000)

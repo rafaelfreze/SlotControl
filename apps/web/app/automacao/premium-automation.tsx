@@ -20,6 +20,9 @@ import { AssetHealthBadge, AssetHealthProvider, BinanceHealthCard } from "./asse
 import { NativeEngineAudit } from "./native-engine-audit";
 import { EngineControlCenter } from "./engine-control-center";
 import { LiveAdjustmentsCenter } from "./live-adjustments-center";
+import { AccountSelector } from "./account-selector";
+import { accountOptions } from "./account-selector-model";
+import { BulkStrategyEditor } from "./bulk-strategy-editor";
 import type { OnboardingCheck } from "./operator-onboarding";
 import { buildFinopsNavigation } from "@/lib/coinops-finops/navigation";
 import { AssetIcon, PremiumDrawer, PremiumIcon, displayMoney as money, displayNumber as number, displayTime as time, type IconName } from "./premium-primitives";
@@ -155,6 +158,8 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const accounts = useMemo(() => data.operator?.accounts
     ?? [{ id: "legacy", displayName: "Rafael", status: "ACTIVE", killSwitch: false }],
     [data.operator?.accounts]);
+  const accountChoices = useMemo(() => accountOptions(accounts, engines.filter((engine) => engine.environment === environment)),
+    [accounts, engines, environment]);
   const rankedAccounts = useMemo(() => rankPremiumAccountsByOperatedBalance(accounts, assets), [accounts, assets]);
   const symbols = [...new Set(engines.filter((engine) => (view === "overview" || engine.environment === environment)
     && (selection.accountId === "ALL" || engine.accountId === selection.accountId)).map((engine) => engine.symbol))];
@@ -202,7 +207,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
        <nav className="px-toolbar" aria-label="Ferramentas da Automação" data-testid="premium-toolbar">{([
         ["home", "Início", () => window.scrollTo({ top: 0, behavior: "smooth" })], ["strategy", "Estratégia", () => setPanel("strategy")], ["adjust", "Ajustes", () => setPanel("adjustments")], ["settings", "Configurações", () => setPanel("config")],
       ] as Array<[IconName, string, () => void]>).map(([icon, label, action]) => <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button>)}{data.operator ? <a href={finopsNavigation.costsHref}><PremiumIcon name="wallet" />Custos &amp; Operação</a> : null}</nav>
-       <div className="px-scope-filters" aria-label="Filtros da operação"><label>Conta<select aria-label="Conta" value={selection.accountId} onChange={(event) => changeSelection({ accountId: event.target.value, symbol: "ALL" })}><option value="ALL">Todos</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><label>Mercado<select aria-label="Mercado" value={selection.symbol} onChange={(event) => changeSelection({ ...selection, symbol: event.target.value })}><option value="ALL">Todos os mercados</option>{symbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}</select></label><small>Filtros de leitura · não alteram ordens</small></div>
+       <div className="px-scope-filters" aria-label="Filtros da operação"><AccountSelector options={accountChoices} value={selection.accountId} onChange={(accountId) => changeSelection({ accountId, symbol: "ALL" })} /><label>Mercado<select aria-label="Mercado" value={selection.symbol} onChange={(event) => changeSelection({ ...selection, symbol: event.target.value })}><option value="ALL">Todos os mercados</option>{symbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}</select></label><small>Filtros de leitura · não alteram ordens</small></div>
      </div>
     {view === "live" ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={liveStatus.online ? "is-ok" : "is-warning"}>● Executor {liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={healthy ? "is-ok" : "is-warning"}>● Estratégia {healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
@@ -258,6 +263,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     </main>
     <PremiumDrawer open={panel !== null} title={title} onClose={() => setPanel(null)}>
       <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
+        {view === "live" ? <BulkStrategyEditor operator={data.operator} /> : null}
         <EngineControlCenter active={panel === "strategy"} initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
           onEditEngine={(accountId, symbol) => { setSelection({ accountId, symbol }); setEngineId(null); }}
           onOpenCredentials={() => setPanel("config")} />

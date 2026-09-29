@@ -5,7 +5,7 @@ export type FastRun = {
 };
 
 export type FastEngine = { id: string; exchange_account_id: string; symbol: string;
-  status: string; kill_switch: boolean };
+  status: string; kill_switch: boolean; strategy_config_pending?: boolean };
 export type FastAccount = { id: string; executor_shard_id: string; status: string;
   kill_switch: boolean };
 export type FastSlot = { run_id: string; id: string; entry_state: string;
@@ -17,6 +17,7 @@ export type FastAlert = { trading_engine_id: string; exchange_account_id: string
 
 export type FastFinding = { state: "HEALTHY" | "RECOVERING" | "BLOCKED" | "STALE" | "DEGRADED";
   code: string | null; recoverable: boolean };
+export type FastConfigUpdate = { status: string; updated_at: string };
 
 const ACTIVE_ORDERS = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
 
@@ -39,7 +40,7 @@ export function criticalAlertsForRun(run: FastRun, alerts: FastAlert[]): FastAle
  * guarded reconciliation; this result must never authorize a direct order. */
 export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null;
   account: FastAccount | null; shardId: string; slots: FastSlot[];
-  orders: FastOrder[]; alerts?: FastAlert[]; now: number }): FastFinding {
+  orders: FastOrder[]; alerts?: FastAlert[]; configUpdate?: FastConfigUpdate | null; now: number }): FastFinding {
   const { run, engine, account, shardId, slots, orders, now } = input;
   if (!engine || !account || engine.id !== run.trading_engine_id
     || engine.exchange_account_id !== run.exchange_account_id
@@ -73,6 +74,14 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
     if (tps.length !== 1)
       return { state: "DEGRADED", code: tps.length ? "WATCHDOG_DUPLICATE_TP" : "WATCHDOG_TP_MISSING",
         recoverable: tps.length === 0 };
+  }
+  if (engine.strategy_config_pending) {
+    const update = input.configUpdate;
+    if (!update || update.status === "BLOCKED_SAFE")
+      return { state: "BLOCKED", code: "WATCHDOG_CONFIG_UPDATE_BLOCKED", recoverable: false };
+    if (!Number.isFinite(Date.parse(update.updated_at)) || now - Date.parse(update.updated_at) > 10 * 60_000)
+      return { state: "STALE", code: "WATCHDOG_CONFIG_UPDATE_STALE", recoverable: true };
+    return { state: "RECOVERING", code: null, recoverable: false };
   }
   // Whether a new BUY is required depends on monthly/strategy eligibility.
   // The existing reconciler decides this from the full ledger, never this screen.

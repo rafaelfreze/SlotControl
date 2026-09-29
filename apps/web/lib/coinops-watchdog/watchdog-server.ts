@@ -110,22 +110,27 @@ export async function runServerWatchdog() {
   if (!shards.data?.length) throw new Error("COINOPS_WATCHDOG_NO_ENABLED_SHARDS");
   const runs = (runsResult.data ?? []) as ScopedRun[];
   const ids = <T,>(items: T[]) => [...new Set(items)];
-  const [accountsResult, enginesResult, slotsResult, ordersResult] = runs.length
+  const [accountsResult, enginesResult, slotsResult, ordersResult, configResult] = runs.length
     ? await Promise.all([
       service.from("exchange_accounts").select("id,executor_shard_id,status,kill_switch")
         .in("id", ids(runs.map((run) => run.exchange_account_id))),
-      service.from("trading_engines").select("id,exchange_account_id,symbol,status,kill_switch")
+      service.from("trading_engines").select("id,exchange_account_id,symbol,status,kill_switch,strategy_config_pending")
         .in("id", ids(runs.map((run) => run.trading_engine_id))),
       service.from("robot_v1_live_slots").select("run_id,id,entry_state,position_quantity,updated_at")
         .in("run_id", runs.map((run) => run.id)),
       service.from("robot_v1_live_orders").select("run_id,slot_id,side,status,exchange_order_id")
         .in("run_id", runs.map((run) => run.id))
         .in("status", ["PREPARED", "NEW", "PARTIALLY_FILLED"]),
-    ]) : [null, null, null, null];
-  if (accountsResult?.error || enginesResult?.error || slotsResult?.error || ordersResult?.error)
+      service.from("strategy_bulk_engine_updates").select("trading_engine_id,status,updated_at")
+        .in("trading_engine_id", ids(runs.map((run) => run.trading_engine_id)))
+        .in("status", ["PENDING", "APPLYING", "BLOCKED_SAFE"]),
+    ]) : [null, null, null, null, null];
+  if (accountsResult?.error || enginesResult?.error || slotsResult?.error || ordersResult?.error || configResult?.error)
     throw new Error("COINOPS_WATCHDOG_LEDGER_READ_FAILED");
   const accounts = new Map(((accountsResult?.data ?? []) as FastAccount[]).map((row) => [row.id, row]));
   const engines = new Map(((enginesResult?.data ?? []) as FastEngine[]).map((row) => [row.id, row]));
+  const updates = new Map(((configResult?.data ?? []) as Array<{ trading_engine_id: string; status: string;
+    updated_at: string }>).map((row) => [row.trading_engine_id, row]));
   const slots = (slotsResult?.data ?? []) as FastSlot[];
   const orders = (ordersResult?.data ?? []) as FastOrder[];
   const groupedSlots = new Map<string, FastSlot[]>();
@@ -145,7 +150,8 @@ export async function runServerWatchdog() {
     const shardId = account?.executor_shard_id ?? "unassigned";
     return { run, shardId, finding: evaluateFastRun({ run,
       engine: engines.get(run.trading_engine_id) ?? null, account, shardId,
-      slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], alerts, now }) };
+      slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], alerts,
+      configUpdate: updates.get(run.trading_engine_id) ?? null, now }) };
   });
   if (findings.some((item) => item.shardId === "unassigned"))
     throw new Error("COINOPS_WATCHDOG_OWNERSHIP_UNKNOWN");

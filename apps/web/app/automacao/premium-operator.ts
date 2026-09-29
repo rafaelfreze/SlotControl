@@ -4,7 +4,8 @@ import type { EngineContext } from "../../lib/execution/operator-context";
 import type { LiveExecutorStatus } from "../../lib/execution/live-executor-health";
 
 /** Public presentation only. Credential references never cross this boundary. */
-export type PremiumAccount = { id: string; displayName: string; status: string; killSwitch: boolean };
+export type PremiumAccount = { id: string; displayName: string; status: string; killSwitch: boolean;
+  shardId?: string | null };
 export type PremiumEngine = Omit<PremiumAsset, "currency"> & {
   engineId: string; accountId: string; accountDisplayName: string; currency: string;
   engineStatus: string; killSwitch: boolean;
@@ -103,7 +104,11 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
     accountDisplayName: context.account_display_name, engineStatus: context.status,
     cap: context.environment === "REAL" ? Number(context.hard_cap_quote) : model.cap,
     health: blocked && model.health.healthy ? { healthy: false, tone: "attention", label: "PROTEGIDO",
-      reason: "Novas entradas bloqueadas por controle da conta, motor ou preparação LIVE." } : model.health,
+      reason: "Novas entradas bloqueadas por controle da conta, motor ou preparação LIVE." }
+      : context.strategy_config_pending && model.health.healthy
+        ? { healthy: false, tone: "attention", label: "RECOVERING",
+          reason: "Atualização de estratégia em andamento; novas entradas aguardam conciliação. TP permanece ativo." }
+        : model.health,
     killSwitch };
 }
 

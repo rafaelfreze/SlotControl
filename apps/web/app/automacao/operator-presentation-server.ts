@@ -200,7 +200,8 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
       label: "DADOS INDISPONÍVEIS", reason: "Leitura deste motor falhou; o estado operacional não está confirmado nesta tela." } } : engine;
   });
   return { accounts: registry.accounts.map((account) => ({ id: account.id, displayName: account.display_name,
-    status: account.status, killSwitch: registry.operator.kill_switch || account.kill_switch })),
+    status: account.status, killSwitch: registry.operator.kill_switch || account.kill_switch,
+    shardId: account.executor_shard_id ?? null })),
     engines, engineData, selection, accountCaps: (caps.data ?? []).map((row) => ({
       accountId: row.exchange_account_id, currency: row.quote_asset, cap: Number(row.hard_cap_quote) })) };
 }
