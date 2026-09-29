@@ -6,9 +6,8 @@ import { requireAccountIdentityBinding } from "@/lib/execution/binance-identity-
 import { bootstrapInitialIdentityBindings, requireLiveIdentityCoverage } from "@/lib/execution/initial-identity-bootstrap";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { assessShardCapacity, decideShardAdmission, DEFAULT_CAPACITY_POLICY, type ShardMetrics } from "./capacity-manager";
+import { assessShardCapacity, DEFAULT_CAPACITY_POLICY, type ShardMetrics } from "./capacity-manager";
 import { collectIndependentShards, shardLedgerMetrics, type CapacityLedger } from "./capacity-aggregation";
-import { shardReservedWeight } from "./admission-reservations";
 import { testnetCredentialCoverage } from "./environment-telemetry";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
@@ -246,29 +245,10 @@ export async function previewAccountCapacity(service: Service, accountId: string
   const account = await service.from("exchange_accounts").select("executor_shard_id")
     .eq("id", accountId).single();
   if (account.error || !account.data?.executor_shard_id) return { code: "CAPACITY_UNKNOWN", shardId: null };
-  const sampleQuery = environment === "REAL"
-    ? service.from("executor_capacity_samples").select("*")
-    : service.from("executor_capacity_environment_samples").select("*").eq("environment", environment);
-  const [shard, sample, reservations] = await Promise.all([
-    service.from("executor_shards")
-      .select("id,enabled,binance_limit_per_min,admission_ratio,incremental_engine_weight")
-      .eq("id", account.data.executor_shard_id).maybeSingle(),
-    sampleQuery.eq("shard_id", account.data.executor_shard_id).maybeSingle(),
-    service.from("executor_capacity_admissions").select("shard_id,environment,reserved_weight")
-      .eq("shard_id", account.data.executor_shard_id).eq("environment", environment)
-      .gt("expires_at", new Date().toISOString()),
-  ]);
-  if (shard.error || sample.error || reservations.error || !shard.data?.enabled || !sample.data)
+  const decision = await service.rpc("preview_executor_admission", {
+    p_shard_id: account.data.executor_shard_id, p_environment: environment, p_engines: engineCount,
+  });
+  if (decision.error || !["CAPACITY_OK", "CAPACITY_REQUIRED", "CAPACITY_UNKNOWN"].includes(decision.data?.code))
     return { code: "CAPACITY_UNKNOWN", shardId: account.data.executor_shard_id };
-  const reservedWeight = shardReservedWeight(account.data.executor_shard_id, environment, reservations.data ?? []);
-  const policy = { ...DEFAULT_CAPACITY_POLICY,
-    binanceLimitPerMinute: Number(shard.data.binance_limit_per_min),
-    admissionRatio: Number(shard.data.admission_ratio) };
-  const assessment = assessShardCapacity(asShardMetrics(sample.data), policy);
-  if (assessment.state === "OFFLINE")
-    return { code: "CAPACITY_UNKNOWN", shardId: account.data.executor_shard_id };
-  const decision = decideShardAdmission(asShardMetrics(sample.data),
-    Number(shard.data.incremental_engine_weight) * engineCount + reservedWeight, policy);
-  return { code: decision.allowed ? "CAPACITY_OK" : "CAPACITY_REQUIRED",
-    shardId: account.data.executor_shard_id };
+  return { code: decision.data.code as string, shardId: account.data.executor_shard_id };
 }

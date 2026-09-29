@@ -37,7 +37,7 @@ prova de capacidade para 50 contas. O custo incremental inicial conservador
 é 900 weight/min por motor; deve ser substituído por medição p95 de novas
 contas em carga normal antes de ampliar admissões.
 
-Thresholds configuráveis: `<50%` HEALTHY, `50–65%` OBSERVE, `65–75%`
+Thresholds canônicos (não configurados individualmente por shard): `<50%` HEALTHY, `50–65%` OBSERVE, `65–75%`
 WARNING/preparar SCALE_OUT, `>=75%` CAPACITY_LIMIT. Novas ativações só
 passam quando o **pico de 15 min + reservas de admissões pendentes + 900 por
 motor** fica em até 65% do limite. A reserva de 35% protege recuperação e
@@ -98,7 +98,7 @@ de Production. CPU representa o processo e RAM representa RSS/limite do host,
 não uma medição de todos os processos do VPS.
 
 ASSIGN cria somente uma conta INACTIVE, sem credencial/engine/ordem. Prefere
-shard HEALTHY (<50%) e menor pressão medida, com custo inicial de 900 por motor
+shard com menor pressão medida cuja projeção cabe no mesmo gate da ativação, com custo inicial de 900 por motor
 planejado e teto projetado de 65%. O vínculo e o ambiente de onboarding ficam
 imutáveis. A reserva final continua obrigatória após configurar whitelist e
 credential; um cadastro abandonado não reserva capacidade para sempre.

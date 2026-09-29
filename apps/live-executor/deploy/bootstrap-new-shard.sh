@@ -28,7 +28,10 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl xz-utils git nginx python3-venv ufw
 timedatectl set-ntp true
-node_version=24.21.0
+# Canonical release assets travel together; bootstrap never invents a profile.
+asset_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+node_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["node_version"].removeprefix("v"))' "$asset_dir/fleet-release.json")
+[[ $node_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'FLEET_NODE_VERSION_REQUIRED'
 node_root=/opt/coinops/node-v${node_version}-linux-x64
 install -d -m 755 /opt/coinops /opt/coinops/releases /var/www/coinops-acme
 if [[ ! -x $node_root/bin/node ]]; then
@@ -89,3 +92,4 @@ systemctl enable coinops-live-executor
 systemctl enable --now coinops-certbot-renew.timer
 printf 'BOOTSTRAP_COMPLETE shard=%s ip=%s runtime=Node%s; verify registry and deploy a reviewed main SHA next.\n' "$shard" "$ipv4" "$node_version"
 printf 'NEW_SHARD_NOT_READY: deploy the common fleet-release.json target and require FLEET_PARITY_PASS before onboarding.\n'
+printf 'ADMISSION_BLOCKED_UNTIL_CERTIFIED: run capacity-preflight.mjs --record from the authorized control plane; SQL verifies policy, runtime, telemetry and Watchdog before admission.\n'

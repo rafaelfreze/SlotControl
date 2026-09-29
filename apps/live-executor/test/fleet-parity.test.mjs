@@ -173,9 +173,11 @@ test("serialized SSH probe is parseable and reads only service/process/public co
   assert.ok(!code.includes("rejectUnauthorized: false"));
 });
 
-test("bootstrap fixed Node version agrees with the fleet manifest", () => {
+test("bootstrap Node version is derived from the fleet manifest, never a second pin", () => {
   const bootstrap = readFileSync(resolve(ROOT, "apps/live-executor/deploy/bootstrap-new-shard.sh"), "utf8");
-  assert.equal(bootstrap.match(/^node_version=([^\r\n]+)$/m)?.[1], manifest.node_version.slice(1));
+  assert.match(bootstrap,/node_version=\$\(python3.*fleet-release\.json/);
+  assert.ok(bootstrap.includes('["node_version"].removeprefix("v")'));
+  assert.ok(!/^node_version=\d/m.test(bootstrap));
 });
 
 test("verify rechecks registry and cannot finish PASS while a third enabled executor appeared", async () => {

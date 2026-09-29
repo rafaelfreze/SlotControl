@@ -3,6 +3,15 @@ import test from "node:test";
 
 import { createCapacityTelemetry } from "../src/capacity-telemetry.mjs";
 
+test("isolated peak expires after exactly the rolling window without restart or stale-warning latch",()=>{
+  let at=Date.parse("2026-09-29T20:00:00Z");
+  const t=createCapacityTelemetry({now:()=>at});
+  const observe=(weight)=>t.observe("https://api.binance.com/api/v3/account",new Response("",{headers:{"x-mbx-used-weight-1m":String(weight)}}));
+  observe(4903);at+=60_000;observe(2600);
+  at+=14*60_000;observe(2500);assert.equal(t.snapshot().binance_weight_peak,4903);
+  at+=1;assert.equal(t.snapshot().binance_weight_peak,2600);
+});
+
 test("IP-wide Binance headers form a rolling minute peak without altering responses", async () => {
   let at = Date.parse("2026-09-26T18:00:00Z"), calls = 0;
   const telemetry = createCapacityTelemetry({ now: () => at, shardId: "executor-01",

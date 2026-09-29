@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ExecutorObservation } from "./automation-executor-sync";
+import { explainAdmission, pressureExplanation, type AdmissionExplanation } from "@/lib/coinops-capacity/admission-explanation";
 
 type Shard = { id: string; state: string; action: string; binanceWeightCurrent: number | null;
   egressIp: string; executorVersion: string | null; binanceWeightAverage: number | null; binanceWeightPeak: number | null;
@@ -10,6 +11,7 @@ type Shard = { id: string; state: string; action: string; binanceWeightCurrent: 
   ramUsedMb: number | null; schedulerBacklog: number | null; reconciliationAgeMs: number | null;
   accountCount: number; engineCount: number; canAddEngine: boolean; admissionReason: string;
   canAddTwoEngineAccount: boolean; warningsMuted: boolean;
+  admission?: AdmissionExplanation; dualEngineAdmission?: AdmissionExplanation;
   alerts: Array<{ code: string }> };
 
 export function CapacityCard({ onExecutorObservation }: {
@@ -78,16 +80,25 @@ export function CapacityCard({ onExecutorObservation }: {
         <span>Fila: {shard.schedulerBacklog === null ? "—" : shard.schedulerBacklog === 0 ? "normal" : shard.schedulerBacklog}
           {` · Reconciliação: ${shard.reconciliationAgeMs === null ? "—" : Math.round(shard.reconciliationAgeMs / 1000) + "s"}`}</span>
         <small>Heartbeat: {shard.heartbeatAt ? new Date(shard.heartbeatAt).toLocaleString("pt-BR") : "sem amostra"}</small>
-        <strong>Nova conta com 1 motor: {shard.canAddEngine ? "SIM" : "NÃO"}</strong>
-        <span>Nova conta com 2 motores: {shard.canAddTwoEngineAccount ? "SIM" : "NÃO"}</span>
+        <strong>Nova conta +1 motor: {explainAdmission(shard.admission)}</strong>
+        <span>Nova conta +2 motores: {explainAdmission(shard.dualEngineAdmission)}</span>
+        {shard.admission ? <>
+          <small>Cálculo: {shard.admission.observed_weight?.toFixed(0) ?? "—"} observado
+            + {shard.admission.reserved_weight} reservado + {shard.admission.incremental_weight} estimado
+            = {shard.admission.projected_weight?.toFixed(0) ?? "—"} / {shard.admission.admission_limit_weight} permitido.</small>
+          <small>Reserva de recuperação: {shard.admission.recovery_headroom_weight} weight/min, descontada uma única vez no limite.</small>
+          <small>Estimativa incremental conservadora: {shard.admission.policy.incremental_weight} por motor; ainda não é p95 medido.
+            Capacidade operacional total não certificada por quantidade de motores.</small>
+          {pressureExplanation(shard.admission.pressure_phase) ? <small>{pressureExplanation(shard.admission.pressure_phase)}</small> : null}
+        </> : null}
         {shard.state === "WARNING" && !shard.warningsMuted ? <small>{shard.action === "SCALE_UP"
           ? "CPU/RAM com pouca margem: preparar SCALE_UP." : shard.action === "SCALE_OUT"
             ? "Preparar novo executor/IP." : "Verificar fila e reconciliação antes de admitir novas contas."}</small> : null}
         {shard.state === "CAPACITY_LIMIT" ? <small>{shard.action === "SCALE_UP"
           ? "Capacidade atingida — SCALE_UP necessário antes de novas ativações."
-          : "Capacidade atingida — provisionar novo executor antes de ativar novas contas."}</small> : null}
+          : "Admissão aguarda margem na janela recente. Se a pressão persistir, preparar novo executor/IP."}</small> : null}
         {!shard.canAddEngine && shard.state !== "CAPACITY_LIMIT" ? <small>{shard.state === "OFFLINE"
-          ? "Telemetria insuficiente; admissão indisponível." : "Headroom de recuperação reservado; não ativar novo motor neste shard."}</small> : null}
+          ? "Telemetria insuficiente; admissão indisponível." : "Novas ativações aguardam os critérios acima; motores existentes não são pausados."}</small> : null}
         {shard.alerts.map((alert) => <small key={alert.code} role="status">{alert.code}</small>)}
         </div>
       </div>)}

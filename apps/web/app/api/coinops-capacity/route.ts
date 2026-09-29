@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { asShardMetrics, capacityScope } from "@/lib/coinops-capacity/capacity-server";
 import { shardReservedWeight } from "@/lib/coinops-capacity/admission-reservations";
-import { assessShardCapacity, calculateAdmissionCapacity, decideShardAdmission,
+import { assessShardCapacity,
   DEFAULT_CAPACITY_POLICY } from "@/lib/coinops-capacity/capacity-manager";
 import { capacityWarningMuted } from "@/lib/coinops-capacity/capacity-warning-mute";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
@@ -31,7 +31,7 @@ export async function GET() {
   if ("error" in auth) return NextResponse.json({ error: auth.error }, { status: auth.status, headers });
   try {
     const service = capacityScope();
-    const [shards, samples, alerts, reservations, mutes] = await Promise.all([
+    const [shards, samples, alerts, reservations, mutes, decisions] = await Promise.all([
       service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio,incremental_engine_weight").order("id"),
       service.from("executor_capacity_samples").select("*"),
       service.from("executor_capacity_alerts").select("shard_id,code,severity,first_seen_at")
@@ -40,8 +40,10 @@ export async function GET() {
         .eq("environment", "REAL").gt("expires_at", new Date().toISOString()),
       service.from("executor_capacity_warning_mutes").select("shard_id")
         .eq("operator_id", auth.operatorId),
+      service.rpc("executor_capacity_decisions"),
     ]);
-    if (shards.error || samples.error || alerts.error || reservations.error || mutes.error)
+    if (shards.error || samples.error || alerts.error || reservations.error || mutes.error || decisions.error
+      || !Array.isArray(decisions.data))
       throw new Error("COINOPS_CAPACITY_READ_FAILED");
     const mutedPairs = new Set((mutes.data ?? []).map((item) => `${auth.operatorId}:${item.shard_id}`));
     return NextResponse.json({ shards: (shards.data ?? []).map((shard) => {
@@ -52,11 +54,9 @@ export async function GET() {
       const metrics = sample && shard.enabled ? asShardMetrics(sample) : null;
       const assessment = assessShardCapacity(metrics, policy);
       const reservedWeight = shardReservedWeight(shard.id, "REAL", reservations.data ?? []);
-      const admission = decideShardAdmission(metrics, Number(shard.incremental_engine_weight) + reservedWeight, policy);
-      const dualEngineAdmission = decideShardAdmission(metrics,
-        Number(shard.incremental_engine_weight) * 2 + reservedWeight, policy);
-      const capacity = calculateAdmissionCapacity(metrics,
-        Number(shard.incremental_engine_weight), reservedWeight, policy);
+      const decision = decisions.data.find((item: { shard_id: string }) => item.shard_id === shard.id);
+      const admission = decision?.plus_one;
+      const dualEngineAdmission = decision?.plus_two;
       const warningsMuted = mutedPairs.has(`${auth.operatorId}:${shard.id}`);
       return { id: shard.id, state: assessment.state, action: assessment.action, warningsMuted,
         egressIp: String(shard.egress_ipv4), reservedWeight,
@@ -73,10 +73,11 @@ export async function GET() {
         heartbeatAt: sample?.heartbeat_at ?? null,
         executorVersion: sample?.executor_version ?? null,
         incrementalEngineWeight: Number(shard.incremental_engine_weight),
-        admissionLimitWeight: capacity.admissionLimitWeight,
-        safeAdditionalEngines: capacity.safeAdditionalEngines,
-        canAddEngine: admission.allowed, admissionReason: admission.reason,
-        canAddTwoEngineAccount: dualEngineAdmission.allowed,
+        admissionLimitWeight: admission?.admission_limit_weight ?? null,
+        safeAdditionalEngines: admission?.additional_engines ?? 0,
+        canAddEngine: admission?.code === "CAPACITY_OK", admissionReason: admission?.reason ?? "CAPACITY_UNKNOWN",
+        canAddTwoEngineAccount: dualEngineAdmission?.code === "CAPACITY_OK",
+        admission, dualEngineAdmission,
         alerts: (alerts.data ?? []).filter((item) => item.shard_id === shard.id
           && !capacityWarningMuted(item, auth.operatorId, mutedPairs)) };
     }) }, { headers });

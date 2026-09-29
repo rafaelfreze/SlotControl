@@ -36,7 +36,10 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
       single: async () => result, maybeSingle: async () => result,
       then: (fn: (value: unknown) => unknown) => Promise.resolve(result).then(fn) };
     return chain;
-  }, rpc: async () => { calls.push("reserve"); return {
+  }, rpc: async (name: string) => { if(name === "preview_executor_admission") {
+    calls.push("preview-rpc"); return {data:{code: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN"
+      : (environment === "REAL" ? realReserved : testnetReserved) > 0 ? "CAPACITY_REQUIRED" : "CAPACITY_OK"},error:null}; }
+    calls.push("reserve"); return {
     data: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN" : "CAPACITY_OK", error: null }; } };
   const dependencies: Record<string, unknown> = {
     "node:crypto": {}, "@/lib/execution/live-executor-client": {},
@@ -70,7 +73,7 @@ test("new Testnet preview and final activation fail closed before reservation wr
   const scenario = fixture("TESTNET");
   assert.equal((await scenario.preview()).code, "CAPACITY_UNKNOWN");
   await assert.rejects(scenario.reserve(), /COINOPS_CAPACITY_UNKNOWN/);
-  assert.ok(scenario.calls.includes("read:executor_capacity_environment_samples"));
+  assert.ok(scenario.calls.includes("preview-rpc"));
   assert.ok(!scenario.calls.includes("read:executor_capacity_samples"));
   assert.deepEqual(scenario.calls.slice(-4), ["read:exchange_accounts", "read:trading_engines", "identity", "reserve"]);
 });
