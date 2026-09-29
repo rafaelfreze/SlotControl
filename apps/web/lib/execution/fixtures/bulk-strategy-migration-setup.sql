@@ -14,6 +14,14 @@ create table coinops.operators (
   status text not null, kill_switch boolean not null,
   unique(id,product_id,tenant_id,user_id)
 );
+create table coinops.exchange_accounts (
+  id uuid primary key, operator_id uuid not null,
+  display_name text not null, status text not null,
+  is_legacy_default boolean not null, kill_switch boolean not null,
+  executor_shard_id text
+);
+grant select (id,operator_id,display_name,status,is_legacy_default,kill_switch)
+  on coinops.exchange_accounts to authenticated;
 create table coinops.trading_engines (
   id uuid primary key, operator_id uuid not null, exchange_account_id uuid not null,
   environment text not null, status text not null, kill_switch boolean not null,

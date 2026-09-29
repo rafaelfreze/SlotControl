@@ -21,6 +21,7 @@ Se navegador, aplicativo ou PC fechar durante a admissão de um lote já confirm
 
 ## Diagnóstico e recuperação
 
+- `COINOPS_OPERATOR_REGISTRY_UNAVAILABLE` com HTTP 403/SQLSTATE `42501` em `exchange_accounts`: conferir privilégios por coluna da role `authenticated`. Campos novos usados pelo registry precisam de `GRANT SELECT (campo)` versionado; não conceder `SELECT` irrestrito na tabela. A policy `operator_owned` e RLS devem permanecer ativas.
 - `COINOPS_BULK_PREVIEW_CONFLICT`: seleção, valor, run, perfil ou versão mudou entre preview e confirmação. Repetir preview; não reutilizar o hash anterior.
 - `COINOPS_BULK_PROFILE_CONFLICT` / `COINOPS_BULK_VERSION_MISMATCH`: conferir `profile_id`, `run_id`, versão, valores e edição individual pendente. Nunca forçar versão.
 - `COINOPS_BULK_PREPARED_BUY_AMBIGUOUS`, `COINOPS_LIVE_FILLED_DURING_SNAPSHOT`, `COINOPS_LIVE_BUY_CANCEL_UNRECONCILED`: obter estado exato da ordem por `clientOrderId`, fills e ledger antes de qualquer nova ação.
