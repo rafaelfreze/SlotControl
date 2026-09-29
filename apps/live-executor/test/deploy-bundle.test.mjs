@@ -98,7 +98,8 @@ test("new-shard deployment assets reject executor01 and preserve secrets, state 
   const service = await readFile(join(folder, "coinops-shard-executor.service"), "utf8");
   assert.ok(bootstrap.indexOf("$ipv4 != 46.101.104.48") < bootstrap.indexOf("apt-get update"));
   assert.ok(bootstrap.indexOf("$shard != executor-01") < bootstrap.indexOf("apt-get update"));
-  assert.match(bootstrap, /node_version=24\.21\.0/);
+  assert.match(bootstrap, /node_version=\$\(python3.*fleet-release\.json/);
+  assert.ok(!/^node_version=\d/m.test(bootstrap));
   assert.match(bootstrap, /'certbot==5\.8\.0'/);
   assert.match(bootstrap, /if \[\[ ! -e \$env_file \]\]; then/);
   assert.match(bootstrap, /randomBytes\(48\)/);
