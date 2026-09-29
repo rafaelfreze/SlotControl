@@ -38,6 +38,7 @@ export type LivePresentation = { configs: LiveConfig[]; sizing: ReturnType<typeo
   permissions: "READ_ONLY" | "SPOT_RESTRICTED" | "UNVERIFIED" | "UNSAFE";
   ipRestricted: boolean | null; error: string | null };
 export type LiveAssetData = {
+  displayQuantityStep?: number | null;
   run: { id: string; status: string; symbol: string; entry_regime: string;
     last_reconciled_at: string | null; last_error: string | null; config_version: number;
     gain_rate: number | string; entry_spacing: number | string };

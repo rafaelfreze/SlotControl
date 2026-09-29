@@ -144,7 +144,7 @@ test("Binance card shares the asset-health provider, opens its own drawer and al
   assert.match(html, /aria-haspopup="dialog"/);
   element.props.children[2].props.onClick();
   assert.equal(selected, "BINANCE");
-  assert.match(integration, /<BinanceHealthCard \/>/);
+  assert.match(integration, /<BinanceHealthCard(?: key="BINANCE")? \/>/);
   const css = readFileSync(new URL("./premium-automation.css", import.meta.url), "utf8");
   assert.match(css, /\.px-market-chart-grid\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
   const detail = renderToStaticMarkup(React.createElement(BinanceHealthDetails, {

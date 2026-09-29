@@ -93,12 +93,13 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
     const onFocus = () => {
       if (document.visibilityState !== "visible" || Date.now() - lastFocus.current < MIN_REFRESH_GAP_MS) return;
       lastFocus.current = Date.now();
-      setConnected(false);
       if (Date.now() - lastRefreshRequested.current >= MIN_REFRESH_GAP_MS) {
         lastRefreshRequested.current = Date.now();
         router.refresh();
       }
-      setGeneration((current) => current + 1);
+      // A healthy subscription survives tab focus. Rebuild only when disconnected;
+      // unconditional reconnects generated a refresh/subscription storm on mobile.
+      if (!connectedRef.current) setGeneration((current) => current + 1);
     };
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);

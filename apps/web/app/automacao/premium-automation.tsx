@@ -1,34 +1,49 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useAutomationMarketPrices } from "./use-automation-market-prices";
 import { useAutomationLiveSync } from "./use-automation-live-sync";
-import { AutomationDetails, type AutomationView } from "./automation-center";
+import type { AutomationView } from "./automation-center";
 import type { Candle, Props } from "./automation-mobile";
 import { type PremiumAsset, type PremiumSlot } from "./premium-model";
 import { concretePremiumEngine, legacyPremiumEngines, premiumNativeGroups, premiumNativeTotal, premiumQuoteBalanceRows, rankPremiumAccountsByOperatedBalance, selectPremiumEngines, selectedLiveExecutorStatus, withLiveMarketPrice, type LiveQuoteBalance, type PremiumEngine, type PremiumOperatorPresentation, type PremiumSelection } from "./premium-operator";
 import { PremiumReferenceTicker } from "./premium-reference-ticker";
-import { PremiumControls } from "./premium-controls";
 import { PremiumGlobalNavigation } from "./premium-global-navigation";
-import { OperatorOnboardingPanel } from "./operator-onboarding-panel";
-import { BinanceAccountsPanel } from "./binance-accounts-panel";
-import { ViewerUsersPanel } from "./viewer-users-panel";
-import { PushNotificationsPanel } from "./push-notifications-panel";
 import { CapacityCard } from "./capacity-card";
 import { WatchdogCard } from "./watchdog-card";
 import { AssetHealthBadge, AssetHealthProvider, BinanceHealthCard } from "./asset-health";
-import { NativeEngineAudit } from "./native-engine-audit";
-import { EngineControlCenter } from "./engine-control-center";
-import { LiveAdjustmentsCenter } from "./live-adjustments-center";
 import { AccountSelector } from "./account-selector";
 import { accountOptions } from "./account-selector-model";
-import { BulkStrategyEditor } from "./bulk-strategy-editor";
+import type { AthProfilesPanel as AthPanel } from "./ath-profiles-panel";
+import type { ManualAdjustmentsPanel as AdjustmentsPanel } from "./manual-adjustments-panel";
 import type { OnboardingCheck } from "./operator-onboarding";
+import type { LiveExecutorStatus } from "@/lib/execution/live-executor-health";
+import { buildPremiumEngine } from "./premium-operator";
+import { freshExecutorObservation } from "./executor-observation-freshness";
+import { useUiPerformance } from "./use-ui-performance";
 import { buildFinopsNavigation } from "@/lib/coinops-finops/navigation";
 import { AssetIcon, PremiumDrawer, PremiumIcon, displayMoney as money, displayNumber as number, displayTime as time, type IconName } from "./premium-primitives";
 import "./premium-automation.css";
 
-export type Presentation = Props & { athProfiles?: Array<{ environment: string; asset: string; regime: string }>; deploymentSha?: string; operator?: PremiumOperatorPresentation; onboardingChecks?: OnboardingCheck[]; snapshotAt?: string };
+const loadingPanel = () => <p role="status" aria-busy="true">Carregando este módulo…</p>;
+const AutomationDetails = dynamic(() => import("./automation-center").then((m) => m.AutomationDetails), { loading: loadingPanel });
+const PremiumControls = dynamic(() => import("./premium-controls").then((m) => m.PremiumControls), { loading: loadingPanel });
+const OperatorOnboardingPanel = dynamic(() => import("./operator-onboarding-panel").then((m) => m.OperatorOnboardingPanel), { loading: loadingPanel });
+const BinanceAccountsPanel = dynamic(() => import("./binance-accounts-panel").then((m) => m.BinanceAccountsPanel), { loading: loadingPanel });
+const ViewerUsersPanel = dynamic(() => import("./viewer-users-panel").then((m) => m.ViewerUsersPanel), { loading: loadingPanel });
+const PushNotificationsPanel = dynamic(() => import("./push-notifications-panel").then((m) => m.PushNotificationsPanel), { loading: loadingPanel });
+const NativeEngineAudit = dynamic(() => import("./native-engine-audit").then((m) => m.NativeEngineAudit), { loading: loadingPanel });
+const EngineControlCenter = dynamic(() => import("./engine-control-center").then((m) => m.EngineControlCenter), { loading: loadingPanel });
+const LiveAdjustmentsCenter = dynamic(() => import("./live-adjustments-center").then((m) => m.LiveAdjustmentsCenter), { loading: loadingPanel });
+const BulkStrategyEditor = dynamic(() => import("./bulk-strategy-editor").then((m) => m.BulkStrategyEditor), { loading: loadingPanel });
+const AthProfilesPanel = dynamic(() => import("./ath-profiles-panel").then((m) => m.AthProfilesPanel), { loading: loadingPanel });
+const ManualAdjustmentsPanel = dynamic(() => import("./manual-adjustments-panel").then((m) => m.ManualAdjustmentsPanel), { loading: loadingPanel });
+export type StrategyPanelData = Parameters<typeof AthPanel>[0];
+export type AdjustmentPanelData = Parameters<typeof AdjustmentsPanel>[0];
+
+export type Presentation = Props & { athProfiles?: Array<{ environment: string; asset: string; regime: string }>; deploymentSha?: string; operator?: PremiumOperatorPresentation; onboardingChecks?: OnboardingCheck[]; snapshotAt?: string; deferredHealth?: boolean; unavailableModules?: string[] };
 type Panel = "strategy" | "simulator" | "adjustments" | "config" | "asset" | "slot" | "audit" | "menu" | "onboarding" | null;
 const labels = { overview: "Visão Geral", shadow: "Shadow", testnet: "Testnet", live: "Real" };
 // Other views remain addressable for internal diagnostics, not product navigation.
@@ -84,8 +99,68 @@ function AccountSlotOverview({ models, onOpen }: { models: PremiumEngine[]; onOp
   })}</div></section>;
 }
 
-export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjustmentsPanel, initialAdjustments = false, strategyPanels, adjustmentPanels }: { view: AutomationView; data: Presentation; userLabel: string; strategyPanel: ReactNode; adjustmentsPanel: ReactNode; initialAdjustments?: boolean; strategyPanels?: Record<string, ReactNode>; adjustmentPanels?: Record<string, ReactNode> }) {
+export function PremiumAutomation({ view, data: initialData, userLabel, strategyPanel, adjustmentsPanel, initialAdjustments = false, strategyPanels, adjustmentPanels }: { view: AutomationView; data: Presentation; userLabel: string; strategyPanel: ReactNode; adjustmentsPanel: ReactNode; initialAdjustments?: boolean; strategyPanels?: Record<string, StrategyPanelData>; adjustmentPanels?: Record<string, AdjustmentPanelData> }) {
+  useUiPerformance();
+  const [healthObservations, setHealthObservations] = useState<Array<{ engineId: string; status: LiveExecutorStatus }>>([]);
+  const [symbolRules, setSymbolRules] = useState<Array<{ symbol: string; quantityStep: number; observedAt: string }>>([]);
+  const [healthPending, setHealthPending] = useState(Boolean(initialData.deferredHealth));
+  const [healthClock, setHealthClock] = useState(0);
+  useEffect(() => {
+    if (!initialData.deferredHealth || view !== "live" && view !== "overview") return;
+    const abort = new AbortController();
+    let inFlight = false;
+    const refresh = () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true; setHealthPending(true);
+      void fetch("/api/coinops-executor-observations", { cache: "no-store", signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]) })
+      .then((response) => response.ok ? response.json() : null)
+      .then((result) => { if (!abort.signal.aborted) {
+        setHealthObservations(Array.isArray(result?.observations) ? result.observations : []);
+        setSymbolRules(Array.isArray(result?.symbolRules) ? result.symbolRules : []);
+        setHealthClock(Date.now());
+      } })
+      .catch(() => { if (!abort.signal.aborted) setHealthObservations([]); })
+      .finally(() => { inFlight = false; if (!abort.signal.aborted) setHealthPending(false); });
+    };
+    refresh();
+    const timer = setInterval(refresh, 45_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { abort.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [initialData.deferredHealth, initialData.snapshotAt, view]);
+  useEffect(() => {
+    const clock = setInterval(() => setHealthClock(Date.now()), 15_000);
+    return () => clearInterval(clock);
+  }, []);
+  const data = useMemo((): Presentation => {
+    if (!initialData.deferredHealth || !initialData.operator) return initialData;
+    const engineData = { ...initialData.operator.engineData };
+    const engines = initialData.operator.engines.map((engine) => {
+      const scoped = engineData[engine.engineId];
+      if (engine.environment !== "REAL" || !scoped?.engineContext || engine.health.label === "DADOS INDISPONÍVEIS") return engine;
+      const status = healthObservations.find((item) => item.engineId === engine.engineId)?.status;
+      const executor = freshExecutorObservation(status, healthClock);
+      const updated = { ...scoped,
+        ...(scoped.livePreparation ? { livePreparation: { ...scoped.livePreparation, executor } } : {}),
+        ...(scoped.nativeLiveControl ? { nativeLiveControl: { ...scoped.nativeLiveControl, executor } } : {}),
+      };
+      const rule = symbolRules.find((item) => item.symbol === engine.symbol
+        && Number.isFinite(item.quantityStep) && item.quantityStep > 0
+        && Date.parse(item.observedAt) - healthClock <= 2_000
+        && healthClock - Date.parse(item.observedAt) < 10 * 60_000);
+      const asset = engine.asset;
+      const live = scoped.liveAssetData?.[asset];
+      if (live) updated.liveAssetData = { ...scoped.liveAssetData, [asset]: { ...live, displayQuantityStep: rule?.quantityStep ?? null } };
+      engineData[engine.engineId] = updated;
+      return { ...buildPremiumEngine(updated, scoped.engineContext), regime: engine.regime };
+    });
+    return { ...initialData, operator: { ...initialData.operator, engineData, engines } };
+  }, [initialData, healthObservations, healthClock, symbolRules]);
   const [panel, setPanel] = useState<Panel>(initialAdjustments ? "adjustments" : null);
+  const [visited, setVisited] = useState({ strategy: false, adjustments: initialAdjustments });
+  useEffect(() => {
+    if (panel === "strategy" || panel === "adjustments")
+      setVisited((current) => current[panel] ? current : { ...current, [panel]: true });
+  }, [panel]);
   const [selection, setSelection] = useState<PremiumSelection>(data.operator?.selection ?? { accountId: "ALL", symbol: "ALL" });
   const [engineId, setEngineId] = useState<string | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<PremiumSlot | null>(null);
@@ -94,6 +169,10 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
     reason: string; openedAt: string; resolvedAt: string | null } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    let pending: string | null = null;
+    try { pending = sessionStorage.getItem("coinops.pending-panel"); sessionStorage.removeItem("coinops.pending-panel"); } catch { /* optional UI preference */ }
+    const requestedPanel = params.get("panel") ?? pending;
+    if (requestedPanel === "strategy" || requestedPanel === "adjustments" || requestedPanel === "config") setPanel(requestedPanel);
     if (params.get("tab") === "alerts") {
       setOperationTab("alerts");
       requestAnimationFrame(() => document.getElementById("premium-operations")?.scrollIntoView({ block: "start" }));
@@ -108,15 +187,29 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const [historyLimit, setHistoryLimit] = useState(8);
   const [accountLimit, setAccountLimit] = useState(10);
   const [quoteBalances, setQuoteBalances] = useState<LiveQuoteBalance[] | null>(null);
+  const [loadAllBalances, setLoadAllBalances] = useState(false);
+  const [dailyCandles, setDailyCandles] = useState(data.dailyCandles);
+  useEffect(() => {
+    const abort = new AbortController();
+    // Public chart data is independent of the authenticated operational snapshot.
+    // A failed/slow chart never blocks the account, orders or navigation.
+    fetch("/api/coinops-market-charts", { signal: abort.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((result) => { if (!abort.signal.aborted && Array.isArray(result?.candles)) setDailyCandles(result.candles); })
+      .catch(() => undefined);
+    return () => abort.abort();
+  }, []);
   useEffect(() => {
     if (view !== "live" && view !== "overview") return;
+    if (selection.accountId === "ALL" && !loadAllBalances) { setQuoteBalances(null); return; }
     const abort = new AbortController();
-    fetch("/api/coinops-live-balances", { cache: "no-store", signal: abort.signal })
+    setQuoteBalances(null);
+    fetch(`/api/coinops-live-balances?account=${encodeURIComponent(selection.accountId)}`, { cache: "no-store", signal: abort.signal })
       .then((response) => response.ok ? response.json() : null)
       .then((result) => { if (!abort.signal.aborted) setQuoteBalances(Array.isArray(result?.balances) ? result.balances : []); })
       .catch(() => { if (!abort.signal.aborted) setQuoteBalances([]); });
     return () => abort.abort();
-  }, [view, data.snapshotAt]);
+  }, [view, selection.accountId, data.snapshotAt, loadAllBalances]);
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
   const engines = useMemo(() => data.operator?.engines ?? legacyPremiumEngines(data), [data]);
   const market = useAutomationMarketPrices(engines.filter((engine) => view === "overview"
@@ -138,7 +231,7 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const currency = active?.currency ?? (environment === "REAL" ? "BRL" : "USDC");
   const groups = premiumNativeGroups(assets);
   const freeQuoteRows = premiumQuoteBalanceRows(groups, quoteBalances ?? []);
-  const freeQuoteValue = quoteBalances === null ? "Consultando contas…" : groups.length === 1
+  const freeQuoteValue = selection.accountId === "ALL" && !loadAllBalances ? <button type="button" className="px-text-button" onClick={() => setLoadAllBalances(true)}>Consultar saldos das contas</button> : quoteBalances === null ? "Consultando conta…" : groups.length === 1
     ? money(freeQuoteRows[0]?.free, groups[0].currency)
     : <span className="px-native-values">{freeQuoteRows.map((row) =>
       <span key={`${row.accountId}:${row.currency}`}><small>{row.accountDisplayName} · {row.currency}</small>
@@ -192,7 +285,7 @@ export function PremiumAutomation({ view, data, userLabel, strategyPanel, adjust
   const alerts = assets.flatMap((item) => item.alerts.map((alert) => ({ asset: item.asset, engineId: item.engineId, account: item.accountDisplayName, symbol: item.symbol, alert })));
   const openAsset = (next: string) => { setEngineId(next); setPanel("asset"); };
   const openSlot = (slot: PremiumSlot, next = active?.engineId) => { setEngineId(next ?? null); setSelectedSlot(slot); setPanel("slot"); };
-  const candlesFor = (item: PremiumAsset) => data.dailyCandles.filter((row) => row.symbol === item.symbol).sort((a, b) => a.candle_open_at.localeCompare(b.candle_open_at));
+  const candlesFor = (item: PremiumAsset) => dailyCandles.filter((row) => row.symbol === item.symbol).sort((a, b) => a.candle_open_at.localeCompare(b.candle_open_at));
   const goOperations = () => view === "overview" ? setPanel("asset") : document.getElementById("premium-operations")?.scrollIntoView({ behavior: "smooth", block: "start" });
 const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMap((item) => item.events.map((event) => ({ ...event, asset: item.asset, account: item.accountDisplayName, symbol: item.symbol, environment: env })))).sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
   const reportHref = `/relatorios?account=${selection.accountId}&engine=${concrete?.engineId ?? "ALL"}&environment=${environment}`;
@@ -203,14 +296,15 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     <div className="px-mobile-sticky-header"><PremiumGlobalNavigation>
      <div className="px-top-status"><span className={`px-live ${liveActive && (view === "live" || view === "overview") ? "is-live" : ""}`}><i />{liveBadgeLabel}</span><span className={`px-sync px-sync--${sync.status === "AO VIVO" ? "live" : sync.stale ? "stale" : "reconnecting"}`} role="status" aria-live="polite" title={`Snapshot operacional: ${new Date(sync.lastSyncedAt).toISOString()}`}><i />{sync.status}<small>{sync.status === "AO VIVO" && sync.recent ? "Atualizado agora" : `Última sincronização ${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Campo_Grande", hour: "2-digit", minute: "2-digit" }).format(sync.lastSyncedAt)}`}</small></span><small>Executor {liveStatus.ip ?? "não consultado"}<br />Binance Production</small></div><button className="px-avatar px-account-trigger" type="button" aria-label="Abrir menu da conta" onClick={() => setPanel("menu")}>{userLabel.slice(0, 2).toUpperCase()}</button></PremiumGlobalNavigation>
     <div className="px-context-bar">
-       <nav className="px-environments" aria-label="Ambientes da Automação">{visibleEnvironments.map((item) => <a key={item} href={viewHref(item)} aria-current={view === item ? "page" : undefined}>{labels[item]}{item === "live" && liveActive ? <i /> : null}</a>)}<span>Central operacional</span></nav>
+       <nav className="px-environments" aria-label="Ambientes da Automação">{visibleEnvironments.map((item) => <Link key={item} href={viewHref(item)} aria-current={view === item ? "page" : undefined}>{labels[item]}{item === "live" && liveActive ? <i /> : null}</Link>)}<span>Central operacional</span></nav>
        <nav className="px-toolbar" aria-label="Ferramentas da Automação" data-testid="premium-toolbar">{([
         ["home", "Início", () => window.scrollTo({ top: 0, behavior: "smooth" })], ["strategy", "Estratégia", () => setPanel("strategy")], ["adjust", "Ajustes", () => setPanel("adjustments")], ["settings", "Configurações", () => setPanel("config")],
-      ] as Array<[IconName, string, () => void]>).map(([icon, label, action]) => <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button>)}{data.operator ? <a href={finopsNavigation.costsHref}><PremiumIcon name="wallet" />Custos &amp; Operação</a> : null}</nav>
+      ] as Array<[IconName, string, () => void]>).map(([icon, label, action]) => <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button>)}{data.operator ? <Link href={finopsNavigation.costsHref}><PremiumIcon name="wallet" />Custos &amp; Operação</Link> : null}</nav>
        <div className="px-scope-filters" aria-label="Filtros da operação"><AccountSelector options={accountChoices} value={selection.accountId} onChange={(accountId) => changeSelection({ accountId, symbol: "ALL" })} /><label>Mercado<select aria-label="Mercado" value={selection.symbol} onChange={(event) => changeSelection({ ...selection, symbol: event.target.value })}><option value="ALL">Todos os mercados</option>{symbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}</select></label><small>Filtros de leitura · não alteram ordens</small></div>
      </div>
     {view === "live" ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={liveStatus.online ? "is-ok" : "is-warning"}>● Executor {liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={healthy ? "is-ok" : "is-warning"}>● Estratégia {healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
+      {healthPending ? <p className="px-caption" role="status">Atualizando confirmação dos executores… Dados do ledger abaixo mantêm seus próprios horários.</p> : null}
       {allAccounts ? <section className="px-market-overview" aria-label="Cotações USDT">
         <div className="px-market-chart-grid">{healthChartItems.map((model) => model === "BINANCE" ? <BinanceHealthCard key="BINANCE" /> : <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /><AssetHealthBadge asset={model.asset} /></article>)}</div>
       </section> : null}
@@ -262,23 +356,23 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       <footer className="px-footer"><span><strong>CoinOps</strong> · Operando com disciplina. Sempre.</span><span><i />{environment === "REAL" ? liveActive ? "LIVE PRODUCTION" : liveConfigured ? "LIVE · ACOMPANHAR" : "PRODUCTION · PREPARAÇÃO" : environment === "SHADOW" ? "SHADOW VIRTUAL" : "BINANCE TESTNET"}</span><span>Dados consultados · {time(checked)}</span></footer>
     </main>
     <PremiumDrawer open={panel !== null} title={title} onClose={() => setPanel(null)}>
-      <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
+      {visited.strategy || panel === "strategy" ? <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
         {view === "live" ? <BulkStrategyEditor operator={data.operator} /> : null}
         <EngineControlCenter active={panel === "strategy"} initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
           onEditEngine={(accountId, symbol) => { setSelection({ accountId, symbol }); setEngineId(null); }}
           onOpenCredentials={() => setPanel("config")} />
         {concrete && strategyPanels?.[concrete.engineId] ? <div className="px-engine-existing-profile">
           <h3>Regras do motor selecionado · {concrete.accountDisplayName} / {concrete.symbol}</h3>
-          {strategyPanels[concrete.engineId]}</div> : null}
+          <AthProfilesPanel {...strategyPanels[concrete.engineId]} /></div> : null}
       </> : view === "overview" ? <p>Selecione Real, Shadow ou Testnet para configurar o perfil isolado.</p>
-        : allowedControls ? concrete && strategyPanels ? strategyPanels[concrete.engineId] : strategyPanel
-          : <p role="status">Selecione uma conta e um mercado específicos nos filtros para alterar a estratégia.</p>}</div>
+        : allowedControls ? concrete && strategyPanels?.[concrete.engineId] ? <AthProfilesPanel {...strategyPanels[concrete.engineId]} /> : strategyPanel
+          : <p role="status">Selecione uma conta e um mercado específicos nos filtros para alterar a estratégia.</p>}</div> : null}
       {/* Keep the one adjustment form mounted: previews and idempotency keys must survive closing the drawer. */}
-      <div key={`adjustments:${selection.accountId}:${selection.symbol}`} hidden={panel !== "adjustments"}>{environment === "REAL" && data.operator
+      {visited.adjustments || panel === "adjustments" ? <div key={`adjustments:${selection.accountId}:${selection.symbol}`} hidden={panel !== "adjustments"}>{environment === "REAL" && data.operator
         ? <LiveAdjustmentsCenter active={panel === "adjustments"} initialAccountId={selection.accountId} initialSymbol={selection.symbol} />
-        : allowedControls ? concrete && adjustmentPanels ? adjustmentPanels[concrete.engineId] : adjustmentsPanel : <p role="status">Selecione uma conta e um mercado específicos nos filtros para ajustar um slot. Nenhum ajuste usa o escopo Todos.</p>}</div>
+        : data.unavailableModules?.includes("manual-history") ? <p role="status">Histórico de ajustes indisponível nesta consulta. Nenhum valor anterior foi tratado como atual. Atualize este módulo antes de ajustar.</p> : allowedControls ? concrete && adjustmentPanels?.[concrete.engineId] ? <ManualAdjustmentsPanel {...adjustmentPanels[concrete.engineId]} /> : adjustmentsPanel : <p role="status">Selecione uma conta e um mercado específicos nos filtros para ajustar um slot. Nenhum ajuste usa o escopo Todos.</p>}</div> : null}
       {panel === "simulator" ? <div className="px-simulator-links"><a href="/automacao/simulador-ath"><PremiumIcon name="strategy" /><strong>Simulador ATH</strong><p>Regime, Top 15 / Reserve, floor e prioridade de reentrada.</p><span>Explorar cenários →</span></a><a href="/automacao/simulador-ajustes"><PremiumIcon name="adjust" /><strong>Simulador de ajustes A–J</strong><p>Provas contábeis de gains, aportes e posições abertas.</p><span>Ver cenários determinísticos →</span></a><p>Simulações isoladas. Não criam ordens nem movimentam saldo.</p></div> : null}
-      {panel === "onboarding" && data.operator ? <OperatorOnboardingPanel operator={data.operator} checks={data.onboardingChecks ?? []} /> : null}
+      {panel === "onboarding" && data.operator ? data.unavailableModules?.includes("onboarding") ? <p role="status">Verificações de onboarding indisponíveis nesta consulta. Nenhum gate de admissão foi presumido.</p> : <OperatorOnboardingPanel operator={data.operator} checks={data.onboardingChecks ?? []} /> : null}
       {panel === "config" && data.operator ? <><BinanceAccountsPanel /><PushNotificationsPanel
         testnetEngines={data.operator.engines.filter((item) => item.environment === "TESTNET")
           .map((item) => ({ id: item.engineId, label: `${item.accountDisplayName} · ${item.symbol}` }))} /><ViewerUsersPanel /></> : null}
@@ -287,7 +381,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {panel === "slot" && selectedSlot && active ? <><button type="button" className="px-text-button" onClick={() => setPanel("asset")}>← Voltar à lista de slots</button><div className="px-slot-detail"><span className="px-badge">{selectedSlot.label}</span><h3>{selectedSlot.nextAction}</h3><dl>{[
         ["Slot físico", `#${selectedSlot.number}${selectedSlot.physicalId ? ` · ${selectedSlot.physicalId}` : ""}`], ["Rank operacional", selectedSlot.rank], ["Grupo / rank", `${selectedSlot.group ?? "—"} / ${selectedSlot.groupRank ?? "—"}`], ["Operação", selectedSlot.operationSequence], ["Ciclo", active.cycleId], ["Valor atual do slot", money(selectedSlot.balance, currency)], ["Aportes aplicados", money(selectedSlot.contributed, currency)], ["Aporte pendente", money(selectedSlot.pendingContribution, currency)], ["Valor após aplicar pendência", money(selectedSlot.valueAfterPending, currency)], ["Capital em posição", money(selectedSlot.committed, currency)], ["Quantidade", `${number(selectedSlot.quantity, 8)} ${asset}`], ["Entrada", money(selectedSlot.entryPrice, currency)], ["Preço atual", money(selectedSlot.currentPrice, currency)], ["TP", money(selectedSlot.tpPrice, currency)], ["Gains totais", selectedSlot.gains], ["Gains mês / meta", `${selectedSlot.monthlyGains ?? "?"}/${selectedSlot.goal}`], ["Elegibilidade", selectedSlot.targetReached && selectedSlot.eligible ? "META GLOBAL CONCLUÍDA · ELEGÍVEL" : selectedSlot.targetReached ? "META INDIVIDUAL BATIDA" : selectedSlot.eligible === null ? "Sem evidência" : selectedSlot.eligible ? "Elegível" : "Não elegível"], ["P&L realizado", money(selectedSlot.realizedPnl, currency)], ["P&L aberto", money(selectedSlot.openPnl, currency)], ["Taxas", money(selectedSlot.fees, currency)],
       ].map(([label, value]) => <div key={String(label)}><dt>{label}</dt><dd>{value ?? "—"}</dd></div>)}</dl><h3>Ordens e ownership</h3>{selectedSlot.orders.map((order) => <div className="px-order-detail" key={order.id}><strong>{order.side} · {order.purpose} · {order.status}</strong><p>{money(order.price, currency)} · {number(order.quantity, 8)} {asset}</p><small>clientOrderId</small><code>{order.id}</code><small>Binance orderId</small><code>{order.exchangeId ?? "Sem ID de exchange"}</code></div>)}<h3>Eventos deste slot</h3>{selectedSlot.events.map((event, index) => <details key={`${event.id}-${index}`}><summary>{time(event.at)} · {event.type}</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>)}<details><summary>Evidência completa · saldo, fees e ajustes</summary><pre>{JSON.stringify(selectedSlot.raw, null, 2)}</pre></details>{environment !== "REAL" ? <a className="px-button" href={`/automacao?view=${view}&account=${active.accountId}&market=${active.symbol}&engine=${active.engineId}&adjust=${environment}:${asset}:${selectedSlot.number}`}>Adicionar gain ou aporte</a> : null}<a className="px-button" href={reportHref}>Histórico e auditoria completa →</a></div></> : null}
-      {panel === "menu" ? <nav className="px-menu-links" aria-label="Opções da Automação"><a href={finopsNavigation.automationHref}>Início da Automação<PremiumIcon name="arrow" /></a>{data.operator ? <><a href={finopsNavigation.costsHref}>Custos &amp; Operação<PremiumIcon name="arrow" /></a><button type="button" className="px-button" onClick={() => setPanel("onboarding")}>Contas e onboarding</button><button type="button" className="px-button" onClick={() => setPanel("config")}>Configurações da Automação</button></> : null}<p>{userLabel}</p></nav> : null}
+      {panel === "menu" ? <nav className="px-menu-links" aria-label="Opções da Automação"><Link href={finopsNavigation.automationHref}>Início da Automação<PremiumIcon name="arrow" /></Link>{data.operator ? <><Link href={finopsNavigation.costsHref}>Custos &amp; Operação<PremiumIcon name="arrow" /></Link><button type="button" className="px-button" onClick={() => setPanel("onboarding")}>Contas e onboarding</button><button type="button" className="px-button" onClick={() => setPanel("config")}>Configurações da Automação</button></> : null}<p>{userLabel}</p></nav> : null}
     </PremiumDrawer>
   </AssetHealthProvider></div>;
 }

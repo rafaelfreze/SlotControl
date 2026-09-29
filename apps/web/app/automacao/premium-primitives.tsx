@@ -36,7 +36,10 @@ export function PremiumDrawer({ open, title, onClose, children }: { open: boolea
     document.documentElement.style.overflow = "hidden";
     return () => { document.documentElement.style.overflow = previousOverflow; };
   }, [open]);
-  return <dialog ref={ref} className="px-drawer" aria-labelledby={titleId} onCancel={onClose} onClose={onClose} onClick={(event) => { if (event.target === event.currentTarget) { const box = event.currentTarget.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right) onClose(); } }}>
+  return <dialog ref={ref} className="px-drawer" aria-labelledby={titleId} onCancel={onClose} onClose={(event) => {
+    // A queued native close event must not dismiss a drawer already reopened.
+    if (!event.currentTarget.open) onClose();
+  }} onClick={(event) => { if (event.target === event.currentTarget) { const box = event.currentTarget.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right) onClose(); } }}>
     <header className="px-drawer-header"><div className="px-drawer-header-top"><PremiumBrand /><button type="button" className="px-icon-button" aria-label="Fechar" onClick={onClose}><PremiumIcon name="close" /></button></div><h2 id={titleId}>{title}</h2></header><div className="px-drawer-body">{children}</div>
   </dialog>;
 }

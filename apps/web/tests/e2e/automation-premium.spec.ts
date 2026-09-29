@@ -33,7 +33,7 @@ function clientModules() {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
         jsx: ts.JsxEmit.React, esModuleInterop: true } });
     const code = outputText.replace(/require\(["']([^"']+)["']\)/g, (_, imported: string) => {
-      if (["react", "react-dom", "next/link", "next/image", "next/navigation"].includes(imported))
+      if (["react", "react-dom", "next/link", "next/image", "next/navigation", "next/dynamic"].includes(imported))
         return `require(${JSON.stringify(imported)})`;
       if (imported.endsWith(".css")) return 'require("@boundary/css")';
       if (imported === "@/lib/supabase/browser") return 'require("@boundary/supabase")';
@@ -89,6 +89,10 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const boundaries = {
       react: React,
       'react-dom': { ...window.ReactDOM, useFormStatus: () => ({ pending: false }) },
+      'next/dynamic': { __esModule: true, default: (loader, options) => {
+        const Lazy = React.lazy(() => loader().then((value) => ({ default: value.default || value })));
+        return (props) => React.createElement(React.Suspense, { fallback: options?.loading ? React.createElement(options.loading) : null }, React.createElement(Lazy, props));
+      } },
       'next/link': { __esModule: true, default: ({ children, prefetch, ...props }) => React.createElement('a', props, children) },
       'next/image': { __esModule: true, default: ({ priority, fill, unoptimized, ...props }) => React.createElement('img', props) },
       'next/navigation': { usePathname: () => '/automacao', useSearchParams: () => new URLSearchParams('view=${view}'),
@@ -281,6 +285,48 @@ test("mobile fixa apenas logo e LIVE; filtros, abas e saúde rolam sem barra inf
   await expect(page.getByLabel("Saúde da operação Live")).toContainText("Binance CONECTADA");
   await expect(page.getByLabel("Saúde da operação Live")).toContainText("Estratégia ATIVA");
   await noSideEffects(page, audit);
+});
+
+for (const width of [320, 360, 375, 390, 430, 1440]) test(`performance: drawers e seletor imediato em ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  data.operator!.selection = { accountId: ACCOUNT_A, symbol: "ALL" };
+  const audit = await mount(page, "live", width, 900, data);
+  const timings: Record<string, number> = {};
+  for (const name of ["Estratégia", "Ajustes", "Configurações"]) {
+    timings[name] = await page.evaluate(async (label) => {
+      const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>(".px-toolbar button"))
+        .find((button) => button.textContent?.trim() === label)!;
+      const start = performance.now();
+      trigger.click();
+      do {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      } while (!document.querySelector("dialog[open]") && performance.now() - start < 1_000);
+      if (!document.querySelector("dialog[open]")) throw new Error("Drawer structure did not open");
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      return performance.now() - start;
+    }, name);
+    await expect(page.locator(".px-drawer[open]").last()).toBeVisible();
+    expect(timings[name], `${name}: click to visible structure`).toBeLessThan(100);
+    await page.getByRole("button", { name: "Fechar", exact: true }).last().click();
+  }
+  timings.seletor = await page.evaluate(async () => {
+    const start = performance.now();
+    (document.querySelector(".px-scope-filters .px-account-selector-trigger") as HTMLButtonElement).click();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    return performance.now() - start;
+  });
+  const input = page.locator(".px-scope-filters .px-account-selector-popover input");
+  await expect(input).toBeVisible();
+  if (width <= 430) expect(await input.evaluate((node) => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(16);
+  expect(timings.seletor).toBeLessThan(100);
+  await input.fill("Conta B");
+  await page.locator(".px-scope-filters .px-account-selector-results button").filter({ hasText: "Conta B Demo" }).click();
+  await expect(page.locator(".px-scope-filters .px-account-selector-trigger")).toContainText("Conta B Demo");
+  expect((await geometry(page)).overflow).toBe(0);
+  await expect(page.getByRole("link", { name: "Custos & Operação", exact: true }).first()).toHaveAttribute("href", /account=10000000-0000-4000-8000-000000000002/);
+  expect(audit.browserErrors).toEqual([]);
+  await testInfo.attach("local-interaction-timings", { body: JSON.stringify({ width, timings, scope: "synthetic component fixture; not production INP" }), contentType: "application/json" });
+  console.log(`COINOPS_LOCAL_UI_TIMING ${JSON.stringify({ width, timings })}`);
 });
 
 for (const width of [1024, 1440, 1920]) test(`contexto desktop não sobrepõe topo em ${width}px`, async ({ page }) => {

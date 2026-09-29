@@ -137,7 +137,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
   });
   const committed = sum(slots.map((slot) => slot.committed)), reserved = sum(slots.map((slot) => slot.reserved));
   const capital = live.accounts.length ? sum(live.accounts.map((row) => amount(row, "balance_brl", "balance_quote"))) : null;
-  const quantityStep = number(sizing?.rules?.quantityStep);
+  const quantityStep = number(sizing?.rules?.quantityStep) ?? number(live.displayQuantityStep);
   const unprotected = slots.filter((slot) => {
     if (slot.state !== "OPEN") return false;
     const tps = slot.orders.filter((order) => order.side === "SELL" && order.resident);

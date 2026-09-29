@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { readLiveDashboardBatch } from "./live-dashboard-batch.ts";
 import { resolveEngineContext, type DomainRegistry, type EngineContext } from "../../lib/execution/operator-context.ts";
 import { loadLiveExecutorStatus as loadExecutorStatus } from "../../lib/execution/live-executor-health.ts";
 import { resolveExecutorShard } from "../../lib/execution/executor-shards-server.ts";
@@ -64,6 +65,7 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
       "server-only": {}, "@/lib/execution/operator-context": { resolveEngineContext },
       "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
       "./premium-operator": { buildPremiumEngine },
+      "./live-dashboard-batch": { readLiveDashboardBatch },
       "@/lib/execution/live-executor-health": { loadLiveExecutorStatus }
     };
     const fetcher = (async (url, init) => {
@@ -240,6 +242,7 @@ test("native LIVE reads its own preparation and scoped executor health without i
     "@/lib/execution/operator-context": { resolveEngineContext },
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
+      "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
   new Function("require", "exports", compiled)((name: string) => dependencies[name], evaluated);
@@ -255,6 +258,28 @@ test("native LIVE reads its own preparation and scoped executor health without i
   assert.equal(result.engines[0].slots[0].valueAfterPending, 26.76);
   assert.equal(result.engineData[nativeEngine.id].nativeLiveControl?.executor?.gate, "LIVE_EXECUTOR_ACTIVE");
   assert.equal(result.engineData[nativeEngine.id].livePreparation, null);
+
+  // The grouped projection must preserve the same financial display while the
+  // independent signed-health observation is still pending.
+  const projected = { run: rows.robot_v1_live_runs, slots, orders: rows.robot_v1_live_orders,
+    accounts: rows.robot_v1_live_slot_accounts,
+    selectiveAllocations: rows.robot_v1_live_selective_contribution_allocations,
+    events: [], alerts: [], monthlyGains: [], preparation: { liveEnabled: true, killSwitch: false } };
+  let capReads = 0;
+  const fastClient = { from(table: string) {
+    assert.equal(table, "account_quote_caps", "projection must not repeat the nine engine reads");
+    capReads++;
+    return client.from(table);
+  } } as unknown as Parameters<typeof BuildPresentation>[0];
+  const fast = await build(fastClient, data(), nativeRegistry, { accountId: "ALL", symbol: "ALL" },
+    undefined, "REAL", true, Promise.resolve(new Map([[nativeEngine.id, projected]])) as unknown as
+      NonNullable<Parameters<typeof BuildPresentation>[7]>);
+  assert.equal(capReads, 1);
+  assert.equal(fast.engines[0].health.healthy, false, "no invented healthy status before signed evidence");
+  assert.deepEqual(fast.engines[0].slots, result.engines[0].slots);
+  assert.deepEqual(fast.engines[0].orders, result.engines[0].orders);
+  assert.equal(fast.engines[0].exposure, result.engines[0].exposure);
+  assert.equal(fast.engineData[nativeEngine.id].nativeLiveControl?.executor, null);
 
   const timeoutClient = { from(table: string) {
     assert.ok(table in rows, `Unexpected native table ${table}`);
@@ -287,6 +312,7 @@ test("Testnet and LIVE tabs read only their environment, including native engine
     "@/lib/execution/operator-context": { resolveEngineContext },
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
+      "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
   new Function("require", "exports", compiled)((name: string) => dependencies[name], evaluated);
@@ -333,6 +359,7 @@ test("one native ledger timeout degrades only that engine and bounds concurrent 
     "@/lib/execution/operator-context": { resolveEngineContext },
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
+      "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
   new Function("require", "exports", compiled)((name: string) => dependencies[name], evaluated);

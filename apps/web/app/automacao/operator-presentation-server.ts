@@ -7,6 +7,7 @@ import { buildPremiumEngine, type PremiumOperatorPresentation, type PremiumSelec
 import { monthlyPeriodKey, rankMonthlySlots } from "@/lib/execution/monthly-slot-policy";
 import { loadLiveExecutorStatus, type LiveExecutorStatus } from "@/lib/execution/live-executor-health";
 import type { AutomationView } from "./automation-center";
+import { readLiveDashboardBatch } from "./live-dashboard-batch";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
 
@@ -141,7 +142,8 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
 
 export async function buildOperatorPresentation(client: Client, data: Props, registry: DomainRegistry,
   selection: PremiumSelection, prefetchedHealth?: Map<string, LiveExecutorStatus>,
-  visibleEnvironment?: EngineContext["environment"]): Promise<PremiumOperatorPresentation> {
+  visibleEnvironment?: EngineContext["environment"], deferHealth = false,
+  prefetchedLive?: Promise<Awaited<ReturnType<typeof readLiveDashboardBatch>> | null>): Promise<PremiumOperatorPresentation> {
   if (selection.accountId !== "ALL" && !registry.accounts.some((account) => account.id === selection.accountId))
     throw new Error("COINOPS_ACCOUNT_SCOPE_DENIED");
   if (selection.symbol !== "ALL" && !registry.engines.some((engine) => engine.symbol === selection.symbol
@@ -154,6 +156,11 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
     environment: row.environment, exchange_account_id: row.exchange_account_id, trading_engine_id: row.id,
   }));
   const loaded: Array<{ context: EngineContext; scoped: Props; readUnavailable: boolean }> = [];
+  const nativeLive = contexts.filter((context) => !context.legacy_compatible && context.environment === "REAL"
+    && (!visibleEnvironment || visibleEnvironment === "REAL"));
+  // If a grouped read fails, retain the established isolated read path. This
+  // fallback is bounded and preserves unrelated accounts during partial failure.
+  const liveBatch = nativeLive.length ? await (prefetchedLive ?? readLiveDashboardBatch(client, nativeLive).catch(() => null)) : null;
   // Each native engine starts several independent PostgREST reads. Keep the
   // aggregate request fan-out bounded even when the registry grows.
   for (let offset = 0; offset < contexts.length; offset += 2) {
@@ -162,6 +169,16 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
         return { context, scoped: emptyScoped(data, context), readUnavailable: false };
       if (context.legacy_compatible)
         return { context, scoped: legacyEnginePresentation(data, context), readUnavailable: false };
+      const projected = liveBatch?.get(context.trading_engine_id);
+      if (projected) {
+        const scoped = emptyScoped(data, context);
+        if (!projected.run) return { context, scoped, readUnavailable: false };
+        if (!projected.preparation) return { context, scoped, readUnavailable: true };
+        scoped.nativeLiveControl = { ...projected.preparation, executor: null };
+        scoped.liveAssetData = { [context.base_asset]: { ...projected, run: projected.run,
+          monthlyGains: projected.monthlyGains.filter((row) => row.period_key === monthlyPeriodKey(new Date())) } };
+        return { context, scoped, readUnavailable: false };
+      }
       try {
         return { context, scoped: await nativeEnginePresentation(client, data, context), readUnavailable: false };
       } catch (error) {
@@ -182,7 +199,7 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
     && (scoped.livePreparation || scoped.nativeLiveControl));
   // Two concurrent read-only health checks keep BTC/SOL within one UI budget,
   // while bounding fan-out if additional legitimate engines are introduced.
-  for (let offset = 0; offset < live.length; offset += 2) {
+  for (let offset = 0; !deferHealth && offset < live.length; offset += 2) {
     await Promise.all(live.slice(offset, offset + 2).map(async ({ context, scoped }) => {
       // Public /health can intentionally advertise the old compatibility
       // contract during rollout. Only the authenticated, identity-validated

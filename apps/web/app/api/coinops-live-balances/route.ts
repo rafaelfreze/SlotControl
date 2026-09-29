@@ -15,8 +15,8 @@ export const maxDuration = 30;
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status,
   headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
 
-/** Read-only, lazy dashboard observation. No browser-supplied account/engine ID is accepted. */
-export async function GET() {
+/** Read-only, lazy observation. Requested account is checked against the owned registry. */
+export async function GET(request: Request) {
   try {
     if (getSupabaseDataSchema() !== "coinops") return json({ error: "COINOPS_BALANCE_SCHEMA_DENIED" }, 503);
     const tenantId = getCoinOpsServiceTenantId();
@@ -27,8 +27,11 @@ export async function GET() {
       .eq("tenant_id", tenantId).eq("user_id", user.id).eq("status", "ACTIVE").single();
     if (owned.error || !owned.data) return json({ error: "COINOPS_BALANCE_SCOPE_DENIED" }, 403);
     const registry = await loadOperatorRegistry(createServiceRoleClient(), owned.data);
+    const accountId = new URL(request.url).searchParams.get("account");
+    if (!accountId || accountId !== "ALL" && !registry.accounts.some((account) => account.id === accountId))
+      return json({ error: "COINOPS_BALANCE_ACCOUNT_SCOPE_DENIED" }, 403);
     const groups = new Map<string, { accountId: string; currency: string; engineId: string }>();
-    for (const engine of registry.engines.filter((item) => item.environment === "REAL" && item.status === "ACTIVE")) {
+    for (const engine of registry.engines.filter((item) => item.environment === "REAL" && item.status === "ACTIVE" && (accountId === "ALL" || item.exchange_account_id === accountId))) {
       const key = `${engine.exchange_account_id}:${engine.quote_asset}`;
       if (!groups.has(key)) groups.set(key, { accountId: engine.exchange_account_id,
         currency: engine.quote_asset, engineId: engine.id });
