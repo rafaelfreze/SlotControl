@@ -11,13 +11,15 @@ type Watchdog = { status: string; checkedAt: string | null;
 
 export function WatchdogCard() {
   const [status, setStatus] = useState<Watchdog | null>(null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     let active = true;
     const refresh = () => fetch("/api/coinops-watchdog", { cache: "no-store", credentials: "same-origin" })
-      .then((response) => response.ok ? response.json() as Promise<Watchdog> : null)
-      .then((value) => { if (active) setStatus(value); })
-      .catch(() => { if (active) setStatus(null); });
+      .then((response) => response.ok ? response.json() as Promise<Watchdog>
+        : Promise.reject(new Error("WATCHDOG_READ_FAILED")))
+      .then((value) => { if (active) { setStatus(value); setLoadState("ready"); } })
+      .catch(() => { if (active) { setStatus(null); setLoadState("error"); } });
     void refresh();
     const onVisible = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", onVisible);
@@ -28,7 +30,8 @@ export function WatchdogCard() {
       document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); };
   }, []);
   const stale = status?.checkedAt && now - Date.parse(status.checkedAt) >= 3 * 60_000;
-  const displayStatus = stale ? "STALE" : status?.status ?? "SEM TELEMETRIA";
+  const displayStatus = loadState === "loading" ? "ATUALIZANDO" : stale ? "STALE"
+    : status?.status ?? "INDISPONÍVEL";
   return <section className="px-panel px-watchdog" aria-label="Watchdog CoinOps">
     <details>
       <summary><strong>Watchdog · {displayStatus}</strong><span className="px-watchdog-action"><i>Ver detalhes</i><b>Ocultar</b></span></summary>
@@ -41,7 +44,8 @@ export function WatchdogCard() {
           {status.activeCriticalAlerts > 0 && <span>Alertas críticos pendentes: {status.activeCriticalAlerts}</span>}
           <small>Último incidente: {status.lastIncident
             ? `${status.lastIncident.detected_condition} · ${status.lastIncident.result}` : "nenhum"}</small></>
-          : <small>Sem confirmação server-side. Não interpretar a interface como saúde operacional.</small>}
+          : <small>{loadState === "loading" ? "Consultando confirmação server-side…"
+            : "Confirmação server-side indisponível. Não interpretar a interface como saúde operacional."}</small>}
       </div>
     </details>
   </section>;

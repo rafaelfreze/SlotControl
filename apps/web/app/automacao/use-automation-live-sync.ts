@@ -8,7 +8,8 @@ import type { PremiumEngine, PremiumSelection } from "./premium-operator";
 import { automationSignalFilter, automationSignalMatches, automationSignalScopes } from "./automation-live-scope";
 import { observeExecutorSnapshots, type ExecutorObservation, type ExecutorSnapshot } from "./automation-executor-sync";
 
-type SyncStatus = "AO VIVO" | "RECONECTANDO" | "DESATUALIZADO";
+type SyncStatus = "AO VIVO" | "CONECTANDO" | "RECONECTANDO" | "DESATUALIZADO";
+type SubscriptionState = "connecting" | "connected" | "disconnected";
 const STALE_MS = 150_000;
 const ONLINE_REFRESH_MS = 120_000;
 const FALLBACK_REFRESH_MS = 30_000;
@@ -22,6 +23,7 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
   const scopeKey = useMemo(() => JSON.stringify(automationSignalScopes(engines, view, selection)),
     [engines, view, selection]);
   const [connected, setConnected] = useState(false);
+  const [subscriptionState, setSubscriptionState] = useState<SubscriptionState>("connecting");
   const [lastSyncedAt, setLastSyncedAt] = useState(() => Date.parse(snapshotAt) || Date.now());
   const [clock, setClock] = useState(Date.now());
   const [generation, setGeneration] = useState(0);
@@ -60,6 +62,7 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
     const client = createClient();
     connectedRef.current = false;
     setConnected(false);
+    setSubscriptionState("connecting");
     const refresh = (delay = 1_000) => {
       if (pendingRefresh.current) return;
       const wait = Math.max(delay, MIN_REFRESH_GAP_MS - (Date.now() - lastRefreshRequested.current));
@@ -80,10 +83,13 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
       event: "*", schema: "coinops", table: "automation_refresh_signals",
       filter: automationSignalFilter(scopes, { accountId: selectedAccountId, symbol: selectedSymbol }),
     }, (payload) => { if (active && scopes.some((scope) => automationSignalMatches(scope, payload.new))) refresh(); });
+    if (!channel) setSubscriptionState("disconnected");
     channel?.subscribe((state) => {
       if (!active) return;
       connectedRef.current = state === "SUBSCRIBED";
       setConnected(connectedRef.current);
+      if (state === "SUBSCRIBED") setSubscriptionState("connected");
+      else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(state)) setSubscriptionState("disconnected");
     });
     const poll = setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -115,6 +121,7 @@ export function useAutomationLiveSync(view: AutomationView, engines: PremiumEngi
     };
   }, [scopeKey, selectedAccountId, selectedSymbol, generation, router]);
   const stale = clock - lastSyncedAt > STALE_MS;
-  const status: SyncStatus = stale ? "DESATUALIZADO" : connected ? "AO VIVO" : "RECONECTANDO";
+  const status: SyncStatus = stale ? "DESATUALIZADO" : connected ? "AO VIVO"
+    : subscriptionState === "connecting" ? "CONECTANDO" : "RECONECTANDO";
   return { status, lastSyncedAt, stale, recent: clock - lastSyncedAt < 30_000, observeExecutors };
 }

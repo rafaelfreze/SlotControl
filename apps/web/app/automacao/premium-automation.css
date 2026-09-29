@@ -339,3 +339,9 @@
   .px-history-row>.px-history-status{grid-area:status;justify-self:end}
   .px-history-row>.px-history-time{grid-area:time;justify-self:end}
 }
+
+/* Deferred operational reads are neutral until the first server response. */
+.px-health--loading h2,.px-health--loading p strong{color:#7dcaf2}
+.px-health--loading p i{background:#537b96;color:#dff5ff}
+.px-mobile-health-strip .is-loading{color:#78b9dc}
+.px-sync--connecting{color:#78b9dc}

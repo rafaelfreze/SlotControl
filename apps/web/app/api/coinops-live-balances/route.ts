@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 
 import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
 import { resolveEngineContext } from "@/lib/execution/operator-context";
+import { resolveExecutorForAccount } from "@/lib/execution/executor-shards-server";
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
-import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -23,10 +23,14 @@ export async function GET(request: Request) {
     const db = createClient();
     const user = (await db.auth.getUser()).data.user;
     if (!user || !tenantId) return json({ error: "COINOPS_BALANCE_AUTH_REQUIRED" }, 401);
-    const owned = await db.from("operators").select("id,product_id,tenant_id,user_id")
-      .eq("tenant_id", tenantId).eq("user_id", user.id).eq("status", "ACTIVE").single();
-    if (owned.error || !owned.data) return json({ error: "COINOPS_BALANCE_SCOPE_DENIED" }, 403);
-    const registry = await loadOperatorRegistry(createServiceRoleClient(), owned.data);
+    // Use the same authenticated scope discovery as /automacao. A secondary
+    // balance read must not drift into a stricter ownership branch than Home.
+    const scope = await db.from("strategies").select("product_id")
+      .eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
+    if (scope.error || !scope.data) return json({ error: "COINOPS_BALANCE_SCOPE_DENIED" }, 403);
+    const registry = await loadOperatorRegistry(db, {
+      product_id: scope.data.product_id, tenant_id: tenantId, user_id: user.id,
+    });
     const accountId = new URL(request.url).searchParams.get("account");
     if (!accountId || accountId !== "ALL" && !registry.accounts.some((account) => account.id === accountId))
       return json({ error: "COINOPS_BALANCE_ACCOUNT_SCOPE_DENIED" }, 403);
@@ -36,10 +40,20 @@ export async function GET(request: Request) {
       if (!groups.has(key)) groups.set(key, { accountId: engine.exchange_account_id,
         currency: engine.quote_asset, engineId: engine.id });
     }
+    // Resolve each account/shard once and bound this optional UI read. A slow
+    // balance collection never blocks Home and never triggers a trading action.
+    const targets = new Map<string, ReturnType<typeof resolveExecutorForAccount>>();
+    const resolve: typeof resolveExecutorForAccount = (operatorId, exchangeAccountId) => {
+      const key = `${operatorId}:${exchangeAccountId}`;
+      if (!targets.has(key)) targets.set(key, resolveExecutorForAccount(operatorId, exchangeAccountId));
+      return targets.get(key)!;
+    };
+    const fetchState: typeof fetch = (url, init) => fetch(url, { ...init,
+      signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : [])]) });
     const observed = await Promise.allSettled([...groups.values()].map(async (group) => {
       const context = resolveEngineContext(registry, { environment: "REAL",
         exchange_account_id: group.accountId, trading_engine_id: group.engineId });
-      const state = await readLiveExecutorState(context);
+      const state = await readLiveExecutorState(context, fetchState, resolve);
       const quote = state.balances.find((item) => item.asset === group.currency);
       if (!quote || !Number.isFinite(quote.free) || quote.free < 0) throw new Error("COINOPS_BALANCE_UNAVAILABLE");
       return { accountId: group.accountId, currency: group.currency,
