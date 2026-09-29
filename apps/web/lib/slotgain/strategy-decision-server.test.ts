@@ -76,6 +76,8 @@ function database(legacy = false) {
       is(key: string, value: unknown) { predicates.push((row) => row[key] === value); return builder; },
       in(key: string, values: unknown[]) { predicates.push((row) => values.includes(row[key])); return builder; },
       order() { return builder; },
+      range() { return builder; },
+      abortSignal() { return builder; },
       single() { single = true; return builder; },
       maybeSingle() { single = true; return builder; },
       then(resolve: (value: unknown) => unknown) {

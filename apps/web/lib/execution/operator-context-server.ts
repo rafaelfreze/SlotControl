@@ -5,21 +5,40 @@ import { assertDomainRegistry, resolveEngineContext, visibleOperatorRegistry, ty
   type OperatorScope } from "./operator-context";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
+const REGISTRY_READ_TIMEOUT_MS = 5_000;
+
+function registryFailure(stage: string, startedAt: number, deadline: AbortSignal,
+  error: unknown, publicCode: string): never {
+  const providerCode = error && typeof error === "object" && "code" in error && typeof error.code === "string"
+    ? error.code.trim() : "";
+  const code = providerCode || (deadline.aborted ? "TIMEOUT" : "UNKNOWN");
+  console.error("COINOPS_OPERATOR_REGISTRY_READ_FAILED", {
+    stage, code, duration_ms: Math.max(0, Date.now() - startedAt),
+  });
+  throw new Error(publicCode);
+}
 
 /** Accepts authenticated/RLS or service clients, but never discovers a user or
  * tenant from browser IDs. Callers supply their already authenticated scope. */
 export async function loadOperatorRegistry(client: Client, scope: OperatorScope): Promise<DomainRegistry> {
+  const startedAt = Date.now();
+  // One deadline covers the complete critical read. A degraded dependency must
+  // fail closed quickly instead of leaving the Home waiting for minutes.
+  const deadline = AbortSignal.timeout(REGISTRY_READ_TIMEOUT_MS);
   const op = await client.from("operators").select("id,product_id,tenant_id,user_id,status,kill_switch")
-    .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id).single();
-  if (op.error || !op.data) throw new Error("COINOPS_OPERATOR_SCOPE_UNAVAILABLE");
+    .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
+    .abortSignal(deadline).single();
+  if (op.error || !op.data)
+    registryFailure("operators", startedAt, deadline, op.error, "COINOPS_OPERATOR_SCOPE_UNAVAILABLE");
   const operatorId = op.data.id;
   const pageSize = 500;
   async function pages(table: "exchange_accounts" | "trading_engines", columns: string) {
     const rows: Record<string, unknown>[] = [];
     for (let offset = 0; ; offset += pageSize) {
       const result = await client.from(table).select(columns).eq("operator_id", operatorId)
-        .order("id").range(offset, offset + pageSize - 1);
-      if (result.error || !result.data) throw new Error("COINOPS_OPERATOR_REGISTRY_UNAVAILABLE");
+        .order("id").range(offset, offset + pageSize - 1).abortSignal(deadline);
+      if (result.error || !result.data)
+        registryFailure(table, startedAt, deadline, result.error, "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE");
       rows.push(...result.data as unknown as Record<string, unknown>[]);
       if (result.data.length < pageSize) return rows;
     }

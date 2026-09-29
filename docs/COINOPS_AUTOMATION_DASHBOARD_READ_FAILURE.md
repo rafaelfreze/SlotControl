@@ -23,3 +23,9 @@ O read-model carregava motores REAL mesmo na aba Testnet e iniciava leituras de 
 5. Se o timeout persistir na aba REAL, medir plano/RLS e carga da consulta em diagnóstico read-only antes de propor índice, migration ou mudança de política. Nunca desativar RLS em Production para testar.
 
 Regressões: `apps/web/app/automacao/operator-presentation-server.test.ts` cobre isolamento de aba, limite de concorrência e falha fechada por motor. Smoke publicado deve abrir a aba Testnet e a REAL em sessão autenticada, sem clicar controles financeiros, e conferir ausência do error boundary e dos timeouts correlatos nos logs.
+
+## Registry e retomada do PWA (29/09/2026)
+
+O registry (`operators`, `exchange_accounts` e `trading_engines`) é uma dependência crítica e continua fail-closed: sem identidade operacional confirmada, a Home não exibe dados anteriores como atuais. As três leituras compartilham um prazo total de 5 segundos; ao excedê-lo, a requisição é abortada e registra somente `stage`, código sanitizado e duração em `COINOPS_OPERATOR_REGISTRY_READ_FAILED`. Nunca registrar payload, conta, credencial ou resposta bruta do provedor.
+
+Depois de uma falha transitória, uma aba/PWA já aberta pode continuar exibindo o error boundary mesmo com Production recuperada. A tela executa uma única tentativa automática por aba e mantém o botão manual se a falha persistir. Não usar intervalo, reload contínuo, cache de dados operacionais nem retry financeiro. O teste `operator-context-server-timeout.test.ts` cobre o prazo compartilhado e o erro sanitizado; `error-recovery.test.ts` impede regressão para retry infinito.

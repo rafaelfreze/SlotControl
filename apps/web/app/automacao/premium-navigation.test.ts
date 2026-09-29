@@ -36,6 +36,12 @@ test("desktop navigation shares the top context row while mobile order stays exp
   assert.match(styles, /\.px-mobile-sticky-header \.px-toolbar\{order:3;/);
 });
 
+test("mobile account search does not trigger iOS zoom and both scope controls stay aligned", () => {
+  assert.match(styles, /\.px-mobile-sticky-header \.px-scope-filters\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(styles, /\.px-account-selector-trigger,\.px-scope-filters select\{width:100%;height:44px;min-height:44px;max-width:100%\}/);
+  assert.match(styles, /\.px-account-selector-popover input\{font-size:16px\}/);
+});
+
 test("shared quotes render once above infrastructure with only two USDT markets and no heading copy", () => {
   const dashboard = source.indexOf('<main className="px-dashboard">');
   const quotes = source.indexOf('className="px-market-overview"');
