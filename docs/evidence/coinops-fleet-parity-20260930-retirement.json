@@ -1,0 +1,102 @@
+{
+  "status": "FLEET_PARITY_PASS",
+  "target_sha": "0681027cc25985455a77893495db6d1b40d5301d",
+  "checked_at": "2026-09-30T22:04:17.631Z",
+  "verified": 2,
+  "total": 2,
+  "shards": [
+    {
+      "shard_id": "executor-01",
+      "ip": "46.101.104.48",
+      "status": "PASS",
+      "reasons": [],
+      "actual_sha": "0681027cc25985455a77893495db6d1b40d5301d",
+      "observed_at": "2026-09-30T22:04:13.639Z",
+      "runtime_sha256": "84f60be26e7b2a725ee004f88749c31f83ca974b96a23f1668b9fe0bc1d15e48"
+    },
+    {
+      "shard_id": "executor-02",
+      "ip": "164.90.223.159",
+      "status": "PASS",
+      "reasons": [],
+      "actual_sha": "0681027cc25985455a77893495db6d1b40d5301d",
+      "observed_at": "2026-09-30T22:04:18.104Z",
+      "runtime_sha256": "84f60be26e7b2a725ee004f88749c31f83ca974b96a23f1668b9fe0bc1d15e48"
+    }
+  ],
+  "git": {
+    "head_sha": "2a716e99761522c68605e01f22d0df8ba3e2c371",
+    "cached_main_sha": "2a716e99761522c68605e01f22d0df8ba3e2c371"
+  },
+  "evidence": [
+    {
+      "shard_id": "executor-01",
+      "ip": "46.101.104.48",
+      "observed_at": "2026-09-30T22:04:13.639Z",
+      "probe_contract_version": 1,
+      "node_version": "v24.21.0",
+      "runtime_sha256": "84f60be26e7b2a725ee004f88749c31f83ca974b96a23f1668b9fe0bc1d15e48",
+      "public_file_count": 23,
+      "runtime_root": "/opt/coinops/source",
+      "process_identity_verified": true,
+      "code_loaded_evidence": "DISK_UNCHANGED_SINCE_PROCESS_START",
+      "newest_code_change_at": "2026-09-30T21:50:17.355Z",
+      "service": {
+        "active_state": "active",
+        "sub_state": "running",
+        "pid": 145363,
+        "user": "coinops-executor",
+        "group": "coinops-executor",
+        "uid": 999,
+        "started_at": "Wed 2026-09-30 21:50:18.147733 UTC",
+        "protect_system": "strict",
+        "no_new_privileges": "yes",
+        "private_tmp": "yes"
+      },
+      "health": {
+        "healthy": true,
+        "executor_shard_id": "executor-01",
+        "actual_executor_version": "0681027cc25985455a77893495db6d1b40d5301d",
+        "clock": "2026-09-30T22:04:13.607Z",
+        "egress_ipv4": "46.101.104.48",
+        "egress_ipv4_verified": true
+      }
+    },
+    {
+      "shard_id": "executor-02",
+      "ip": "164.90.223.159",
+      "observed_at": "2026-09-30T22:04:18.104Z",
+      "probe_contract_version": 1,
+      "node_version": "v24.21.0",
+      "runtime_sha256": "84f60be26e7b2a725ee004f88749c31f83ca974b96a23f1668b9fe0bc1d15e48",
+      "public_file_count": 23,
+      "runtime_root": "/opt/coinops/releases/0681027cc25985455a77893495db6d1b40d5301d",
+      "process_identity_verified": true,
+      "code_loaded_evidence": "DISK_UNCHANGED_SINCE_PROCESS_START",
+      "newest_code_change_at": "2026-09-30T21:52:30.301Z",
+      "service": {
+        "active_state": "active",
+        "sub_state": "running",
+        "pid": 70221,
+        "user": "coinops-executor",
+        "group": "coinops-executor",
+        "uid": 997,
+        "started_at": "Wed 2026-09-30 21:52:31.597857 UTC",
+        "protect_system": "strict",
+        "no_new_privileges": "yes",
+        "private_tmp": "yes"
+      },
+      "health": {
+        "healthy": true,
+        "executor_shard_id": "executor-02",
+        "actual_executor_version": "0681027cc25985455a77893495db6d1b40d5301d",
+        "clock": "2026-09-30T22:04:18.070Z",
+        "egress_ipv4": "164.90.223.159",
+        "egress_ipv4_verified": true
+      }
+    }
+  ],
+  "registry_source": "official Supabase connector; registry reread unchanged",
+  "admission_preflight": "ADMISSION_PREFLIGHT_PASS",
+  "certified_at": "2026-09-30T22:04:42Z"
+}

@@ -58,8 +58,11 @@ export async function GET() {
       const admission = decision?.plus_one;
       const dualEngineAdmission = decision?.plus_two;
       const warningsMuted = mutedPairs.has(`${auth.operatorId}:${shard.id}`);
-      return { id: shard.id, state: admission?.executor_state ?? assessment.state,
-        action: admission?.scale_action ?? assessment.action, warningsMuted,
+      // Infrastructure health is independent of onboarding certification,
+      // the 15-sample admission window and its persisted recovery latch.
+      // A denied/unknown admission must never imply a healthy process is offline.
+      return { id: shard.id, state: assessment.state,
+        action: assessment.action, warningsMuted,
         egressIp: String(shard.egress_ipv4), reservedWeight,
         binanceWeightCurrent: sample?.binance_weight_current ?? null,
         binanceWeightAverage: sample?.binance_weight_average ?? null,

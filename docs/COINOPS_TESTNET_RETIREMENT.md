@@ -38,11 +38,21 @@ no menu e no cadastro de contas. `testnet-policy.ts` é a política versionada;
 
 ## Limite de infraestrutura
 
-Esta entrega é web/control plane, sem reiniciar os executores LIVE. O payload
-de capacidade do runtime já publicado ainda pode incluir a sonda pública
-Testnet isolada. Ela não avança ciclos nem envia ordens, e sua evidência deixa
-de ser processada/persistida pelo coletor web. Remover essa sonda do runtime
-exige uma entrega própria com rollout sequencial e FLEET_PARITY_PASS.
+A primeira entrega retirou Testnet do web/control plane, sem restart. A
+entrega complementar de runtime foi publicada em 30/09 às 21:50Z no 01 e
+21:52Z no 02, pelos scripts canônicos, preflight como usuário systemd e
+rollback compatível. Ambos executam `0681027cc25985455a77893495db6d1b40d5301d`,
+Node `v24.21.0`, fingerprint de 23 arquivos
+`84f60be26e7b2a725ee004f88749c31f83ca974b96a23f1668b9fe0bc1d15e48`.
+FLEET_PARITY_PASS 2/2 às 21:53:50Z, registry relido sem mudança; nova prova
+às 22:04Z e ADMISSION_PREFLIGHT_PASS persistido. Não foram copiados secrets,
+vaults ou estado; a janela pública de versões termina às 22:15:24Z.
+
+O gate de admissão e a saúde do processo são sinais distintos. Durante a
+janela de amostragem/recuperação, cadastro pode ficar NÃO sem o executor
+estar OFFLINE. A API apresenta saúde pela telemetria, mantendo decisões
+de +1/+2 exclusivamente do RPC persistido. Não encurtar a histerese nem
+fabricar amostras para ocultar um indicador. LIVE, ordens e regras não mudam.
 
 ## Validação segura
 

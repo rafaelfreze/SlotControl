@@ -47,6 +47,16 @@ test("weight, resources, backlog and heartbeat suggest distinct actions", () => 
   assert.equal(assessShardCapacity(metrics({ heartbeatAt: new Date(now - 121_000).toISOString() }),
     undefined, now).state, "OFFLINE");
 });
+
+test("fresh post-deploy telemetry proves health before the admission window matures", () => {
+  for (const shardId of ["executor-01", "executor-02", "executor-03"]) {
+    const warming = metrics({ shardId, weightSampleCount: 2,
+      binanceWeightCurrent: 2500, binanceWeightAverage: 2400, binanceWeightPeak: 2700 });
+    assert.equal(assessShardCapacity(warming, undefined, now).state, "HEALTHY");
+    assert.equal(assessShardCapacity({ ...warming, binanceWeightCurrent: 5500 }, undefined, now).state, "CAPACITY_LIMIT");
+    assert.equal(assessShardCapacity({ ...warming, heartbeatAt: new Date(now - 121_000).toISOString() }, undefined, now).state, "OFFLINE");
+  }
+});
 test("one account cannot have two primary shards", () => {
   assert.equal(assertUniquePrimaryShard([{ accountId: "rafael", shardId: "01" },
     { accountId: "rafael", shardId: "01" }]).size, 1);
