@@ -12,6 +12,10 @@ headroom, coleta, cron, Watchdog server-side, motores, ordens ou credenciais.
   saudável tiver espaço, todos são candidatos ao resumo limitado a cinco.
 - O resumo informa quando não contém todos os executores. A observação
   completa continua alimentando a sincronização; não é truncada na coleta.
+- Nome/estado do executor usam 13 px, proporcionais ao monitoramento lateral.
+  A linha inteira abre/fecha os detalhes por clique, toque ou Enter/Espaço,
+  com foco visível e estado expandido acessível. Controles dos detalhes
+  permanecem separados desse botão; abrir detalhes não salva preferências.
 - Contas em blocos de moeda nativa, sem truncar nomes/valores. Nome, estado,
   motores ativos, ganhos, alertas, exposição e P&L permanecem disponíveis.
   Primeiro lote de 30, com mais 30 sob demanda, inclusive ao voltar a Todos.

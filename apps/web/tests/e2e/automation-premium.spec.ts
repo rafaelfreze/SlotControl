@@ -774,6 +774,46 @@ test("capacity admission exposes exact math and reserve without overflow or live
   await noSideEffects(page, audit);
 });
 
+test("executor tem texto legível e linha inteira clicável por mouse toque e teclado", async ({ page }, testInfo) => {
+  const shard = { id: "executor-01", state: "HEALTHY", action: "NONE", accountCount: 4, engineCount: 7,
+    observedAt: AUTOMATION_FIXTURE_NOW, heartbeatAt: AUTOMATION_FIXTURE_NOW, alerts: [],
+    canAddEngine: true, canAddTwoEngineAccount: false, binanceWeightCurrent: 1800,
+    binanceWeightAverage: 1800, binanceWeightPeak: 2400, binanceLimit: 6000,
+    reservedWeight: 0, egressIp: "192.0.2.1" };
+  const audit = await mount(page, "live", 1920, 1080, automationOperatorFixture(), { shards: [shard] });
+  const summary = page.locator("#infra-executor-01 .px-capacity-summary");
+  const details = page.locator("#infra-details-executor-01");
+  for (const width of [1920, 1280, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const typography = await summary.locator("strong").evaluate((element) => ({
+      size: parseFloat(getComputedStyle(element).fontSize),
+      clipped: element.scrollWidth > element.clientWidth + 1,
+    }));
+    expect(typography.size).toBe(13);
+    expect(typography.clipped).toBe(false);
+    const row = await summary.boundingBox();
+    const card = await page.locator("#infra-executor-01").boundingBox();
+    expect(row?.width).toBe(card?.width);
+    expect(row?.height ?? 0).toBeGreaterThanOrEqual(40);
+    // Click the name itself, not only the old chevron target.
+    await summary.locator("strong").click();
+    await expect(details).toBeVisible();
+    await expect(summary).toHaveAttribute("aria-expanded", "true");
+    await expect(summary).toHaveAttribute("aria-controls", "infra-details-executor-01");
+    expect(await summary.locator("button, a, input").count()).toBe(0);
+    await summary.press("Space");
+    await expect(details).toBeHidden();
+    await summary.press("Enter");
+    await expect(details).toBeVisible();
+    // Availability text is also inside the same clickable target.
+    await summary.locator(".px-capacity-availability").click();
+    await expect(details).toBeHidden();
+    expect((await geometry(page)).overflow).toBe(0);
+    if (width === 1920 || width === 390) await screenshot(page, testInfo, `executor-readable-${width}`);
+  }
+  await noSideEffects(page, audit);
+});
+
 test("desktop inicial alinha seletores, mostra espaço disponível e reúne monitoramento à direita", async ({ page }, testInfo) => {
   const shard = { id: "executor-01", state: "HEALTHY", action: "OBSERVE",
     binanceWeightCurrent: 642, binanceWeightAverage: 654, binanceWeightPeak: 748,

@@ -398,14 +398,19 @@
 .px-capacity-title small,.px-capacity-remainder{font-size:9px;color:var(--px-muted)}
 .px-capacity--overview .px-capacity-shard{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px;min-height:25px;padding:0;border:0;border-radius:0;background:none;box-shadow:none}
 .px-capacity--overview .px-capacity-heading{display:block;min-width:0}
-.px-capacity--overview .px-capacity-heading strong{display:block;font-size:10px;line-height:1.4;overflow-wrap:anywhere}
+.px-capacity--overview .px-capacity-heading strong{display:block;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
 .px-capacity--overview .px-capacity-heading>span{display:none}
-.px-capacity-availability{font-size:9px;white-space:nowrap;color:#ffd166}
+.px-capacity-availability{font-size:11px;white-space:nowrap;color:#ffd166}
 .px-capacity-availability[data-available="true"]{color:#58d7b4}
-.px-capacity--overview .px-capacity-expand{align-self:center;margin:0;padding:2px 5px;font-size:17px;min-width:24px;min-height:24px}
+.px-capacity .px-capacity-summary{display:grid;grid-column:1/-1;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;width:100%;min-width:0;min-height:40px;margin:0;padding:5px 6px;border-radius:5px;text-align:left;white-space:normal;font:inherit;color:inherit;cursor:pointer}
+.px-capacity .px-capacity-summary:hover{background:rgba(119,205,233,.08)}
+.px-capacity .px-capacity-summary:focus-visible{outline:2px solid #77cde9;outline-offset:2px}
+.px-capacity--overview .px-capacity-summary{grid-template-columns:minmax(0,1fr) auto auto}
+.px-capacity-toggle-label{font-size:11px;color:#77cde9;white-space:nowrap}
+.px-capacity--overview .px-capacity-toggle-label{font-size:20px;line-height:1}
 .px-capacity--overview .px-capacity-details{grid-column:1/-1;flex-direction:column;align-items:stretch;overflow-wrap:anywhere;font-size:11px}
 .px-capacity--overview .px-capacity-notice{min-height:0;padding:0;border:0;background:none}
-@media(max-width:1199px){.px-capacity--overview{min-height:0;height:auto}.px-capacity--overview .px-capacity-shard{min-height:32px}.px-capacity--overview .px-capacity-heading strong{font-size:12px}}
+@media(max-width:1199px){.px-capacity--overview{min-height:0;height:auto}.px-capacity--overview .px-capacity-shard{min-height:40px}}
 
 /* Compact native-currency account tiles: 30 per batch, never truncate values. */
 .px-account-grid--list{grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}

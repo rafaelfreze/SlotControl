@@ -69,18 +69,20 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
       ? <p className="px-panel px-capacity-notice" role="status">Telemetria indisponível. Novas ativações ficam bloqueadas; motores existentes continuam operando.</p>
       : visibleShards?.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}
         data-attention={executorNeedsAttention(shard, observedNow)}>
-        <div className="px-capacity-heading"><strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
-          <span>{shard.accountCount} contas · {shard.engineCount} motores</span>
-          {!overview && executorNeedsAttention(shard, observedNow) && ["HEALTHY", "OBSERVE"].includes(shard.state) && !shard.alerts.length
-            ? <small role="status">Telemetria sem confirmação recente.</small> : null}</div>
-        {overview ? <span className="px-capacity-availability" data-available={!executorNeedsAttention(shard, observedNow) && shard.canAddEngine}
-          title={executorNeedsAttention(shard, observedNow) ? "Verificar saúde e telemetria do executor" : shard.canAddEngine ? "Admissão disponível para +1 motor" : "Sem espaço para nova admissão"}>
-          {executorNeedsAttention(shard, observedNow) ? "Verificar" : shard.canAddEngine ? "+1 SIM" : "+1 NÃO"}</span> : null}
-        <button type="button" className="px-capacity-expand" aria-expanded={expandedShard === shard.id}
+        <button type="button" className="px-capacity-summary px-capacity-expand" aria-expanded={expandedShard === shard.id}
           aria-controls={`infra-details-${shard.id}`}
           aria-label={`${expandedShard === shard.id ? "Ocultar" : "Ver"} detalhes de ${shard.id.replace("executor-", "Executor ")}`}
           onClick={() => setExpandedShard((current) => current === shard.id ? null : shard.id)}>
-          {overview ? expandedShard === shard.id ? "−" : "›" : expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</button>
+          <span className="px-capacity-heading"><strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
+            <span>{shard.accountCount} contas · {shard.engineCount} motores</span>
+            {!overview && executorNeedsAttention(shard, observedNow) && ["HEALTHY", "OBSERVE"].includes(shard.state) && !shard.alerts.length
+              ? <small role="status">Telemetria sem confirmação recente.</small> : null}</span>
+          {overview ? <span className="px-capacity-availability" data-available={!executorNeedsAttention(shard, observedNow) && shard.canAddEngine}
+            title={executorNeedsAttention(shard, observedNow) ? "Verificar saúde e telemetria do executor" : shard.canAddEngine ? "Admissão disponível para +1 motor" : "Sem espaço para nova admissão"}>
+            {executorNeedsAttention(shard, observedNow) ? "Verificar" : shard.canAddEngine ? "+1 SIM" : "+1 NÃO"}</span> : null}
+          <span className="px-capacity-toggle-label" aria-hidden="true">
+            {overview ? expandedShard === shard.id ? "−" : "›" : expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</span>
+        </button>
         <div className={`px-capacity-details${expandedShard === shard.id ? " is-expanded" : ""}`} id={`infra-details-${shard.id}`}>
         <button type="button" className="px-button px-capacity-mute" disabled={mutating === shard.id}
           onClick={() => void toggleWarnings(shard)}>{shard.warningsMuted
