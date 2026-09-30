@@ -199,9 +199,11 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     return () => abort.abort();
   }, []);
   useEffect(() => {
+    setQuoteBalances(null);
+    // Free balances belong to account details, never the all-accounts home.
+    if (selection.accountId === "ALL") return;
     if (view !== "live" && view !== "overview") return;
     const abort = new AbortController();
-    setQuoteBalances(null);
     fetch(`/api/coinops-live-balances?account=${encodeURIComponent(selection.accountId)}`, {
       cache: "no-store", credentials: "same-origin",
       signal: AbortSignal.any([abort.signal, AbortSignal.timeout(12_000)]),
@@ -334,7 +336,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
         </button>;
       })}</div>{rankedAccounts.length > accountLimit ? <button type="button" className="px-text-button" onClick={() => setAccountLimit(accountLimit + 30)}>Ver mais contas ({rankedAccounts.length - accountLimit} restantes)</button> : null}</section> : null}
       {view === "overview" ? <section className="px-overview-grid" aria-label="Resumo dos três ambientes">{overview.map(({ env, assets: group }) => { const groupPaused = env !== "REAL" && group.length > 0 && group.every((item) => item.engineStatus === "PAUSED"); return <a className={`px-panel px-overview-card px-env-${env.toLowerCase()}`} key={env} href={viewHref(env === "REAL" ? "live" : env === "SHADOW" ? "shadow" : "testnet")}><header><h2>{env === "REAL" ? "Real · LIVE" : env === "SHADOW" ? "Shadow" : "Testnet"}</h2><span className={`px-badge ${!groupPaused && group.some((item) => !item.health.healthy) ? "px-badge--warning" : ""}`}>{groupPaused ? "PAUSADO" : group.every((item) => item.health.healthy) ? "OPERACIONAL" : "ACOMPANHAR"}</span></header><strong>{premiumNativeGroups(group).map((native) => `${native.accountDisplayName} · ${money(premiumNativeTotal(native.engines, "capital"), native.currency)}`).join(" · ") || "Sem motores neste filtro"}</strong><small>{env === "REAL" ? "Capital lógico autorizado" : "Capital lógico · sem dinheiro real"}</small><div>{group.map((item) => <span key={item.engineId}><AssetIcon asset={item.asset} /><b>{item.asset}</b>{item.openCount} OPEN · {item.gains ?? "—"} gains<PremiumIcon name="arrow" /></span>)}</div><p className="px-caption">{groupPaused ? "Execução pausada · histórico preservado" : env === "REAL" ? premiumNativeGroups(group).map((native) => `${native.accountDisplayName} · Exposição ${money(premiumNativeTotal(native.engines, "exposure"), native.currency)} · P&L ${money(premiumNativeTotal(native.engines, "realizedPnl"), native.currency)}`).join(" · ") : env === "TESTNET" ? `${group.reduce((sum, item) => sum + item.orders.filter((order) => order.resident).length, 0)} ordens residentes · fundos fictícios` : "Execução virtual · sem ordens na Binance"}</p></a>; })}</section> : null}
-      {view !== "overview" ? <section className="px-kpis" aria-label={`Indicadores ${labels[view]}`}>
+      {view !== "overview" && !allAccounts ? <section className="px-kpis" aria-label={`Indicadores ${labels[view]}`}>
         <Metric label={environment === "REAL" ? "Saldo livre · Binance" : "Capital lógico livre"} value={environment === "REAL" ? freeQuoteValue : nativeMoney("freeCapital")} note={environment === "REAL" ? "Saldo da conta ≠ limite CoinOps" : "Virtual · sem saldo real"} icon="wallet" />
         <Metric label="Capital em posições" value={nativeValues("committed")} note={`${positions.length} posições próprias`} icon="orders" />
         <Metric label="P&L realizado · acumulado" value={nativeValues("realizedPnl")} note={groups.length > 1 ? "Valores nativos · sem conversão" : `Aberto ${nativeMoney("openPnl")}`} icon="chart" tone={tones(nativeTotal("realizedPnl"))} />

@@ -641,8 +641,7 @@ for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${w
   await expect(page.getByText("Cotações por moeda", { exact: true })).toHaveCount(0);
   await expect(page.locator(".px-account-engine-row")).toHaveCount(8);
   await expect(page.locator(".px-asset")).toHaveCount(0);
-  await expect(page.locator(".px-kpis")).toContainText("USDT");
-  await expect(page.locator(".px-kpis")).toContainText("R$");
+  await expect(page.locator(".px-kpis")).toHaveCount(0);
   for (const viewport of [320, 360, 375, 390, 430, 1024, 1440]) {
     await page.setViewportSize({ width: viewport, height: 900 });
     expect((await geometry(page)).overflow).toBe(0);
@@ -722,13 +721,14 @@ test("infraestrutura resume executores em linhas expansíveis no mobile e deskto
   await page.locator("#infra-executor-01 .px-capacity-expand").click();
   await expect(page.locator("#infra-details-executor-01")).toBeVisible();
   await expect(page.locator("#infra-details-executor-02")).toBeHidden();
+  await page.keyboard.press("Escape");
   await page.locator("#infra-executor-02 .px-capacity-expand").click();
   await expect(page.locator("#infra-details-executor-01")).toBeHidden();
   await expect(page.locator("#infra-details-executor-02")).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(page.locator("#infra-details-executor-01")).toBeHidden();
   await expect(page.locator("#infra-details-executor-02")).toBeVisible();
-  await page.locator("#infra-executor-02 .px-capacity-expand").click();
+  await page.getByRole("dialog").getByRole("button", { name: "Fechar", exact: true }).click();
   await expect(page.locator(".px-capacity-details").first()).toBeHidden();
   await expect(page.locator(".px-capacity-details").last()).toBeHidden();
   const infrastructure = await page.locator("#coinops-infrastructure").boundingBox();
@@ -795,18 +795,27 @@ test("executor tem texto legível e linha inteira clicável por mouse toque e te
     const card = await page.locator("#infra-executor-01").boundingBox();
     expect(row?.width).toBe(card?.width);
     expect(row?.height ?? 0).toBeGreaterThanOrEqual(40);
+    const originalTop = await page.locator(".px-overview-top").boundingBox();
     // Click the name itself, not only the old chevron target.
     await summary.locator("strong").click();
     await expect(details).toBeVisible();
     await expect(summary).toHaveAttribute("aria-expanded", "true");
     await expect(summary).toHaveAttribute("aria-controls", "infra-details-executor-01");
+    await expect(summary).toHaveAttribute("aria-haspopup", "dialog");
+    await expect(page.getByRole("dialog")).toHaveAccessibleName("Executor 01 · HEALTHY");
+    expect(await page.locator(".px-overview-top").boundingBox()).toEqual(originalTop);
     expect(await summary.locator("button, a, input").count()).toBe(0);
-    await summary.press("Space");
+    await page.keyboard.press("Escape");
     await expect(details).toBeHidden();
+    await expect(summary).toBeFocused();
     await summary.press("Enter");
     await expect(details).toBeVisible();
+    await page.getByRole("dialog").getByRole("button", { name: "Fechar", exact: true }).click();
+    await expect(summary).toBeFocused();
     // Availability text is also inside the same clickable target.
     await summary.locator(".px-capacity-availability").click();
+    await expect(details).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(details).toBeHidden();
     expect((await geometry(page)).overflow).toBe(0);
     if (width === 1920 || width === 390) await screenshot(page, testInfo, `executor-readable-${width}`);
@@ -887,13 +896,21 @@ test("desktop inicial prioriza falha à esquerda e mantém detalhes e mobile ace
   await screenshot(page, testInfo, "desktop-attention-only");
   await page.locator("#infra-executor-02 .px-capacity-expand").click();
   await expect(page.locator("#infra-details-executor-02")).toBeVisible();
-  await page.getByRole("region", { name: "Watchdog CoinOps" }).locator("summary").click();
-  await expect(page.locator(".px-watchdog-details")).toContainText("indisponível");
   for (const width of [320, 390, 1024]) {
     await page.setViewportSize({ width, height: 900 });
     expect((await geometry(page)).overflow).toBe(0);
     await expect(page.locator("#infra-details-executor-02")).toBeVisible();
   }
+  await page.keyboard.press("Escape");
+  const topBeforeWatchdog = await page.locator(".px-overview-top").boundingBox();
+  const watchdogButton = page.locator(".px-watchdog-summary");
+  await watchdogButton.click();
+  await expect(page.getByRole("dialog", { name: "Watchdog · INDISPONÍVEL", exact: true })).toBeVisible();
+  await expect(page.locator(".px-watchdog-details")).toContainText("indisponível");
+  expect(await page.locator(".px-overview-top").boundingBox()).toEqual(topBeforeWatchdog);
+  await page.getByRole("dialog").getByRole("button", { name: "Fechar", exact: true }).click();
+  await expect(watchdogButton).toBeFocused();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await noSideEffects(page, audit);
 });
 
@@ -941,6 +958,33 @@ test("home compacta limita cinco executores e trinta contas por lote", async ({ 
   }
   await page.getByRole("button", { name: "Ver mais contas (1 restantes)" }).click();
   await expect(page.locator(".px-account-grid--list .px-account-card")).toHaveCount(31);
+  await noSideEffects(page, audit);
+});
+
+for (const width of [390, 1440]) test(`indicadores financeiros somente dentro da conta em ${width}px`, async ({ page }, testInfo) => {
+  const audit = await mount(page, "live", width, 900, automationOperatorFixture());
+  const balanceReads = () => page.evaluate(() =>
+    (window as unknown as { __fixtureReads: string[] }).__fixtureReads.filter((url) => url.startsWith("/api/coinops-live-balances")));
+  await expect(page.locator(".px-kpis")).toHaveCount(0);
+  await expect(page.locator(".px-account-card")).toHaveCount(2);
+  expect(await balanceReads()).toEqual([]);
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  await page.getByRole("option").filter({ hasText: "Rafael Demo" }).click();
+  const metrics = page.locator(".px-kpis .px-metric");
+  await expect(metrics).toHaveCount(5);
+  await expect(metrics.locator(":scope > span")).toHaveText([
+    "Saldo livre · Binance", "Capital em posições", "P&L realizado · acumulado", "Exposição total", "Limites por conta / moeda",
+  ]);
+  expect(await balanceReads()).toEqual([`/api/coinops-live-balances?account=${ACCOUNT_A}`]);
+  await page.getByLabel("Mercado", { exact: true }).selectOption("BTCUSDT");
+  await expect(page.locator(".px-kpis")).toContainText("USDT");
+  await expect(page.locator(".px-kpis")).not.toContainText("R$");
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  await page.getByRole("option", { name: "Todos", exact: true }).click();
+  await expect(page.locator(".px-kpis")).toHaveCount(0);
+  expect((await balanceReads()).some((url) => url.includes("account=ALL"))).toBe(false);
+  expect((await geometry(page)).overflow).toBe(0);
+  await screenshot(page, testInfo, `home-account-only-metrics-${width}`);
   await noSideEffects(page, audit);
 });
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ExecutorObservation } from "./automation-executor-sync";
 import { executorNeedsAttention, selectOverviewExecutors } from "./capacity-card-presentation";
+import { PremiumDrawer } from "./premium-primitives";
 import { explainAdmission, pressureExplanation, type AdmissionExplanation } from "@/lib/coinops-capacity/admission-explanation";
 
 type Shard = { id: string; state: string; action: string; binanceWeightCurrent: number | null;
@@ -70,6 +71,7 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
       : visibleShards?.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}
         data-attention={executorNeedsAttention(shard, observedNow)}>
         <button type="button" className="px-capacity-summary px-capacity-expand" aria-expanded={expandedShard === shard.id}
+          aria-haspopup="dialog"
           aria-controls={`infra-details-${shard.id}`}
           aria-label={`${expandedShard === shard.id ? "Ocultar" : "Ver"} detalhes de ${shard.id.replace("executor-", "Executor ")}`}
           onClick={() => setExpandedShard((current) => current === shard.id ? null : shard.id)}>
@@ -83,7 +85,9 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
           <span className="px-capacity-toggle-label" aria-hidden="true">
             {overview ? expandedShard === shard.id ? "−" : "›" : expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</span>
         </button>
-        <div className={`px-capacity-details${expandedShard === shard.id ? " is-expanded" : ""}`} id={`infra-details-${shard.id}`}>
+        <PremiumDrawer open={expandedShard === shard.id} title={`${shard.id.replace("executor-", "Executor ")} · ${shard.state}`}
+          onClose={() => setExpandedShard(null)}>
+        <div className="px-capacity-details is-expanded" id={`infra-details-${shard.id}`}>
         <button type="button" className="px-button px-capacity-mute" disabled={mutating === shard.id}
           onClick={() => void toggleWarnings(shard)}>{shard.warningsMuted
             ? "Reativar avisos de capacidade" : "Ocultar avisos de capacidade"}</button>
@@ -122,6 +126,7 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
           ? "Telemetria insuficiente; admissão indisponível." : "Novas ativações aguardam os critérios acima; motores existentes não são pausados."}</small> : null}
         {shard.alerts.map((alert) => <small key={alert.code} role="status">{alert.code}</small>)}
         </div>
+        </PremiumDrawer>
       </div>)}
     {overview && shards && shards.length > (visibleShards?.length ?? 0)
       ? <small className="px-capacity-remainder">{visibleShards?.length} de {shards.length} executores neste resumo</small> : null}

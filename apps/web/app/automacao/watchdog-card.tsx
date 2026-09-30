@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PremiumDrawer } from "./premium-primitives";
 
 type Watchdog = { status: string; checkedAt: string | null;
   activeCriticalAlerts: number;
@@ -13,6 +14,7 @@ export function WatchdogCard({ attentionOnly = false }: { attentionOnly?: boolea
   const [status, setStatus] = useState<Watchdog | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [now, setNow] = useState(Date.now);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   useEffect(() => {
     let active = true;
     const refresh = () => fetch("/api/coinops-watchdog", { cache: "no-store", credentials: "same-origin" })
@@ -35,8 +37,9 @@ export function WatchdogCard({ attentionOnly = false }: { attentionOnly?: boolea
   // Keep collection mounted; account details expose only actual failures.
   if (attentionOnly && (loadState === "loading" || displayStatus === "HEALTHY")) return null;
   return <section className="px-panel px-watchdog" data-status={displayStatus} aria-label="Watchdog CoinOps">
-    <details>
-      <summary><strong>Watchdog · {displayStatus}</strong><span className="px-watchdog-action"><i>Ver detalhes</i><b>Ocultar</b></span></summary>
+    <button type="button" className="px-watchdog-summary" aria-haspopup="dialog" aria-expanded={detailsOpen}
+      onClick={() => setDetailsOpen(true)}><strong>Watchdog · {displayStatus}</strong><span className="px-watchdog-action">Ver detalhes</span></button>
+    <PremiumDrawer open={detailsOpen} title={`Watchdog · ${displayStatus}`} onClose={() => setDetailsOpen(false)}>
       <div className="px-watchdog-details">
         <span>Última checagem: {status?.checkedAt
           ? new Date(status.checkedAt).toLocaleTimeString("pt-BR") : "—"}</span>
@@ -49,6 +52,6 @@ export function WatchdogCard({ attentionOnly = false }: { attentionOnly?: boolea
           : <small>{loadState === "loading" ? "Consultando confirmação server-side…"
             : "Confirmação server-side indisponível. Não interpretar a interface como saúde operacional."}</small>}
       </div>
-    </details>
+    </PremiumDrawer>
   </section>;
 }

@@ -66,9 +66,10 @@ test("home stays compact with no greeting and account pagination ranked by opera
   assert.match(source, /setAccountLimit\(30\)/);
 });
 
-test("watchdog starts collapsed and reveals operational evidence on demand", () => {
-  assert.match(watchdog, /<details>/);
-  assert.doesNotMatch(watchdog, /<details open/);
+test("watchdog opens operational evidence in the shared modal without expanding home", () => {
+  assert.match(watchdog, /<PremiumDrawer open=\{detailsOpen\}/);
+  assert.match(watchdog, /aria-haspopup="dialog"/);
+  assert.doesNotMatch(watchdog, /<details>|<summary>/);
   assert.match(watchdog, /Ver detalhes/);
   assert.match(watchdog, /Executores: \{status\.executors\.healthy\}\/\{status\.executors\.total\} saudáveis/);
 });
@@ -77,6 +78,7 @@ test("infrastructure area shows only compact executor cards", () => {
   assert.doesNotMatch(capacity, /<h2>Infraestrutura<\/h2>/);
   assert.doesNotMatch(capacity, /className="px-panel px-capacity"/);
   assert.match(capacity, /className="px-panel px-capacity-shard"/);
+  assert.match(capacity, /<PremiumDrawer open=\{expandedShard === shard\.id\}/);
   assert.match(capacity, /expandedShard === shard\.id \? "Ocultar detalhes" : "Ver detalhes"/);
   assert.match(styles, /\.px-capacity-expand\{display:block/);
   assert.match(styles, /\.px-capacity-details\{display:none/);
@@ -84,6 +86,8 @@ test("infrastructure area shows only compact executor cards", () => {
 });
 
 test("all-accounts home hides account-detail operation, engine, capital, limit and activity cards", () => {
+  assert.match(source, /view !== "overview" && !allAccounts \? <section className="px-kpis"/);
+  assert.match(source, /if \(selection\.accountId === "ALL"\) return;/);
   assert.match(source, /\{!allAccounts \? <section className="px-operations px-panel"/);
   assert.match(source, /\{!allAccounts \? <div className="px-lower-grid"><section className="px-panel px-capital"/);
   assert.match(source, /\{!allAccounts \? <section className="px-assets"/);

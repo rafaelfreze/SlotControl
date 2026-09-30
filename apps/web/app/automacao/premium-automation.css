@@ -257,14 +257,9 @@
 .px-account-actions .px-button{min-height:40px}
 .px-capacity { display: grid; gap: .55rem; }
 .px-watchdog{padding:0;font-size:.82rem}
-.px-watchdog details{width:100%}
-.px-watchdog summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:46px;padding:9px 14px;cursor:pointer;list-style:none}
-.px-watchdog summary::-webkit-details-marker{display:none}
-.px-watchdog summary strong{color:#58d7b4}
+.px-watchdog-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:46px;padding:9px 14px;cursor:pointer;text-align:left;border:0;background:none}
+.px-watchdog-summary strong{color:#58d7b4}
 .px-watchdog-action{color:#77cde9;font-size:11px;white-space:nowrap}
-.px-watchdog-action i{font-style:normal}.px-watchdog-action b{display:none;font-weight:400}
-.px-watchdog details[open] .px-watchdog-action i{display:none}.px-watchdog details[open] .px-watchdog-action b{display:inline}
-.px-watchdog details[open] summary{border-bottom:1px solid #244257}
 .px-watchdog-details{display:flex;flex-wrap:wrap;gap:.35rem 1rem;align-items:center;padding:10px 14px 12px}
 .px-watchdog small{color:var(--px-muted)}
 .px-capacity h2 { margin: 0; font-size: .95rem; }
@@ -350,8 +345,8 @@
 .px-overview-top,.px-overview-executors,.px-overview-status{display:contents}
 .px-capacity-notice{margin:0;padding:14px;color:var(--px-muted);font-size:12px;line-height:1.5}
 .px-capacity-shard[data-attention="true"] .px-capacity-heading strong{color:#ffd166}
-.px-watchdog:not([data-status="HEALTHY"]) summary strong{color:#ffd166}
-.px-watchdog[data-status="ATUALIZANDO"] summary strong{color:#78b9dc}
+.px-watchdog:not([data-status="HEALTHY"]) .px-watchdog-summary strong{color:#ffd166}
+.px-watchdog[data-status="ATUALIZANDO"] .px-watchdog-summary strong{color:#78b9dc}
 @media(min-width:761px){
   .px-mobile-sticky-header .px-scope-filters{align-items:flex-end}
   .px-mobile-sticky-header .px-scope-filters>.px-account-selector,
@@ -375,7 +370,7 @@
   .px-overview-top--markets .px-health-check small{font-size:9px;text-align:left}
   .px-overview-top--markets .px-health-check .px-button{min-height:28px;padding:4px 8px;font-size:10px}
   .px-overview-top--markets .px-watchdog{border:0;border-top:1px solid #244257;border-radius:0;background:transparent}
-  .px-overview-top--markets .px-watchdog summary{min-height:36px;padding:8px 14px;gap:6px;font-size:11px}
+  .px-overview-top--markets .px-watchdog-summary{min-height:36px;padding:8px 14px;gap:6px;font-size:11px}
   .px-overview-top--markets .px-watchdog-action{font-size:10px}
   .px-overview-top--markets .px-watchdog-details{display:grid;gap:6px;font-size:11px}
   .px-overview-top--markets .px-capacity-shard{display:flex;flex-direction:column;align-items:stretch;min-height:172px;padding:14px}
@@ -410,6 +405,9 @@
 .px-capacity--overview .px-capacity-toggle-label{font-size:20px;line-height:1}
 .px-capacity--overview .px-capacity-details{grid-column:1/-1;flex-direction:column;align-items:stretch;overflow-wrap:anywhere;font-size:11px}
 .px-capacity--overview .px-capacity-notice{min-height:0;padding:0;border:0;background:none}
+.px-drawer .px-capacity-details,.px-drawer .px-watchdog-details{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:0;border:0;font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+.px-drawer .px-capacity-details small,.px-drawer .px-watchdog-details small{font-size:13px}
+.px-drawer .px-capacity-mute{align-self:flex-start;margin:0}
 @media(max-width:1199px){.px-capacity--overview{min-height:0;height:auto}.px-capacity--overview .px-capacity-shard{min-height:40px}}
 
 /* Compact native-currency account tiles: 30 per batch, never truncate values. */
