@@ -53,14 +53,17 @@ export function assessShardCapacity(metrics: ShardMetrics | null,
     return { ...base, state: "OFFLINE", action: "INVESTIGATE",
       reasons: ["CAPACITY_TELEMETRY_MISSING_OR_STALE"],
       alertCodes: ["EXECUTOR_RESOURCE_WARNING"], binancePercent: null };
-  const ratio = Math.max(metrics.binanceWeightCurrent, metrics.binanceWeightAverage,
+  const ratio = Math.max(metrics.binanceWeightCurrent, metrics.binanceWeightAverage)
+    / policy.binanceLimitPerMinute;
+  const sustainedRatio = metrics.binanceWeightAverage / policy.binanceLimitPerMinute;
+  const observeRatio = Math.max(metrics.binanceWeightCurrent, metrics.binanceWeightAverage,
     metrics.binanceWeightPeak) / policy.binanceLimitPerMinute;
   const ramPercent = metrics.ramUsedMb / metrics.ramLimitMb * 100;
   const reasons: string[] = [], alertCodes: string[] = [];
   let state: ShardState = ratio >= policy.capacityRatio ? "CAPACITY_LIMIT"
-    : ratio >= policy.warningRatio ? "WARNING" : ratio >= policy.observeRatio ? "OBSERVE" : "HEALTHY";
+    : sustainedRatio >= policy.warningRatio ? "WARNING" : observeRatio >= policy.observeRatio ? "OBSERVE" : "HEALTHY";
   let action: ScaleAction = state === "CAPACITY_LIMIT" || state === "WARNING" ? "SCALE_OUT" : "NONE";
-  if (ratio >= policy.warningRatio) {
+  if (sustainedRatio >= policy.warningRatio || ratio >= policy.capacityRatio) {
     reasons.push("BINANCE_WEIGHT_HEADROOM_LOW");
     alertCodes.push("BINANCE_WEIGHT_WARNING", "EXECUTOR_CAPACITY_WARNING");
   }
@@ -88,7 +91,8 @@ export type AdmissionCapacity = {
   safeAdditionalEngines: number; observedWeight: number | null; admissionLimitWeight: number;
   reservedWeight: number; incrementalEngineWeight: number; availableWeight: number;
 };
-/** Derives an executor's remaining admission capacity from that executor's own
+/** Diagnostic estimate only; persisted SQL preview is the admission authority.
+ * Derives an executor's remaining admission capacity from that executor's own
  * telemetry. Reservations are only unobserved work; once a fresh registry-
  * matched sample contains an activated engine its reservation is consumed by
  * the collector and must not be charged a second time. */
@@ -99,15 +103,14 @@ export function calculateAdmissionCapacity(metrics: ShardMetrics | null,
   const admissionLimitWeight = policy.binanceLimitPerMinute * policy.admissionRatio;
   const invalid = !metrics || !valid(incrementalEngineWeight) || incrementalEngineWeight === 0
     || !valid(reservedWeight) || ["OFFLINE", "WARNING", "CAPACITY_LIMIT"].includes(assessment.state);
-  const observedWeight = metrics ? Math.max(metrics.binanceWeightCurrent,
-    metrics.binanceWeightAverage, metrics.binanceWeightPeak) : null;
+  const observedWeight = metrics?.binanceWeightAverage ?? null;
   const availableWeight = invalid || observedWeight === null
     ? 0 : Math.max(0, admissionLimitWeight - observedWeight - reservedWeight);
   return { safeAdditionalEngines: invalid ? 0 : Math.floor(availableWeight / incrementalEngineWeight),
     observedWeight, admissionLimitWeight, reservedWeight, incrementalEngineWeight, availableWeight };
 }
-/** Admission needs fresh metrics and a measured incremental p95. Existing
- * assignments and engines are never changed by this decision. */
+/** Diagnostic estimate, never used by ASSIGN/reservation or the ADMIN API.
+ * Those use persisted SQL hysteresis plus this unchanged recovery ceiling. */
 export function decideShardAdmission(metrics: ShardMetrics | null, incrementalWeightP95: number | null,
   policy: CapacityPolicy = DEFAULT_CAPACITY_POLICY, now = Date.now()): AdmissionDecision {
   const assessment = assessShardCapacity(metrics, policy, now);
@@ -118,8 +121,7 @@ export function decideShardAdmission(metrics: ShardMetrics | null, incrementalWe
   if (incrementalWeightP95 === null || !valid(incrementalWeightP95) || !incrementalWeightP95)
     return deny("NEW_ACCOUNT_COST_UNMEASURED");
   if (assessment.state === "WARNING") return deny("SHARD_HEADROOM_LOW");
-  const projected = Math.max(metrics.binanceWeightCurrent, metrics.binanceWeightAverage,
-    metrics.binanceWeightPeak) + incrementalWeightP95;
+  const projected = metrics.binanceWeightAverage + incrementalWeightP95;
   if (projected > policy.binanceLimitPerMinute * policy.admissionRatio)
     return deny("PROJECTED_BINANCE_WEIGHT_ABOVE_ADMISSION_LIMIT");
   return { allowed: true, code: "ASSIGN", reason: "MEASURED_HEADROOM_AVAILABLE",

@@ -223,3 +223,129 @@ check("two concurrent reservations cannot spend the same remaining engine headro
   assert.deepEqual((await Promise.all([reserve(engine),reserve(second)])).sort(),["CAPACITY_OK","CAPACITY_REQUIRED"]);
   assert.equal(psql("select count(*) from coinops.executor_capacity_admissions where expires_at>now()"),"1");
 });
+
+// v2 above is a historical regression baseline. These cases upgrade that same
+// disposable database and exercise the production v3 functions and triggers.
+const fresh = (average = 2400, current = 2200, peak = 5000, shard = "executor-02") => change(
+  `observed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),weight_observed_at=clock_timestamp(),
+   binance_weight_average=${average},binance_weight_current=${current},binance_weight_peak=${peak},
+   binance_weight_samples=15,cpu_percent=5,scheduler_backlog=0,reconciliation_p95_ms=10000,
+   errors_last_5m=0,retries_last_5m=0,executor_version='${sha}'`, shard);
+// Time injection is restricted to this local fixture; Production must accrue
+// ten minutes through fresh collector samples and never receives fake history.
+const matureRecovery = (shard = "executor-02", environment = "REAL") => psql(
+  `update coinops.executor_admission_hysteresis set healthy_since=now()-interval '601 seconds'
+   where shard_id='${shard}' and environment='${environment}' and healthy_since is not null`);
+
+check("v3 migration keeps certified bytes, policy defaults and initial closed recovery", () => {
+  psql("update coinops.executor_capacity_admissions set expires_at=now()");
+  psql(readFileSync(resolve("../../supabase/migrations/20260930140348_coinops_admission_hysteresis.sql"), "utf8"));
+  fresh();
+  assert.equal(preview().reason,"RECOVERY_STABILIZING");
+  assert.equal(preview().executor_state,"OBSERVE");
+  const p=preview().policy;
+  assert.equal(p.version,"capacity-v3-20260930");
+  assert.equal(p.admission_ratio+p.recovery_ratio,1);
+  assert.equal(p.incremental_weight,900); assert.equal(p.binance_limit,6000);
+  assert.equal(p.reopen_healthy_seconds,600); assert.equal(p.reopen_ratio,.60);
+  assert.equal(psql("select target_sha||':'||policy_version from coinops.executor_admission_release"),`${sha}:capacity-v3-20260930`);
+});
+check("transient peak and its expiry preserve OBSERVE plus-one YES and plus-two NO", () => {
+  matureRecovery(); fresh(2400,2200,5100);
+  const yes=preview(); assert.equal(yes.code,"CAPACITY_OK");
+  assert.equal(yes.executor_state,"OBSERVE"); assert.equal(yes.projected_weight,3300);
+  assert.equal(yes.recovery_headroom_weight,2100); assert.equal(yes.pressure_phase,"TRANSIENT_SPIKE");
+  assert.equal(preview("executor-02",2).code,"CAPACITY_REQUIRED");
+  const at=yes.last_transition_at;
+  fresh(2400,2200,2500);
+  assert.equal(preview().code,"CAPACITY_OK"); assert.equal(preview().last_transition_at,at);
+});
+check("sustained 15-minute pressure closes immediately and hysteresis stops threshold flapping", () => {
+  fresh(3001,2200,3500);
+  assert.equal(preview().reason,"SUSTAINED_PROJECTION_ABOVE_ADMISSION_LIMIT");
+  assert.equal(preview().projected_weight,3901);
+  const blocked=preview().last_transition_at;
+  for(const avg of [2999,3001,2998,3002,2990,2950]){
+    fresh(avg); assert.equal(preview().code,"CAPACITY_REQUIRED");
+    assert.equal(preview().last_transition_at,blocked);
+  }
+  fresh(2700); assert.equal(preview().reason,"RECOVERY_STABILIZING");
+  matureRecovery(); fresh(2701); // reopen band broken: 3601 > 3600
+  assert.equal(preview().reason,"RECOVERY_MARGIN_NOT_REACHED");
+  fresh(2600); matureRecovery(); fresh(2600);
+  assert.equal(preview().code,"CAPACITY_OK");
+  fresh(2999); assert.equal(preview().code,"CAPACITY_OK","an open gate uses 65%, not the reopen band");
+});
+check("current 75% and projected 90% are immediate hard safety regardless of low average", () => {
+  fresh(2400,4499); assert.equal(preview().code,"CAPACITY_OK");
+  fresh(2400,4500); assert.equal(preview().reason,"BINANCE_WEIGHT_CRITICAL_NOW");
+  assert.equal(preview().executor_state,"CAPACITY_LIMIT");
+  fresh(2400,5900); assert.equal(preview().code,"CAPACITY_REQUIRED");
+  fresh(1000,4000); matureRecovery(); fresh(1000,4000);
+  assert.equal(preview("executor-02",2).reason,"BINANCE_PROJECTED_CRITICAL_NOW");
+  assert.equal(preview("executor-02",1).code,"CAPACITY_OK");
+});
+check("reload is pure and repeated/out-of-order samples never accrue recovery", () => {
+  fresh(3100); fresh(2400);
+  const before=psql("select row_to_json(h) from coinops.executor_admission_hysteresis h where shard_id='executor-02' and environment='REAL' and planned_engines=1");
+  for(let i=0;i<10;i++)assert.equal(preview().reason,"RECOVERY_STABILIZING");
+  assert.equal(psql("select row_to_json(h) from coinops.executor_admission_hysteresis h where shard_id='executor-02' and environment='REAL' and planned_engines=1"),before);
+  change("binance_weight_peak=5200"); // same observation timestamp
+  assert.equal(psql("select row_to_json(h) from coinops.executor_admission_hysteresis h where shard_id='executor-02' and environment='REAL' and planned_engines=1"),before);
+  change("observed_at=observed_at-interval '1 second'");
+  assert.equal(preview().reason,"HYSTERESIS_EVIDENCE_MISSING");
+  fresh(); matureRecovery(); fresh(); assert.equal(preview().code,"CAPACITY_OK");
+});
+check("telemetry gaps, resources and errors close new work and require healthy recovery", () => {
+  psql("update coinops.executor_admission_hysteresis set sample_at=now()-interval '3 minutes' where shard_id='executor-02'");
+  fresh(); assert.equal(preview().reason,"RECOVERY_STABILIZING");
+  matureRecovery(); fresh(); assert.equal(preview().code,"CAPACITY_OK");
+  change("observed_at=clock_timestamp(),cpu_percent=70");
+  assert.equal(preview().reason,"EXECUTOR_RESOURCE_HEADROOM_LOW");
+  fresh(); assert.equal(preview().reason,"RECOVERY_STABILIZING");
+  matureRecovery(); fresh();
+  change("observed_at=clock_timestamp(),errors_last_5m=1");
+  assert.equal(preview().reason,"RECENT_TRANSPORT_ERRORS");
+  fresh(); assert.equal(preview().reason,"RECOVERY_STABILIZING");
+});
+check("executor01 and future03 inherit policy, zero engine quota and independent state", () => {
+  fresh(2414.5,2272,3187,"executor-01");
+  fresh(10,10,20,"executor-03");
+  matureRecovery("executor-01"); matureRecovery("executor-03");
+  fresh(2414.5,2272,3187,"executor-01"); fresh(10,10,20,"executor-03");
+  assert.equal(preview("executor-01").code,"CAPACITY_OK");
+  assert.equal(preview("executor-01").projected_weight,3314.5);
+  assert.equal(preview("executor-03",2).code,"CAPACITY_OK");
+  assert.equal(preview("executor-03",4).code,"CAPACITY_REQUIRED","10+4*900 fits65% but not reopening60%");
+  fresh(4500,4600,5000,"executor-01");
+  assert.equal(preview("executor-01").code,"CAPACITY_REQUIRED");
+  assert.equal(preview("executor-03",2).code,"CAPACITY_OK");
+  assert.equal(psql(`select status||':'||executor_note from coinops.exchange_accounts where id='${account}'`),"ACTIVE:untouched");
+});
+check("reservations are charged once, replay excludes own reservation, REAL never borrows Testnet", () => {
+  fresh(2400,2200,5000,"executor-01"); matureRecovery("executor-01"); fresh(2400,2200,5000,"executor-01");
+  const reserve=()=>psql(`select coinops.reserve_executor_capacity('executor-01','${engine}')`);
+  assert.equal(reserve(),"CAPACITY_OK"); assert.equal(reserve(),"CAPACITY_OK");
+  assert.equal(preview("executor-01").reserved_weight,900);
+  assert.equal(preview("executor-01").projected_weight,4200);
+  assert.equal(preview("executor-01").code,"CAPACITY_REQUIRED");
+  assert.equal(preview("executor-03").reserved_weight,0);
+  psql("update coinops.executor_capacity_admissions set expires_at=now()");
+  assert.equal(preview("executor-01").code,"CAPACITY_OK");
+  psql(`update coinops.executor_capacity_environment_samples set observed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),weight_observed_at=clock_timestamp(),
+    binance_weight_current=20,binance_weight_average=25,binance_weight_peak=30,binance_weight_samples=15 where shard_id='executor-02'`);
+  matureRecovery("executor-02","TESTNET");
+  psql("update coinops.executor_capacity_environment_samples set observed_at=clock_timestamp() where shard_id='executor-02'");
+  assert.equal(JSON.parse(psql("select coinops.preview_executor_admission('executor-02','TESTNET',2)")).code,"CAPACITY_OK");
+  assert.equal(preview("executor-02").code,"CAPACITY_REQUIRED");
+});
+check("new persistence is service-only, bounded telemetry, invoker functions and observable transitions", () => {
+  // Exercise the exact collector role, not just the local database owner.
+  psql("set role service_role; update coinops.executor_capacity_samples set observed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),weight_observed_at=clock_timestamp() where shard_id='executor-03'; reset role");
+  for(const name of ["executor_admission_hysteresis","executor_capacity_observations","executor_admission_transitions"])
+    assert.equal(psql(`select has_table_privilege('authenticated','coinops.${name}','SELECT')||':'||relforcerowsecurity from pg_class where oid='coinops.${name}'::regclass`),"false:true");
+  assert.equal(psql("select has_function_privilege('authenticated','coinops.preview_executor_admission(text,text,integer,uuid)','EXECUTE')"),"f");
+  assert.equal(psql("select bool_and(not prosecdef) from pg_proc where proname in ('advance_executor_admission_hysteresis','executor_capacity_sample_safety','preview_executor_admission')"),"t");
+  assert.ok(Number(psql("select count(*) from coinops.executor_admission_transitions"))>0);
+  assert.equal(psql("select count(*) from coinops.executor_admission_hysteresis where shard_id='executor-03' and environment='REAL'"),"25");
+});

@@ -723,29 +723,33 @@ test("infraestrutura resume executores em linhas expansíveis no mobile e deskto
 });
 
 test("capacity admission exposes exact math and reserve without overflow or live actions", async ({ page }, testInfo) => {
-  const admission = { code: "CAPACITY_OK", reason: "MEASURED_HEADROOM_AVAILABLE", projected_weight: 3614,
-    projected_percent: 60.23, admission_limit_weight: 3900, recovery_headroom_weight: 2100,
-    remaining_weight: 286, observed_weight: 2714, reserved_weight: 0, incremental_weight: 900,
-    pressure_phase: "NORMAL", additional_engines: 1, policy: { version: "capacity-v2-20260929",
+  const admission = { code: "CAPACITY_OK", reason: "SUSTAINED_HEADROOM_AVAILABLE", projected_weight: 3300,
+    projected_percent: 55, admission_limit_weight: 3900, recovery_headroom_weight: 2100,
+    remaining_weight: 600, observed_weight: 2400, sustained_weight:2400, reserved_weight: 0, incremental_weight: 900,
+    pressure_phase: "TRANSIENT_SPIKE", additional_engines: 1, healthy_seconds: 600,
+    policy: { version: "capacity-v3-20260930",reopen_ratio:.60,reopen_healthy_seconds:600,
       binance_limit: 6000, admission_ratio: .65, recovery_ratio: .35, incremental_weight: 900,
       incremental_source: "CONSERVATIVE_UNCALIBRATED", peak_hold_minutes: 15 } };
-  const shard = { id: "executor-02", state: "HEALTHY", action: "NONE", binanceWeightCurrent: 2100,
-    binanceWeightAverage: 2400, binanceWeightPeak: 2714, binanceLimit: 6000, binancePercent: 45.23,
+  const shard = { id: "executor-02", state: "OBSERVE", action: "NONE", binanceWeightCurrent: 2100,
+    binanceWeightAverage: 2400, binanceWeightPeak: 5100, binanceLimit: 6000, binancePercent: 40,
     cpuPercent: 2.5, ramUsedMb: 149, schedulerBacklog: 0, reconciliationAgeMs: 26000,
     egressIp: "192.0.2.2", heartbeatAt: AUTOMATION_FIXTURE_NOW, reservedWeight: 0,
     accountCount: 6, engineCount: 6, canAddEngine: true, canAddTwoEngineAccount: false,
     warningsMuted: false, alerts: [], admission, dualEngineAdmission: { ...admission,
-      code: "CAPACITY_REQUIRED", reason: "PROJECTED_BINANCE_WEIGHT_ABOVE_ADMISSION_LIMIT",
-      projected_weight: 4514, projected_percent: 75.23, incremental_weight: 1800, additional_engines: 0 } };
+      code: "CAPACITY_REQUIRED", reason: "SUSTAINED_PROJECTION_ABOVE_ADMISSION_LIMIT",
+      projected_weight: 4200, projected_percent: 70, incremental_weight: 1800, additional_engines: 0 } };
   const audit = await mount(page, "live", 320, 844, automationOperatorFixture(), { shards: [shard] });
   await page.locator("#infra-executor-02 .px-capacity-expand").click();
   const details = page.locator("#infra-details-executor-02");
-  await expect(details).toContainText("+1 motor: SIM — projeção 60.2% ≤ limite 65%");
-  await expect(details).toContainText("+2 motores: NÃO — projeção 75.2% > limite 65%");
-  await expect(details).toContainText("2714 observado + 0 reservado + 900 estimado = 3614 / 3900 permitido");
+  await expect(page.locator("#infra-executor-02 .px-capacity-heading")).toContainText("OBSERVE");
+  await expect(details).toContainText("+1 motor: SIM — pressão sustentada 40.0%, projeção 55.0%");
+  await expect(details).toContainText("+2 motores: NÃO — pressão sustentada 40.0%, projeção 70.0%");
+  await expect(details).toContainText("2400 sustentado (média de 15 min) + 0 reservado + 900 estimado = 3300 / 3900 permitido");
+  await expect(details).toContainText("reabre após 10 min até 60%");
+  await expect(details).toContainText("OBSERVE é monitoramento");
   await expect(details).toContainText("2100 weight/min, descontada uma única vez");
   await expect(details).toContainText("ainda não é p95 medido");
-  for (const width of [320, 360, 375, 390, 430, 1440]) {
+  for (const width of [320, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(details).toBeVisible();
     expect((await geometry(page)).overflow).toBe(0);

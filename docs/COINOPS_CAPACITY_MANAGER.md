@@ -14,7 +14,7 @@ ativações dependem dele. Falha da coleta **nunca** pausa, cancela, reprifica
 ou reancora motor LIVE. Cada conta possui um `executor_shard_id` primário;
 nenhuma migração de conta/IP ocorre automaticamente.
 
-## Medição e política inicial
+## Medição e política canônica v3
 
 O executor registra os cabeçalhos IP-wide `x-mbx-used-weight-1m` das respostas
 Binance Production já necessárias para a operação. Um shard sem tráfego recente
@@ -37,13 +37,19 @@ prova de capacidade para 50 contas. O custo incremental inicial conservador
 é 900 weight/min por motor; deve ser substituído por medição p95 de novas
 contas em carga normal antes de ampliar admissões.
 
-Thresholds canônicos (não configurados individualmente por shard): `<50%` HEALTHY, `50–65%` OBSERVE, `65–75%`
-WARNING/preparar SCALE_OUT, `>=75%` CAPACITY_LIMIT. Novas ativações só
-passam quando o **pico de 15 min + reservas de admissões pendentes + 900 por
-motor** fica em até 65% do limite. A reserva de 35% protege recuperação e
+Thresholds canônicos (não configurados individualmente por shard): `<50%` HEALTHY;
+atual/média/pico histórico `>=50%` pode elevar OBSERVE (monitoramento, não veto);
+média `>=65%` WARNING/preparar SCALE_OUT; atual ou média `>=75%` CAPACITY_LIMIT.
+Novas ativações usam a **média dos máximos por minuto em 15 min + reservas de admissões pendentes + 900 por
+motor**, em até 65% do limite. Pico histórico transitório não bloqueia sozinho.
+Depois de fechar, reabre após 10 minutos contínuos com projeção <=60%; atual >=75%
+ou atual projetado >=90% bloqueia imediatamente, além dos gates operacionais.
+O coletor persiste a histerese SQL por shard/ambiente/+N; GET não escreve estado.
+Detalhes, matemática, testes e rollback: `COINOPS_ADMISSION_HYSTERESIS_20260930.md`.
+A reserva de 35% protege recuperação e
 leituras simultâneas. Acima de 70% CPU, 75% RAM, backlog ou p95 de
 reconciliação >=120 s, a admissão também bloqueia. Telemetria/heartbeat/
-weight com mais de 120 s, menos de 2 minutos amostrados, registry divergente
+weight com mais de 120 s, menos de 15 minutos amostrados, registry divergente
 ou Capacity Manager indisponível = CAPACITY_UNKNOWN, fail-closed apenas para
 nova ativação. A reserva SQL serializada por shard dura 20 min; replay do
 mesmo motor não duplica a cobrança. Uma amostra posterior, fresca e com
@@ -113,7 +119,7 @@ executor vazio.
 Ordem segura de publicação: validar migration em PostgreSQL descartável;
 confirmar backend/schema/estado LIVE; aplicar migration aditiva; instalar
 executor com rota de telemetria e confirmar HMAC/health; publicar web/cron;
-aguardar duas amostras de minuto e comprovar card, admissão e push, sempre
+aguardar janela de 15 minutos amostrados e recuperação saudável de 10 minutos e comprovar card, admissão e push, sempre
 sem criar ordem para smoke. Se o acesso ao VPS faltar, não declarar os gates
 ativos nem publicar UI/gate parcialmente.
 

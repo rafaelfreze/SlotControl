@@ -58,7 +58,8 @@ export async function GET() {
       const admission = decision?.plus_one;
       const dualEngineAdmission = decision?.plus_two;
       const warningsMuted = mutedPairs.has(`${auth.operatorId}:${shard.id}`);
-      return { id: shard.id, state: assessment.state, action: assessment.action, warningsMuted,
+      return { id: shard.id, state: admission?.executor_state ?? assessment.state,
+        action: admission?.scale_action ?? assessment.action, warningsMuted,
         egressIp: String(shard.egress_ipv4), reservedWeight,
         binanceWeightCurrent: sample?.binance_weight_current ?? null,
         binanceWeightAverage: sample?.binance_weight_average ?? null,

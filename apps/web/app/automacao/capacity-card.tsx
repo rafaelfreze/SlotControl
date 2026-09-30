@@ -73,7 +73,7 @@ export function CapacityCard({ onExecutorObservation }: {
         <span>Binance atual: {shard.binanceWeightCurrent?.toFixed(0) ?? "—"} / {shard.binanceLimit} weight/min
           {shard.binanceWeightCurrent !== null && shard.binanceLimit > 0
             ? ` · ${(shard.binanceWeightCurrent / shard.binanceLimit * 100).toFixed(1)}%` : ""}</span>
-        <small>Pressão conservadora (maior entre atual, média e pico 15 min): {shard.binancePercent?.toFixed(1) ?? "—"}%</small>
+        <small>Pressão atual/média (pico histórico apenas para OBSERVE): {shard.binancePercent?.toFixed(1) ?? "—"}%</small>
         <small>Média dos máximos por minuto (15 min): {shard.binanceWeightAverage?.toFixed(0) ?? "—"} · Pico 15 min: {shard.binanceWeightPeak?.toFixed(0) ?? "—"}
           {shard.reservedWeight > 0 ? ` · Reservado: ${shard.reservedWeight}` : ""}</small>
         <span>CPU: {shard.cpuPercent?.toFixed(1) ?? "—"}% · RAM: {shard.ramUsedMb?.toFixed(0) ?? "—"} MB</span>
@@ -83,12 +83,14 @@ export function CapacityCard({ onExecutorObservation }: {
         <strong>Nova conta +1 motor: {explainAdmission(shard.admission)}</strong>
         <span>Nova conta +2 motores: {explainAdmission(shard.dualEngineAdmission)}</span>
         {shard.admission ? <>
-          <small>Cálculo: {shard.admission.observed_weight?.toFixed(0) ?? "—"} observado
+          <small>Cálculo: {shard.admission.observed_weight?.toFixed(0) ?? "—"} sustentado (média de 15 min)
             + {shard.admission.reserved_weight} reservado + {shard.admission.incremental_weight} estimado
             = {shard.admission.projected_weight?.toFixed(0) ?? "—"} / {shard.admission.admission_limit_weight} permitido.</small>
           <small>Reserva de recuperação: {shard.admission.recovery_headroom_weight} weight/min, descontada uma única vez no limite.</small>
           <small>Estimativa incremental conservadora: {shard.admission.policy.incremental_weight} por motor; ainda não é p95 medido.
             Capacidade operacional total não certificada por quantidade de motores.</small>
+          {shard.admission.policy.reopen_healthy_seconds ? <small>Histerese: bloqueia acima de 65% sustentado; reabre após 10 min até 60%.
+            Consumo atual ≥75% bloqueia imediatamente. OBSERVE é monitoramento.</small> : null}
           {pressureExplanation(shard.admission.pressure_phase) ? <small>{pressureExplanation(shard.admission.pressure_phase)}</small> : null}
         </> : null}
         {shard.state === "WARNING" && !shard.warningsMuted ? <small>{shard.action === "SCALE_UP"

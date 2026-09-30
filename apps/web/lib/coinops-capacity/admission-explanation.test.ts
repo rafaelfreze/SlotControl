@@ -16,7 +16,9 @@ test("capacity UI explains both exact rejection and preserved headroom without s
   assert.match(explainAdmission(decision({code:"CAPACITY_UNKNOWN",reason:"RUNTIME_PARITY"})),/runtime diferente/);
   assert.match(explainAdmission(),/indisponível/);
 });
-test("peak hold is explicitly finite and not called sustained pressure",()=>{
-  assert.match(pressureExplanation("TRANSIENT_SPIKE")!,/15 min.*não é bloqueio permanente/);
+test("transient peak is observation, recovery persists independently of reload",()=>{
+  assert.match(pressureExplanation("TRANSIENT_SPIKE")!,/15 min.*pico isolado não fecha/);
   assert.match(pressureExplanation("SUSTAINED_PRESSURE")!,/média/);
+  assert.match(pressureExplanation("RECOVERY")!,/10 min.*Reload não/);
+  assert.match(explainAdmission(decision({reason:"RECOVERY_STABILIZING",healthy_seconds:300})),/5\/10 min/);
 });
