@@ -65,7 +65,8 @@ function clientModules() {
 }
 
 async function mount(page: Page, view: View, width: number, height = 960,
-  data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null) {
+  data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null,
+  watchdogData: unknown = null) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
@@ -84,11 +85,13 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const React = window.React;
     const capacityFixture = ${JSON.stringify(capacityData)};
     const assetHealthFixture = ${JSON.stringify(assetHealthData)};
+    const watchdogFixture = ${JSON.stringify(watchdogData)};
     window.__fixtureReads = [];
     window.fetch = async (url) => {
       window.__fixtureReads.push(String(url));
       const data = String(url).startsWith('/api/coinops-asset-health?') ? assetHealthFixture
-        : String(url) === '/api/coinops-capacity' ? capacityFixture : null;
+        : String(url) === '/api/coinops-capacity' ? capacityFixture
+        : String(url) === '/api/coinops-watchdog' ? watchdogFixture : null;
       return { ok: Boolean(data), json: async () => data ?? {} };
     };
     window.WebSocket = class { static OPEN = 1; readyState = 1; close() {} };
@@ -700,12 +703,12 @@ test("infraestrutura resume executores em linhas expansíveis no mobile e deskto
   const base = { action: "SCALE_OUT", binanceWeightCurrent: 2679, binanceWeightAverage: 3190,
     binanceWeightPeak: 4555, binanceLimit: 6000, binancePercent: 75.9,
     cpuPercent: 2.6, ramUsedMb: 180, schedulerBacklog: 0, reconciliationAgeMs: 27000,
-    heartbeatAt: "2026-09-26T22:48:42Z", reservedWeight: 0, canAddEngine: false,
+    heartbeatAt: AUTOMATION_FIXTURE_NOW, observedAt: AUTOMATION_FIXTURE_NOW, reservedWeight: 0, canAddEngine: false,
     canAddTwoEngineAccount: false, warningsMuted: true, alerts: [] };
   const audit = await mount(page, "live", 320, 844, automationOperatorFixture(), { shards: [
     { ...base, id: "executor-01", state: "CAPACITY_LIMIT", egressIp: "46.101.104.48",
       accountCount: 4, engineCount: 7 },
-    { ...base, id: "executor-02", state: "HEALTHY", egressIp: "164.90.223.159",
+    { ...base, id: "executor-02", state: "WARNING", egressIp: "192.0.2.2",
       accountCount: 2, engineCount: 2, canAddEngine: true, warningsMuted: false },
   ] });
   await expect(page.locator(".px-capacity-shard")).toHaveCount(2);
@@ -728,7 +731,7 @@ test("infraestrutura resume executores em linhas expansíveis no mobile e deskto
   await page.locator("#infra-executor-02 .px-capacity-expand").click();
   await expect(page.locator(".px-capacity-details").first()).toBeHidden();
   await expect(page.locator(".px-capacity-details").last()).toBeHidden();
-  expect((await page.locator(".px-capacity-shard").first().boundingBox())?.height ?? Infinity).toBeLessThan(100);
+  expect((await page.locator(".px-capacity-shard").first().boundingBox())?.height).toBe(172);
   await noSideEffects(page, audit);
 });
 
@@ -749,6 +752,9 @@ test("capacity admission exposes exact math and reserve without overflow or live
       code: "CAPACITY_REQUIRED", reason: "SUSTAINED_PROJECTION_ABOVE_ADMISSION_LIMIT",
       projected_weight: 4200, projected_percent: 70, incremental_weight: 1800, additional_engines: 0 } };
   const audit = await mount(page, "live", 320, 844, automationOperatorFixture(), { shards: [shard] });
+  // The account view retains the full infrastructure inspector; Todos is attention-only.
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  await page.getByRole("option").filter({ hasText: "Rafael Demo" }).click();
   await page.locator("#infra-executor-02 .px-capacity-expand").click();
   const details = page.locator("#infra-details-executor-02");
   await expect(page.locator("#infra-executor-02 .px-capacity-heading")).toContainText("OBSERVE");
@@ -768,15 +774,19 @@ test("capacity admission exposes exact math and reserve without overflow or live
   await noSideEffects(page, audit);
 });
 
-test("desktop reúne navegação no topo, centraliza cotações e recolhe executores", async ({ page }, testInfo) => {
+test("desktop inicial alinha seletores, oculta executores saudáveis e reúne monitoramento à direita", async ({ page }, testInfo) => {
   const shard = { id: "executor-01", state: "HEALTHY", action: "OBSERVE",
     binanceWeightCurrent: 642, binanceWeightAverage: 654, binanceWeightPeak: 748,
     binanceLimit: 6000, binancePercent: 12.5, egressIp: "192.0.2.10",
     cpuPercent: 0.7, ramUsedMb: 111, schedulerBacklog: 0, reconciliationAgeMs: 26000,
-    heartbeatAt: "2026-09-27T09:41:42Z", reservedWeight: 0, accountCount: 2,
+    heartbeatAt: AUTOMATION_FIXTURE_NOW, observedAt: AUTOMATION_FIXTURE_NOW, reservedWeight: 0, accountCount: 2,
     engineCount: 2, canAddEngine: true, canAddTwoEngineAccount: true,
     admissionReason: "HEALTHY", warningsMuted: false, alerts: [] };
-  const audit = await mount(page, "live", 1920, 1080, automationOperatorFixture(), { shards: [shard] });
+  const audit = await mount(page, "live", 1920, 1080, automationOperatorFixture(), { shards: [shard] }, null, {
+    status: "HEALTHY", checkedAt: AUTOMATION_FIXTURE_NOW, activeCriticalAlerts: 0,
+    engines: { healthy: 13, recovering: 0, blocked: 0, stale: 0 },
+    executors: { healthy: 2, total: 2 }, lastIncident: null, autoRecoveries24h: 0,
+  });
   const context = page.locator(".px-context-bar");
   await expect(context.getByRole("navigation", { name: "Ambientes da Automação" })).toBeVisible();
   await expect(context.getByRole("navigation", { name: "Ferramentas da Automação" })).toBeVisible();
@@ -786,12 +796,72 @@ test("desktop reúne navegação no topo, centraliza cotações e recolhe execut
   expect(toolbar?.x ?? 0).toBeGreaterThan((environments?.x ?? 0) + (environments?.width ?? 0));
   const quotes = await page.locator(".px-market-overview").boundingBox();
   expect(Math.abs((quotes?.x ?? 0) * 2 + (quotes?.width ?? 0) - 1920)).toBeLessThan(4);
-  await expect(page.locator(".px-market-chart h3")).toHaveText(["BTC/USDT", "SOL/USDT"]);
-  await expect(page.locator(".px-capacity-details")).toBeHidden();
-  await expect(page.getByRole("button", { name: "Ver detalhes", exact: true }).first()).toBeVisible();
-  expect((await page.locator(".px-capacity-shard").boundingBox())?.height ?? Infinity).toBeLessThan(100);
+  await expect(page.locator(".px-market-chart h3")).toHaveText(["BTC/USDT", "BINANCE", "SOL/USDT"]);
+  await expect(page.locator(".px-capacity-shard")).toHaveCount(0);
+  await expect(page.getByText("Atualizando confirmação dos executores…", { exact: false })).toHaveCount(0);
+  for (const width of [1280, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 1080 });
+    const account = await page.getByRole("button", { name: "Conta", exact: true }).boundingBox();
+    const market = await page.getByLabel("Mercado", { exact: true }).boundingBox();
+    expect(account?.height).toBe(market?.height);
+    expect(account?.width).toBe(market?.width);
+    expect(account?.y).toBe(market?.y);
+    const quotes = await page.locator(".px-market-overview").boundingBox();
+    const monitoring = await page.locator(".px-overview-status").boundingBox();
+    const coin = await page.locator(".px-market-chart").first().boundingBox();
+    expect(monitoring?.x ?? 0).toBeGreaterThan((quotes?.x ?? 0) + (quotes?.width ?? 0));
+    expect(monitoring?.y).toBe(quotes?.y);
+    expect(Math.abs((monitoring?.height ?? 0) - (coin?.height ?? 0))).toBeLessThan(5);
+    expect(Math.abs((monitoring?.width ?? 0) - (coin?.width ?? 0))).toBeLessThan(8);
+    expect((await geometry(page)).overflow).toBe(0);
+  }
+  await expect(page.getByRole("complementary", { name: "Monitoramento operacional" }).getByRole("region", { name: "Watchdog CoinOps" })).toContainText("HEALTHY");
   expect((await geometry(page)).overflow).toBe(0);
   await screenshot(page, testInfo, "desktop-unified-topbar");
+  await noSideEffects(page, audit);
+});
+
+test("desktop inicial mostra somente falha à esquerda e mantém detalhes e mobile acessíveis", async ({ page }, testInfo) => {
+  const healthy = { id: "executor-01", state: "HEALTHY", action: "NONE", accountCount: 4, engineCount: 7,
+    observedAt: AUTOMATION_FIXTURE_NOW, heartbeatAt: AUTOMATION_FIXTURE_NOW, alerts: [],
+    binanceWeightCurrent: 1800, binanceWeightAverage: 1800, binanceWeightPeak: 2400, binanceLimit: 6000,
+    binancePercent: 30, cpuPercent: 2, ramUsedMb: 150, schedulerBacklog: 0, reconciliationAgeMs: 20000,
+    egressIp: "192.0.2.1", reservedWeight: 0, canAddEngine: true, canAddTwoEngineAccount: true };
+  const audit = await mount(page, "live", 1440, 900, automationOperatorFixture(), { shards: [healthy,
+    { ...healthy, id: "executor-02", state: "OFFLINE", heartbeatAt: null, accountCount: 6, engineCount: 6 },
+  ] });
+  await expect(page.locator(".px-capacity-shard")).toHaveCount(1);
+  await expect(page.locator("#infra-executor-02")).toContainText("OFFLINE");
+  const executor = await page.locator("#infra-executor-02").boundingBox();
+  const coin = await page.locator(".px-market-chart").first().boundingBox();
+  expect(executor?.y).toBe(coin?.y);
+  expect(executor?.height).toBe(coin?.height);
+  expect(Math.abs((executor?.width ?? 0) - (coin?.width ?? 0))).toBeLessThan(8);
+  await expect(page.locator(".px-watchdog")).toHaveAttribute("data-status", "INDISPONÍVEL");
+  await screenshot(page, testInfo, "desktop-attention-only");
+  await page.locator("#infra-executor-02 .px-capacity-expand").click();
+  await expect(page.locator("#infra-details-executor-02")).toBeVisible();
+  await page.getByRole("region", { name: "Watchdog CoinOps" }).locator("summary").click();
+  await expect(page.locator(".px-watchdog-details")).toContainText("indisponível");
+  for (const width of [320, 390, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect((await geometry(page)).overflow).toBe(0);
+    await expect(page.locator("#infra-details-executor-02")).toBeVisible();
+  }
+  await noSideEffects(page, audit);
+});
+
+test("desktop inicial não oculta telemetria ausente nem transforma OBSERVE em falha", async ({ page }) => {
+  const base = { action: "NONE", observedAt: AUTOMATION_FIXTURE_NOW, heartbeatAt: AUTOMATION_FIXTURE_NOW,
+    accountCount: 0, engineCount: 0, alerts: [], canAddEngine: true, canAddTwoEngineAccount: false };
+  const audit = await mount(page, "live", 1440, 900, automationOperatorFixture(), { shards: [
+    { ...base, id: "executor-03", state: "OBSERVE" },
+    { ...base, id: "executor-04", state: "HEALTHY", observedAt: null },
+  ] });
+  await expect(page.locator("#infra-executor-03")).toHaveCount(0);
+  await expect(page.locator(".px-capacity-shard")).toHaveCount(1);
+  await expect(page.locator("#infra-executor-04")).toContainText("Telemetria sem confirmação recente");
+  expect((await geometry(page)).overflow).toBe(0);
   await noSideEffects(page, audit);
 });
 

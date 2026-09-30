@@ -345,3 +345,46 @@
 .px-health--loading p i{background:#537b96;color:#dff5ff}
 .px-mobile-health-strip .is-loading{color:#78b9dc}
 .px-sync--connecting{color:#78b9dc}
+
+/* One observation component per source; desktop rearranges presentation only. */
+.px-overview-top,.px-overview-executors,.px-overview-status{display:contents}
+.px-capacity-notice{margin:0;padding:14px;color:var(--px-muted);font-size:12px;line-height:1.5}
+.px-capacity--attention .px-capacity-heading strong{color:#ffd166}
+.px-watchdog:not([data-status="HEALTHY"]) summary strong{color:#ffd166}
+.px-watchdog[data-status="ATUALIZANDO"] summary strong{color:#78b9dc}
+@media(min-width:761px){
+  .px-mobile-sticky-header .px-scope-filters{align-items:flex-end}
+  .px-mobile-sticky-header .px-scope-filters>.px-account-selector,
+  .px-mobile-sticky-header .px-scope-filters>label{display:grid;gap:3px;width:164px;min-width:0;max-width:none}
+  .px-mobile-sticky-header .px-account-selector-label{margin:0;line-height:15px}
+  .px-mobile-sticky-header .px-scope-filters>label{line-height:15px}
+  .px-mobile-sticky-header .px-scope-filters select,
+  .px-mobile-sticky-header .px-account-selector-trigger{box-sizing:border-box;width:100%;max-width:none;height:40px;min-height:40px}
+}
+@media(min-width:1200px){
+  .px-overview-top--markets{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,3fr) minmax(0,1fr);gap:10px;align-items:start}
+  .px-overview-top--markets>.px-overview-executors{display:block;min-width:0}
+  .px-overview-top--markets>.px-market-overview{width:100%;min-width:0}
+  .px-overview-top--markets .px-market-chart{min-height:172px}
+  .px-overview-top--markets>.px-overview-status{display:flex;flex-direction:column;min-width:0;min-height:172px;border:1px solid #244257;border-radius:10px;background:linear-gradient(135deg,#061722,#04101a);overflow:hidden}
+  .px-overview-top--markets .px-overview-status>.px-hero{flex:1;border:0;border-radius:0;box-shadow:none;background:transparent;padding:11px 14px}
+  .px-overview-top--markets .px-health{display:grid;gap:7px}
+  .px-overview-top--markets .px-health p{font-size:12px;line-height:1.5}
+  .px-overview-top--markets .px-health p strong{font-size:11px}
+  .px-overview-top--markets .px-health-check{display:flex;align-items:center;justify-content:space-between;gap:5px}
+  .px-overview-top--markets .px-health-check small{font-size:9px;text-align:left}
+  .px-overview-top--markets .px-health-check .px-button{min-height:28px;padding:4px 8px;font-size:10px}
+  .px-overview-top--markets .px-watchdog{border:0;border-top:1px solid #244257;border-radius:0;background:transparent}
+  .px-overview-top--markets .px-watchdog summary{min-height:36px;padding:8px 14px;gap:6px;font-size:11px}
+  .px-overview-top--markets .px-watchdog-action{font-size:10px}
+  .px-overview-top--markets .px-watchdog-details{display:grid;gap:6px;font-size:11px}
+  .px-overview-top--markets .px-capacity-shard{display:flex;flex-direction:column;align-items:stretch;min-height:172px;padding:14px}
+  .px-overview-top--markets .px-capacity-heading{display:grid;gap:8px}
+  .px-overview-top--markets .px-capacity-heading span{color:var(--px-muted);font-size:12px}
+  .px-overview-top--markets .px-capacity-expand{align-self:flex-start;margin-top:auto}
+  .px-overview-top--markets .px-capacity-details{flex-direction:column;align-items:stretch;overflow-wrap:anywhere}
+  .px-overview-top--markets .px-capacity-notice{min-height:172px}
+}
+@media(max-width:760px){
+  .px-mobile-sticky-header .px-account-selector{min-width:0;max-width:none}
+}

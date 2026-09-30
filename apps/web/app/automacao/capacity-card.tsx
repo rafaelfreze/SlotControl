@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ExecutorObservation } from "./automation-executor-sync";
+import { executorNeedsAttention } from "./capacity-card-presentation";
 import { explainAdmission, pressureExplanation, type AdmissionExplanation } from "@/lib/coinops-capacity/admission-explanation";
 
 type Shard = { id: string; state: string; action: string; binanceWeightCurrent: number | null;
@@ -14,12 +15,14 @@ type Shard = { id: string; state: string; action: string; binanceWeightCurrent: 
   admission?: AdmissionExplanation; dualEngineAdmission?: AdmissionExplanation;
   alerts: Array<{ code: string }> };
 
-export function CapacityCard({ onExecutorObservation }: {
+export function CapacityCard({ onExecutorObservation, attentionOnly = false }: {
   onExecutorObservation?: (shards: ExecutorObservation[]) => void;
+  attentionOnly?: boolean;
 }) {
   const observationCallback = useRef(onExecutorObservation);
   useEffect(() => { observationCallback.current = onExecutorObservation; }, [onExecutorObservation]);
   const [shards, setShards] = useState<Shard[] | null>(null);
+  const [observedNow, setObservedNow] = useState(Date.now);
   const [mutating, setMutating] = useState<string | null>(null);
   const [muteError, setMuteError] = useState<string | null>(null);
   const [expandedShard, setExpandedShard] = useState<string | null>(null);
@@ -46,20 +49,26 @@ export function CapacityCard({ onExecutorObservation }: {
       .then((result) => {
         if (abort.signal.aborted) return;
         const observed = Array.isArray(result?.shards) ? result.shards : [];
+        setObservedNow(Date.now());
         setShards(observed);
         if (observed.length) observationCallback.current?.(observed);
       })
-      .catch(() => { if (!abort.signal.aborted) setShards([]); });
+      .catch(() => { if (!abort.signal.aborted) { setObservedNow(Date.now()); setShards([]); } });
     void refresh();
     const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 30_000);
     return () => { abort.abort(); clearInterval(timer); };
   }, []);
-  return <section className="px-capacity" id="coinops-infrastructure" aria-label="Infraestrutura CoinOps">
-    {shards === null ? <p>Consultando capacidade do executor…</p> : shards.length === 0
-      ? <p role="status">Capacidade indisponível. Novas ativações ficam bloqueadas; motores existentes continuam operando.</p>
-      : shards.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}>
+  const visibleShards = attentionOnly ? shards?.filter((shard) => executorNeedsAttention(shard, observedNow)) : shards;
+  // Keep this component mounted: hidden healthy cards still feed executor sync.
+  if (shards?.length && !visibleShards?.length) return null;
+  return <section className={`px-capacity${attentionOnly ? " px-capacity--attention" : ""}`} id="coinops-infrastructure" aria-label="Infraestrutura CoinOps">
+    {shards === null ? <p className="px-panel px-capacity-notice" role="status">Consultando executores…</p> : shards.length === 0
+      ? <p className="px-panel px-capacity-notice" role="status">Telemetria indisponível. Novas ativações ficam bloqueadas; motores existentes continuam operando.</p>
+      : visibleShards?.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}>
         <div className="px-capacity-heading"><strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
-          <span>{shard.accountCount} contas · {shard.engineCount} motores</span></div>
+          <span>{shard.accountCount} contas · {shard.engineCount} motores</span>
+          {attentionOnly && ["HEALTHY", "OBSERVE"].includes(shard.state) && !shard.alerts.length
+            ? <small role="status">Telemetria sem confirmação recente.</small> : null}</div>
         <button type="button" className="px-capacity-expand" aria-expanded={expandedShard === shard.id}
           aria-controls={`infra-details-${shard.id}`}
           onClick={() => setExpandedShard((current) => current === shard.id ? null : shard.id)}>

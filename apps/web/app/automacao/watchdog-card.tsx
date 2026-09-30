@@ -32,7 +32,7 @@ export function WatchdogCard() {
   const stale = status?.checkedAt && now - Date.parse(status.checkedAt) >= 3 * 60_000;
   const displayStatus = loadState === "loading" ? "ATUALIZANDO" : stale ? "STALE"
     : status?.status ?? "INDISPONÍVEL";
-  return <section className="px-panel px-watchdog" aria-label="Watchdog CoinOps">
+  return <section className="px-panel px-watchdog" data-status={displayStatus} aria-label="Watchdog CoinOps">
     <details>
       <summary><strong>Watchdog · {displayStatus}</strong><span className="px-watchdog-action"><i>Ver detalhes</i><b>Ocultar</b></span></summary>
       <div className="px-watchdog-details">
