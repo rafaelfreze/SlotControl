@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { assertOperationalEnvironment } from "@/lib/execution/testnet-policy";
 import { signedExecutorHeaders } from "@/lib/execution/live-executor-client";
 import { requireLiveIdentityCoverage } from "@/lib/execution/initial-identity-bootstrap";
 import { resolveExecutorForAccount, resolveExecutorShard, withExecutorShard } from "@/lib/execution/executor-shards-server";
@@ -57,7 +58,7 @@ export async function GET() {
       service.from("account_onboarding_checks").select("exchange_account_id,status,evidence,checked_at")
         .eq("operator_id", operator.id).eq("check_key", "BINANCE_CREDENTIAL").order("checked_at", { ascending: false }).limit(100),
       service.from("trading_engines").select("id,exchange_account_id,environment,symbol,quote_asset,status,hard_cap_quote,config")
-        .eq("operator_id", operator.id).in("environment", ["REAL", "TESTNET"]).order("symbol"),
+        .eq("operator_id", operator.id).eq("environment", "REAL").order("symbol"),
       service.from("executor_shards").select("id,egress_ipv4"),
     ]);
     if (accounts.error || checks.error || engines.error || shards.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
@@ -89,6 +90,7 @@ export async function POST(request: NextRequest) {
     if (Buffer.byteLength(raw) > 4096) throw new Error("COINOPS_ADMIN_BODY_TOO_LARGE");
     const input = JSON.parse(raw) as CredentialIntent;
     validateCredentialIntent(input);
+    assertOperationalEnvironment(input.environment ?? "REAL");
     const { operator, service } = await adminScope();
     const accountId = input.accountId!, operation = input.operation!, requestId = input.requestId!;
     if (operation === "ASSIGN") {
@@ -108,6 +110,7 @@ export async function POST(request: NextRequest) {
     if (accountRead.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
     const account = accountRead.data;
     assertOwnedAccount(account, operator.id);
+    assertOperationalEnvironment(account?.onboarding_environment ?? "REAL");
     if (operation === "REASSIGN_STAGED") {
       if (!account) throw new Error("COINOPS_ADMIN_ACCOUNT_DENIED");
       return json(await reassignStagedAccount({
@@ -159,6 +162,7 @@ export async function POST(request: NextRequest) {
     const environment = operation === "CONNECT" ? input.environment!
       : recordedEnvironment ?? account.onboarding_environment ?? [...environments][0]
         ?? (operation === "REVALIDATE" ? input.environment : undefined);
+    assertOperationalEnvironment(environment ?? "REAL");
     if (!["REAL", "TESTNET"].includes(environment ?? "") || environments.size > 1
       || environments.size === 1 && !environments.has(environment)
       || operation === "CONNECT" && recordedEnvironment && recordedEnvironment !== environment

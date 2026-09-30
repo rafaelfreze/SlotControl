@@ -122,7 +122,7 @@ export function BinanceAccountsPanel() {
     <p>Credenciais enviadas por HTTPS ao executor de IP fixo. O Secret não é mostrado após salvar. Cadastro e validação não ativam motores nem enviam ordens.</p>
     <label>Conta<select value={selected} onChange={(event) => setSelected(event.target.value)}>
       <option value="">Adicionar conta Binance</option>
-      {accounts.filter((item) => !item.legacy).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}
+      {accounts.filter((item) => !item.legacy && item.onboardingEnvironment !== "TESTNET").map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}
     </select></label>
     {active?.validation ? <div className="px-onboarding-checks" aria-label="Resultado da validação Binance">
       <p><strong>{active.validation.evidence.status ?? active.validation.status}</strong> · {active.validation.evidence.environment} · {active.validation.evidence.account_identity ?? "Identidade de API não fornecida pela Binance"}</p>
@@ -133,7 +133,7 @@ export function BinanceAccountsPanel() {
     </div> : null}
     {!active && <form className="px-onboarding-form" onSubmit={assign} autoComplete="off">
       <label>Nome da conta<input name="displayName" maxLength={80} required autoComplete="off" /></label>
-      <label>Ambiente<select name="environment" defaultValue="REAL"><option value="REAL">Binance Production</option><option value="TESTNET">Spot Testnet</option></select></label>
+      <input type="hidden" name="environment" value="REAL" />
       <label>Motores planejados<select name="plannedEngines" defaultValue="2"><option value="1">1 motor</option><option value="2">2 motores · BTC e SOL</option></select></label>
       <button type="submit" className="px-button" disabled={busy}>Selecionar executor e obter IP</button>
       <small>Primeiro verificamos capacidade e fixamos o executor desta conta. Cadastro sem credenciais, capital ou ordens. A capacidade será verificada novamente antes da ativação.</small>
@@ -166,7 +166,7 @@ export function BinanceAccountsPanel() {
             void perform("REASSIGN_STAGED", { fromShardId: active.shardId, toShardId: target.id });
         }}>Reatribuir conta preparada · sem ativar</button>
     </details>}
-    {active && !active.validation && !active.onboardingEnvironment && <label>Ambiente para recuperar validação<select value={recoverEnvironment} onChange={(event) => setRecoverEnvironment(event.target.value)}><option value="REAL">Binance Production</option><option value="TESTNET">Spot Testnet</option></select></label>}
+    {active && !active.validation && !active.onboardingEnvironment && <label>Ambiente para recuperar validação<select value={recoverEnvironment} onChange={(event) => setRecoverEnvironment(event.target.value)}><option value="REAL">Binance Production</option></select></label>}
     {active && <div className="px-account-actions">
       <button type="button" className="px-button" disabled={busy} onClick={() => void perform("REVALIDATE", active.validation ? {} : { environment: recoverEnvironment })}>Validar novamente</button>
       <button type="button" className="px-button" disabled={busy || active.status !== "INACTIVE"} onClick={() => void perform("DEACTIVATE", {})}>Desativar conta</button>

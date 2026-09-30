@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertOperationalEnvironment } from "@/lib/execution/testnet-policy";
 import { NextRequest, NextResponse } from "next/server";
 
 import { syncInactiveBinanceAccount } from "@/lib/execution/binance-account-registry-server";
@@ -80,6 +81,7 @@ async function accountEnvironment(scope: Scope, accountId: string): Promise<Envi
     || !account.data.executor_shard_id
     || account.data.onboarding_environment && account.data.onboarding_environment !== environment)
     throw new Error("COINOPS_ENGINE_CREDENTIAL_NOT_VALIDATED");
+  assertOperationalEnvironment(environment);
   return environment as Environment;
 }
 
@@ -175,7 +177,7 @@ export async function GET(request: NextRequest) {
       service.from("trading_engines")
         .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
-        .in("environment", ["REAL", "TESTNET"]).order("symbol"),
+        .eq("environment", "REAL").order("symbol"),
       service.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId),
       service.from("robot_v1_live_runs")

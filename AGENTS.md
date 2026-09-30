@@ -20,8 +20,10 @@ Descubra no Git, código, configuração e documentação tudo que for tecnicame
 
 ## Identidade e limites oficiais
 
+- Testnet operacional foi descontinuada em 30/09/2026 por decisão do proprietário. O menu, onboarding, controles, diagnóstico e cron Testnet ficam desativados pela política versionada `testnet-policy.ts`, mesmo com uma variável de ambiente antiga habilitada. Links antigos redirecionam para REAL sem executar ações. Preservar ledgers, relatórios e testes offline históricos; não reativar Testnet incidentalmente. Production/LIVE não muda. Ver `docs/COINOPS_TESTNET_RETIREMENT.md`.
+
 - Repositório: github.com/rafaelfreze/SlotControl; branch de produção: main.
-- CoinOps é uma plataforma de automação Binance multi-conta. Production/LIVE é o produto principal; Testnet valida operações. Painéis ativos: ADMIN da Automação e VIEWER de cada conta. O modelo manual anterior está descontinuado e não orienta arquitetura, navegação, novas features ou testes. Histórico financeiro e compatibilidade de leitura permanecem preservados.
+- CoinOps é uma plataforma de automação Binance multi-conta. Production/LIVE é o produto operacional; Testnet é somente histórico desde 30/09/2026. Painéis ativos: ADMIN da Automação e VIEWER de cada conta. O modelo manual anterior está descontinuado e não orienta arquitetura, navegação, novas features ou testes. Histórico financeiro e compatibilidade de leitura permanecem preservados.
 - Monorepo: a aplicação Next.js fica em apps/web. Execute scripts Node nessa pasta; no Windows, prefira npm.cmd.
 - Stack atual: Next.js 14.2.35, React 18, TypeScript, Supabase JS/SSR, npm e apps/web/package-lock.json. Node ainda não está declarado; não invente versão nem aplique regra do Next 16. Use a versão comprovada por Vercel/ambiente até uma tarefa específica declarar o runtime.
 - Backend: OnPlay Platform otdfpmsegjxpqrzisfmi; schema operacional coinops.

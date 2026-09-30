@@ -9,6 +9,16 @@ import type { Presentation } from "../../app/automacao/premium-automation";
 
 type View = "overview" | "live" | "shadow" | "testnet";
 const views: View[] = ["overview", "live", "shadow", "testnet"];
+
+for (const width of [390, 1440]) test(`Testnet descontinuada: somente REAL na navegação em ${width}px`, async ({ page }) => {
+  const audit = await mount(page, "live", width);
+  const environments = page.getByRole("navigation", { name: "Ambientes da Automação" });
+  await expect(environments.getByRole("link")).toHaveText(["Real"]);
+  await expect(page.getByRole("link", { name: "Testnet", exact: true })).toHaveCount(0);
+  await expect(page.locator('a[href*="view=testnet"]')).toHaveCount(0);
+  expect((await geometry(page)).overflow).toBe(0);
+  await noSideEffects(page, audit);
+});
 const appRoot = process.cwd();
 const entry = "app/automacao/premium-automation.tsx";
 const styles = ["app/globals.css", "app/compact-redesign.css", "app/official-monitoring.css", "app/official-reports.css",
@@ -614,7 +624,7 @@ test("ciclo ACTIVE não apresenta LIVE verde quando o executor está sem saúde"
 
 for (const width of [390, 1440]) test(`multi-account: A/B quatro mercados em ${width}px`, async ({ page }, testInfo) => {
   const audit = await mount(page, "live", width, 900, automationOperatorFixture());
-  await expect(page.getByRole("navigation", { name: "Ambientes da Automação" }).getByRole("link")).toHaveText(["Testnet", "Real"]);
+  await expect(page.getByRole("navigation", { name: "Ambientes da Automação" }).getByRole("link")).toHaveText(["Real"]);
   const toolbar = page.getByTestId("premium-toolbar");
   for (const label of ["Operações", "Simulador", "Relatórios"]) {
     await expect(toolbar.getByRole("button", { name: label, exact: true })).toHaveCount(0);

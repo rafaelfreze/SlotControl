@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { assertOperationalEnvironment } from "./testnet-policy.ts";
 
 import { BinanceSpotAdapter } from "./binance-spot-adapter.ts";
 import type { EngineContext } from "./operator-context.ts";
@@ -64,7 +65,7 @@ export class BinanceSpotTestnetAdapter {
   }
 
   static fromAccount(engine: EngineContext, runId: string, persistedIds: readonly string[], options: { beforeWrite?: () => Promise<void>; fetcher?: FetchLike; now?: () => number } = {}) {
-    if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
+    assertOperationalEnvironment("TESTNET");
     if (!runId || !TESTNET_SYMBOLS.has(engine.symbol)) throw new Error("COINOPS_TESTNET_ACCOUNT_MARKET_DENIED");
     // Existing legacy engines retain their pinned environment keys. New
     // accounts use the same executor credential vault as Production; the
@@ -116,7 +117,7 @@ export class BinanceSpotTestnetAdapter {
   }
 
   static fromEnvironment(options: { beforeWrite?: () => Promise<void> } = {}) {
-    if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
+    assertOperationalEnvironment("TESTNET");
     const apiKey = process.env.BINANCE_TESTNET_API_KEY?.trim();
     const apiSecret = process.env.BINANCE_TESTNET_API_SECRET?.trim();
     if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
@@ -124,6 +125,7 @@ export class BinanceSpotTestnetAdapter {
   }
 
   static readsFromEnvironment() {
+    assertOperationalEnvironment("TESTNET");
     const apiKey = process.env.BINANCE_TESTNET_API_KEY?.trim();
     const apiSecret = process.env.BINANCE_TESTNET_API_SECRET?.trim();
     if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");
@@ -131,6 +133,7 @@ export class BinanceSpotTestnetAdapter {
   }
 
   static diagnosticFromEnvironment() {
+    assertOperationalEnvironment("TESTNET");
     const apiKey = process.env.BINANCE_TESTNET_API_KEY?.trim();
     const apiSecret = process.env.BINANCE_TESTNET_API_SECRET?.trim();
     if (!apiKey || !apiSecret) throw new Error("COINOPS_TESTNET_CREDENTIALS_MISSING");

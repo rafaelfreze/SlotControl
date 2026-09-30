@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertOperationalEnvironment } from "./testnet-policy";
 
 import { BinanceSpotTestnetAdapter, type TestnetOrder, type TestnetTrade } from "./binance-spot-testnet-adapter";
 import { BinanceSpotAdapter } from "./binance-spot-adapter";
@@ -72,8 +73,8 @@ async function intent(service: Service, run: Run, decision: StrategyDecision, se
 }
 
 function assertTestnetEnvironment() {
+  assertOperationalEnvironment("TESTNET");
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId()) throw new Error("COINOPS_TESTNET_SCHEMA_SCOPE_INVALID");
-  if (process.env.COINOPS_TESTNET_ENABLED !== "true") throw new Error("COINOPS_TESTNET_DISABLED");
 }
 
 async function queryRun(service: Service, runId: string): Promise<Run> {

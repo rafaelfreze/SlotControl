@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveTestnetCredentials } from "./testnet-account-credentials.ts";
 import { BinanceSpotTestnetAdapter } from "./binance-spot-testnet-adapter.ts";
-import { testnetClientOrderId, testnetInitialCapital } from "./robot-v1-testnet-cycle.ts";
+import { testnetInitialCapital } from "./robot-v1-testnet-cycle.ts";
 import { distributeLiveCapital } from "./live-capital-distribution.ts";
 import type { EngineContext } from "./operator-context.ts";
 
@@ -39,31 +39,16 @@ test("Testnet credentials resolve exact account + engine; no Production or Rafae
   assert.throws(() => resolveTestnetCredentials(engine(2), { COINOPS_TESTNET_ACCOUNTS_JSON: "[null]" }), /INVALID/);
 });
 
-test("Testnet routed adapter denies another engine's order/cancel before network", async () => {
+test("retired Testnet denies all account factories before network, even with stale enabled env", () => {
   const names = ["COINOPS_TESTNET_ACCOUNTS_JSON", "COINOPS_TESTNET_ENABLED"] as const;
   const previous = names.map((name) => process.env[name]);
   process.env.COINOPS_TESTNET_ENABLED = "true";
   process.env.COINOPS_TESTNET_ACCOUNTS_JSON = JSON.stringify(entries);
   try {
-    const calls: Array<{ method: string; key: string | null }> = [];
-    let responseSymbol = "BTCUSDT";
-    const runId = id(20), ownId = testnetClientOrderId(runId, "BTC", 1, "BUY", 1);
-    const foreignId = testnetClientOrderId(id(21), "BTC", 1, "BUY", 1);
-    const adapter = BinanceSpotTestnetAdapter.fromAccount(engine(2), runId, [], { now: () => 1000,
-      fetcher: async (url, init) => {
-        calls.push({ method: init?.method ?? "GET", key: new Headers(init?.headers).get("X-MBX-APIKEY") });
-        return url.endsWith("/api/v3/time") ? Response.json({ serverTime: 1000 }) : Response.json({
-          orderId: 42, clientOrderId: ownId, symbol: responseSymbol, side: "BUY", status: "NEW", executedQty: "0", cummulativeQuoteQty: "0", price: "60000" });
-      } });
-    await assert.rejects(adapter.getOwnedOrder("BTCUSDT", foreignId), /ACCOUNT_ORDER_DENIED/);
-    await assert.rejects(adapter.getOwnedOrder("BTCUSDT", `${ownId}a`), /ORDER_NOT_OWNED/);
-    await assert.rejects(adapter.cancelOwnedOrder("BTCUSDT", "42", foreignId), /ACCOUNT_ORDER_DENIED/);
-    await assert.rejects(adapter.getOwnedOrder("BTCUSDC", ownId), /ACCOUNT_MARKET_DENIED/);
-    assert.equal(calls.length, 0);
-    assert.equal((await adapter.getOwnedOrder("BTCUSDT", ownId))?.orderId, "42");
-    assert.ok(calls.every((call) => call.method === "GET"));
-    assert.equal(calls.at(-1)?.key, "fake-key-2");
-    responseSymbol = "BTCUSDC";
-    await assert.rejects(adapter.getOwnedOrder("BTCUSDT", ownId), /ORDER_RESPONSE_INVALID/);
+    let calls = 0;
+    for (const n of [2, 3]) assert.throws(() => BinanceSpotTestnetAdapter.fromAccount(engine(n), id(20), [], {
+      fetcher: async () => { calls++; throw new Error("Network must not be reached"); },
+    }), /COINOPS_TESTNET_DISABLED/);
+    assert.equal(calls, 0);
   } finally { names.forEach((name, n) => { if (previous[n] === undefined) delete process.env[name]; else process.env[name] = previous[n]; }); }
 });

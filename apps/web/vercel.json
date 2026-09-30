@@ -67,10 +67,6 @@
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/cron/testnet-reactor",
-      "schedule": "* * * * *"
-    },
-    {
       "path": "/api/cron/live-execution",
       "schedule": "* * * * *"
     },

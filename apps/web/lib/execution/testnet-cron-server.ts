@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isTestnetEnabled } from "./testnet-policy";
 import { NextRequest, NextResponse } from "next/server";
 
 import { advanceTestnetRun } from "./robot-v1-testnet-server";
@@ -13,7 +14,7 @@ const headers = { "cache-control": "no-store" };
 export async function handleTestnetCron(request: NextRequest, mode: TestnetCronMode) {
   const secret = process.env.CRON_SECRET;
   if (!secret || request.headers.get("authorization") !== `Bearer ${secret}`) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401, headers });
-  if (process.env.COINOPS_TESTNET_ENABLED !== "true") {
+  if (!isTestnetEnabled()) {
     console.warn(JSON.stringify({ event: "COINOPS_TESTNET_CRON", mode, status: "DISABLED" }));
     return NextResponse.json({ status: "DISABLED", mode }, { headers });
   }

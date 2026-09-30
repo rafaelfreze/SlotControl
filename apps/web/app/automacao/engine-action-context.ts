@@ -1,4 +1,5 @@
 import "server-only";
+import { assertOperationalEnvironment } from "@/lib/execution/testnet-policy";
 
 import { isIdentity, type EngineEnvironment, type OperatorScope } from "@/lib/execution/operator-context";
 import { resolveOperatorEngine } from "@/lib/execution/operator-context-server";
@@ -10,6 +11,7 @@ export type ActionEngineIds = { exchange_account_id: string; trading_engine_id: 
 
 export async function actionEngine(input: ActionEngineIds | FormData, environment: EngineEnvironment,
   asset?: string, scope?: OperatorScope) {
+  assertOperationalEnvironment(environment);
   const account = input instanceof FormData ? input.get("exchange_account_id") : input.exchange_account_id;
   const engine = input instanceof FormData ? input.get("trading_engine_id") : input.trading_engine_id;
   if (!isIdentity(account) || !isIdentity(engine)) throw new Error("COINOPS_ENGINE_EXPLICIT_SELECTION_REQUIRED");

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isTestnetEnabled } from "../execution/testnet-policy";
 
 import { signedExecutorHeaders } from "@/lib/execution/live-executor-client";
 import { resolveExecutorShard, withExecutorShard } from "@/lib/execution/executor-shards-server";
@@ -114,6 +115,7 @@ export async function refreshExecutorCapacity() {
       return { status: "CAPACITY_UNKNOWN" };
     }
     const production = await saveShardCapacity(service, shard, sample, ledger);
+    if (!isTestnetEnabled()) return { ...production, environments: { TESTNET: { status: "DISABLED" } } };
     // Testnet telemetry is optional on older executors. Its absence/failure must
     // never invalidate or delay publication of a successful REAL observation.
     let testnet: { status: string } = { status: "CAPACITY_UNKNOWN" };

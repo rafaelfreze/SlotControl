@@ -1,10 +1,12 @@
 import "server-only";
+import { isTestnetEnabled } from "./testnet-policy";
 
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 
 /** A paused environment must not poll exchanges or advance virtual cycles. */
 export async function hasActiveNonRealEngine(environment: "SHADOW" | "TESTNET") {
+  if (environment === "TESTNET" && !isTestnetEnabled()) return false;
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_CRON_SCHEMA_SCOPE_INVALID");
   const service = createServiceRoleClient();
   const { data: operators, error: operatorError } = await service.from("operators")

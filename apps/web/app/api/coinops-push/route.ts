@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { assertOperationalEnvironment } from "@/lib/execution/testnet-policy";
 
 import { endpointHash, pushPublicKey, sendToDevice } from "@/lib/coinops-notifications/push-server";
 import { alertDeepLink, publicPushReason } from "@/lib/coinops-notifications/push-policy";
@@ -70,6 +71,7 @@ export async function POST(request: NextRequest) {
     if (!["REGISTER", "STATUS", "TEST", "DISABLE", "PREFERENCES", "TESTNET_PROBE"].includes(action))
       throw new Error("COINOPS_PUSH_ACTION_INVALID");
     if (action === "TESTNET_PROBE") {
+      assertOperationalEnvironment("TESTNET");
       if (typeof input.engineId !== "string" || !/^[0-9a-f-]{36}$/i.test(input.engineId))
         throw new Error("COINOPS_PUSH_TESTNET_SCOPE_INVALID");
       const engine = await service.from("trading_engines")
@@ -189,7 +191,7 @@ export async function POST(request: NextRequest) {
     if (result.error) throw new Error("COINOPS_PUSH_TEST_AUDIT_FAILED");
     return json({ delivered: true });
   } catch (error) {
-    const code = error instanceof Error && /^COINOPS_PUSH_[A-Z0-9_]+$/.test(error.message)
+    const code = error instanceof Error && /^(?:COINOPS_PUSH_[A-Z0-9_]+|COINOPS_TESTNET_DISABLED)$/.test(error.message)
       ? error.message : "COINOPS_PUSH_REQUEST_FAILED";
     return json({ error: code }, code.includes("AUTH") || code.includes("DENIED") ? 403 : 400);
   }

@@ -1,6 +1,7 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
+import { assertOperationalEnvironment } from "@/lib/execution/testnet-policy";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
@@ -23,6 +24,7 @@ async function operatorScope() {
 
 /** Administrative preparation only. Partial retries remain INACTIVE and never dispatch. */
 export async function saveAccountOnboardingDraft(input: AccountDraft) {
+  assertOperationalEnvironment(input.environment);
   const draft = validateAccountDraft(input), { operator, service } = await operatorScope();
   const existing = await service.from("exchange_accounts").select("id,operator_id,display_name,status,kill_switch,is_legacy_default")
     .eq("id", draft.accountId).maybeSingle();

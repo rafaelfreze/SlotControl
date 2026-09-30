@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isTestnetEnabled } from "@/lib/execution/testnet-policy";
 
 import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
@@ -10,6 +11,8 @@ export const runtime = "nodejs";
 export const preferredRegion = "gru1";
 
 export async function GET() {
+  if (!isTestnetEnabled()) return NextResponse.json({ ok: false, error: "COINOPS_TESTNET_DISABLED" },
+    { status: 410, headers: { "cache-control": "no-store" } });
   try {
     const authenticated = createClient();
     const { data: { user } } = await authenticated.auth.getUser();

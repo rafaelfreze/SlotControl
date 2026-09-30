@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
+import { isRetiredTestnetView, isTestnetEnabled } from "@/lib/execution/testnet-policy";
 
 import { diagnoseBinanceSpotTestnet } from "@/lib/execution/binance-spot-testnet-adapter";
 import { SOL_BRL_PUBLIC_SNAPSHOT, assessSolBrlPilot } from "@/lib/execution/robot-v1-live-readiness";
@@ -137,6 +138,10 @@ async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, acc
 }
 
 export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string; adjust?: string; account?: string; market?: string; engine?: string; preparation?: string } }) {
+  // Retired URLs must not load a ledger, diagnose an exchange or select a REAL
+  // engine using an old Testnet account/engine query parameter.
+  if (isRetiredTestnetView(searchParams) || searchParams?.view === "overview")
+    redirect("/automacao?view=live&account=ALL");
   const timing = uiReadTimer("automacao");
   if (!isSupabaseConfigured()) redirect("/login?setup=missing-env");
   const supabase = createClient();
@@ -370,7 +375,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     solBrlPilot: { ...assessSolBrlPilot(SOL_BRL_PUBLIC_SNAPSHOT.filters, SOL_BRL_PUBLIC_SNAPSHOT.priceBrl), observedAt: SOL_BRL_PUBLIC_SNAPSHOT.observedAt, status: SOL_BRL_PUBLIC_SNAPSHOT.status, priceBrl: SOL_BRL_PUBLIC_SNAPSHOT.priceBrl, priceTick: SOL_BRL_PUBLIC_SNAPSHOT.filters.priceTick, quantityStep: SOL_BRL_PUBLIC_SNAPSHOT.filters.quantityStep, minQuantity: SOL_BRL_PUBLIC_SNAPSHOT.filters.minQuantity, minNotional: SOL_BRL_PUBLIC_SNAPSHOT.filters.minNotional, orderTypes: SOL_BRL_PUBLIC_SNAPSHOT.orderTypes },
     testnet,
     testnetActionError: searchParams?.testnetError && /^COINOPS_TESTNET_[A-Z_]+$/.test(searchParams.testnetError) ? searchParams.testnetError : null,
-    testnetEnabled: process.env.COINOPS_TESTNET_ENABLED === "true",
+    testnetEnabled: isTestnetEnabled(),
     testnetRun,
     testnetSlots: testnetAssetData.SOL?.slots || [],
     testnetOrders: testnetAssetData.SOL?.orders || [],
