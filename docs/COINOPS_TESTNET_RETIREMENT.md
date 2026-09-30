@@ -1,5 +1,20 @@
 # Descontinuação operacional da Testnet — 30/09/2026
 
+## Runtime do executor
+
+A política versionada `testnet-policy.ts` também é importada pelo servidor
+do executor. Após assinatura e isolamento de shard, qualquer envelope
+TESTNET ou `/v1/testnet/transport` recebe HTTP 410
+`COINOPS_TESTNET_DISABLED`, antes de vault, registry ou Binance. Flags
+antigas não reativam Testnet. `/v1/capacity` coleta somente REAL e informa
+Testnet DISABLED/RETIRED, sem evidência de peso, nunca peso zero.
+Não enumera credenciais históricas nem inicia a sonda pública Testnet.
+
+Testes offline históricos do transporte continuam disponíveis. Suite do
+executor: 102 PASS, incluindo rejeição de GET/order/test/POST/DELETE e
+isolamento. Isso não prova rollout: publicar sequencialmente nos shards
+pelo manifest/runbook e exigir FLEET_PARITY_PASS antes de fechar.
+
 Decisão do proprietário: ocultar e desativar Testnet. Somente REAL permanece
 no menu e no cadastro de contas. `testnet-policy.ts` é a política versionada;
 `COINOPS_TESTNET_ENABLED=true` remanescente não reabre a operação.

@@ -104,12 +104,13 @@ test("empty Executor02 proves infrastructure health and measured weight without 
     assert.equal(sample.binance_weight_current, 2);
     assert.equal(sample.binance_weight_samples, 1);
     assert.equal(sample.environments.TESTNET.shard_id, "executor-02");
-    assert.equal(sample.environments.TESTNET.binance_weight_current, 2);
-    assert.equal(sample.environments.TESTNET.binance_weight_samples, 1);
-    assert.equal(sample.environments.TESTNET.weight_observed_at, new Date(NOW).toISOString());
-    assert.equal(sample.environments.TESTNET.cpu_percent, sample.cpu_percent);
-    assert.equal(sample.environments.TESTNET.registry_scope, "CREDENTIAL_BOUND_TRANSPORT");
-    assert.deepEqual(sample.environments.TESTNET.credential_account_ids, []);
+    assert.equal(sample.environments.TESTNET.binance_weight_current, null);
+    assert.equal(sample.environments.TESTNET.binance_weight_samples, 0);
+    assert.equal(sample.environments.TESTNET.weight_observed_at, null);
+    assert.equal(sample.environments.TESTNET.status, "DISABLED");
+    assert.equal(sample.environments.TESTNET.registry_scope, "RETIRED");
+    assert.equal(sample.environments.TESTNET.credential_account_ids, undefined);
+    assert.ok(calls.every((call) => !call.url.includes("testnet.binance.vision")));
     assert.equal(sample.environments.TESTNET.engine_count, undefined);
     assert.ok(calls.every((call) => call.method === "GET"));
     assert.ok(calls.every((call) => !call.url.includes("account") && !call.url.includes("order")));
@@ -129,7 +130,7 @@ test("Testnet telemetry outage does not invalidate Production capacity and never
     assert.equal(sample.binance_weight_current, 2);
     assert.equal(sample.environments.TESTNET.binance_weight_current, null);
     assert.equal(sample.environments.TESTNET.weight_observed_at, null);
-    assert.equal(sample.environments.TESTNET.request_errors_last_5m, 1);
+    assert.equal(sample.environments.TESTNET.request_errors_last_5m, 0);
     assert.equal(sample.request_errors_last_5m, 0);
   } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
 });
@@ -228,23 +229,24 @@ test("Testnet forwarding needs own-shard signature and locally bound account cre
       trading_engine_id: "10000000-0000-4000-8000-000000000007", symbol: "SOLUSDT",
       method: "GET", path: "/api/v3/account", params: {} };
     const valid = await post(running.url, "/v1/testnet/transport", payload, `TESTNET:${payload.request_id}`);
-    assert.equal(valid.status, 200); assert.equal((await valid.json()).executor_shard_id, "executor-02");
-    assert.equal(calls.length, 2);
+    assert.equal(valid.status, 410); assert.equal((await valid.json()).error, "COINOPS_TESTNET_DISABLED");
+    assert.equal(calls.length, 0);
     const other = { ...payload, exchange_account_id: ACCOUNT_A, credential_ref: `account_${ACCOUNT_A.replaceAll("-", "")}` };
     const denied = await post(running.url, "/v1/testnet/transport", other, `TESTNET:${other.request_id}`);
-    assert.equal(denied.status, 503); assert.equal((await denied.json()).error, "EXECUTOR_BINANCE_CREDENTIALS_MISSING");
-    assert.equal(calls.length, 2);
+    assert.equal(denied.status, 410); assert.equal((await denied.json()).error, "COINOPS_TESTNET_DISABLED");
+    assert.equal(calls.length, 0);
     const capacityId = randomUUID();
     const capacityResponse = await post(running.url, "/v1/capacity",
       { executor_shard_id: "executor-02", request_id: capacityId }, `CAPACITY:${capacityId}`);
     const capacity = await capacityResponse.json();
     assert.equal(capacityResponse.status, 200);
-    assert.deepEqual(capacity.environments.TESTNET.credential_account_ids, [ACCOUNT_B]);
+    assert.equal(capacity.environments.TESTNET.status, "DISABLED");
+    assert.equal(capacity.environments.TESTNET.credential_account_ids, undefined);
     assert.deepEqual(capacity.account_ids, []);
   } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
 });
 
-test("Testnet financial writes obey executor flags while reads and no-order probes remain available", async () => {
+test("retired Testnet rejects writes, reads and no-order probes regardless of stale execution flags", async () => {
   for (const flags of [{ tradingEnabled: false, killSwitch: true },
     { tradingEnabled: true, killSwitch: true }, { tradingEnabled: true, killSwitch: false }]) {
     const calls = [], running = await serve({ ...flags, fetcher: async (url, init) => {
@@ -271,16 +273,15 @@ test("Testnet financial writes obey executor flags while reads and no-order prob
         origClientOrderId: clientId, cancelRestrictions: "ONLY_NEW",
         newClientOrderId: `COV1-C-${createHmac("sha256", "coinops-testnet-cancel-id").update(clientId).digest("hex").slice(0, 18)}` } }]) {
         const response = await submit(input);
-        const allowed = flags.tradingEnabled && !flags.killSwitch;
-        assert.equal(response.status, allowed ? 200 : 403);
-        if (!allowed) assert.equal((await response.json()).error, "EXECUTOR_TRADING_DISABLED");
+        assert.equal(response.status, 410);
+        assert.equal((await response.json()).error, "COINOPS_TESTNET_DISABLED");
       }
       assert.equal(calls.filter((call) => call.path === "/api/v3/order").length,
-        flags.tradingEnabled && !flags.killSwitch ? 2 : 0);
-      assert.equal((await submit({ method: "GET", path: "/api/v3/account", params: {} })).status, 200);
+        0);
+      assert.equal((await submit({ method: "GET", path: "/api/v3/account", params: {} })).status, 410);
       assert.equal((await submit({ method: "POST", path: "/api/v3/order/test", params: {
-        symbol: "BTCUSDT", side: "BUY", type: "MARKET", quoteOrderQty: "11" } })).status, 200);
-      assert.equal(calls.filter((call) => call.path === "/api/v3/order/test").length, 1);
+        symbol: "BTCUSDT", side: "BUY", type: "MARKET", quoteOrderQty: "11" } })).status, 410);
+      assert.equal(calls.length, 0);
     } finally { await running.close(); await rm(running.stateDirectory, { recursive: true, force: true }); }
   }
 });
