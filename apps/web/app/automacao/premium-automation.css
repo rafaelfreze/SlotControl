@@ -349,7 +349,7 @@
 /* One observation component per source; desktop rearranges presentation only. */
 .px-overview-top,.px-overview-executors,.px-overview-status{display:contents}
 .px-capacity-notice{margin:0;padding:14px;color:var(--px-muted);font-size:12px;line-height:1.5}
-.px-capacity--attention .px-capacity-heading strong{color:#ffd166}
+.px-capacity-shard[data-attention="true"] .px-capacity-heading strong{color:#ffd166}
 .px-watchdog:not([data-status="HEALTHY"]) summary strong{color:#ffd166}
 .px-watchdog[data-status="ATUALIZANDO"] summary strong{color:#78b9dc}
 @media(min-width:761px){
@@ -362,7 +362,7 @@
   .px-mobile-sticky-header .px-account-selector-trigger{box-sizing:border-box;width:100%;max-width:none;height:40px;min-height:40px}
 }
 @media(min-width:1200px){
-  .px-overview-top--markets{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,3fr) minmax(0,1fr);gap:10px;align-items:start}
+  .px-overview-top--markets{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,3fr) minmax(0,1fr);gap:10px;align-items:stretch}
   .px-overview-top--markets>.px-overview-executors{display:block;min-width:0}
   .px-overview-top--markets>.px-market-overview{width:100%;min-width:0}
   .px-overview-top--markets .px-market-chart{min-height:172px}
@@ -384,7 +384,43 @@
   .px-overview-top--markets .px-capacity-expand{align-self:flex-start;margin-top:auto}
   .px-overview-top--markets .px-capacity-details{flex-direction:column;align-items:stretch;overflow-wrap:anywhere}
   .px-overview-top--markets .px-capacity-notice{min-height:172px}
+  .px-overview-top--markets .px-market-chart-grid{height:100%}
+  .px-overview-top--markets .px-market-chart{height:100%;box-sizing:border-box}
 }
 @media(max-width:760px){
   .px-mobile-sticky-header .px-account-selector{min-width:0;max-width:none}
 }
+
+/* One aligned home card: faults first, available capacity next, at most five. */
+.px-capacity--overview{box-sizing:border-box;min-width:0;min-height:172px;height:100%;padding:10px;gap:4px;align-content:start}
+.px-capacity-title{display:flex;align-items:center;justify-content:space-between;gap:5px;margin-bottom:3px}
+.px-capacity-title h2{font-size:12px;margin:0}
+.px-capacity-title small,.px-capacity-remainder{font-size:9px;color:var(--px-muted)}
+.px-capacity--overview .px-capacity-shard{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px;min-height:25px;padding:0;border:0;border-radius:0;background:none;box-shadow:none}
+.px-capacity--overview .px-capacity-heading{display:block;min-width:0}
+.px-capacity--overview .px-capacity-heading strong{display:block;font-size:10px;line-height:1.4;overflow-wrap:anywhere}
+.px-capacity--overview .px-capacity-heading>span{display:none}
+.px-capacity-availability{font-size:9px;white-space:nowrap;color:#ffd166}
+.px-capacity-availability[data-available="true"]{color:#58d7b4}
+.px-capacity--overview .px-capacity-expand{align-self:center;margin:0;padding:2px 5px;font-size:17px;min-width:24px;min-height:24px}
+.px-capacity--overview .px-capacity-details{grid-column:1/-1;flex-direction:column;align-items:stretch;overflow-wrap:anywhere;font-size:11px}
+.px-capacity--overview .px-capacity-notice{min-height:0;padding:0;border:0;background:none}
+@media(max-width:1199px){.px-capacity--overview{min-height:0;height:auto}.px-capacity--overview .px-capacity-shard{min-height:32px}.px-capacity--overview .px-capacity-heading strong{font-size:12px}}
+
+/* Compact native-currency account tiles: 30 per batch, never truncate values. */
+.px-account-grid--list{grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.px-account-grid--list .px-account-card{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;align-content:start;align-items:start;gap:6px;min-width:0;padding:9px!important}
+.px-account-grid--list .px-account-card header{display:grid;grid-column:auto;gap:4px;min-width:0;justify-content:stretch}
+.px-account-grid--list .px-account-card header strong{font-size:13px;line-height:1.3;overflow-wrap:anywhere}
+.px-account-grid--list .px-account-card header .px-badge{justify-self:start;font-size:9px;padding:3px 5px}
+.px-account-counts{display:flex;flex-wrap:wrap;gap:2px 7px;min-width:0;font-size:10px;line-height:1.4;color:var(--px-muted)}
+.px-account-counts b{color:var(--px-text)}
+.px-account-grid--list .px-account-currency{display:grid;grid-template-columns:minmax(0,1fr);gap:3px;font-size:10px;min-width:0;border-top:1px solid #244257;padding-top:5px}
+.px-account-grid--list .px-account-currency b{font-size:10px}
+.px-account-grid--list .px-account-currency>span{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 4px;min-width:0}
+.px-account-grid--list .px-account-currency strong{font-size:12px;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+.px-account-grid--list .px-account-card .px-caption{display:block;justify-self:end;font-size:10px;margin:0}
+@media(min-width:1100px){.px-account-grid--list{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media(min-width:1400px){.px-account-grid--list{grid-template-columns:repeat(8,minmax(0,1fr))}}
+@media(min-width:1800px){.px-account-grid--list{grid-template-columns:repeat(10,minmax(0,1fr))}}
+@media(max-width:599px){.px-account-grid--list{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.px-account-grid--list .px-account-card{padding:8px!important}}

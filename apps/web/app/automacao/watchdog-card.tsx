@@ -9,7 +9,7 @@ type Watchdog = { status: string; checkedAt: string | null;
   lastIncident: { detected_condition: string; opened_at: string; result: string } | null;
   autoRecoveries24h: number };
 
-export function WatchdogCard() {
+export function WatchdogCard({ attentionOnly = false }: { attentionOnly?: boolean }) {
   const [status, setStatus] = useState<Watchdog | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [now, setNow] = useState(Date.now);
@@ -32,6 +32,8 @@ export function WatchdogCard() {
   const stale = status?.checkedAt && now - Date.parse(status.checkedAt) >= 3 * 60_000;
   const displayStatus = loadState === "loading" ? "ATUALIZANDO" : stale ? "STALE"
     : status?.status ?? "INDISPONÍVEL";
+  // Keep collection mounted; account details expose only actual failures.
+  if (attentionOnly && (loadState === "loading" || displayStatus === "HEALTHY")) return null;
   return <section className="px-panel px-watchdog" data-status={displayStatus} aria-label="Watchdog CoinOps">
     <details>
       <summary><strong>Watchdog · {displayStatus}</strong><span className="px-watchdog-action"><i>Ver detalhes</i><b>Ocultar</b></span></summary>

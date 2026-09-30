@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ExecutorObservation } from "./automation-executor-sync";
-import { executorNeedsAttention } from "./capacity-card-presentation";
+import { executorNeedsAttention, selectOverviewExecutors } from "./capacity-card-presentation";
 import { explainAdmission, pressureExplanation, type AdmissionExplanation } from "@/lib/coinops-capacity/admission-explanation";
 
 type Shard = { id: string; state: string; action: string; binanceWeightCurrent: number | null;
@@ -15,8 +15,9 @@ type Shard = { id: string; state: string; action: string; binanceWeightCurrent: 
   admission?: AdmissionExplanation; dualEngineAdmission?: AdmissionExplanation;
   alerts: Array<{ code: string }> };
 
-export function CapacityCard({ onExecutorObservation, attentionOnly = false }: {
+export function CapacityCard({ onExecutorObservation, overview = false, attentionOnly = false }: {
   onExecutorObservation?: (shards: ExecutorObservation[]) => void;
+  overview?: boolean;
   attentionOnly?: boolean;
 }) {
   const observationCallback = useRef(onExecutorObservation);
@@ -58,21 +59,28 @@ export function CapacityCard({ onExecutorObservation, attentionOnly = false }: {
     const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 30_000);
     return () => { abort.abort(); clearInterval(timer); };
   }, []);
-  const visibleShards = attentionOnly ? shards?.filter((shard) => executorNeedsAttention(shard, observedNow)) : shards;
-  // Keep this component mounted: hidden healthy cards still feed executor sync.
-  if (shards?.length && !visibleShards?.length) return null;
-  return <section className={`px-capacity${attentionOnly ? " px-capacity--attention" : ""}`} id="coinops-infrastructure" aria-label="Infraestrutura CoinOps">
+  const visibleShards = overview && shards ? selectOverviewExecutors(shards, observedNow)
+    : attentionOnly ? shards?.filter((shard) => executorNeedsAttention(shard, observedNow)) : shards;
+  // The full observation still feeds sync, even when the home shows only five.
+  if (attentionOnly && (shards === null || shards.length > 0 && !visibleShards?.length)) return null;
+  return <section className={`px-capacity${overview ? " px-panel px-capacity--overview" : ""}`} id="coinops-infrastructure" aria-label="Infraestrutura CoinOps">
+    {overview ? <header className="px-capacity-title"><h2>Executores</h2><small>Falhas primeiro</small></header> : null}
     {shards === null ? <p className="px-panel px-capacity-notice" role="status">Consultando executores…</p> : shards.length === 0
       ? <p className="px-panel px-capacity-notice" role="status">Telemetria indisponível. Novas ativações ficam bloqueadas; motores existentes continuam operando.</p>
-      : visibleShards?.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}>
+      : visibleShards?.map((shard) => <div key={shard.id} className="px-panel px-capacity-shard" id={`infra-${shard.id}`}
+        data-attention={executorNeedsAttention(shard, observedNow)}>
         <div className="px-capacity-heading"><strong>{shard.id.replace("executor-", "Executor ")} · {shard.state}</strong>
           <span>{shard.accountCount} contas · {shard.engineCount} motores</span>
-          {attentionOnly && ["HEALTHY", "OBSERVE"].includes(shard.state) && !shard.alerts.length
+          {!overview && executorNeedsAttention(shard, observedNow) && ["HEALTHY", "OBSERVE"].includes(shard.state) && !shard.alerts.length
             ? <small role="status">Telemetria sem confirmação recente.</small> : null}</div>
+        {overview ? <span className="px-capacity-availability" data-available={!executorNeedsAttention(shard, observedNow) && shard.canAddEngine}
+          title={executorNeedsAttention(shard, observedNow) ? "Verificar saúde e telemetria do executor" : shard.canAddEngine ? "Admissão disponível para +1 motor" : "Sem espaço para nova admissão"}>
+          {executorNeedsAttention(shard, observedNow) ? "Verificar" : shard.canAddEngine ? "+1 SIM" : "+1 NÃO"}</span> : null}
         <button type="button" className="px-capacity-expand" aria-expanded={expandedShard === shard.id}
           aria-controls={`infra-details-${shard.id}`}
+          aria-label={`${expandedShard === shard.id ? "Ocultar" : "Ver"} detalhes de ${shard.id.replace("executor-", "Executor ")}`}
           onClick={() => setExpandedShard((current) => current === shard.id ? null : shard.id)}>
-          {expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</button>
+          {overview ? expandedShard === shard.id ? "−" : "›" : expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</button>
         <div className={`px-capacity-details${expandedShard === shard.id ? " is-expanded" : ""}`} id={`infra-details-${shard.id}`}>
         <button type="button" className="px-button px-capacity-mute" disabled={mutating === shard.id}
           onClick={() => void toggleWarnings(shard)}>{shard.warningsMuted
@@ -113,6 +121,8 @@ export function CapacityCard({ onExecutorObservation, attentionOnly = false }: {
         {shard.alerts.map((alert) => <small key={alert.code} role="status">{alert.code}</small>)}
         </div>
       </div>)}
+    {overview && shards && shards.length > (visibleShards?.length ?? 0)
+      ? <small className="px-capacity-remainder">{visibleShards?.length} de {shards.length} executores neste resumo</small> : null}
     {muteError ? <p role="alert">{muteError}</p> : null}
   </section>;
 }

@@ -62,7 +62,8 @@ test("home stays compact with no greeting and account pagination ranked by opera
   assert.doesNotMatch(source, /Seu robô está operando no servidor/);
   assert.match(source, /rankPremiumAccountsByOperatedBalance\(accounts, assets\)/);
   assert.match(source, /rankedAccounts\.slice\(0, accountLimit\)/);
-  assert.match(source, /setAccountLimit\(accountLimit \+ 10\)/);
+  assert.match(source, /setAccountLimit\(accountLimit \+ 30\)/);
+  assert.match(source, /setAccountLimit\(30\)/);
 });
 
 test("watchdog starts collapsed and reveals operational evidence on demand", () => {
