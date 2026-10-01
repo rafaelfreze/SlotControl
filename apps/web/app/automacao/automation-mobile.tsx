@@ -43,7 +43,7 @@ export type LiveAssetData = {
     last_reconciled_at: string | null; last_error: string | null; config_version: number;
     gain_rate: number | string; entry_spacing: number | string };
   slots: Array<{ slot_number: number; entry_state: string; target_buy_price: number | string;
-    operational_rank: number | null; post_ath_group: string | null;
+    operational_rank: number | null; grid_operational_rank?: number | null; post_ath_group: string | null;
     post_ath_group_rank: number | null; operation_sequence: number;
     position_quantity: number | string; position_committed_brl: number | string;
     missed_at: string | null }>;

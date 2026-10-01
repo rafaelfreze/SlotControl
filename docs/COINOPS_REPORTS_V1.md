@@ -138,3 +138,7 @@ Testes da camada ficam em `apps/web/lib/coinops-reports/*.test.ts` e integram `n
 ## Acompanhamento por ambiente e ativo
 
 Shadow, Testnet e Real usam a mesma composição visual de resultados na Automação: seleção BTC/SOL, KPIs, slots, gráfico diário, ganhos, eventos e reconciliação. A seleção troca somente a apresentação; não inicia nem modifica execução. Cada ativo Testnet carrega seu próprio run e ledger via cliente autenticado/RLS, sem reutilizar slots ou ordens de outro ativo. Sem run, o painel informa ausência de execução. Saldos fictícios da conta permanecem distintos do capital do robô. Real exibe consultas Production e ausência de operações CoinOps enquanto LIVE estiver bloqueado. A Visão Geral compara os três ambientes sem somar capitais ou lucros entre simulação, fundos fictícios e dinheiro real.
+
+## v15 — apresentação operacional de slots
+
+O snapshot LIVE distingue rank da grade de rank vigente, posição visual, Mês/meta e lifetime. A ordem reutiliza estado + rank da Strategy Engine, sem escrever no ledger. Cutoff histórico ou fonte incompleta não recebe projeção atual. Ver [contrato de apresentação](./COINOPS_OPERATIONAL_SLOT_PRESENTATION.md).

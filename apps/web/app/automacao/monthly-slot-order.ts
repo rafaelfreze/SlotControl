@@ -1,9 +1,8 @@
 import type { MonthlySlotStatus } from "../../lib/execution/monthly-slot-policy.ts";
+import { compareOperationalSlots, isOperationalOpen as isOpen } from "../../lib/slotgain/operational-slot-order.ts";
 
 export type MonthlySlotFilter = "operational" | "physical" | "gain_desc" | "gain_asc" | "reached" | "eligible" | "open" | "waiting";
 
-const isOpen = (state: string) => ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(state);
-const stateOrder = (state: string) => isOpen(state) ? 0 : state === "ARMED" ? 1 : 2;
 
 /** Sorts the existing slot list; physical identities and ledger rows never change. */
 export function orderMonthlySlotRows<T>(rows: readonly T[], statuses: readonly MonthlySlotStatus[], slotNumber: (row: T) => number, filter: MonthlySlotFilter): T[] {
@@ -24,9 +23,7 @@ export function orderMonthlySlotRows<T>(rows: readonly T[], statuses: readonly M
     if (filter === "physical") return a.physicalSlotNumber - b.physicalSlotNumber;
     if (filter === "gain_desc") return b.lifetimeGainCount - a.lifetimeGainCount || a.physicalSlotNumber - b.physicalSlotNumber;
     if (filter === "gain_asc") return a.lifetimeGainCount - b.lifetimeGainCount || a.physicalSlotNumber - b.physicalSlotNumber;
-    return stateOrder(a.entryState) - stateOrder(b.entryState)
-      || (a.operationalRank ?? 99) - (b.operationalRank ?? 99)
-      || a.physicalSlotNumber - b.physicalSlotNumber;
+    return compareOperationalSlots({ ...a, eligible: a.eligibleForNewEntry }, { ...b, eligible: b.eligibleForNewEntry });
   });
 }
 

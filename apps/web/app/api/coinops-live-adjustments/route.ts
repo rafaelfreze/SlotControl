@@ -12,6 +12,7 @@ import { getLiveAdjustmentReasonError } from "@/lib/execution/live-adjustment-va
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
+import { projectCurrentLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,7 +30,7 @@ type Run = { id: string; trading_engine_id: string; status: string; last_error: 
   last_reconciled_at: string | null; lease_until: string | null };
 type Slot = { id: string; trading_engine_id: string; slot_number: number; operation_sequence: number;
   entry_state: string; position_committed_brl: number | string; target_buy_price: number | string;
-  entry_reference_price: number | string; operational_rank: number | null };
+  entry_reference_price: number | string; operational_rank: number | null; post_ath_group?: string | null };
 type SlotAccount = { trading_engine_id: string; slot_number: number; balance_quote: number | string;
   contribution_quote: number | string; gain_count: number };
 type Draft = { action: "PREVIEW" | "CONFIRM" | "REVERSE_PREVIEW" | "REVERSE_CONFIRM" | "PLAN_SAVE" | "PLAN_DISABLE";
@@ -131,9 +132,9 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
   if (runs.error || runs.data?.length !== ids.length)
     throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY");
   const runIds = runs.data.map((run) => run.id);
-  const [slotRows, accounts, orderRows, totals, alerts] = await Promise.all([
+  const [slotRows, accounts, orderRows, totals, alerts, preparations] = await Promise.all([
     scope.service.from("robot_v1_live_slots")
-      .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank")
+      .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank,post_ath_group")
       .in("run_id", runIds),
     scope.service.from("robot_v1_live_slot_accounts")
       .select("trading_engine_id,slot_number,balance_quote,contribution_quote,gain_count")
@@ -146,8 +147,9 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
       .in("trading_engine_id", ids).eq("environment", "REAL"),
     scope.service.from("robot_v1_live_alerts").select("id,trading_engine_id")
       .in("trading_engine_id", ids).is("resolved_at", null).limit(1),
+    scope.service.from("robot_v1_live_preparations").select("trading_engine_id,monthly_target").in("trading_engine_id", ids),
   ]);
-  if ([slotRows, accounts, orderRows, totals, alerts].some((result) => result.error)
+  if ([slotRows, accounts, orderRows, totals, alerts, preparations].some((result) => result.error)
     || slotRows.data?.length !== ids.length * 25
     || accounts.data?.length !== ids.length * 25 || alerts.data?.length)
     throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY");
@@ -175,7 +177,13 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
       .reduce((sum, order) => sum + Number(order.reserved_notional_brl), 0);
   const uncommitted = Math.max(0, loaded.cap - exposure);
   const availableForNewCapital = Math.max(0, Math.floor((free - uncommitted + 1e-8) * 100) / 100);
-  return { ...loaded, runs: runList, slots: slotRows.data as Slot[],
+  const rankedSlots = loaded.engines.flatMap((engine) => projectCurrentLiveSlotRanks(
+    (slotRows.data as Slot[]).filter((slot) => slot.trading_engine_id === engine.id),
+    (accounts.data as SlotAccount[]).filter((slot) => slot.trading_engine_id === engine.id),
+    (totals.data ?? []).filter((slot) => slot.trading_engine_id === engine.id), engine.base_asset,
+    Number(preparations.data?.find((row) => row.trading_engine_id === engine.id)?.monthly_target
+      ?? (engine.base_asset === "BTC" ? 7 : 2)), new Date().toISOString()));
+  return { ...loaded, runs: runList, slots: rankedSlots,
     slotAccounts: accounts.data as SlotAccount[], totals: totals.data ?? [],
     free, exposure, availableForNewCapital, observedAt: snapshot.observed_at,
     executorIp: snapshot.executor_ip, openOrders: exchangeOwn.length };
@@ -411,7 +419,7 @@ export async function GET() {
   try {
     const scope = await adminScope();
     const [accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
-      selectiveBatches, selectiveAllocations, presets] = await Promise.all([
+      selectiveBatches, selectiveAllocations, presets, preparations] = await Promise.all([
       scope.service.from("exchange_accounts").select("id,display_name,status,is_legacy_default")
         .eq("operator_id", scope.operator.id).eq("status", "ACTIVE").order("display_name"),
       scope.service.from("trading_engines")
@@ -425,7 +433,7 @@ export async function GET() {
         .select("trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
         .eq("operator_id", scope.operator.id),
       scope.service.from("robot_v1_live_slots")
-        .select("run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank")
+        .select("run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank,post_ath_group")
         .eq("operator_id", scope.operator.id),
       scope.service.from("robot_v1_slot_gain_totals")
         .select("trading_engine_id,slot_number,lifetime_gain_count,monthly_gain_count")
@@ -446,6 +454,8 @@ export async function GET() {
         .select("id,name,total_slots,open_slots,following_slots,status,built_in,usage_count,created_at,updated_at")
         .eq("operator_id", scope.operator.id).order("built_in", { ascending: false })
         .order("created_at", { ascending: true }).limit(100),
+      scope.service.from("robot_v1_live_preparations").select("trading_engine_id,monthly_target")
+        .eq("operator_id", scope.operator.id),
     ]);
     const currentRunIds = (runs.data ?? []).map((run) => run.id);
     const orders = currentRunIds.length ? await scope.service.from("robot_v1_live_orders")
@@ -453,7 +463,7 @@ export async function GET() {
       .eq("operator_id", scope.operator.id).in("run_id", currentRunIds)
       .order("created_at", { ascending: false }).limit(5000) : { data: [], error: null };
     if ([accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
-      selectiveBatches, selectiveAllocations, presets, orders].some((item) => item.error)
+      selectiveBatches, selectiveAllocations, presets, orders, preparations].some((item) => item.error)
       || batches.data?.length === 1000 || plans.data?.length === 100
       || selectiveBatches.data?.length === 1000 || selectiveAllocations.data?.length === 25000
       || presets.data?.length === 100 || orders.data?.length === 5000)
@@ -461,7 +471,12 @@ export async function GET() {
     const currentRunIdSet = new Set(currentRunIds);
     return json({ accounts: accounts.data, engines: engines.data, caps: caps.data,
       runs: runs.data, slotAccounts: slotAccounts.data,
-      slots: (slots.data ?? []).filter((slot) => currentRunIdSet.has(slot.run_id)),
+      slots: (engines.data ?? []).flatMap((engine) => projectCurrentLiveSlotRanks(
+        (slots.data ?? []).filter((slot) => currentRunIdSet.has(slot.run_id) && slot.trading_engine_id === engine.id),
+        (slotAccounts.data ?? []).filter((slot) => slot.trading_engine_id === engine.id),
+        (totals.data ?? []).filter((slot) => slot.trading_engine_id === engine.id), engine.base_asset,
+        Number(preparations.data?.find((row) => row.trading_engine_id === engine.id)?.monthly_target
+          ?? (engine.base_asset === "BTC" ? 7 : 2)), new Date().toISOString())),
       totals: totals.data, batches: batches.data, plans: plans.data,
       selectiveBatches: selectiveBatches.data, selectiveAllocations: selectiveAllocations.data,
       presets: presets.data,

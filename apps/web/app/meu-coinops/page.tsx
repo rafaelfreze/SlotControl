@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
 import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
+import { projectCurrentLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
+import { orderOperationalSlots, ledgerSlotKey } from "@/lib/slotgain/operational-slot-order";
 import { rankViewerMarkets } from "@/lib/coinops-viewer/gain-ranking";
 import { ViewerSignOut } from "./sign-out";
 import { ViewerLiveBalances } from "./live-balances";
@@ -65,7 +67,7 @@ export default async function MeuCoinOps() {
   const marketRows = await Promise.all((engines.data ?? []).map(async (engine) => {
     const scoped = <T extends string>(table: string, columns: T) => service.from(table).select(columns)
       .eq("operator_id", operatorId).eq("exchange_account_id", accountId).eq("trading_engine_id", engine.id);
-    const [run, accounts, gains, allocations, marketData] = await Promise.all([
+    const [run, accounts, gains, allocations, marketData, preparation] = await Promise.all([
       scoped("robot_v1_live_runs", "id,status,last_reconciled_at,last_error,gain_rate")
         .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle(),
       scoped("robot_v1_live_slot_accounts", "slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count").order("slot_number"),
@@ -74,10 +76,11 @@ export default async function MeuCoinOps() {
       scoped("robot_v1_live_selective_contribution_allocations", "slot_number,amount_quote,status")
         .in("status", ["PENDING", "APPLIED"]),
       publicMarket(engine.symbol),
+      scoped("robot_v1_live_preparations", "monthly_target").maybeSingle(),
     ]);
-    if (run.error || accounts.error || gains.error || allocations.error) throw new Error("COINOPS_VIEWER_LEDGER_UNAVAILABLE");
+    if (run.error || accounts.error || gains.error || allocations.error || preparation.error) throw new Error("COINOPS_VIEWER_LEDGER_UNAVAILABLE");
     const [slots, orders, alerts, history] = run.data ? await Promise.all([
-      scoped("robot_v1_live_slots", "slot_number,operation_sequence,position_quantity,position_committed_quote,target_buy_price")
+      scoped("robot_v1_live_slots", "slot_number,operation_sequence,position_quantity,position_committed_quote,target_buy_price,entry_state,operational_rank,post_ath_group")
         .eq("run_id", run.data.id).order("slot_number"),
       scoped("robot_v1_live_orders", "slot_number,operation_sequence,side,purpose,status,price,executed_quantity,cumulative_quote,created_at")
         .eq("run_id", run.data.id),
@@ -92,7 +95,10 @@ export default async function MeuCoinOps() {
     const pendingBySlot = new Map<number, number>();
     for (const allocation of allocations.data ?? []) if (allocation.status === "PENDING")
       pendingBySlot.set(allocation.slot_number, (pendingBySlot.get(allocation.slot_number) ?? 0) + asNumber(allocation.amount_quote));
-    const positions = new Map((slots?.data ?? []).map((row) => [row.slot_number, row]));
+    const target = Number(preparation.data?.monthly_target ?? (engine.base_asset === "BTC" ? 7 : 2));
+    const rankedPositions = projectCurrentLiveSlotRanks(slots?.data ?? [], accounts.data ?? [], gains.data ?? [],
+      engine.base_asset === "BTC" ? "BTC" : "SOL", target, new Date().toISOString());
+    const positions = new Map(rankedPositions.map((row) => [row.slot_number, row]));
     const slotRows = [...accountMap.values()].map((slot) => {
       const position = positions.get(slot.slot_number);
       const quantity = asNumber(position?.position_quantity);
@@ -103,10 +109,11 @@ export default async function MeuCoinOps() {
       const lastBuy = buys.at(-1);
       const entry = lastBuy && asNumber(lastBuy.executed_quantity) > 0
         ? asNumber(lastBuy.cumulative_quote) / asNumber(lastBuy.executed_quantity) : null;
-      const tp = currentOrders.find((order) => order.side === "SELL" && order.status === "NEW");
-      const next = currentOrders.find((order) => order.side === "BUY" && order.status === "NEW");
+      const tp = currentOrders.find((order) => order.side === "SELL" && ["NEW", "PARTIALLY_FILLED"].includes(order.status));
+      const next = currentOrders.find((order) => order.side === "BUY" && ["NEW", "PARTIALLY_FILLED"].includes(order.status));
       const balance = asNumber(slot.balance_quote), pendingContribution = pendingBySlot.get(slot.slot_number) ?? 0;
-      return { slot: slot.slot_number, balance, contributed: asNumber(slot.contribution_quote), pendingContribution,
+      return { slot: slot.slot_number, rank: position?.operational_rank ?? null, state: position?.entry_state ?? "UNKNOWN", target,
+        balance, contributed: asNumber(slot.contribution_quote), pendingContribution,
         valueAfterPending: balance + pendingContribution,
         committed: asNumber(position?.position_committed_quote), gains: slot.gain_count,
         monthly: gainMap.get(slot.slot_number)?.monthly_gain_count ?? 0,
@@ -124,7 +131,8 @@ export default async function MeuCoinOps() {
         && Date.now() - Date.parse(run.data.last_reconciled_at) < 15 * 60_000,
       updatedAt: run.data?.last_reconciled_at ?? null, price: marketData.price, change: marketData.change,
       trend: marketData.trend, gainRate: asNumber(run.data?.gain_rate), cap: asNumber(engine.hard_cap_quote),
-      slots: slotRows, openCount: slotRows.filter((slot) => slot.open).length,
+      slots: orderOperationalSlots(slotRows, (slot) => ledgerSlotKey({ slot_number: slot.slot,
+        operational_rank: slot.rank, entry_state: slot.state })), openCount: slotRows.filter((slot) => slot.open).length,
       realized: slotRows.reduce((sum, slot) => sum + slot.realized, 0),
       openPnl: slotRows.reduce((sum, slot) => sum + (slot.openPnl ?? 0), 0),
       operationalBalance: slotRows.reduce((sum, slot) => sum + slot.balance, 0), history: historyRows };
@@ -165,10 +173,11 @@ export default async function MeuCoinOps() {
         <div className="viewer-market-summary"><div><small>Posições</small><strong>{market.openCount} / {market.slots.length}</strong></div><div><small>Gains</small><strong>{market.slots.reduce((sum, slot) => sum + slot.gains, 0)}</strong></div><div><small>P&amp;L aberto estimado</small><strong className={market.openPnl >= 0 ? "viewer-up" : "viewer-down"}>{amount(market.price === null ? null : market.openPnl, market.currency)}</strong></div></div>
         <ViewerMarketPanels market={`${base}/${market.currency}`} details={<>
         <div className="viewer-slots"><p className="viewer-footnote">{market.slots.length} slots · {market.openCount} posição(ões) aberta(s). O valor atual já inclui aportes aplicados.</p>{market.slots.map((slot) => <div key={slot.slot} className="viewer-slot">
-          <strong>Slot #{slot.slot}<span>{slot.open ? "ABERTO" : slot.nextBuy ? "PRÓXIMA COMPRA" : "EM ESPERA"}</span></strong>
+          <strong>Slot físico #{slot.slot}<span>{slot.open ? "ABERTO" : slot.nextBuy ? "PRÓXIMA BUY" : slot.state === "PLANNED" ? "PLANEJADO" : slot.state}</span></strong>
+          <small>Rank operacional {slot.rank ?? "—"}</small>
           <div className="viewer-slot-finance"><span><small>Valor atual</small><b>{amount(slot.balance, market.currency)}</b></span><span><small>Aportado</small><b>{amount(slot.contributed, market.currency)}</b></span><span><small>P&amp;L realizado</small><b className={slot.realized >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.realized, market.currency)}</b></span><span><small>P&amp;L aberto</small><b className={(slot.openPnl ?? 0) >= 0 ? "viewer-up" : "viewer-down"}>{amount(slot.openPnl, market.currency)}</b></span></div>
           {slot.pendingContribution > 0 ? <small className="viewer-pending">+ {amount(slot.pendingContribution, market.currency)} de aporte pendente · após aplicar {amount(slot.valueAfterPending, market.currency)}</small> : null}
-          <small>{slot.gains} gains · {slot.monthly} no mês</small>
+          <small>Mês/meta {slot.monthly}/{slot.target} · Gains totais {slot.gains}</small>
           {slot.open ? <small>Posição {amount(slot.committed, market.currency)} · Quantidade {number(slot.quantity, 8)} · Entrada {amount(slot.entry, market.currency)} · TP {amount(slot.tp, market.currency)}</small> : null}
           {slot.nextBuy ? <small>Próxima compra {amount(slot.nextBuy, market.currency)}</small> : null}
         </div>)}</div>

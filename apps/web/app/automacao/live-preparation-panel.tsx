@@ -8,6 +8,7 @@ import { useState } from "react";
 import type { LiveAssetData, LivePresentation } from "./automation-mobile";
 import { saveLiveAssetCaps, saveLiveGlobalCap } from "./live-preparation-actions";
 import "./live-preparation.css";
+import { orderOperationalSlots, ledgerSlotKey } from "@/lib/slotgain/operational-slot-order";
 
 const brl = (value: number | null | undefined, digits = 2) => value === null || value === undefined
   ? "—" : `R$ ${value.toLocaleString("pt-BR", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -27,8 +28,7 @@ export function LiveOperationalPanel({ asset, data }: { asset: "BTC" | "SOL"; da
   const committed = data.slots.reduce((sum, slot) => sum + Number(slot.position_committed_brl), 0);
   const marketPnl = data.accounts.reduce((sum, account) => sum + Number(account.market_pnl_brl), 0);
   const fees = data.accounts.reduce((sum, account) => sum + Number(account.fees_brl), 0);
-  const rows = [...data.slots].sort((left, right) => (left.operational_rank ?? 26)
-    - (right.operational_rank ?? 26) || left.slot_number - right.slot_number);
+  const rows = orderOperationalSlots(data.slots, ledgerSlotKey);
   const target = asset === "BTC" ? 7 : 2;
   return <section className="ac-panel lp-asset" aria-label={`Ciclo LIVE ${asset}/BRL`}>
     <div className="ac-panel-heading"><h2>{asset}/BRL · ciclo LIVE</h2>
@@ -177,7 +177,7 @@ export function LivePreparationPanel({ data, asset, context }: {
           <p>Strategy Engine {sizing.dryRun.strategyVersion} · {sizing.dryRun.status}: {sizing.dryRun.initial.action_type} hipotética em {brl(sizing.dryRun.initial.target_price)}, TP em {brl(sizing.dryRun.takeProfit.target_price)}, {sizing.dryRun.nextBuy.action_type} em {brl(sizing.dryRun.nextBuy.target_price)}, 23 níveis PLANNED. Nenhuma posição nem ordem criada.</p>
           <p>Ensaios da mesma engine: reentrada local {sizing.dryRun.localReentry.action_type} com +{brl(sizing.dryRun.hypotheticalManualGainBrl)} apenas no próximo saldo; META BATIDA {sizing.dryRun.monthlyHold.reason}; reset global {sizing.dryRun.globalReset.map((decision) => decision.action_type).join(" → ")}. Valores hipotéticos, sem escrita no ledger.</p>
         </details>
-        <details><summary>Ver os 25 slots, rank, grupo, preço e quantidade</summary><div className="lp-table-wrap"><table><thead><tr><th>Físico</th><th>Rank</th><th>Grupo</th><th>Capital BRL</th><th>Entrada BRL</th><th>Qtd.</th><th>TP BRL</th><th>Válido</th></tr></thead><tbody>{sizing.slots.map((slot) => <tr key={slot.physicalSlotNumber}><td>#{slot.physicalSlotNumber}</td><td>{slot.operationalRank ?? "—"}</td><td>{slot.postAthGroup ?? "—"}</td><td>{brl(slot.capitalBrl)}</td><td>{brl(slot.entryPriceBrl)}</td><td>{num(slot.estimatedQuantity)}</td><td>{brl(slot.tpPriceBrl)}</td><td>{slot.valid ? "sim" : "não"}</td></tr>)}</tbody></table></div></details>
+        <details><summary>Ver os 25 slots, rank, grupo, preço e quantidade</summary><div className="lp-table-wrap"><table><thead><tr><th>Slot físico</th><th>Rank operacional</th><th>Grupo</th><th>Capital BRL</th><th>Entrada BRL</th><th>Qtd.</th><th>TP BRL</th><th>Válido</th></tr></thead><tbody>{orderOperationalSlots(sizing.slots, (slot) => ({ ...slot, entryState: "PLANNED" })).map((slot) => <tr key={slot.physicalSlotNumber}><td>#{slot.physicalSlotNumber}</td><td>{slot.operationalRank ?? "—"}</td><td>{slot.postAthGroup ?? "—"}</td><td>{brl(slot.capitalBrl)}</td><td>{brl(slot.entryPriceBrl)}</td><td>{num(slot.estimatedQuantity)}</td><td>{brl(slot.tpPriceBrl)}</td><td>{slot.valid ? "sim" : "não"}</td></tr>)}</tbody></table></div></details>
       </> : <p role="alert">Dimensionamento indisponível: par, filtros, preço ou configuração inválidos.</p>}
       <details><summary>Editar capital e hard caps de {asset}</summary><form action={saveLiveAssetCaps} className="lp-form"><EngineScopeFields context={context} />
         <input type="hidden" name="asset" value={asset} />

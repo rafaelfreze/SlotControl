@@ -2,6 +2,7 @@ import type { EngineContext } from "@/lib/execution/operator-context";
 import { EngineScopeFields } from "./engine-scope-fields";
 
 import { MONTHLY_SLOT_TARGET } from "@/lib/execution/monthly-slot-policy";
+import { orderOperationalSlots } from "@/lib/slotgain/operational-slot-order";
 
 import { saveAthNextProfile } from "./ath-config-actions";
 
@@ -60,9 +61,8 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLive
             <label>Floor manual (opcional)<input name="ath_floor_reference" type="text" inputMode="decimal" placeholder={profile.ath_floor_reference?.toString() ?? "Ainda não definido"} /></label>
             <button type="submit">Salvar para próximo ciclo</button>
           </form>
-          {currentSlots.length ? <details className="ath-slot-list"><summary>Ver slots, grupo e próxima ação ({currentSlots.length})</summary><div className="ath-slot-table-wrap"><table><thead><tr><th>Físico</th><th>Rank</th><th>Gains</th><th>Grupo</th><th>Status</th><th>Saldo</th><th>Próxima ação</th></tr></thead><tbody>{currentSlots
-            .sort((left, right) => (left.operationalRank ?? 99) - (right.operationalRank ?? 99)
-              || left.physicalSlotNumber - right.physicalSlotNumber).map((slot) => <tr key={slot.physicalSlotId}>
+          {currentSlots.length ? <details className="ath-slot-list"><summary>Ver slots, grupo e próxima ação ({currentSlots.length})</summary><div className="ath-slot-table-wrap"><table><thead><tr><th>Físico</th><th>Rank operacional</th><th>Gains totais / mês/meta</th><th>Grupo</th><th>Status</th><th>Saldo</th><th>Próxima ação</th></tr></thead><tbody>{orderOperationalSlots(currentSlots,
+            (slot) => ({ ...slot, entryState: slot.status })).map((slot) => <tr key={slot.physicalSlotId}>
               <td title={slot.physicalSlotId}>#{slot.physicalSlotNumber}</td><td>{slot.operationalRank ?? "—"}</td>
               <td>{slot.lifetimeGains} total · {slot.monthlyGains ?? "?"}/{slot.monthlyTarget} mês</td>
               <td>{slot.group ? `${slot.group} #${slot.groupRank}` : "—"}</td><td>{slot.status}</td>

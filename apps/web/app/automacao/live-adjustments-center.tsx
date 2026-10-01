@@ -1,4 +1,6 @@
 "use client";
+import { orderOperationalSlots, ledgerSlotKey } from "@/lib/slotgain/operational-slot-order";
+import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { allocateBulkSlots, allocateSelectedSlots, splitBulkEngines } from "@/lib/execution/live-adjustment-plans";
@@ -172,10 +174,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const amount = Number(amountText.replace(",", "."));
   const firstAmount = Number(firstAmountText.replace(",", "."));
   const latestPlan = status?.plans.find((item) => item.exchange_account_id === accountId && item.quote_asset === quote);
-  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentMonth = monthlyPeriodKey(new Date());
   const realizedThisMonth = (status?.batches ?? []).filter((item) => item.exchange_account_id === accountId
     && item.quote_asset === quote && item.origin_currency === (latestPlan?.origin_currency ?? planOrigin)
-    && ["CAPITAL", "REVERSAL"].includes(item.kind) && item.created_at.slice(0, 7) === currentMonth)
+    && ["CAPITAL", "REVERSAL"].includes(item.kind) && monthlyPeriodKey(item.created_at) === currentMonth)
     .reduce((sum, item) => sum + Number(item.origin_amount), 0);
   const accountEngineIds = new Set(inQuote.map((item) => item.id));
   const scopedSlotAccounts = (status?.slotAccounts ?? []).filter((item) => accountEngineIds.has(item.trading_engine_id));
@@ -192,9 +194,8 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     const key = `${item.trading_engine_id}:${item.slot_number}`;
     pendingBySlot.set(key, (pendingBySlot.get(key) ?? 0) + Number(item.amount_quote));
   }
-  const engineSlots = useMemo(() => (status?.slots ?? [])
-    .filter((item) => item.trading_engine_id === engineId)
-    .sort((left, right) => Number(left.operational_rank) - Number(right.operational_rank)), [status, engineId]);
+  const engineSlots = useMemo(() => orderOperationalSlots((status?.slots ?? [])
+    .filter((item) => item.trading_engine_id === engineId), ledgerSlotKey), [status, engineId]);
   const activePresets = (status?.presets ?? []).filter((item) => item.status === "ACTIVE");
   const selectedPreset = activePresets.find((item) => item.id === presetId) ?? activePresets[0];
   const presetRegions = useMemo(() => {
@@ -410,7 +411,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
         <label>Motor<select value={engineId} onChange={(event) => { setEngineId(event.target.value); setSelectedSlots([]); setCustomSlotAmounts({}); setPresetAnchorSlot(null); invalidate(); }}>
           <option value="">Selecione</option>{inQuote.map((item) => <option value={item.id} key={item.id}>{item.symbol}</option>)}</select></label>
         {kind !== "SELECTIVE_CAPITAL" && kind !== "PRESET_CAPITAL" ? <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>
-          {Array.from({ length: 25 }, (_, index) => <option value={index + 1} key={index}>Slot #{index + 1}</option>)}</select></label>
+          {engineSlots.map((slot) => <option value={slot.slot_number} key={slot.slot_number}>#{slot.slot_number} · Rank {slot.operational_rank ?? "—"} · {slot.entry_state}</option>)}</select></label>
           : <p className="lac-slot-note">{kind === "PRESET_CAPITAL"
             ? "A predefinição resolve a região pela ordem operacional oficial do motor."
             : "Escolha manualmente qualquer subconjunto dos 25 slots deste motor."}</p>}

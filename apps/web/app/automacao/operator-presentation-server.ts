@@ -8,6 +8,7 @@ import { monthlyPeriodKey, rankMonthlySlots } from "@/lib/execution/monthly-slot
 import { loadLiveExecutorStatus, type LiveExecutorStatus } from "@/lib/execution/live-executor-health";
 import type { AutomationView } from "./automation-center";
 import { readLiveDashboardBatch } from "./live-dashboard-batch";
+import { projectLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
 
@@ -211,6 +212,15 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
     }));
   }
   const engines = loaded.map(({ context, scoped, readUnavailable }) => {
+    const liveData = context.base_asset === "BTC" || context.base_asset === "SOL"
+      ? scoped.liveAssetData?.[context.base_asset] : undefined;
+    if (context.environment === "REAL" && liveData && (context.base_asset === "BTC" || context.base_asset === "SOL")) {
+      const target = scoped.nativeLiveControl?.monthlyTarget
+        ?? scoped.livePreparation?.configs.find((config) => config.asset === context.base_asset)?.monthly_target
+        ?? (context.base_asset === "BTC" ? 7 : 2);
+      scoped.liveAssetData = { ...scoped.liveAssetData,
+        [context.base_asset]: projectLiveSlotRanks(liveData, context.base_asset, Number(target), new Date().toISOString()) };
+    }
     engineData[context.trading_engine_id] = scoped;
     const engine = buildPremiumEngine(scoped, context);
     return readUnavailable ? { ...engine, health: { healthy: false as const, tone: "attention" as const,

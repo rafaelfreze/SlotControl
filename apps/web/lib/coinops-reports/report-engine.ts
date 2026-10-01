@@ -14,6 +14,7 @@ import { buildLivePreparationAudit } from "./live-preparation-audit.ts";
 import type { DomainRegistry } from "../execution/operator-context.ts";
 import { buildScopedEngineReports } from "./engine-report-scope.ts";
 import { buildLivePerformanceEvidence } from "./live-performance-audit.ts";
+import { buildSlotPresentationAudit } from "./slot-presentation-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
@@ -565,6 +566,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     return fields;
   };
   const liveExecution: AuditRow[] = [];
+  const slotPresentation = Date.parse(observationEnd) >= Date.parse(input.generatedAt)
+    && !["robot_v1_monthly_slot_gains", "robot_v1_live_slot_accounts", "robot_v1_live_slots", "robot_v1_live_preparations"]
+      .some(missing) ? buildSlotPresentationAudit(input.sources, input.generatedAt) : new Map<string, AuditRow>();
   const appendLive = (table: string, rowType: string, rows: AuditRow[], resolve: (row: AuditRow) => ReportAsset | null) => {
     for (const row of rows) {
       const asset = resolve(row);
@@ -572,7 +576,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       liveExecution.push({ environment: "REAL", row_type: rowType, asset,
         symbol: asset ? `${asset}BRL` : null, source: `coinops.${table}`,
         evidence_basis: "PERSISTED_COINOPS_LIVE_LEDGER", snapshot_at: input.generatedAt,
-        ...own(row) });
+        ...own(row), ...(rowType === "SLOT" ? slotPresentation.get(str(row.id)) ?? {} : {}) });
     }
   };
   const runAsset = (row: AuditRow) => str(liveRunById.get(str(row.run_id))?.asset) as ReportAsset || null;

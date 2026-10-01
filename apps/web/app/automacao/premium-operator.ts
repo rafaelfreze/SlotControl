@@ -2,6 +2,7 @@ import type { Props } from "./automation-mobile";
 import { buildPremiumAssets, type PremiumAsset, type PremiumEnvironment } from "./premium-model.ts";
 import type { EngineContext } from "../../lib/execution/operator-context";
 import type { LiveExecutorStatus } from "../../lib/execution/live-executor-health";
+import { orderOperationalSlots } from "../../lib/slotgain/operational-slot-order.ts";
 
 /** Public presentation only. Credential references never cross this boundary. */
 export type PremiumAccount = { id: string; displayName: string; status: string; killSwitch: boolean;
@@ -99,7 +100,8 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
       || preparation?.live_enabled === false || data.nativeLiveControl?.killSwitch === true
       || (data.nativeLiveControl !== undefined && !data.nativeLiveControl.liveEnabled)));
   const blocked = context.environment === "REAL" && (killSwitch || context.status !== "ACTIVE");
-  return { ...model, symbol: context.symbol, currency: context.quote_asset,
+  return { ...model, slots: orderOperationalSlots(model.slots, (slot) => ({ physicalSlotNumber: slot.number,
+    operationalRank: slot.rank, entryState: slot.state, eligible: slot.eligible })), symbol: context.symbol, currency: context.quote_asset,
     engineId: context.trading_engine_id, accountId: context.exchange_account_id,
     accountDisplayName: context.account_display_name, engineStatus: context.status,
     cap: context.environment === "REAL" ? Number(context.hard_cap_quote) : model.cap,

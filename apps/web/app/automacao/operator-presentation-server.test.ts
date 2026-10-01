@@ -8,6 +8,7 @@ import { loadLiveExecutorStatus as loadExecutorStatus } from "../../lib/executio
 import { resolveExecutorShard } from "../../lib/execution/executor-shards-server.ts";
 import { monthlyPeriodKey, rankMonthlySlots } from "../../lib/execution/monthly-slot-policy.ts";
 import { buildPremiumEngine } from "./premium-operator.ts";
+import { projectLiveSlotRanks } from "../../lib/slotgain/live-slot-read-model.ts";
 import type { buildOperatorPresentation as BuildPresentation } from "./operator-presentation-server";
 import type { Props } from "./automation-mobile";
 
@@ -65,6 +66,7 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
       "server-only": {}, "@/lib/execution/operator-context": { resolveEngineContext },
       "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
       "./premium-operator": { buildPremiumEngine },
+      "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
       "./live-dashboard-batch": { readLiveDashboardBatch },
       "@/lib/execution/live-executor-health": { loadLiveExecutorStatus }
     };
@@ -242,6 +244,7 @@ test("native LIVE reads its own preparation and scoped executor health without i
     "@/lib/execution/operator-context": { resolveEngineContext },
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
+    "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
       "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
@@ -312,6 +315,7 @@ test("Testnet and LIVE tabs read only their environment, including native engine
     "@/lib/execution/operator-context": { resolveEngineContext },
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
+    "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
       "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
@@ -359,6 +363,7 @@ test("one native ledger timeout degrades only that engine and bounds concurrent 
     "@/lib/execution/operator-context": { resolveEngineContext },
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
+    "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
       "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};

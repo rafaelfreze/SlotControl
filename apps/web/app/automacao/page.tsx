@@ -407,9 +407,9 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       profiles: (athProfilesResponse.data || []).filter((row) => row.trading_engine_id === engine.engineId) as StrategyPanelData["profiles"],
       realLiveActive: engine.status === "ACTIVE", slots: context.legacy_compatible && engine.environment !== "REAL"
         ? athSlotRows.filter((row) => row.environment === engine.environment && row.asset === engine.asset)
-        : engine.slots.filter((slot) => slot.physicalId && slot.gains !== null && slot.balance !== null).map((slot) => ({
+        : engine.slots.filter((slot) => slot.gains !== null && slot.balance !== null).map((slot) => ({
           environment: engine.environment, asset: engine.asset, physicalSlotNumber: slot.number,
-          physicalSlotId: slot.physicalId!, lifetimeGains: slot.gains!, monthlyGains: slot.monthlyGains,
+          physicalSlotId: slot.physicalId ?? `${engine.engineId}:${slot.number}`, lifetimeGains: slot.gains!, monthlyGains: slot.monthlyGains,
           monthlyTarget: slot.goal, balanceUsdc: slot.balance!, eligible: slot.eligible === true,
           operationalRank: slot.rank, group: slot.group === "PRIMARY" || slot.group === "RESERVE" ? slot.group : null, groupRank: slot.groupRank,
           status: slot.state, buyPrice: slot.entryPrice ?? 0,

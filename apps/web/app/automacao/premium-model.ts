@@ -3,6 +3,7 @@ import { reconcileV1PhysicalSlotAccounts, summarizeV1ShadowOperations } from "..
 import { summarizeTestnetLedgerTotals, summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "../../lib/slotgain/testnet-results.ts";
 import { selectTestnetAssetData } from "../../lib/slotgain/testnet-asset-view.ts";
 import type { Props } from "./automation-mobile";
+import { isOperationalOpen } from "../../lib/slotgain/operational-slot-order.ts";
 
 /** Read-only view models. They never produce strategy decisions or dispatch actions. */
 export type PremiumEnvironment = "REAL" | "SHADOW" | "TESTNET";
@@ -47,7 +48,7 @@ const rawField = (row: unknown, key: string): unknown => row && typeof row === "
 const rawText = (row: unknown, key: string): string | null => typeof rawField(row, key) === "string" ? rawField(row, key) as string : null;
 
 function slotState(state: string, reached = false, eligible = false): Pick<PremiumSlot, "state" | "label" | "tone" | "nextAction"> {
-  if (state === "OPEN") return { state, label: "ABERTO", tone: "open", nextAction: "Aguardar TP" };
+  if (isOperationalOpen(state)) return { state: "OPEN", label: "ABERTO", tone: "open", nextAction: "Aguardar TP" };
   if (state === "NEXT_BUY" || state === "ARMED") return { state: "NEXT_BUY", label: "PRÓXIMA BUY", tone: "armed", nextAction: "Aguardar fill" };
   if (state === "ACTIVE_ERROR" || state === "ERROR") return { state: "ACTIVE_ERROR", label: "REVISAR", tone: "error", nextAction: "Auditar ocorrência" };
   if (reached && !eligible) return { state: "TARGET_REACHED", label: "META BATIDA", tone: "warning", nextAction: "Aguardar meta dos demais slots" };
@@ -117,7 +118,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     }));
     const committed = amount(row, "position_committed_brl", "position_committed_quote"), quantity = number(row.position_quantity);
     const marketPnl = amount(account, "market_pnl_brl", "market_pnl_quote"), fees = amount(account, "fees_brl", "fees_quote");
-    const open = row.entry_state === "OPEN";
+    const open = isOperationalOpen(row.entry_state);
     // The ledger's committed amount includes the actual entry cost. Use the
     // last filled BUY for displayed entry price; target_buy_price is an intention.
     const filledBuy = [...slotOrders].reverse().find((item) => item.side === "BUY" && (item.executedQuantity ?? 0) > 0);

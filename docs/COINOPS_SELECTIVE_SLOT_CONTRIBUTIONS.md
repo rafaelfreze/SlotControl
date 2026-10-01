@@ -99,13 +99,14 @@ As predefinições são somente uma camada de seleção sobre o mesmo serviço. 
 modelos iniciais são `1 aberto + 4 abaixo` e `2 abertos + 3 abaixo`; o ADMIN
 pode criar, editar, ativar ou desativar outros modelos informando total, slots
 OPEN da âncora e quantidade seguinte abaixo. A ordem vem de
-`robot_v1_live_slots.operational_rank`, nunca do número físico nem de previsão
-de mercado.
+read model vigente da Strategy Engine, agrupada por estado operacional e rank,
+nunca do número físico puro nem de previsão de mercado. Contrato compartilhado:
+[ordem operacional](./COINOPS_OPERATIONAL_SLOT_PRESENTATION.md).
 
 O resolver lista todas as regiões válidas e exige escolha explícita quando há
 mais de uma. Os slots OPEN configurados precisam formar o prefixo consecutivo
-da região; os demais são exatamente os próximos ranks da estratégia. A grade
-jamais volta para cima ou inventa slots após o rank 25. Preview e confirmação
+da região; os demais são exatamente as próximas linhas operacionais. A lista
+jamais dá a volta nem inventa slots depois do fim. Preview e confirmação
 resolvem novamente `preset + âncora`; qualquer mudança no estado/ordem invalida
 o fingerprint antes da escrita financeira.
 

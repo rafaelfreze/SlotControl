@@ -6,9 +6,45 @@ import ts from "typescript";
 import { AUTOMATION_FIXTURE_NOW, automationPremiumFixture } from "./fixtures/automation-premium";
 import { ACCOUNT_A, ACCOUNT_B, automationOperatorFixture } from "./fixtures/automation-operator";
 import type { Presentation } from "../../app/automacao/premium-automation";
+import { projectLiveSlotRanks } from "../../lib/slotgain/live-slot-read-model";
+import { buildPremiumEngine } from "../../app/automacao/premium-operator";
 
 type View = "overview" | "live" | "shadow" | "testnet";
 const views: View[] = ["overview", "live", "shadow", "testnet"];
+
+for (const width of [390, 1440]) for (const asset of ["BTC", "SOL"] as const)
+  test(`slots canônicos ${asset} em ${width}px: OPEN, NEXT, PLANNED e mês/meta separados`, async ({ page }, testInfo) => {
+    const data = automationOperatorFixture();
+    const engine = data.operator!.engines.find((row) => row.accountId === ACCOUNT_A && row.symbol === `${asset}BRL`)!;
+    const scoped = data.operator!.engineData[engine.engineId];
+    const live = scoped.liveAssetData![asset]!;
+    live.slots = live.slots.map((slot, i) => ({ ...slot, entry_state: i === 1 ? "OPEN" : i === 0 ? "ARMED" : "PLANNED",
+      operational_rank: i < 3 ? i + 1 : i - 2 }));
+    live.monthlyGains = live.slots.map((slot) => ({ slot_number: slot.slot_number,
+      lifetime_gain_count: slot.slot_number === 2 ? 4 : slot.slot_number <= 3 ? 3 : 0, monthly_gain_count: 0 }));
+    scoped.liveAssetData![asset] = projectLiveSlotRanks(live, asset, asset === "BTC" ? 7 : 2, "2026-10-01T04:00:00Z");
+    const projected = buildPremiumEngine(scoped, scoped.engineContext!, Date.parse(AUTOMATION_FIXTURE_NOW));
+    data.operator!.engines = [projected];
+    const audit = await mount(page, "live", width, 844, data);
+    await page.getByRole("button", { name: "Conta", exact: true }).click();
+    await page.getByRole("option").filter({ hasText: "Rafael Demo" }).click();
+    await page.getByRole("button", { name: `Ver ${asset}`, exact: true }).click();
+    const rows = page.getByTestId("premium-slot-row");
+    expect(await rows.evaluateAll((elements) => elements.map((row) => row.getAttribute("data-slot-number"))))
+      .toEqual(["2", "1", "3", "4", "5", "6"]);
+    await expect(rows.nth(0)).toContainText("ABERTO");
+    await expect(rows.nth(1)).toContainText("PRÓXIMA BUY");
+    await expect(rows.nth(0)).toContainText("Rank operacional 1");
+    await expect(rows.nth(0)).toContainText(`0/${asset === "BTC" ? 7 : 2}`);
+    await expect(rows.nth(0)).toContainText("Gains totais 4");
+    await screenshot(page, testInfo, `slot-order-first-${asset}-${width}`);
+    await page.getByRole("button", { name: "Ver todos os 25 slots", exact: true }).click();
+    await expect(rows).toHaveCount(25);
+    expect(new Set(await rows.evaluateAll((elements) => elements.map((row) => row.getAttribute("data-slot-number")))).size).toBe(25);
+    expect((await geometry(page)).overflow).toBe(0);
+    await screenshot(page, testInfo, `slot-order-${asset}-${width}`);
+    await noSideEffects(page, audit);
+  });
 
 for (const width of [390, 1440]) test(`Testnet descontinuada: somente REAL na navegação em ${width}px`, async ({ page }) => {
   const audit = await mount(page, "live", width);

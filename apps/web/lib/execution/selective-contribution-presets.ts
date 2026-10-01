@@ -1,3 +1,5 @@
+import { orderOperationalSlots } from "../slotgain/operational-slot-order.ts";
+
 export type SelectiveContributionPreset = {
   id: string;
   name: string;
@@ -31,14 +33,13 @@ function validatePreset(preset: SelectiveContributionPreset) {
 function officialOrder(slots: PresetStrategySlot[]) {
   if (slots.length !== 25 || new Set(slots.map((slot) => slot.slotNumber)).size !== 25
     || slots.some((slot) => !Number.isInteger(slot.slotNumber) || slot.slotNumber < 1 || slot.slotNumber > 25
-      || !Number.isInteger(slot.operationalRank) || Number(slot.operationalRank) < 1)
-    || new Set(slots.map((slot) => slot.operationalRank)).size !== 25)
+      || !Number.isInteger(slot.operationalRank) || Number(slot.operationalRank) < 1))
     throw new Error("COINOPS_PRESET_STRATEGY_ORDER_UNAVAILABLE");
-  return [...slots].sort((left, right) => Number(left.operationalRank) - Number(right.operationalRank));
+  return orderOperationalSlots(slots, (slot) => ({ ...slot, physicalSlotNumber: slot.slotNumber }));
 }
 
-/** Resolves every valid anchor against the engine's persisted operational
- * rank. Slot numbers are identities only; they never define "below". */
+/** Resolves each anchor in the same state + engine-rank order as the UI.
+ * Slot numbers are identities/tie-breakers only; they never define "following". */
 export function resolveSelectiveContributionPresetRegions(preset: SelectiveContributionPreset,
   slots: PresetStrategySlot[]): PresetRegion[] {
   validatePreset(preset);

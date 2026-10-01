@@ -19,21 +19,22 @@ test("1 OPEN + 4 abaixo resolves the official strategy order", () => {
   assert.deepEqual(region.openAnchorSlotNumbers, [8]);
 });
 
-test("2 OPEN + 3 abaixo requires a consecutive OPEN anchor region", () => {
+test("2 OPEN + 3 seguintes uses the same OPEN prefix and NEXT BUY as the operational UI", () => {
   assert.deepEqual(resolveSelectiveContributionPresetRegion(preset23, slots([7, 8]), 7).slotNumbers,
-    [7, 8, 9, 10, 11]);
-  assert.equal(resolveSelectiveContributionPresetRegions(preset23, slots([7, 9])).length, 0);
+    [7, 8, 3, 1, 2]);
+  assert.deepEqual(resolveSelectiveContributionPresetRegion(preset23, slots([7, 9]), 7).slotNumbers,
+    [7, 9, 3, 1, 2]);
 });
 
 test("multiple OPEN regions remain explicit choices", () => {
   const regions = resolveSelectiveContributionPresetRegions(preset14, slots([3, 12]));
   assert.deepEqual(regions.map((region) => region.anchorSlotNumber), [3, 12]);
-  assert.deepEqual(regions[1].slotNumbers, [12, 13, 14, 15, 16]);
+  assert.deepEqual(regions[1].slotNumbers, [12, 1, 2, 4, 5]);
 });
 
 test("grid end never wraps upward or invents slots", () => {
-  assert.equal(resolveSelectiveContributionPresetRegions(preset14, slots([23])).length, 0);
-  assert.throws(() => resolveSelectiveContributionPresetRegion(preset14, slots([23]), 23),
+  const allOpen = Array.from({ length: 25 }, (_, index) => index + 1);
+  assert.throws(() => resolveSelectiveContributionPresetRegion(preset14, slots(allOpen), 23),
     /PRESET_REGION_UNAVAILABLE/);
 });
 
@@ -45,12 +46,12 @@ test("custom preset is generic and exact over 25 slots", () => {
     { ...custom, totalSlots: 6 }, slots([1, 2, 3])), /CONFIGURATION_INVALID/);
 });
 
-test("missing, duplicated or incomplete operational rank fails closed", () => {
+test("missing rank fails closed; equal engine ranks use immutable physical tie-break", () => {
   assert.throws(() => resolveSelectiveContributionPresetRegions(preset14,
     slots([1]).map((slot) => ({ ...slot, operationalRank: null }))), /STRATEGY_ORDER_UNAVAILABLE/);
-  assert.throws(() => resolveSelectiveContributionPresetRegions(preset14,
-    slots([1]).map((slot, index) => ({ ...slot, operationalRank: index === 24 ? 24 : slot.operationalRank }))),
-  /STRATEGY_ORDER_UNAVAILABLE/);
+  assert.deepEqual(resolveSelectiveContributionPresetRegion(preset14,
+    slots([1]).map((slot, index) => ({ ...slot, operationalRank: index === 24 ? 24 : slot.operationalRank })),
+  1).slotNumbers, [1, 2, 3, 4, 5]);
 });
 
 test("preset layer stays selection-only and delegates to the official contribution route", () => {

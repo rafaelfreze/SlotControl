@@ -73,6 +73,15 @@ test("LIVE uses CoinOps position only, actual fill price, remaining BUY reservat
   assert.equal(btc.health.healthy, true);
   assert.equal(sol.capital, null);
 
+  for (const state of ["TP_ACTIVE", "PARTIALLY_FILLED"]) {
+    const partial = structuredClone(data);
+    partial.liveAssetData!.BTC!.slots[0].entry_state = state;
+    const projected = buildPremiumAssets(partial, "REAL", NOW)[0];
+    assert.equal(projected.slots[0].state, "OPEN");
+    assert.equal(projected.slots[0].entryPrice, 100);
+    assert.equal(projected.slots[0].openPnl, 10);
+  }
+
   const persistedReserve = structuredClone(data);
   persistedReserve.liveAssetData!.BTC!.orders[2].reserved_notional_brl = "105";
   const persisted = buildPremiumAssets(persistedReserve, "REAL", NOW)[0];
