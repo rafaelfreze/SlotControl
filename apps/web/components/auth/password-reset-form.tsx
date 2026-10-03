@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
-import { parsePasswordLink } from "@/lib/auth/password-link";
+import { parsePasswordLink, passwordLinkError } from "@/lib/auth/password-link";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
 
 export function PasswordResetForm() {
@@ -19,7 +19,8 @@ export function PasswordResetForm() {
     let active = true;
     const link = parsePasswordLink(window.location.hash);
     if (link.kind === "invalid") {
-      setError("Link inválido ou expirado. Solicite um novo convite ou redefinição.");
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+      setError(passwordLinkError(link));
       return () => { active = false; };
     }
     if (link.kind === "session") {
