@@ -1,6 +1,9 @@
 # Executor 03 — provisionamento de 03/10/2026
 
-## Infraestrutura confirmada
+Estado vigente: correção/rollout/certificação concluídos; consultar o fechamento
+ao final. As seções de provisionamento/checkpoint abaixo são histórico auditável.
+
+## Infraestrutura confirmada no provisionamento inicial
 
 - DigitalOcean, Droplet `605889779`, `coinops-executor-03-fra1`.
 - FRA1, Ubuntu 24.04 LTS x64, Basic Regular `s-1vcpu-1gb`:
@@ -62,7 +65,7 @@ o conector Supabase autorizado pode descobrir/reler o registry/política e
 registrar o certificado gerado pelos exports oficiais de preflight/paridade,
 com as mesmas sondagens SSH e validação SQL de freshness/runtime/política.
 
-## Continuidade / limites
+## Continuidade / limites do provisionamento inicial
 
 Nenhum restart/deploy no 01/02, nenhuma conta/motor movido, nenhuma alteração
 financeira ou ordem usada como smoke. Samya não foi cadastrada por esta tarefa.
@@ -74,7 +77,7 @@ GitHub/main+SHA revisado e `deploy-shard.sh`; nunca copiar filesystem entre PCs
 nem restaurar estado financeiro antigo. Não repetir criação/bootstrap/migration
 apenas por trocar de computador; ler Droplet/registry/Git primeiro.
 
-## Checkpoint seguro — liberação pendente
+## Checkpoint histórico — liberação pendente antes da correção
 
 Web publicada `807ef1f7495f896659ecf5a535f90259ebdf0e59`, deployment
 `dpl_BQ2EuHGaqCL6z69ycxtyg6ejMRFK` READY no domínio canônico.
@@ -110,3 +113,68 @@ Em 03/10 o proprietário autorizou explicitamente a correção e o rollout
 Não publicar apenas no 03 e declarar paridade falsa. Depois do rollout,
 aguardar 15 amostras reais e 10 min saudáveis, registrar preflight oficial e
 confirmar +2 SIM pelo painel, ainda vazio. Nenhuma conta Samya foi cadastrada.
+
+## Fechamento — coleta corrigida e admissão certificada
+
+Em 03/10/2026, rollout sequencial autorizado 01 → 02 → 03, somente
+`coinops-live-executor`. Cada etapa confirmou estado LIVE, reconciliação,
+TP/NEXT BUY, incidentes e Watchdog antes/depois; nenhum restart simultâneo.
+Assets diretamente de GitHub/main `89e303e4a6ef2ef80fdece0aab450b9bf464f25e`,
+runtime comum `0f5c1071f30f3859379e3b7ce01b4a9fac9be724` nos três servidores,
+Node `v24.21.0`, 23 arquivos, checksum
+`dfd5888668f364dd439589120346227bf475c8d4d6f2f429a26bcbc2ef879879`.
+
+| Shard | IPv4 | Início do processo UTC | PID | Resultado |
+| --- | --- | --- | --- | --- |
+| executor-01 | 46.101.104.48 | 22:07:17.800670 | 175900 | HEALTHY, 7 motores |
+| executor-02 | 164.90.223.159 | 22:09:16.541852 | 97433 | HEALTHY, 6 motores |
+| executor-03 | 167.71.37.166 | 22:11:25.250239 | 4108 | HEALTHY, vazio |
+
+Sondagens oficiais 22:38:33–22:38:44 UTC: **FLEET_PARITY_PASS 3/3**, identidade
+IP/processo/UID/Node e fingerprint exatos, código não alterado após início do
+processo. Registry oficial relido antes/depois, sem mudança. Certificado gerado
+pelos exports de `fleet-parity.mjs`/`capacity-preflight.mjs`, registrado uma vez
+pelo conector autorizado no RPC canônico `certify_executor_admission`, em
+escopo CoinOps/ref `otdfpmsegjxpqrzisfmi`/schema `coinops`/Production e role
+`service_role`: **ADMISSION_PREFLIGHT_PASS** às 22:39:18.455927 UTC.
+Releitura confirmou três attestations e release comum exatas, readiness=true
+sem falhas nos três shards. Não copiar service-role localmente para certificar.
+
+03 atingiu 15 amostras reais às 22:25:42.330 UTC, mantendo 15–16 a cada coleta.
+Histerese começou nessa amostra e reabriu automaticamente às 22:36:42.275,
+após 659,945s saudáveis. GET/reload não avançou o estado; não houve bypass,
+backfill, alteração do mínimo, reserva ou custo incremental. Às 22:39:34,
+`preview_executor_admission('executor-03','REAL',2)` = **CAPACITY_OK**:
+1,06 sustentado + 0 reservado + 2×900 = 1801,06 /6000 (30,02%), abaixo de
+3900 (65%), reserva única 2100 (35%) preservada. UI autenticada confirmou
+**+1 SIM / +2 SIM** com IP 167.71.37.166, CPU ~0,1%, RAM ~118 MiB,
+fila normal/reconciliação 0s corretamente reconhecida como shard vazio.
+01/02 +1 SIM; +2 NÃO pelas próprias projeções medidas, sem forçar admissão.
+Capacidade é dinâmica; não é certificação de uma cota fixa de motores.
+
+Gates: CONFIG_PARITY, RUNTIME_PARITY, CAPACITY_POLICY_PARITY, TELEMETRY_ACTIVE,
+BINANCE_WEIGHT_TRACKING, WATCHDOG_DISCOVERY, ADMISSION_GATE_ACTIVE, HEALTHY,
+heartbeat/scheduler/reconciliação, FLEET_PARITY e preflight: **PASS**.
+Leitura 22:39:11: **13/13** engines/runs ACTIVE, 25 slots físicos cada,
+23 posições com TP residente, 13 NEXT BUY, zero kill switch LIVE ou incidente.
+Hashes de estratégia/vínculos/ordens residentes/posições idênticos ao baseline
+pré-rollout. Logs warning/error pós-restart e restarts automáticos: zero.
+Watchdog HEALTHY 7+6+0. 03: zero contas, zero motores, sem credencial Binance.
+
+106 testes executor +18 config/health web +45 capacidade (22 SQL em banco
+local descartável), lint dirigido, typecheck e build isolado: PASS. Testnet
+permanece desativada; mocks históricos corrigidos só no harness offline.
+Detalhes da causa/regressões: `COINOPS_IDLE_CAPACITY_COLLECTION.md`.
+
+Publicação web pré-rollout foi necessária à compatibilidade de versões antes
+de reiniciar LIVE: Git `89e303e`, deployment `dpl_Dbc8MeQcWFzuRPJfNhTNytXmeY6b`
+READY. Janela exata 0681027→0f5c107, 22:05:02–22:45:02 UTC; o resolver passa
+a aceitar só 0f5c107 no fim, sem redeploy/renovação. Fechamento Git inclui só
+testes/documentação adicionais, fingerprint de runtime inalterado: **não exige
+novo deploy/restart de VPS**. Todas as variáveis sensíveis preexistentes intactas.
+
+**PRONTO PARA NOVA CONTA: SIM, para onboarding normal pelo painel.** Não houve
+cadastro de conta, atribuição/reserva ou operação Binance por esta tarefa.
+Nenhuma migration nova nesta correção; não repetir a migration do 03, criação,
+bootstrap, configuração do HMAC, deploys ou certificação após trocar de PC.
+O gate será revalidado no último instante pelo fluxo oficial de onboarding.

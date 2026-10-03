@@ -27,3 +27,33 @@ manifest e atualizar 01 → 02 → 03 sequencialmente. Antes/depois de cada rest
 validar health exato, motores/reconciliação, proteções, incidentes e Watchdog.
 Paridade total e evidência real devem preceder certificação do 03 vazio.
 Nenhuma certificação ou prontidão é inferida dos testes offline.
+
+## Validação e rollout autorizado
+
+Runtime publicado: `0f5c1071f30f3859379e3b7ce01b4a9fac9be724`.
+Manifest comum: `89e303e4a6ef2ef80fdece0aab450b9bf464f25e`.
+Node `v24.21.0`, 23 arquivos transitivos, fingerprint
+`dfd5888668f364dd439589120346227bf475c8d4d6f2f429a26bcbc2ef879879`.
+
+106 testes do executor, 18 testes de configuração/health web e 45 de capacidade
+(22 em PostgreSQL local descartável): PASS. Lint dirigido, typecheck e build
+isolado Next 14.2.35: PASS. Os mocks de dois testes anteriores à aposentadoria
+Testnet foram atualizados; fixtures históricas permanecem exclusivamente offline
+e nova regressão comprova que o coletor atual não consulta/persiste Testnet.
+
+Os três serviços foram atualizados sequencialmente, com assets diretamente do
+GitHub e os deploys oficiais. Início dos processos UTC em 03/10: 01 22:07:17,
+02 22:09:16, 03 22:11:25. Antes de avançar, cada shard confirmou HEALTHY,
+reconciliação pós-restart e proteções. Nenhum restart simultâneo ou automático.
+Snapshot 22:20:23: 13 engines/runs ativos, hashes de estratégia/ordens residentes/
+posições inalterados, 13 NEXT BUY, zero posição sem TP, zero incidente,
+Watchdog HEALTHY 7+6+0, 03 sem contas. Logs warning/error pós-restart: zero.
+
+A janela de compatibilidade web é explícita, somente SHA/horários, por shard:
+0681027 → 0f5c107, 22:05:02–22:45:02 UTC. Após o fim, o resolver aceita apenas
+0f5c107 em cada requisição, sem novo deploy ou extensão automática. Overrides
+version-only preservam os JSONs sensíveis, HMACs e demais credenciais existentes.
+Deploy web Git oficial `dpl_Dbc8MeQcWFzuRPJfNhTNytXmeY6b`: READY.
+
+A evidência final de amostras/histerese/certificação está no fechamento do
+`COINOPS_EXECUTOR_03_DELIVERY.md`; estes testes não substituem os gates reais.

@@ -5,6 +5,7 @@ import ts from "typescript";
 import * as manager from "./capacity-manager.ts";
 import * as reservations from "./admission-reservations.ts";
 import * as environmentTelemetry from "./environment-telemetry.ts";
+import * as testnetPolicy from "../execution/testnet-policy.ts";
 
 function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh = false, testnetReserved = 9000) {
   const calls: string[] = [];
@@ -42,6 +43,7 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
     calls.push("reserve"); return {
     data: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN" : "CAPACITY_OK", error: null }; } };
   const dependencies: Record<string, unknown> = {
+    "../execution/testnet-policy": testnetPolicy,
     "node:crypto": {}, "@/lib/execution/live-executor-client": {},
     "@/lib/execution/executor-shards-server": {},
     "@/lib/execution/binance-identity-server": { requireAccountIdentityBinding: async () => { calls.push("identity"); } },
@@ -69,7 +71,7 @@ test("Production preview retains 900-per-engine/65-percent gate without invented
   assert.equal((await fixture("REAL", 900).preview()).code, "CAPACITY_REQUIRED");
 });
 
-test("new Testnet preview and final activation fail closed before reservation writes without own telemetry", async () => {
+test("offline historical Testnet admission fails closed without its own telemetry", async () => {
   const scenario = fixture("TESTNET");
   assert.equal((await scenario.preview()).code, "CAPACITY_UNKNOWN");
   await assert.rejects(scenario.reserve(), /COINOPS_CAPACITY_UNKNOWN/);
@@ -78,7 +80,7 @@ test("new Testnet preview and final activation fail closed before reservation wr
   assert.deepEqual(scenario.calls.slice(-4), ["read:exchange_accounts", "read:trading_engines", "identity", "reserve"]);
 });
 
-test("fresh Testnet telemetry permits final admission using its own independent reservations", async () => {
+test("offline historical Testnet admission isolates its own independent reservations", async () => {
   const scenario = fixture("TESTNET", 9000, true, 0);
   assert.equal((await scenario.preview()).code, "CAPACITY_OK", "Production's 9000 must not be charged to Testnet");
   assert.equal((await fixture("TESTNET", 0, true, 9000).preview()).code, "CAPACITY_REQUIRED");

@@ -6,12 +6,16 @@ import * as manager from "./capacity-manager.ts";
 import * as aggregation from "./capacity-aggregation.ts";
 import * as reservations from "./admission-reservations.ts";
 import * as environmentTelemetry from "./environment-telemetry.ts";
+import * as testnetPolicy from "../execution/testnet-policy.ts";
 
-async function collect(testnetFailure = false, testnetAvailable = true) {
+// Historical transport fixtures stay offline; the default exercises retirement.
+async function collect(testnetFailure = false, testnetAvailable = true, historicalTestnet = false) {
+  const reads: string[] = [];
   const writes: Array<{ table: string; value: Record<string, unknown> }> = [];
   const updates: Array<{ table: string; value: Record<string, unknown> }> = [];
   const now = new Date().toISOString();
   const service = { from(table: string) {
+    reads.push(table);
     const filters: Record<string, unknown> = {};
     const query = () => {
       let data: unknown = [];
@@ -44,6 +48,8 @@ async function collect(testnetFailure = false, testnetAvailable = true) {
       binance_weight_average: 25, binance_weight_peak: 30, registry_scope: "CREDENTIAL_BOUND_TRANSPORT",
       credential_account_ids: ["testnet-account", "inactive-account"] } } : undefined };
   const dependencies: Record<string, unknown> = {
+    "../execution/testnet-policy": historicalTestnet
+      ? { isTestnetEnabled: () => true } : testnetPolicy,
     "node:crypto": { randomUUID: () => "request" },
     "@/lib/execution/live-executor-client": { signedExecutorHeaders: () => ({}) },
     "@/lib/execution/executor-shards-server": { resolveExecutorShard: async () => ({
@@ -62,11 +68,11 @@ async function collect(testnetFailure = false, testnetAvailable = true) {
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
   }, loaded, async () => ({ ok: true, json: async () => sample }));
   await (loaded.refreshExecutorCapacity as () => Promise<unknown>)();
-  return { writes, updates };
+  return { writes, updates, reads };
 }
 
-test("collector persists independent Testnet evidence with ledger counts and vault account coverage", async () => {
-  const { writes, updates } = await collect();
+test("offline historical collector preserves independent Testnet evidence and vault coverage", async () => {
+  const { writes, updates } = await collect(false, true, true);
   const real = writes.find((row) => row.table === "executor_capacity_samples")!.value;
   const testnet = writes.find((row) => row.table === "executor_capacity_environment_samples")!.value;
   assert.equal(real.binance_weight_peak, 2400);
@@ -82,9 +88,18 @@ test("collector persists independent Testnet evidence with ledger counts and vau
     "fresh REAL and TESTNET samples consume only reservations already reflected by their own registries");
 });
 
-test("Testnet database failure or old executor payload cannot invalidate Production telemetry", async () => {
-  for (const { writes } of [await collect(true), await collect(false, false)]) {
+test("offline historical Testnet failure cannot invalidate Production telemetry", async () => {
+  for (const { writes } of [await collect(true, true, true), await collect(false, false, true)]) {
     assert.equal(writes.filter((row) => row.table === "executor_capacity_samples").length, 1);
     assert.equal(writes.filter((row) => row.table === "executor_capacity_environment_samples").length, 0);
   }
+});
+
+test("retired Testnet never collects or writes even when the executor sends historical payload", async () => {
+  const { writes, reads, updates } = await collect();
+  assert.equal(testnetPolicy.isTestnetEnabled(), false);
+  assert.equal(writes.filter((row) => row.table === "executor_capacity_samples").length, 1);
+  assert.equal(writes.filter((row) => row.table === "executor_capacity_environment_samples").length, 0);
+  assert.ok(!reads.includes("robot_v1_testnet_runs"));
+  assert.equal(updates.filter((row) => row.table === "executor_capacity_admissions").length, 1);
 });
