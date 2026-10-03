@@ -3,6 +3,70 @@ import test from "node:test";
 
 import { createCapacityTelemetry } from "../src/capacity-telemetry.mjs";
 
+test("idle UTC buckets retain >=15 real minute samples despite early/late cron jitter", async () => {
+  for (const shardId of ["executor-01", "executor-02", "executor-03", "executor-04"]) {
+    for (const jitter of [[150, 50], [59_900, 100], [41_977, 42_201]]) {
+      let at = 0, calls = 0;
+      const t = createCapacityTelemetry({ shardId, now: () => at, fetcher: async () => {
+        calls++;
+        return Response.json({ serverTime: at }, { headers: { "x-mbx-used-weight-1m": "1" } });
+      } });
+      for (let minute = 0; minute < 32; minute++) {
+        at = minute * 60_000 + jitter[minute % 2];
+        await Promise.all(Array.from({ length: 5 }, () => t.sampleIfIdle()));
+        assert.equal(calls, minute + 1, "one public request per UTC minute, not per render");
+        if (minute >= 15) assert.ok(t.snapshot().binance_weight_samples >= 15);
+        assert.equal(t.snapshot().binance_weight_average, 1);
+      }
+      at += 16 * 60_000;
+      assert.equal(t.snapshot().binance_weight_samples, 0, "no invented/backfilled samples");
+    }
+  }
+});
+
+test("recent active traffic suppresses only its UTC bucket, not the next minute", async () => {
+  let at = 59_900, calls = 0;
+  const t = createCapacityTelemetry({ now: () => at, fetcher: async () => {
+    calls++; return Response.json({ serverTime: at }, { headers: { "x-mbx-used-weight-1m": "2" } });
+  } });
+  t.observe("https://api.binance.com/api/v3/account", new Response("", { headers: { "x-mbx-used-weight-1m": "100" } }));
+  await t.sampleIfIdle(); assert.equal(calls, 0);
+  at = 60_050; await t.sampleIfIdle(); assert.equal(calls, 1);
+  assert.equal(t.snapshot().binance_weight_samples, 2);
+  at = 59_950; await t.sampleIfIdle(); assert.equal(calls, 1);
+});
+
+test("in-flight idle probe is shared across a minute boundary without overlap", async () => {
+  let at = 59_900, calls = 0, finish;
+  const t = createCapacityTelemetry({ now: () => at, fetcher: () => {
+    calls++; return new Promise(resolve => { finish = resolve; });
+  } });
+  const first = t.sampleIfIdle();
+  at = 60_100; const second = t.sampleIfIdle();
+  assert.equal(calls, 1);
+  finish(Response.json({ serverTime: at }, { headers: { "x-mbx-used-weight-1m": "1" } }));
+  await Promise.all([first, second]); await t.sampleIfIdle(); assert.equal(calls, 1);
+  at = 120_100; const third = t.sampleIfIdle();
+  finish(Response.json({ serverTime: at }, { headers: { "x-mbx-used-weight-1m": "1" } }));
+  await third; assert.equal(calls, 2);
+});
+
+test("failed/headerless idle probes never fabricate capacity or retry within a bucket", async () => {
+  for (const failure of ["network", "headerless"]) {
+    let at = 60_100, calls = 0;
+    const t = createCapacityTelemetry({ now: () => at, fetcher: async () => {
+      calls++;
+      if (failure === "network") throw new Error("fixture network failure");
+      return Response.json({ serverTime: at });
+    } });
+    await Promise.allSettled([t.sampleIfIdle(), t.sampleIfIdle()]);
+    at += 100; await t.sampleIfIdle(); assert.equal(calls, 1);
+    assert.equal(t.snapshot().binance_weight_samples, 0);
+    assert.equal(t.snapshot().binance_weight_current, null);
+    at += 60_000; await Promise.allSettled([t.sampleIfIdle()]); assert.equal(calls, 2);
+  }
+});
+
 test("isolated peak expires after exactly the rolling window without restart or stale-warning latch",()=>{
   let at=Date.parse("2026-09-29T20:00:00Z");
   const t=createCapacityTelemetry({now:()=>at});

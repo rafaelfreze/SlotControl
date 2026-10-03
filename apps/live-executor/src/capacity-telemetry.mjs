@@ -14,7 +14,7 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
   const failedRequests = [], probableRetries = [];
   const recentFailures = new Map();
   let previousCpu = cpuUsage(), previousAt = now(), cpuPercent = null;
-  let lastIdleProbeAt = -Infinity, idleProbe = null;
+  let lastIdleProbeMinute = -Infinity, idleProbe = null;
   function observe(url, response) {
     let responseHost;
     try { responseHost = new URL(String(url)).hostname; } catch { return; }
@@ -55,9 +55,14 @@ export function createCapacityTelemetry({ fetcher = fetch, now = Date.now,
    * measured IP-weight evidence; absence of a header is never fabricated as 0. */
   async function sampleIfIdle() {
     const at = now();
-    if (at - (samples.at(-1)?.at ?? -Infinity) < 60_000 || at - lastIdleProbeAt < 60_000)
+    // Use the same UTC minute buckets as the measured rolling window. A
+    // moving 60s cooldown skips every other minute when cron arrives early.
+    // Share an in-flight probe and bound failed attempts too; never backfill.
+    const minute = Math.floor(at / 60_000);
+    if (idleProbe || Math.floor((samples.at(-1)?.at ?? -Infinity) / 60_000) >= minute
+      || lastIdleProbeMinute >= minute)
       return idleProbe;
-    lastIdleProbeAt = at;
+    lastIdleProbeMinute = minute;
     idleProbe = (async () => {
       const response = await trackedFetch(`https://${host}/api/v3/time`, {
         method: "GET", cache: "no-store", signal: AbortSignal.timeout(4_000),

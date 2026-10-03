@@ -52,6 +52,36 @@ const rolloutBounds = { COINOPS_EXECUTOR_01_VERSION_TRANSITION_START: rolloutSta
   COINOPS_EXECUTOR_02_VERSION_TRANSITION_START: rolloutStart,
   COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL: rolloutUntil };
 
+test("version-only promotion keeps sensitive config intact across successive bounded rollouts", () => {
+  const current = "a".repeat(40), upcoming = "b".repeat(40);
+  for (const id of ["executor-01", "executor-02", "executor-03", "executor-04"]) {
+    const prefix = `COINOPS_${id.toUpperCase().replaceAll("-", "_")}`;
+    const env = { [`${prefix}_VALIDATED_VERSION`]: current,
+      [`${prefix}_NEXT_VALIDATED_VERSION`]: upcoming,
+      [`${prefix}_VERSION_TRANSITION_START`]: rolloutStart,
+      [`${prefix}_VERSION_TRANSITION_UNTIL`]: rolloutUntil };
+    const snapshot = structuredClone(env);
+    assert.equal(resolveExecutorValidatedVersion(id, "historical-base", env, Date.parse(rolloutStart) - 1), current);
+    assert.equal(resolveExecutorValidatedVersion(id, "historical-base", env, rolloutNow), `${current},${upcoming}`);
+    assert.equal(resolveExecutorValidatedVersion(id, "historical-base", env, Date.parse(rolloutUntil)), upcoming);
+    assert.equal(resolveExecutorValidatedVersion(id, "historical-base", { [`${prefix}_VALIDATED_VERSION`]: current }), current);
+    assert.deepEqual(env, snapshot);
+    for (const invalid of ["", "alias", `${current},${upcoming}`, "*", "A".repeat(40), "a".repeat(39)])
+      assert.throws(() => resolveExecutorValidatedVersion(id, "historical-base", { ...env,
+        [`${prefix}_VALIDATED_VERSION`]: invalid }, rolloutNow), /CONFIG_INVALID/);
+    assert.throws(() => resolveExecutorValidatedVersion(id, "historical-base", { ...env,
+      [`${prefix}_VERSION_TRANSITION_UNTIL`]: undefined }, rolloutNow), /CONFIG_INVALID/);
+  }
+  const promoted = { ...environment, COINOPS_EXECUTOR_02_VALIDATED_VERSION: current,
+    COINOPS_EXECUTOR_02_NEXT_VALIDATED_VERSION: upcoming,
+    COINOPS_EXECUTOR_02_VERSION_TRANSITION_START: rolloutStart,
+    COINOPS_EXECUTOR_02_VERSION_TRANSITION_UNTIL: rolloutUntil };
+  const actual = resolveExecutorShard("executor-02", promoted, rolloutNow);
+  assert.deepEqual({ ...actual, validatedVersion: "shard02" }, target);
+  assert.equal(actual.validatedVersion, `${current},${upcoming}`);
+  assert.deepEqual(resolveExecutorShard("executor-01", promoted, rolloutNow), resolveExecutorShard("executor-01", environment));
+});
+
 test("validated releases allow at most two exact bounded versions and reject malformed lists per shard", () => {
   for (const valid of ["release-a", "release-a,release-b", "a".repeat(100), `${"a".repeat(100)},${"b".repeat(100)}`]) {
     assert.deepEqual(parseExecutorValidatedVersions(valid), valid.split(","));

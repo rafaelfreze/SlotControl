@@ -111,6 +111,17 @@ Manter a versão atual única em `validatedVersion` do shard (ou
 - `COINOPS_EXECUTOR_XX_VERSION_TRANSITION_START`: início UTC ISO, inclusivo;
 - `COINOPS_EXECUTOR_XX_VERSION_TRANSITION_UNTIL`: fim UTC ISO, exclusivo.
 
+Em rollouts posteriores, se a base antiga estiver dentro de JSON `sensitive`,
+promover a release atual já conferida por SSH usando somente
+`COINOPS_EXECUTOR_XX_VALIDATED_VERSION` (SHA completo exato de 40 caracteres).
+Essa configuração server-only altera apenas a base de versão, nunca IP/HMAC ou
+vault. Não aceita listas, aliases curtos ou wildcard. Configuração inválida
+falha fechada no shard correspondente. Renovar NEXT/START/UNTIL juntos; não
+reutilizar a base histórica do JSON para uma janela nova. O gate legado e o
+autenticado usam a mesma resolução. Nunca decrypt/substituir secrets para
+promover uma versão. Após o cutoff, somente NEXT é aceita; no próximo rollout
+promover o SHA já executado e revisado antes de preparar a nova janela.
+
 Substituir `EXECUTOR_XX` pelo shard real. Datas exigem `Z`, com segundos e
 milissegundos opcionais (três dígitos). A janela deve durar mais de zero e no
 máximo seis horas; usar a menor janela operacional suficiente. Antes do início

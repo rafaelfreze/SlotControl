@@ -24,10 +24,16 @@ export function resolveExecutorValidatedVersion(shardId: string, value: unknown,
   env: Environment = process.env, now = Date.now()): string | undefined {
   if (!SHARD.test(shardId)) throw new Error("EXECUTOR_SHARD_INVALID");
   const prefix = `COINOPS_${shardId.toUpperCase().replaceAll("-", "_")}`;
+  // Promote a reviewed release without decrypting/replacing a sensitive
+  // shard JSON. This version-only base is exact, never a permanent allowlist.
+  const promotedValue = env[`${prefix}_VALIDATED_VERSION`];
+  if (promotedValue !== undefined && !/^[a-f0-9]{40}$/.test(promotedValue))
+    throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
   const nextValue = env[`${prefix}_NEXT_VALIDATED_VERSION`];
   const startValue = env[`${prefix}_VERSION_TRANSITION_START`];
   const untilValue = env[`${prefix}_VERSION_TRANSITION_UNTIL`];
-  const base = value === undefined ? undefined : parseExecutorValidatedVersions(value);
+  const baseValue = promotedValue ?? value;
+  const base = baseValue === undefined ? undefined : parseExecutorValidatedVersions(baseValue);
   if (base === null) throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
   const transition = nextValue !== undefined || startValue !== undefined || untilValue !== undefined
     || base?.length === 2;

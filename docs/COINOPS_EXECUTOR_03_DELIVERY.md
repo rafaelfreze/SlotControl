@@ -73,3 +73,40 @@ Deploy futuro e rollback seguem `COINOPS_SHARD_DEPLOY_RUNBOOK.md`,
 GitHub/main+SHA revisado e `deploy-shard.sh`; nunca copiar filesystem entre PCs
 nem restaurar estado financeiro antigo. Não repetir criação/bootstrap/migration
 apenas por trocar de computador; ler Droplet/registry/Git primeiro.
+
+## Checkpoint seguro — liberação pendente
+
+Web publicada `807ef1f7495f896659ecf5a535f90259ebdf0e59`, deployment
+`dpl_BQ2EuHGaqCL6z69ycxtyg6ejMRFK` READY no domínio canônico.
+Migration remota registrada uma vez como `20261003213949`, nome
+`register_coinops_executor_03` (arquivo local gerado pelo CLI às 21:30:34).
+Não reaplicar por diferença do timestamp do conector: conferir nome/conteúdo.
+
+Sondagens oficiais 21:43:41–21:43:52 UTC: FLEET_PARITY_PASS 3/3,
+mesmo SHA/Node/fingerprint, código não alterado desde início dos processos.
+PIDs 01=145363, 02=70221 continuam desde 30/09; 03=3381 desde 21:27:51.
+Nenhum restart 01/02. Às 21:45:54 UTC: Watchdog saudável 7+6+0,
+13 engines/runs ACTIVE, zero kill switch LIVE, zero incidente aberto,
+23 TP SELL NEW e 13 ENTRY BUY NEW, zero conta atribuída ao 03.
+
+**PRONTO PARA NOVA CONTA: NÃO. Não registrar certificado final nem forçar gate.**
+O idle sampler usa intervalo móvel de 60.000 ms. Cron com jitter pode executar
+antes desse intervalo e pular um minuto inteiro. Política v3 exige 15 máximos
+por minuto UTC numa janela de 15 min. Observações reais 03 às 21:40/41/42/43
+tinham 3/3/4/3 minutos amostrados; às 21:45 tinha 4, weight real 1/min,
+sem erro/retry/backlog e registry vazio conferido. Não é pressão Binance real.
+
+Reprodução offline, sem rede/credencial: usar `createCapacityTelemetry` com
+fetcher fixture, relógio `minute*60000 + (minute%2 ? 50 : 150)`, 32 ticks.
+Após aquecimento, todos os ticks 15..31 mantêm apenas 8 amostras na janela,
+em vez das 15 necessárias. Apenas esperar não resolve a causa estrutural.
+
+Correção indicada: alinhar o probe público ocioso ao bucket de minuto UTC,
+sem criar polling adicional, reduzir samples/headroom ou fabricar history.
+Como esse arquivo integra o fingerprint comum, exige nova release canônica
+e rollout sequencial dos três shards. Esse foi o bloqueio da autorização anterior.
+Em 03/10 o proprietário autorizou explicitamente a correção e o rollout
+01 → 02 → 03, mantendo todas as proteções e a certificação fail-closed.
+Não publicar apenas no 03 e declarar paridade falsa. Depois do rollout,
+aguardar 15 amostras reais e 10 min saudáveis, registrar preflight oficial e
+confirmar +2 SIM pelo painel, ainda vazio. Nenhuma conta Samya foi cadastrada.
