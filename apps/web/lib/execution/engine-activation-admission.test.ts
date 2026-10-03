@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { assertOperationalEnvironment } from "./testnet-policy.ts";
 
 function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alreadyActive = false,
   identity = "BOUND", accountStatus = "INACTIVE") {
@@ -34,6 +35,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
     "node:crypto": { randomUUID: () => "request", createHash: () => ({ update: () => ({ digest: () => "fixture-prefix" }) }) },
     "next/server": { NextResponse: { json: (body: unknown, options: { status: number }) => ({ body, status: options.status }) } },
     "@/lib/execution/binance-account-registry-server": {},
+    "@/lib/execution/testnet-policy": { assertOperationalEnvironment },
     "@/lib/execution/binance-identity-server": { requireAccountIdentityBinding: async () => {
       calls.push("identity"); if (identity !== "BOUND") throw new Error(identity);
     } },
@@ -46,6 +48,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
     },
     "@/lib/execution/operator-engine-plan": {},
     "@/lib/execution/engine-account-catalog": {},
+    "@/lib/coinops-capacity/activation-admission-view": {},
     "@/lib/execution/operator-context-server": { resolveOperatorEngine: async () => engine },
     "@/lib/execution/robot-v1-live-server": { advanceLiveRun: async () => { calls.push("start"); return {}; } },
     "@/lib/execution/robot-v1-testnet-server": { startTestnetRun: async () => { calls.push("start"); return "cycle"; } },
@@ -69,7 +72,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
   return { run: () => post(request), calls };
 }
 
-for (const environment of ["REAL", "TESTNET"] as const) {
+for (const environment of ["REAL"] as const) {
   test(`${environment} final capacity and physical identity checks precede every activation write`, async () => {
     for (const failure of ["CAPACITY_UNKNOWN", "CAPACITY_REQUIRED"]) {
       const scenario = fixture(environment, failure);
@@ -86,7 +89,7 @@ for (const environment of ["REAL", "TESTNET"] as const) {
     const healthy = fixture(environment);
     assert.equal((await healthy.run()).body.status, "ACTIVATING");
     assert.deepEqual(healthy.calls.slice(0, 3), ["identity", "capacity", "write:exchange_accounts"]);
-    assert.equal(healthy.calls.includes("start"), environment === "TESTNET");
+    assert.equal(healthy.calls.includes("start"), false);
   });
   test(`${environment} existing ACTIVE run never depends on capacity or identity admission`, async () => {
     const scenario = fixture(environment, "CAPACITY_UNKNOWN", true, "COINOPS_BINANCE_IDENTITY_REQUIRED");
@@ -94,3 +97,9 @@ for (const environment of ["REAL", "TESTNET"] as const) {
     assert.deepEqual(scenario.calls, []);
   });
 }
+
+test("retired Testnet activation cannot bypass product policy even with prepared fixtures", async () => {
+  const scenario = fixture("TESTNET");
+  assert.equal((await scenario.run()).body.error, "COINOPS_TESTNET_DISABLED");
+  assert.deepEqual(scenario.calls, []);
+});

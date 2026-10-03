@@ -17,6 +17,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
 import { previewAccountCapacity, reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
 import { engineCatalogAccount } from "@/lib/execution/engine-account-catalog";
+import { activationAdmissionFromEvidence } from "@/lib/coinops-capacity/activation-admission-view";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -222,8 +223,19 @@ export async function GET(request: NextRequest) {
     ]) : [{ data: [], error: null }, { data: [], error: null }];
     if (slots.error || orders.error || testnetSlots.error || testnetOrders.error)
       throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
+    const preparing = (engines.data ?? []).some((engine) => engine.environment === "REAL"
+      && (runs.data ?? []).some((run) => run.trading_engine_id === engine.id && run.status === "PREPARING"));
+    const selectedAccount = accounts.find((item) => item.id === accountId);
+    // One internal read per selected account; never collect Binance or advance
+    // hysteresis on GET. A missing decision fails closed for new activation only.
+    const admissionRead = preparing && selectedAccount?.executor_shard_id
+      ? await service.rpc("preview_executor_admission", {
+        p_shard_id: selectedAccount.executor_shard_id, p_environment: "REAL", p_engines: 1,
+      }) : null;
+    const activationAdmission = preparing
+      ? activationAdmissionFromEvidence(admissionRead?.error ? null : admissionRead?.data) : null;
     const accountById = new Map(accounts.map((item) => [item.id, item]));
-    return json({ accounts,
+    return json({ accounts, activationAdmission,
       engines: (engines.data ?? []).filter((item) => accountById.has(item.exchange_account_id)).map((item) => {
         const isTestnet = item.environment === "TESTNET";
         const run = (isTestnet ? testnetRuns.data : runs.data)?.find((row) => row.trading_engine_id === item.id) ?? null;
