@@ -29,6 +29,23 @@ TLS usa certificado Let's Encrypt do IPv4, perfil `shortlived`, sem fallback par
 
 ## Deploy por SHA
 
+### Configuração aditiva sem revelar secrets existentes
+
+O JSON `COINOPS_EXECUTOR_SHARDS_JSON` existente pode ser um secret Vercel
+`sensitive` não recuperável. Não o substituir nem tentar reduzir sua proteção
+para adicionar um servidor. Novos shards também aceitam uma variável server-only
+dedicada `COINOPS_EXECUTOR_XX_CONFIG_JSON` (por exemplo, `03`), contendo
+`egressIp`, `baseUrl`, `hmacSecret` exclusivo e `validatedVersion` exata.
+Transmitir somente o HMAC recém-gerado do novo VPS, em memória, ao secret manager;
+nunca gravá-lo no checkout, argumentos, logs ou documentação.
+
+A variável dedicada não pode sobrescrever um ID já presente no JSON estabelecido.
+IP/HMAC repetidos são rejeitados antes do transporte. Adições inválidas não
+alteram a resolução de 01/02 pelo contrato existente. 03 e futuros usam os mesmos
+gates de versão, vínculo da conta, telemetria, política e certificação. Esta é
+configuração do control plane/web, não mudança do runtime financeiro: conferir
+`FLEET_CODE_PASS` antes de decidir qualquer restart de VPS.
+
 O SHA deve coincidir com o alvo comum de `apps/live-executor/deploy/fleet-release.json`. Obter os scripts, manifest e helper `fleet-parity.mjs` juntos do main revisado, mesmo quando o runtime alvo não mudou. Ambos os scripts rejeitam um alvo diferente antes de alterar host. `DEPLOY_HEALTHY`/`ALREADY_DEPLOYED` é evidência individual: somente `fleet-parity.mjs --check-code` e `--verify`, sobre TODOS os shards enabled do registry oficial, permitem encerrar a publicação. Novos executores seguem a mesma regra antes do onboarding. Procedimento e limites em `COINOPS_EXECUTOR_FLEET_PARITY.md`.
 
 ```bash

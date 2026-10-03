@@ -72,6 +72,28 @@ export function resolveExecutorShard(shardId: string, env: Environment = process
     mapping = decoded as Record<string, unknown>;
     configured = Object.hasOwn(mapping, shardId) ? mapping[shardId] : undefined;
   }
+  // Add new shards without decrypting/replacing an existing sensitive fleet
+  // JSON. Never override an established route; malformed additions cannot
+  // affect shards that still use the established configuration.
+  if (shardId !== "executor-01") {
+    const ownKey = `COINOPS_${shardId.toUpperCase().replaceAll("-", "_")}_CONFIG_JSON`;
+    if (env[ownKey] !== undefined) {
+      if (configured !== undefined) throw new Error("EXECUTOR_SHARD_CONFIG_COLLISION");
+      for (const [key, value] of Object.entries(env)) {
+        const match = /^COINOPS_EXECUTOR_([0-9]{2,})_CONFIG_JSON$/.exec(key);
+        if (!match || match[1] === "01" || value === undefined) continue;
+        const id = `executor-${match[1]}`;
+        if (Object.hasOwn(mapping, id)) throw new Error("EXECUTOR_SHARD_CONFIG_COLLISION");
+        let row: unknown;
+        try { row = JSON.parse(value); }
+        catch { throw new Error("EXECUTOR_SHARD_CONFIG_INVALID"); }
+        if (!row || typeof row !== "object" || Array.isArray(row))
+          throw new Error("EXECUTOR_SHARD_CONFIG_INVALID");
+        mapping[id] = row;
+      }
+      configured = mapping[shardId];
+    }
+  }
   if (!configured || typeof configured !== "object" || Array.isArray(configured))
     throw new Error("EXECUTOR_SHARD_NOT_CONFIGURED");
   const row = configured as Record<string, unknown>;

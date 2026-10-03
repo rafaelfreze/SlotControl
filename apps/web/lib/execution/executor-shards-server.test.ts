@@ -15,6 +15,34 @@ const environment = { LIVE_EXECUTOR_EGRESS_IP: "46.101.104.48", LIVE_EXECUTOR_BA
   COINOPS_EXECUTOR_HMAC_SECRET: "first-shard-fixture-secret".repeat(2), LIVE_EXECUTOR_VALIDATED_VERSION: "legacy01",
   COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify(configs) };
 const target = resolveExecutorShard("executor-02", environment);
+test("isolated new-shard config preserves sensitive fleet JSON and existing routing", () => {
+  const third = { egressIp: "203.0.113.33", baseUrl: "https://203.0.113.33",
+    hmacSecret: "third-shard-fixture-only".repeat(3), validatedVersion: "shard03" };
+  const env = { ...environment, COINOPS_EXECUTOR_03_CONFIG_JSON: JSON.stringify(third) };
+  const snapshot = structuredClone(env);
+  assert.deepEqual(resolveExecutorShard("executor-01", env), resolveExecutorShard("executor-01", environment));
+  assert.deepEqual(resolveExecutorShard("executor-02", env), target);
+  assert.equal(resolveExecutorShard("executor-03", env).ip, third.egressIp);
+  assert.equal(resolveExecutorShard("executor-03", env).validatedVersion, "shard03");
+  assert.deepEqual(env, snapshot);
+  for (const invalid of ["{broken", "null", "[]", JSON.stringify({ ...third, hmacSecret: "short" })]) {
+    const bad = { ...env, COINOPS_EXECUTOR_03_CONFIG_JSON: invalid };
+    assert.throws(() => resolveExecutorShard("executor-03", bad), /CONFIG_INVALID/);
+    assert.deepEqual(resolveExecutorShard("executor-02", bad), target);
+  }
+  for (const collision of [configs["executor-02"], { ...third,
+    hmacSecret: environment.COINOPS_EXECUTOR_HMAC_SECRET }, { ...third,
+    egressIp: environment.LIVE_EXECUTOR_EGRESS_IP, baseUrl: environment.LIVE_EXECUTOR_BASE_URL }])
+    assert.throws(() => resolveExecutorShard("executor-03", { ...env,
+      COINOPS_EXECUTOR_03_CONFIG_JSON: JSON.stringify(collision) }), /COLLISION/);
+  assert.throws(() => resolveExecutorShard("executor-02", { ...env,
+    COINOPS_EXECUTOR_02_CONFIG_JSON: JSON.stringify(third) }), /COLLISION/);
+  const future = { ...env, COINOPS_EXECUTOR_04_CONFIG_JSON: JSON.stringify({ ...third,
+    egressIp: "203.0.113.44", baseUrl: "https://203.0.113.44", hmacSecret: "fourth-fixture".repeat(4) }) };
+  assert.equal(resolveExecutorShard("executor-04", future).ip, "203.0.113.44");
+  assert.throws(() => resolveExecutorShard("executor-04", { ...future,
+    COINOPS_EXECUTOR_04_CONFIG_JSON: JSON.stringify(third) }), /COLLISION/);
+});
 const engine = { operator_id: "operator-fixture", exchange_account_id: "account-fixture",
   trading_engine_id: "engine-fixture", symbol: "BTCBRL", quote_asset: "BRL" };
 const rolloutStart = "2026-09-28T04:00:00.000Z", rolloutUntil = "2026-09-28T05:00:00.000Z";
