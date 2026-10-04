@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { projectAccountBudgetObservation, type BudgetObservation, type BudgetEngineIdentity, type KnownBudgetOrder } from "./account-order-budget-observation.ts";
 import { parseExecutorValidatedVersions, resolveExecutorForConnection, withExecutorShard } from "./executor-shards-server.ts";
@@ -83,26 +84,59 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
       .order("id").range(start, end), code);
   const engineById = new Map(engines.map((engine) => [engine.id, engine]));
   const ledger = rawOrders.map((order) => ({ ...order, symbol: engineById.get(order.trading_engine_id)?.symbol ?? "" }));
-  const leaseOwner = randomUUID();
-  const lease = await service.rpc("acquire_account_order_budget_probe", { p_operator_id: operatorId,
-    p_account_id: accountId, p_lease_owner: leaseOwner });
-  if (lease.error || lease.data !== true) throw new Error("COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY");
-  const requestId = randomUUID(), path = "/v1/admin/order-budget", key = `ORDER_BUDGET:${requestId}`;
-  const body = JSON.stringify(withExecutorShard({ operator_id: operatorId, exchange_account_id: accountId,
-    environment: "REAL", credential_ref: target.credentialRef, symbols, request_id: requestId }, target));
-  const response = await fetcher(`${target.base}${path}`, { method: "POST", cache: "no-store", body,
-    headers: signedExecutorHeaders(target.secret, path, body, key), signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(code);
-  const observed = await response.json() as BudgetObservation;
-  const sample = projectAccountBudgetObservation(observed, { operatorId, accountId, shardId, ip: target.ip,
-    credentialRef: target.credentialRef, versions, symbols, engines, ledger });
-  const saved = await service.rpc("record_account_order_budget_sample", { p_operator_id: operatorId,
-    p_account_id: accountId, p_lease_owner: leaseOwner, p_shard_id: shardId,
-    p_observed_at: new Date(sample.observedAt).toISOString(), p_server_time_ms: sample.serverTime,
-    p_intervals: sample.intervals, p_symbol_limits: sample.symbols, p_restrictions: sample.restrictions,
-    p_exchange_limits: sample.exchangeOrders ?? null });
-  if (saved.error || saved.data !== true) throw new Error(code);
-  return { observedAt: new Date(sample.observedAt).toISOString(), shardId };
+  // The executor rejects a probe crossing a Binance counter interval. Its
+  // failed-probe cooldown is 5s; retry only that read-only rejection, bounded
+  // by attempts/time, never a Binance POST or a bypass of sample validation.
+  const deadline = Date.now() + 35_000;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const leaseOwner = randomUUID();
+    const lease = await service.rpc("acquire_account_order_budget_probe", { p_operator_id: operatorId,
+      p_account_id: accountId, p_lease_owner: leaseOwner });
+    if (lease.error) throw new Error(code);
+    if (lease.data !== true) {
+      if (attempt < 2 && Date.now() + 1000 < deadline) { await wait(1000); continue; }
+      throw new Error("COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY");
+    }
+    let recorded = false, retryable = false;
+    try {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(code);
+      const requestId = randomUUID(), path = "/v1/admin/order-budget", key = `ORDER_BUDGET:${requestId}`;
+      const body = JSON.stringify(withExecutorShard({ operator_id: operatorId, exchange_account_id: accountId,
+        environment: "REAL", credential_ref: target.credentialRef, symbols, request_id: requestId }, target));
+      const response = await fetcher(`${target.base}${path}`, { method: "POST", cache: "no-store", body,
+        headers: signedExecutorHeaders(target.secret, path, body, key), signal: AbortSignal.timeout(Math.min(20_000, remaining)) });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        retryable = response.status === 503 && failure?.error === "EXECUTOR_ACCOUNT_ORDER_BUDGET_UNKNOWN";
+        throw new Error(code);
+      }
+      const observed = await response.json() as BudgetObservation;
+      const sample = projectAccountBudgetObservation(observed, { operatorId, accountId, shardId, ip: target.ip,
+        credentialRef: target.credentialRef, versions, symbols, engines, ledger });
+      const saved = await service.rpc("record_account_order_budget_sample", { p_operator_id: operatorId,
+        p_account_id: accountId, p_lease_owner: leaseOwner, p_shard_id: shardId,
+        p_observed_at: new Date(sample.observedAt).toISOString(), p_server_time_ms: sample.serverTime,
+        p_intervals: sample.intervals, p_symbol_limits: sample.symbols, p_restrictions: sample.restrictions,
+        p_exchange_limits: sample.exchangeOrders ?? null });
+      if (saved.error || saved.data !== true) throw new Error(code);
+      recorded = true; // The record RPC atomically releases this probe lease.
+      return { observedAt: new Date(sample.observedAt).toISOString(), shardId };
+    } catch (error) {
+      if (!retryable || attempt === 2 || Date.now() + 5500 >= deadline) throw error;
+    } finally {
+      if (!recorded) {
+        // Compare-and-set only OUR probe lease. Never release another worker,
+        // order permit, run lease or reservation; failure stays fail-closed.
+        const released = await service.from("account_order_budget_probe_leases")
+          .update({ expires_at: new Date().toISOString() }).eq("operator_id", operatorId)
+          .eq("exchange_account_id", accountId).eq("lease_owner", leaseOwner);
+        if (released.error) throw new Error(code);
+      }
+    }
+    await wait(5500);
+  }
+  throw new Error(code);
 }
 
 export async function previewAccountOrderBudget(service: Service, operatorId: string, accountId: string,

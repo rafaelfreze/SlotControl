@@ -26,7 +26,12 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
   }
   async function work(action: () => Promise<void>) {
     if (busy) return; setBusy(true); setMessage("");
-    try { await action(); } catch (error) { setMessage(error instanceof Error ? error.message : "Ação não concluída. Confira o estado antes de repetir."); }
+    try { await action(); } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      setMessage(code === "COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY"
+        ? "Outra consulta dos limites Binance está em andamento. Aguarde alguns segundos e tente novamente neste formulário."
+        : code || "Ação não concluída. Confira o estado antes de repetir.");
+    }
     finally { setBusy(false); }
   }
   function invalidate() { setPreview(null); setRequestId(crypto.randomUUID()); }
