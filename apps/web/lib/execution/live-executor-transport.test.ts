@@ -29,6 +29,36 @@ const state = { ...engine, environment: "REAL",
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
 
+test("permit expiry before fetch has scoped proof and zero network attempts; timeout stays uncertain", async () => {
+  const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://203.0.113.2", secret: "fixture-secret-not-real-123456789123456789" };
+  const input = { clientOrderId: "C2-fixture-2-B-0123456789abcd", symbol: engine.symbol, side: "BUY", purpose: "ENTRY" };
+  const reservation = { code: "PASS", operatorId: engine.operator_id, accountId: engine.exchange_account_id,
+    engineId: engine.trading_engine_id, shardId: target.shardId, clientOrderId: input.clientOrderId, expiresAt: Date.now() - 1 };
+  let attempts = 0;
+  const fetcher = (async () => { attempts++; throw new Error("FETCH_TIMEOUT"); }) as typeof fetch;
+  await assert.rejects(transport.createLiveExecutorOrder(input, engine, "a".repeat(64), fetcher, async () => target, reservation),
+    (error: any) => error instanceof AccountOrderNotSubmitted && error.receipt.trading_engine_id === engine.trading_engine_id);
+  assert.equal(attempts, 0);
+  await assert.rejects(transport.createLiveExecutorOrder(input, engine, "a".repeat(64), fetcher, async () => target,
+    { ...reservation, expiresAt: Date.now() + 20000 }), /FETCH_TIMEOUT/);
+  assert.equal(attempts, 1);
+});
+
+test("historical proof endpoint verifies body/shard/engine and never sends create-order", async () => {
+  const target = { shardId: "executor-03", ip: "203.0.113.3", base: "https://203.0.113.3", secret: "fixture-secret-not-real-123456789123456789" };
+  let calls = 0;
+  const fetcher = (async (url: unknown, init?: RequestInit) => {
+    calls++; assert.equal(new URL(String(url)).pathname, "/v1/prove-unsent-order");
+    const raw = String(init!.body), input = JSON.parse(raw), headers = new Headers(init!.headers);
+    const proofScope = { ...engine, environment: "REAL", executor_shard_id: target.shardId,
+      clientOrderId: input.clientOrderId, decision_id: input.decision_id, request_nonce: headers.get("x-coinops-nonce")! };
+    return Response.json({ ...engine, environment: "REAL", executor_shard_id: target.shardId, order: null,
+      unsent_proof: signAccountOrderUnsentProof(target.secret, proofScope, createHash("sha256").update(raw).digest("hex")) });
+  }) as typeof fetch;
+  await assert.rejects(transport.proveLiveExecutorUnsentOrder(engine, "C2-fixture-2-B-0123456789abcd", "a".repeat(64), new Date(Date.now() - 90000).toISOString(), fetcher, async () => target), AccountOrderNotSubmitted);
+  assert.equal(calls, 1);
+});
+
 test("create dispatch carries a separate permit on01/03; byte identity, no write retry, and exact signed unsent response", async () => {
   const secret = "fictional-transport-budget-secret-123456789", now = Date.now();
   for (const shardId of ["executor-01", "executor-03"]) {

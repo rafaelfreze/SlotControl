@@ -4,7 +4,7 @@ import { planAthLadder } from "./ath-ladder";
 import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
 import { buildLiveSizing, parseLiveRules, type LiveConfig, type RawLiveSymbol } from "./live-preparation";
 import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
-  createLiveExecutorOrder, cancelLiveExecutorOrder, type LiveOrder,
+  createLiveExecutorOrder, cancelLiveExecutorOrder, proveLiveExecutorUnsentOrder, type LiveOrder,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, type ReadRecoveryAlert } from "./live-read-recovery";
@@ -38,6 +38,7 @@ import { completeLedgerRead } from "./complete-ledger-read";
 import { accountExecutionPolicyRequired, reserveAccountOrderDispatch, acknowledgeAccountOrderDispatch,
   AccountOrderBudgetHold } from "./account-order-budget-server";
 import { AccountOrderNotSubmitted } from "./account-order-unsent-proof";
+import { mayAttestUnsentEntry } from "./live-unsent-entry-recovery";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Symbol = string;
@@ -344,7 +345,10 @@ async function assertExchangeMatchesLedger(run: Run, orders: Order[], state: Liv
     ledger.delete(observed.clientOrderId!);
   }
   for (const pending of ledger.values()) {
-    if (pending.submission_guarded_at !== null && pending.client_order_id !== dispatchingClientOrderId) {
+    if (pending.submission_guarded_at !== null && pending.client_order_id !== dispatchingClientOrderId
+      && !(pending.status === "PREPARED" && pending.exchange_order_id === null
+        && amount(pending.executed_quantity) === 0 && amount(pending.cumulative_quote) === 0
+        && pending.account_order_unsent_receipt?.request_nonce)) {
       // openOrders is a snapshot, not proof of a lost order. Verify the exact
       // persisted Binance ID before deciding whether this is an ordinary fill.
       if (pending.exchange_order_id) {
@@ -434,9 +438,28 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
         .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
         .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
         .eq("decision_id", order.strategy_decision_id ?? "").maybeSingle();
-      const certifiedUnsent = Boolean(order.account_order_unsent_receipt?.request_nonce
+      let certifiedUnsent = Boolean(order.account_order_unsent_receipt?.request_nonce
         && decision.data?.result === "PENDING" && decision.data.dispatched_at === null
         && decision.data.exchange_ack_at === null && decision.data.completed_at === null);
+      if (!decision.error && !certifiedUnsent && mayAttestUnsentEntry(order, decision.data)) {
+        const recoveryHealth = await loadLiveEngineExecutorStatus(run);
+        if (["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(recoveryHealth.gate)
+          && recoveryHealth.health?.unsent_recovery_protocol === 1) {
+          await renewLease(service, run);
+          try { await proveLiveExecutorUnsentOrder(run, order.client_order_id, order.strategy_decision_id!, decision.data!.dispatched_at!); }
+          catch (error) {
+            if (!(error instanceof AccountOrderNotSubmitted)) throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
+            await renewLease(service, run);
+            const released = await service.rpc("release_proven_unsent_account_order", {
+              p_operator_id: run.operator_id, p_account_id: run.exchange_account_id, p_engine_id: run.trading_engine_id,
+              p_client_order_id: order.client_order_id, p_lease_owner: run.lease_owner,
+              p_dispatched_at: decision.data!.dispatched_at, p_proof: error.receipt });
+            if (released.error || released.data !== true) throw new Error("COINOPS_ACCOUNT_ORDER_UNSENT_UNPROVEN");
+            order.account_order_unsent_receipt = error.receipt;
+            certifiedUnsent = true;
+          }
+        }
+      }
       if (decision.error || !certifiedUnsent && !isProvablyUnsentTakeProfit(order, decision.data, Date.now()))
         throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
     }

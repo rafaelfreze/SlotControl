@@ -19,7 +19,8 @@ function valid(receipt: Receipt, scope: Scope, hash: string, now: number) {
     && Number.isSafeInteger(receipt.observedAt) && receipt.observedAt <= now + 2000
     && now - receipt.observedAt < 60_000;
 }
-/** ONLY the executor's synchronous no-POST gate may issue this receipt. A
+/** Only a synchronous no-fetch gate or the executor's durable fenced no-POST
+ * attestation may issue this receipt. A
  * timeout, absent order, exchange rejection or string error is never proof. */
 export function signAccountOrderUnsentProof(secret: string, scope: Scope, bodyHash: string, now = Date.now()): UnsentProof {
   const receipt: Receipt = { ...scope, protocol: 1, outcome: "NOT_SUBMITTED", bodyHash, observedAt: now };

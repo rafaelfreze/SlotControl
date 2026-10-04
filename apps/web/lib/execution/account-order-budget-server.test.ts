@@ -9,9 +9,9 @@ import { projectAccountBudgetObservation } from "./account-order-budget-observat
 // Supabase connection, key, Binance request, order or real engine is created.
 function fixture(options: { busy?: number; acquireError?: boolean; recordError?: boolean;
   releaseError?: boolean; responses?: string[]; successor?: boolean; latency?: number;
-  minimumValidityMs?: number; recordLatency?: number; observationLag?: number } = {}) {
+  minimumValidityMs?: number; recordLatency?: number; observationLag?: number; reservationShortAfterRefresh?: boolean } = {}) {
   let now = Date.parse("2026-10-04T18:58:18Z"), owner: string | null = null;
-  let acquired = 0, reads = 0, records = 0, busy = options.busy ?? 0;
+  let acquired = 0, reads = 0, records = 0, reserves = 0, busy = options.busy ?? 0;
   const events: string[] = [], releases: Record<string, unknown>[] = [];
   const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://executor.invalid",
     credentialRef: "fixture", validatedVersion: "release", secret: "fixture-not-a-secret" };
@@ -37,6 +37,12 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
     }
   }
   const service = { from: (table: string) => new Query(table), rpc: async (name: string, args: any) => {
+    if (name === "reserve_account_order_budget") {
+      reserves++; events.push("RESERVE");
+      return { error: null, data: { code: "PASS", operatorId: "op", accountId: "account", engineId: "engine",
+        shardId: target.shardId, clientOrderId: args.p_client_order_id,
+        expiresAt: reserves === 1 || options.reservationShortAfterRefresh ? now + 100 : Math.floor(now / 10000) * 10000 + 10000 } };
+    }
     if (name === "acquire_account_order_budget_probe") {
       acquired++; events.push("ACQUIRE");
       if (options.acquireError) return { data: null, error: { message: "db" } };
@@ -56,16 +62,16 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
     "node:timers/promises": { setTimeout: async (ms: number) => { assert.equal(owner, null); events.push(`WAIT:${ms}`); now += ms; } },
     "./complete-ledger-read.ts": { completeLedgerRead },
     "./account-order-budget-observation.ts": { projectAccountBudgetObservation: (sample: any, input: any, at = now) => projectAccountBudgetObservation(sample, input, at) },
-    "./executor-shards-server.ts": { resolveExecutorForConnection: async () => target,
+    "./executor-shards-server.ts": { resolveExecutorForConnection: async () => target, resolveExecutorForEngine: async () => target,
       parseExecutorValidatedVersions: () => ["release"], withExecutorShard: (input: any) => ({ ...input, executor_shard_id: target.shardId }) },
     "./live-executor-client.ts": { signedExecutorHeaders: () => ({ "content-type": "application/json" }) },
   };
   const compiled = ts.transpileModule(readFileSync(new URL("./account-order-budget-server.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const loaded: Record<string, any> = {};
-  new Function("require", "exports", "Date", compiled)((name: string) => {
+  new Function("require", "exports", "Date", "fetch", compiled)((name: string) => {
     assert.ok(name in dependencies, name); return dependencies[name];
-  }, loaded, Clock);
+  }, loaded, Clock, (...args: any[]) => fetcher(args[0], args[1]));
   const fetcher = async (url: string, init: RequestInit) => {
     assert.equal(url, "https://executor.invalid/v1/admin/order-budget");
     assert.equal(init.method, "POST"); // Signed administrative GET-only probe, not an order route.
@@ -86,6 +92,8 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
   };
   return { collect: () => loaded.collectAccountOrderBudget(service, "op", "account", "executor-02", ["BTCBRL"], fetcher,
     { minimumValidityMs: options.minimumValidityMs }),
+    reserve: () => loaded.reserveAccountOrderDispatch(service, { operator_id: "op", exchange_account_id: "account",
+      trading_engine_id: "engine", symbol: "BTCBRL", quote_asset: "BRL" }, "C2-fixture-2-B-0123456789abcd", "BUY", "lease", true),
     events, releases, get owner() { return owner; }, get reads() { return reads; }, get records() { return records; }, get acquired() { return acquired; } };
 }
 
@@ -95,6 +103,15 @@ test("interval-boundary rejection releases only own lease before cooldown and fr
   assert.deepEqual(f.events, ["ACQUIRE", "READ", "RELEASE", "WAIT:5500", "ACQUIRE", "READ", "RECORD"]);
   assert.equal(f.records, 1); assert.equal(f.owner, null);
   await f.collect(); assert.equal(f.records, 2); assert.equal(f.owner, null);
+});
+
+test("dispatch refreshes near-expiry PASS before guard; short refreshed permit stays held without dispatch", async () => {
+  const f = fixture(); const reservation = await f.reserve();
+  assert.equal(reservation.code, "PASS"); assert.equal(f.reads, 2);
+  assert.deepEqual(f.events.filter(event => event === "RESERVE"), ["RESERVE", "RESERVE"]);
+  const short = fixture({ reservationShortAfterRefresh: true });
+  await assert.rejects(short.reserve(), /BUDGET_UNKNOWN/);
+  assert.ok(short.events.every(event => !/DISPATCH|CREATE|GUARD/.test(event)));
 });
 test("failed transport, invalid scope or persistence failure releases lease without saving false evidence", async () => {
   for (const options of [{ responses: ["NETWORK"] }, { responses: ["INVALID"] }, { recordError: true },

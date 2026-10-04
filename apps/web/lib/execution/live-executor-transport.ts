@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { EngineContext } from "./operator-context.ts";
 import { resolveExecutorForEngine, withExecutorShard, type ExecutorEngineResolver } from "./executor-shards-server.ts";
 import { accountBudgetPermitHeaders, type AccountBudgetReservation } from "./account-order-budget-permit.ts";
-import { AccountOrderNotSubmitted, verifyAccountOrderUnsentProof } from "./account-order-unsent-proof.ts";
+import { AccountOrderNotSubmitted, signAccountOrderUnsentProof, verifyAccountOrderUnsentProof } from "./account-order-unsent-proof.ts";
 
 export type ExecutorEngineScope = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "symbol" | "quote_asset">;
 export type ExecutorContext = ExecutorEngineScope & { environment: "REAL"; decision_id: string; idempotency_key: string };
@@ -57,8 +57,20 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
     trading_engine_id: String(input.trading_engine_id), executor_shard_id: target.shardId,
     environment: String(input.environment), symbol: String(input.symbol), side: String(input.side),
     clientOrderId: String(input.clientOrderId) };
-  const permit: Record<string, string> = reservation ? accountBudgetPermitHeaders(secret, reservation, permitScope, body) : {};
   const headers = signedExecutorHeaders(secret, path, body, key);
+  const { side: permitSide, ...receiptScope } = permitScope;
+  void permitSide;
+  const proofScope = { ...receiptScope, decision_id: String(input.decision_id), request_nonce: headers.get("x-coinops-nonce")! };
+  let permit: Record<string, string>;
+  try { permit = reservation ? accountBudgetPermitHeaders(secret, reservation, permitScope, body) : {}; }
+  catch (error) {
+    // No fetch has started. This typed, scoped receipt cannot be synthesized
+    // from a timeout, remote error string or an absent Binance order.
+    if (path !== "/v1/create-order" || !(error instanceof Error)
+      || error.message !== "EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED") throw error;
+    const proof = signAccountOrderUnsentProof(secret, proofScope, createHash("sha256").update(body).digest("hex"));
+    throw new AccountOrderNotSubmitted(verifyAccountOrderUnsentProof(secret, proof, proofScope, body));
+  }
   for (const [name, value] of Object.entries(permit)) headers.set(name, value);
   const response = await fetcher(`${base}${path}`, { method: "POST", cache: "no-store",
     headers, body,
@@ -81,7 +93,19 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
   if (target.shardId !== "executor-01"
     && (payload as Record<string, unknown>).executor_shard_id !== target.shardId)
     throw new Error("EXECUTOR_RESPONSE_SHARD_MISMATCH");
+  if (path === "/v1/prove-unsent-order") {
+    const value = payload as T & { order?: unknown; unsent_proof?: unknown };
+    if (value.order !== null) throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
+    throw new AccountOrderNotSubmitted(verifyAccountOrderUnsentProof(secret, value.unsent_proof, proofScope, body));
+  }
   return payload;
+}
+
+/** Attests durable absence with fencing and exact Binance GET. Never POSTs an order. */
+export async function proveLiveExecutorUnsentOrder(engine: ExecutorEngineScope, clientOrderId: string,
+  decisionId: string, dispatchedAt: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
+  return request<never>("/v1/prove-unsent-order", { ...executorContext(engine, decisionId, clientOrderId),
+    clientOrderId, dispatched_at: dispatchedAt, side: "BUY", purpose: "ENTRY" }, clientOrderId, fetcher, resolver);
 }
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;

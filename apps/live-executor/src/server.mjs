@@ -23,6 +23,7 @@ import { createAccountOrderBudgetReader } from "./account-order-budget.mjs";
 import { accountOrderPolicyEnabled, enableAccountOrderPolicy, ACCOUNT_ORDER_POLICY } from "./account-order-policy.mjs";
 import { verifyAccountBudgetPermit } from "../../web/lib/execution/account-order-budget-permit.ts";
 import { signAccountOrderUnsentProof } from "../../web/lib/execution/account-order-unsent-proof.ts";
+import { assertUnsentFence, attestNeverDispatched } from "./unsent-recovery.mjs";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -115,6 +116,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
       : path === "/v1/trades" ? "READ_TRADES"
+      : path === "/v1/prove-unsent-order" ? "UNSENT_ORDER_ATTESTATION"
       : path === "/v1/reconciliation" ? "READ_RECONCILIATION" : "DENIED";
     let outcome = "DENIED", status = 403, decisionId = null, symbol = null, keyHash = null, scope = null, legacyClient = false;
     try {
@@ -130,7 +132,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         return;
       }
       if (request.method !== "POST" || !["/v1/health", "/v1/capacity", "/v1/dry-run", "/v1/state", "/v1/query-order",
-        "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
+        "/v1/trades", "/v1/prove-unsent-order", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
         "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/order-budget", "/v1/admin/account-policy", "/v1/admin/promote",
         "/v1/admin/capital", "/v1/admin/account-cap", "/v1/admin/registry-append", "/v1/testnet/transport"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
@@ -419,6 +421,10 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       scope = { ...responseContext(engine), executor_shard_id: shardId };
       const accountBudgetEnabled = await accountOrderPolicyEnabled(stateDirectory, engine, shardId);
       const assertBudgetPermit = () => {
+        if (path === "/v1/create-order") {
+          const claim = durableIntent(engine, input, key, verified.bodyHash, "CREATE_ORDER");
+          assertUnsentFence(join(stateDirectory, "orders"), claim.key, verified.timestamp);
+        }
         if (!accountBudgetEnabled) return;
         try { verifyAccountBudgetPermit(secret, request.headers["x-coinops-account-order-budget"],
           request.headers["x-coinops-account-order-budget-signature"], { ...scope,
@@ -456,7 +462,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           clock_drift_ms: market.driftMs, binance_connectivity: "OK", account_permission: permission,
           egress_ipv4: ip, egress_ipv4_verified: ip === expectedEgressIp,
           isolation_contract: ACCOUNT_ORDER_POLICY, account_order_budget_protocol: 1,
-          account_order_budget_enforced: accountBudgetEnabled,
+          account_order_budget_enforced: accountBudgetEnabled, unsent_recovery_protocol: 1,
           trading_enabled: flags.tradingEnabled, kill_switch: flags.killSwitch, latency_ms: now() - started };
         engineHealthCache.set(engine.trading_engine_id, { at: now(), value });
         writeJson(response, status, value);
@@ -491,6 +497,20 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
             ? await transport.ownedTrades(symbol, input.clientOrderId, order.orderId) : null;
           outcome = "READ_ONLY"; status = 200;
           writeJson(response, 200, { ...scope, order, trades });
+          return;
+        }
+        if (path === "/v1/prove-unsent-order") {
+          if (key !== input.clientOrderId || input.side !== "BUY" || input.purpose !== "ENTRY" || !accountBudgetEnabled)
+            throw new ExecutorRejection("EXECUTOR_UNSENT_RECOVERY_SCOPE_DENIED", 403);
+          transport.ownership(symbol, input.clientOrderId, "BUY");
+          const claim = durableIntent(engine, input, key, verified.bodyHash, "CREATE_ORDER");
+          await attestNeverDispatched({ directory: join(stateDirectory, "orders"), key: claim.key,
+            dispatchedAt: input.dispatched_at, now,
+            query: () => transport.queryOrder(symbol, input.clientOrderId) });
+          const proof = signAccountOrderUnsentProof(secret, { ...scope, clientOrderId: input.clientOrderId,
+            decision_id: input.decision_id, request_nonce: verified.nonce }, verified.bodyHash, now());
+          outcome = "PROVEN_NOT_SUBMITTED"; status = 200;
+          writeJson(response, status, { ...scope, order: null, unsent_proof: proof });
           return;
         }
         if (path === "/v1/create-order") {

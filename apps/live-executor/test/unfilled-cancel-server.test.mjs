@@ -10,6 +10,8 @@ import { createExecutorHandler } from "../src/server.mjs";
 import { requestSignature, sha256 } from "../src/security.mjs";
 import { engineOrderPrefix, validateExecutorRegistry } from "../src/account-registry.mjs";
 import { ACCOUNT_B, engineFixture, registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
+import { enableAccountOrderPolicy } from "../src/account-order-policy.mjs";
+import { verifyAccountOrderUnsentProof } from "../../web/lib/execution/account-order-unsent-proof.ts";
 
 const NOW = Date.parse("2026-09-28T02:00:00.000Z");
 const SECRET = "test-only-cancel-secret-with-sufficient-entropy";
@@ -17,7 +19,7 @@ const CLIENT = "COR1-BTC-2-1-BUY-0123456789abcd";
 const ORDER = { symbol: "BTCBRL", clientOrderId: CLIENT, orderId: 123, side: "BUY",
   status: "NEW", executedQty: "0", cummulativeQuoteQty: "0", price: "437000" };
 
-async function fixture({ native = false } = {}) {
+async function fixture({ native = false, missingOrder = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "coinops-unfilled-cancel-"));
   const shardId = native ? "executor-03" : "executor-01";
   const rawRegistry = native ? { ...registryFixture([
@@ -54,7 +56,8 @@ async function fixture({ native = false } = {}) {
     if (parsed.pathname === "/api/v3/ticker/price") return Response.json({
       symbol: parsed.searchParams.get("symbol"), price });
     if (parsed.pathname === "/api/v3/openOrders") return Response.json([]);
-    if (parsed.pathname === "/api/v3/order" && method === "GET") return Response.json(order);
+    if (parsed.pathname === "/api/v3/order" && method === "GET") return missingOrder
+      ? Response.json({ code: -2013, msg: "Order does not exist." }, { status: 400 }) : Response.json(order);
     if (parsed.pathname === "/api/v3/order" && method === "DELETE") {
       if (uncertain) throw new Error("LOST_DELETE_ACK");
       if (fillDuringCancel) {
@@ -108,6 +111,27 @@ test("signed ONLY_NEW cancellation preserves request identity, replays and rejec
     assert.equal(identityChanged.body.error, "EXECUTOR_IDEMPOTENCY_CONFLICT");
     assert.equal(scenario.calls.filter((call) => call.method === "DELETE").length, 1);
   } finally { await scenario.close(); }
+});
+
+test("signed historical attestation is read-only, scope-bound and unavailable for a resident order", async () => {
+  for (const missingOrder of [true, false]) {
+    const f = await fixture({ native: true, missingOrder });
+    try {
+      await enableAccountOrderPolicy(f.directory, f.engine, f.shardId);
+      const patch = { clientOrderId: f.clientId, side: "BUY", purpose: "ENTRY", dispatched_at: new Date(NOW - 180000).toISOString() };
+      const result = await f.send("/v1/prove-unsent-order", patch, f.clientId);
+      assert.equal(result.status, missingOrder ? 200 : 409);
+      if (missingOrder) {
+        assert.equal(result.body.order, null);
+        const proof = JSON.parse(Buffer.from(result.body.unsent_proof.receipt, "base64url").toString());
+        const raw = JSON.stringify({ ...intentContext(f.engine, f.clientId), executor_shard_id: f.shardId, ...patch });
+        assert.equal(verifyAccountOrderUnsentProof(SECRET, result.body.unsent_proof, proof, raw, NOW).trading_engine_id, f.engine.trading_engine_id);
+        const foreign = await f.send("/v1/prove-unsent-order", { ...patch, trading_engine_id: "10000000-0000-4000-8000-000000009999" }, f.clientId);
+        assert.equal(foreign.status, 403);
+      } else assert.equal(result.body.error, "EXECUTOR_UNSENT_RECOVERY_ORDER_EXISTS");
+      assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+    } finally { await f.close(); }
+  }
 });
 
 test("native SOLUSDT on executor-03 advertises own caps and cancels an empty BUY exactly once", async () => {

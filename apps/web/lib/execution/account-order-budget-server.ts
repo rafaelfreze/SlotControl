@@ -36,9 +36,11 @@ export async function reserveAccountOrderDispatch(service: Service, engine: Exec
     p_account_id: engine.exchange_account_id, p_engine_id: engine.trading_engine_id,
     p_client_order_id: clientOrderId, p_lease_owner: leaseOwner });
   let result = await reserve();
-  if (!result.error && result.data?.code === "ACCOUNT_ORDER_BUDGET_UNKNOWN") {
+  if (!result.error && (result.data?.code === "ACCOUNT_ORDER_BUDGET_UNKNOWN"
+    || result.data?.code === "PASS" && result.data.expiresAt - Date.now() < 4000)) {
     const target = await resolveExecutorForEngine(engine.operator_id, engine.exchange_account_id, engine.trading_engine_id);
-    try { await collectAccountOrderBudget(service, engine.operator_id, engine.exchange_account_id, target.shardId, [engine.symbol]); }
+    try { await collectAccountOrderBudget(service, engine.operator_id, engine.exchange_account_id, target.shardId, [engine.symbol],
+      undefined, { minimumValidityMs: 4000 }); }
     catch { throw new AccountOrderBudgetHold(code, clientOrderId, side); }
     result = await reserve();
   }
@@ -49,6 +51,8 @@ export async function reserveAccountOrderDispatch(service: Service, engine: Exec
   if (reservation.operatorId !== engine.operator_id || reservation.accountId !== engine.exchange_account_id
     || reservation.engineId !== engine.trading_engine_id || reservation.clientOrderId !== clientOrderId)
     throw new Error("COINOPS_ACCOUNT_ORDER_RESERVE_SCOPE_DENIED");
+  if (!Number.isSafeInteger(reservation.expiresAt) || reservation.expiresAt - Date.now() < 4000)
+    throw new AccountOrderBudgetHold(code, clientOrderId, side);
   return reservation;
 }
 

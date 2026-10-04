@@ -22,6 +22,7 @@ export type LiveExecutorHealth = {
   isolation_contract?: string;
   account_order_budget_protocol?: number;
   account_order_budget_enforced?: boolean;
+  unsent_recovery_protocol?: number;
 };
 
 export type LiveExecutorStatus = {

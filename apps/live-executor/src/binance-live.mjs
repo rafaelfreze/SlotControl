@@ -76,6 +76,12 @@ export class BinanceLiveTransport {
     if (this.offset === null) this.offset = (await this.reads.getServerTime()) - this.now();
     const params = new URLSearchParams({ ...fields, recvWindow: "5000", timestamp: String(this.now() + this.offset) });
     params.set("signature", createHmac("sha256", this.apiSecret).update(params.toString()).digest("hex"));
+    // Final synchronous gate AFTER all clock reads and immediately before
+    // fetch. A fenced old request cannot wake up and POST after attestation.
+    if (method === "POST" && path === "/api/v3/order") {
+      if (this.beforeOrderSubmit) this.beforeOrderSubmit();
+      this.orderPostAttempted = true;
+    }
     let response;
     try {
       response = await this.fetcher(`${BASE}${path}${method === "GET" ? `?${params}` : ""}`, {
@@ -276,8 +282,6 @@ export class BinanceLiveTransport {
       throw new ExecutorRejection("EXECUTOR_SELF_TRADE_PREVENTION_UNPROVEN", 503);
     // The incoming order may expire, but an already resident sibling TP/BUY
     // must never be canceled by EXPIRE_MAKER/BOTH. The caller cannot override it.
-    if (this.beforeOrderSubmit) this.beforeOrderSubmit();
-    this.orderPostAttempted = true;
     const response = await this.signed("POST", "/api/v3/order", { ...fields,
       ...(stpSupported ? { selfTradePreventionMode: "EXPIRE_TAKER" } : {}),
       newClientOrderId: clientOrderId, newOrderRespType: "FULL" });
