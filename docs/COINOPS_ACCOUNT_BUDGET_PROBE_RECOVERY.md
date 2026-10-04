@@ -46,3 +46,38 @@ permits, ownership e criação idempotente); lint direcionado, typecheck e build
 PASS. Harness sintético de append em desktop/mobile: 2 testes PASS, sem requests
 externas nem criação real. Fingerprint do runtime do executor inalterado
 (`fleet-parity.mjs --check-code` PASS).
+
+## Segunda falha — confirmação, 15:24 local (19:24 UTC)
+
+O preview público aprovado não comprovou a confirmação. Nesta tentativa, a
+leitura administrativa foi 200 às 19:24:14.335 UTC (1960ms); a confirmação
+retornou UNKNOWN. O código ainda fazia preview RPC + gravação de allocation
+antes do gate SQL final: a amostra ORDERS de 10s podia vencer no trajeto ou ao
+aguardar lock. Nova leitura às 19:24:29.576 e preview às 19:24:24.796 foram
+persistidos, mas não havia BTCBRL nem check ENGINE_APPEND. Portanto não houve
+criação parcial para repetir. A expiração é a hipótese causal consistente
+com o código e os tempos; os logs antigos não preservam o motivo SQL detalhado.
+
+A confirmação agora recolhe uma amostra assinada POR ÚLTIMO, imediatamente
+antes do RPC serializado. Exige pelo menos 4s restantes da janela original,
+inclusive depois de gravar a amostra (margem para RTT/lock, não extensão da
+validade). Amostra perto do fim é descartada e recolhida após 5,5s; o contador
+nunca é zerado localmente. Ownership completo é validado antes de classificar
+expiração como recuperável. Limites, SQL, reservas de proteção e freshness
+de 30s permanecem inalterados.
+
+Se o próprio gate SQL perder a janela, apenas P0001 explícito com mensagem
+exata COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN permite UM retry do RPC, com mesmo
+request_id e revalidação integral de wallet/hash/capacidade/budget. Esse RAISE
+está antes das inserções e garante rollback. Timeout, rede, resposta ambígua,
+outro código ou UNKNOWN persistente não são repetidos nem viram PASS. O prazo
+do fluxo é 50s, dentro dos 60s da rota; collectors continuam limitados a 35s,
+três leituras, usando o prazo restante do fluxo.
+
+26 regressões PASS: inclui validade após latência de persistência, amostra
+expirada no transporte, confirmação com rollback/UUID único, UNKNOWN
+persistente e timeout sem retry SQL. Lint direcionado, typecheck e build PASS.
+Publicação somente web, sem migration,
+alteração de credenciais, estratégias ou restart de VPS. Preparação INACTIVE
+e ativação REAL são etapas distintas: ativação pelo navegador exige handoff
+ao proprietário; não usar trade como smoke.

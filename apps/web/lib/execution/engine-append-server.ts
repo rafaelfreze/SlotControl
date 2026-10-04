@@ -1,4 +1,5 @@
 import type { createServiceRoleClient } from "../supabase/service-role";
+import { setTimeout as wait } from "node:timers/promises";
 import { validateEnginePlan, type EnginePlanInput } from "./operator-engine-plan.ts";
 import { loadEngineAdmissionOptions } from "./engine-admission-router-server.ts";
 import { operatorConnectionAdmin, operatorConnectionSnapshot, type OperatorExchangeSnapshot } from "./operator-executor-admin.ts";
@@ -54,7 +55,8 @@ export async function allocatedCapital(service: Service, operatorId: string, acc
   return { inventory, accountCap, free, ...engineAppendAvailableCapital(free, accountCap, inventory, exposure) };
 }
 
-export async function previewEngineAppend(service: Service, operatorId: string, input: AppendPlanInput) {
+export async function previewEngineAppend(service: Service, operatorId: string, input: AppendPlanInput,
+  deadline = Date.now() + 50_000) {
   const plan = validateEnginePlan(input);
   if (plan.quote === "USDC" || !/^executor-[0-9]{2,4}$/.test(input.shardId)) throw new Error("COINOPS_ENGINE_MARKET_DENIED");
   const options = await loadEngineAdmissionOptions(service, operatorId, plan.accountId, plan.engines.length);
@@ -72,8 +74,17 @@ export async function previewEngineAppend(service: Service, operatorId: string, 
   const confirmed = await operatorConnectionSnapshot(operatorId, plan.accountId, input.shardId, plan.quote, symbols);
   if (allocationSnapshotFingerprint(snapshot) !== allocationSnapshotFingerprint(confirmed))
     throw new Error("COINOPS_ENGINE_APPEND_SNAPSHOT_CHANGED");
-  await collectAccountOrderBudget(service, operatorId, plan.accountId, input.shardId, plan.engines.map((engine) => engine.symbol));
-  const budget = await previewAccountOrderBudget(service, operatorId, plan.accountId, plan.engines.map((engine) => engine.symbol));
+  const newSymbols = plan.engines.map((engine) => engine.symbol);
+  let budget: Awaited<ReturnType<typeof previewAccountOrderBudget>> | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await collectAccountOrderBudget(service, operatorId, plan.accountId, input.shardId, newSymbols, fetch,
+      { deadline, minimumValidityMs: 4000 });
+    budget = await previewAccountOrderBudget(service, operatorId, plan.accountId, newSymbols);
+    if (budget.code !== "ACCOUNT_ORDER_BUDGET_UNKNOWN" || budget.reason !== "interval expired or invalid"
+      || attempt === 1 || Date.now() + 5500 >= deadline) break;
+    await wait(5500); // Fresh GET after a crossed window, never reuse expired evidence.
+  }
+  if (!budget) throw new Error("COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN");
   if (budget.code !== "PASS") throw new Error(`COINOPS_${budget.code}`);
   const engines = plan.engines.map((engine) => {
     const market = snapshot.markets.find((row) => row.symbol === engine.symbol)!;
@@ -160,13 +171,26 @@ export async function provisionEngineAppend(service: Service, operatorId: string
     return synchronizeAppendedEngines(service, operatorId, plan.accountId, plan.requestId);
   }
   if (!/^[a-f0-9]{64}$/.test(input.previewHash ?? "")) throw new Error("COINOPS_ENGINE_APPEND_PREVIEW_REQUIRED");
+  const deadline = Date.now() + 50_000;
   await ensureAccountExecutionPolicy(service, operatorId, plan.accountId, input.shardId, plan.requestId);
-  const preview = await previewEngineAppend(service, operatorId, input);
-  if (preview.status !== "PREVIEW_NO_ORDER") throw new Error("COINOPS_ENGINE_SLOT_NOT_EXECUTABLE");
-  const created = await service.rpc("append_operator_engine_plan", { p_operator_id: operatorId, p_account_id: plan.accountId,
-    p_shard_id: input.shardId, p_quote_asset: plan.quote, p_authorized_capital: plan.capital,
-    p_engines: configuration.engines, p_request_id: plan.requestId });
-  if (created.error) throw new Error(/^(?:COINOPS|EXECUTOR)_[A-Z0-9_]+$/.test(created.error.message)
-    ? created.error.message : "COINOPS_ENGINE_APPEND_FAILED");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const preview = await previewEngineAppend(service, operatorId, input, deadline);
+    if (preview.status !== "PREVIEW_NO_ORDER") throw new Error("COINOPS_ENGINE_SLOT_NOT_EXECUTABLE");
+    // The public preview persisted allocation after its budget check. Refresh
+    // LAST, immediately before the serialized SQL gate, not before extra RPCs.
+    await collectAccountOrderBudget(service, operatorId, plan.accountId, input.shardId,
+      plan.engines.map(engine => engine.symbol), fetch, { deadline, minimumValidityMs: 4000 });
+    const created = await service.rpc("append_operator_engine_plan", { p_operator_id: operatorId, p_account_id: plan.accountId,
+      p_shard_id: input.shardId, p_quote_asset: plan.quote, p_authorized_capital: plan.capital,
+      p_engines: configuration.engines, p_request_id: plan.requestId });
+    if (!created.error) break;
+    // Only an explicit RAISE from the pre-insert budget gate proves rollback.
+    // Never retry a timeout/network/unknown commit. Same UUID and full wallet,
+    // hash, capacity and budget revalidation on the one permitted retry.
+    if (created.error.code === "P0001" && created.error.message === "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN"
+      && attempt === 0 && Date.now() + 5500 < deadline) { await wait(5500); continue; }
+    throw new Error(/^(?:COINOPS|EXECUTOR)_[A-Z0-9_]+$/.test(created.error.message)
+      ? created.error.message : "COINOPS_ENGINE_APPEND_FAILED");
+  }
   return synchronizeAppendedEngines(service, operatorId, plan.accountId, plan.requestId);
 }

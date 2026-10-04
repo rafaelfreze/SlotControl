@@ -8,7 +8,8 @@ import { projectAccountBudgetObservation } from "./account-order-budget-observat
 // Execute the actual collector with isolated database/transport fixtures. No
 // Supabase connection, key, Binance request, order or real engine is created.
 function fixture(options: { busy?: number; acquireError?: boolean; recordError?: boolean;
-  releaseError?: boolean; responses?: string[]; successor?: boolean; latency?: number } = {}) {
+  releaseError?: boolean; responses?: string[]; successor?: boolean; latency?: number;
+  minimumValidityMs?: number; recordLatency?: number; observationLag?: number } = {}) {
   let now = Date.parse("2026-10-04T18:58:18Z"), owner: string | null = null;
   let acquired = 0, reads = 0, records = 0, busy = options.busy ?? 0;
   const events: string[] = [], releases: Record<string, unknown>[] = [];
@@ -44,6 +45,7 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
       return { data: true, error: null };
     }
     assert.equal(name, "record_account_order_budget_sample"); records++; events.push("RECORD");
+    now += options.recordLatency ?? 0;
     assert.equal(args.p_lease_owner, owner);
     if (options.recordError) return { data: false, error: { message: "db" } };
     owner = null; return { data: true, error: null };
@@ -53,7 +55,7 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
     "node:crypto": { randomUUID: () => `owner-${acquired}-${reads}` },
     "node:timers/promises": { setTimeout: async (ms: number) => { assert.equal(owner, null); events.push(`WAIT:${ms}`); now += ms; } },
     "./complete-ledger-read.ts": { completeLedgerRead },
-    "./account-order-budget-observation.ts": { projectAccountBudgetObservation: (sample: any, input: any) => projectAccountBudgetObservation(sample, input, now) },
+    "./account-order-budget-observation.ts": { projectAccountBudgetObservation: (sample: any, input: any, at = now) => projectAccountBudgetObservation(sample, input, at) },
     "./executor-shards-server.ts": { resolveExecutorForConnection: async () => target,
       parseExecutorValidatedVersions: () => ["release"], withExecutorShard: (input: any) => ({ ...input, executor_shard_id: target.shardId }) },
     "./live-executor-client.ts": { signedExecutorHeaders: () => ({ "content-type": "application/json" }) },
@@ -76,12 +78,14 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
     if (state !== "OK" && state !== "INVALID") return new Response(JSON.stringify({ error: state }), { status: state === "DENIED" ? 403 : 503 });
     return new Response(JSON.stringify({ operator_id: "op", exchange_account_id: state === "INVALID" ? "foreign" : "account",
       environment: "REAL", executor_shard_id: "executor-02", executor_ip: target.ip,
-      credential_ref: target.credentialRef, executor_version: "release", observedAt: now, serverTime: now,
+      credential_ref: target.credentialRef, executor_version: "release", observedAt: now - (reads === 1 ? options.observationLag ?? 0 : 0),
+      serverTime: now - (reads === 1 ? options.observationLag ?? 0 : 0),
       intervals: [{ intervalMs: 10000, limit: 100, count: 0 }], restrictions: [],
       symbols: body.symbols.map((symbol: string) => ({ symbol, maxOrders: 200, selfTradePrevention: "EXPIRE_TAKER", openOrders: [] })),
       exchangeOrders: null }));
   };
-  return { collect: () => loaded.collectAccountOrderBudget(service, "op", "account", "executor-02", ["BTCBRL"], fetcher),
+  return { collect: () => loaded.collectAccountOrderBudget(service, "op", "account", "executor-02", ["BTCBRL"], fetcher,
+    { minimumValidityMs: options.minimumValidityMs }),
     events, releases, get owner() { return owner; }, get reads() { return reads; }, get records() { return records; }, get acquired() { return acquired; } };
 }
 
@@ -119,4 +123,15 @@ test("persistent unknown sample has at most three read-only attempts and an over
   assert.equal(f.reads, 3); assert.equal(f.releases.length, 3); assert.equal(f.records, 0);
   const slow = fixture({ responses, latency: 16000 }); await assert.rejects(slow.collect(), /BUDGET_UNKNOWN/);
   assert.equal(slow.reads, 2); assert.equal(slow.records, 0); assert.equal(slow.owner, null);
+});
+
+test("confirmation margin recollects near-end sample, including database latency, without extending its window", async () => {
+  const near = fixture({ minimumValidityMs: 4000 }); await near.collect();
+  assert.equal(near.reads, 2); assert.equal(near.records, 1); assert.equal(near.owner, null);
+  const afterRecord = fixture({ minimumValidityMs: 1000, recordLatency: 1500 }); await afterRecord.collect();
+  assert.equal(afterRecord.reads, 2); assert.equal(afterRecord.records, 2); assert.equal(afterRecord.owner, null);
+  const expired = fixture({ observationLag: 9000 }); await expired.collect();
+  assert.equal(expired.reads, 2); assert.equal(expired.records, 1);
+  const invalid = fixture({ minimumValidityMs: 4000, responses: ["INVALID"] });
+  await assert.rejects(invalid.collect(), /OBSERVATION_INVALID/); assert.equal(invalid.reads, 1);
 });

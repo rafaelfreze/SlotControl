@@ -19,10 +19,12 @@ const input: AppendPlanInput = { accountId: account, requestId: "55555555-5555-4
     { asset: "SOL", capital: "100.00", gainPercent: "5.5", spacingPercent: "3", postAthPercent: "8", monthlyTarget: 2 }] };
 type Row = Record<string, any>;
 function fixture(options: { capacity?: string; credential?: string; budget?: string; changedWallet?: boolean;
-  insufficient?: boolean; registryFailure?: boolean } = {}) {
+  insufficient?: boolean; registryFailure?: boolean; sqlBudgetFailures?: number; sqlError?: string;
+  previewExpiry?: boolean } = {}) {
   const calls: Array<{ shard: string; path: string; payload: Row }> = [];
   const events: string[] = [];
-  let registryFails = !!options.registryFailure, snapshots = 0, creates = 0;
+  let registryFails = !!options.registryFailure, snapshots = 0, creates = 0, sqlCalls = 0, previewCalls = 0;
+  const waits: number[] = [], ids: string[] = [];
   const oldEngine: Row = { id: original, operator_id: operator, exchange_account_id: account,
     environment: "REAL", quote_asset: "BRL", base_asset: "SOL", symbol: "SOLBRL", legacy_compatible: false,
     hard_cap_quote: 100, executor_shard_id: "executor-02", status: "ACTIVE", config: { immutable: "old" } };
@@ -50,7 +52,11 @@ function fixture(options: { capacity?: string; credential?: string; budget?: str
     }
   }
   const service = { from: (name: string) => new Query(name), rpc: async (name: string, args: Row) => {
-    assert.equal(name, "append_operator_engine_plan"); events.push("SQL_APPEND"); creates++;
+    assert.equal(name, "append_operator_engine_plan"); events.push("SQL_APPEND"); sqlCalls++; ids.push(args.p_request_id);
+    assert.equal(events.at(-2), "ACCOUNT_BUDGET_GET", "fresh observation LAST before SQL, not before allocation upsert");
+    if (sqlCalls <= (options.sqlBudgetFailures ?? 0)) return { data: null,
+      error: { code: options.sqlError ?? "P0001", message: "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN" } };
+    creates++;
     assert.equal(args.p_shard_id, "executor-03");
     const saved = tables.account_engine_append_previews[0];
     assert.ok(saved); assert.equal(saved.available_capital >= 100, true);
@@ -76,6 +82,7 @@ function fixture(options: { capacity?: string; credential?: string; budget?: str
             { filterType: "MIN_NOTIONAL", minNotional: "1" }] } })) };
   };
   const dependencies: Record<string, unknown> = {
+    "node:timers/promises": { setTimeout: async (ms: number) => { waits.push(ms); } },
     "./operator-engine-plan.ts": { validateEnginePlan }, "./complete-ledger-read.ts": { completeLedgerRead },
     "./engine-append-allocation.ts": { engineAppendAvailableCapital, engineAppendPreviewHash },
     "./engine-append-exposure.ts": { allocationSnapshotFingerprint, confirmedEngineCapitalExposure },
@@ -91,8 +98,11 @@ function fixture(options: { capacity?: string; credential?: string; budget?: str
         assert.ok(["/v1/admin/account-cap", "/v1/admin/registry-append"].includes(path));
         return { registered_engines: 1, status: "INACTIVE", trading_enabled: false };
       } },
-    "./account-order-budget-server.ts": { collectAccountOrderBudget: async () => events.push("ACCOUNT_BUDGET_GET"),
-      previewAccountOrderBudget: async () => ({ code: options.budget ?? "PASS" }) },
+    "./account-order-budget-server.ts": { collectAccountOrderBudget: async (_s: unknown, _o: unknown, _a: unknown,
+      _sh: unknown, _sy: unknown, _fetch: unknown, safety: { minimumValidityMs: number; deadline: number }) => {
+      assert.equal(safety.minimumValidityMs, 4000); assert.ok(Number.isFinite(safety.deadline)); events.push("ACCOUNT_BUDGET_GET"); },
+      previewAccountOrderBudget: async () => ({ code: options.previewExpiry && previewCalls++ === 0
+        ? "ACCOUNT_ORDER_BUDGET_UNKNOWN" : options.budget ?? "PASS", reason: "interval expired or invalid" }) },
     "./account-execution-policy-server.ts": { ensureAccountExecutionPolicy: async () => events.push("ALL_HOST_POLICY") },
     "./executor-shards-server.ts": { resolveExecutorForConnection: async () => ({ credentialRef: "fixture-reference-not-a-secret" }) },
   };
@@ -102,7 +112,7 @@ function fixture(options: { capacity?: string; credential?: string; budget?: str
   new Function("require", "exports", compiled)((name: string) => {
     assert.ok(name in dependencies, `Unexpected dependency ${name}`); return dependencies[name];
   }, loaded);
-  return { tables, before, calls, events, get creates() { return creates; },
+  return { tables, before, calls, events, waits, ids, get sqlCalls() { return sqlCalls; }, get creates() { return creates; },
     preview: () => loaded.previewEngineAppend(service, operator, input),
     provision: (hash: string, change: Partial<AppendPlanInput> = {}) =>
       loaded.provisionEngineAppend(service, operator, { ...input, previewHash: hash, ...change }) };
@@ -124,6 +134,28 @@ test("append orchestration: same SOLBRL A/02 → B/03, policy before SQL, only n
   assert.deepEqual(registered.map((engine: Row) => engine.trading_engine_id), [appended]);
   assert.equal(registered[0].execution_allowed, false); assert.equal(registered[0].kill_switch, true);
   assert.equal(f.tables.robot_v1_live_orders.length, 0);
+});
+
+test("confirmation: expired SQL gate rolls back, refreshes complete preview, same UUID creates exactly once", async () => {
+  const f = fixture({ sqlBudgetFailures: 1 }), preview = await f.preview();
+  await f.provision(preview.previewHash);
+  assert.equal(f.sqlCalls, 2); assert.equal(f.creates, 1); assert.deepEqual(f.ids, [input.requestId, input.requestId]);
+  assert.deepEqual(f.waits, [5500]); assert.deepEqual(f.tables.trading_engines[0], f.before);
+  assert.equal(f.tables.account_quote_caps[0].hard_cap_quote, 200);
+  assert.equal(f.events.filter(e => e === "ALL_HOST_POLICY").length, 1);
+});
+test("confirmation: repeated UNKNOWN fails closed; network/uncertain outcome never retries SQL", async () => {
+  for (const error of ["P0001", "PGRST003", "08006"]) {
+    const f = fixture({ sqlBudgetFailures: 9, sqlError: error }), preview = await f.preview();
+    await assert.rejects(f.provision(preview.previewHash), /BUDGET_UNKNOWN/);
+    assert.equal(f.sqlCalls, error === "P0001" ? 2 : 1); assert.equal(f.creates, 0);
+    assert.equal(f.tables.trading_engines.length, 1); assert.equal(f.calls.length, 0);
+    assert.equal(f.tables.account_quote_caps[0].hard_cap_quote, 100);
+  }
+});
+test("preview: SQL interval expiry refreshes signed evidence, never forces PASS", async () => {
+  const f = fixture({ previewExpiry: true }), preview = await f.preview();
+  assert.equal(preview.status, "PREVIEW_NO_ORDER"); assert.deepEqual(f.waits, [5500]); assert.equal(f.creates, 0);
 });
 test("append orchestration: lost registry ACK retries exact request without second engine/cap/preview", async () => {
   const f = fixture({ registryFailure: true }), preview = await f.preview();

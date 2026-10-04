@@ -67,7 +67,8 @@ export async function acknowledgeAccountOrderDispatch(service: Service, engine: 
 /** Explicit onboarding/preflight collection only. No render/GET, hidden cron,
  * exchange writes, account-primary fallback or full Binance trade history. */
 export async function collectAccountOrderBudget(service: Service, operatorId: string, accountId: string,
-  shardId: string, newSymbols: readonly string[], fetcher: typeof fetch = fetch) {
+  shardId: string, newSymbols: readonly string[], fetcher: typeof fetch = fetch,
+  options: { deadline?: number; minimumValidityMs?: number } = {}) {
   const target = await resolveExecutorForConnection(operatorId, accountId, shardId);
   const versions = parseExecutorValidatedVersions(target.validatedVersion);
   if (!versions || newSymbols.some((symbol) => !/^(BTC|SOL)(BRL|USDT)$/.test(symbol))) throw new Error(code);
@@ -87,7 +88,10 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
   // The executor rejects a probe crossing a Binance counter interval. Its
   // failed-probe cooldown is 5s; retry only that read-only rejection, bounded
   // by attempts/time, never a Binance POST or a bypass of sample validation.
-  const deadline = Date.now() + 35_000;
+  const deadline = Math.min(Date.now() + 35_000, options.deadline ?? Infinity);
+  const minimumValidity = options.minimumValidityMs ?? 0;
+  if (!Number.isFinite(deadline) || !Number.isFinite(minimumValidity) || minimumValidity < 0 || minimumValidity > 5000)
+    throw new Error(code);
   for (let attempt = 0; attempt < 3; attempt++) {
     const leaseOwner = randomUUID();
     const lease = await service.rpc("acquire_account_order_budget_probe", { p_operator_id: operatorId,
@@ -112,8 +116,24 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
         throw new Error(code);
       }
       const observed = await response.json() as BudgetObservation;
-      const sample = projectAccountBudgetObservation(observed, { operatorId, accountId, shardId, ip: target.ip,
-        credentialRef: target.credentialRef, versions, symbols, engines, ledger });
+      const identity = { operatorId, accountId, shardId, ip: target.ip,
+        credentialRef: target.credentialRef, versions, symbols, engines, ledger };
+      // Validate ALL ownership/payload fields at observation time first, so
+      // an expired window is retryable without masking a malformed sample.
+      const inspected = projectAccountBudgetObservation(observed, identity, observed.observedAt);
+      const windowEnd = Math.min(...inspected.intervals.map(row =>
+        (Math.floor(inspected.serverTime / row.intervalMs) + 1) * row.intervalMs
+          - (inspected.serverTime - inspected.observedAt)));
+      if (Date.now() >= windowEnd && Date.now() - inspected.observedAt <= 30_000) {
+        retryable = true; throw new Error(code);
+      }
+      const sample = projectAccountBudgetObservation(observed, identity);
+      // Retain the original Binance window and clock offset. This is a
+      // scheduling margin, NOT an extension of freshness or assumed reset.
+      const validUntil = Math.min(sample.observedAt + 30_000, ...sample.intervals.map(row =>
+        (Math.floor(sample.serverTime / row.intervalMs) + 1) * row.intervalMs
+          - (sample.serverTime - sample.observedAt)));
+      if (validUntil - Date.now() < minimumValidity) { retryable = true; throw new Error(code); }
       const saved = await service.rpc("record_account_order_budget_sample", { p_operator_id: operatorId,
         p_account_id: accountId, p_lease_owner: leaseOwner, p_shard_id: shardId,
         p_observed_at: new Date(sample.observedAt).toISOString(), p_server_time_ms: sample.serverTime,
@@ -121,6 +141,7 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
         p_exchange_limits: sample.exchangeOrders ?? null });
       if (saved.error || saved.data !== true) throw new Error(code);
       recorded = true; // The record RPC atomically releases this probe lease.
+      if (validUntil - Date.now() < minimumValidity) { retryable = true; throw new Error(code); }
       return { observedAt: new Date(sample.observedAt).toISOString(), shardId };
     } catch (error) {
       if (!retryable || attempt === 2 || Date.now() + 5500 >= deadline) throw error;
