@@ -25,7 +25,7 @@ async function collect(testnetFailure = false, testnetAvailable = true, historic
       if (table === "exchange_accounts") data = [{ id: "real-account", executor_shard_id: "executor-02" },
         { id: "testnet-account", executor_shard_id: "executor-02" }];
       if (table === "trading_engines") data = [{ id: filters.environment === "TESTNET" ? "testnet-engine" : "real-engine",
-        exchange_account_id: filters.environment === "TESTNET" ? "testnet-account" : "real-account" }];
+        exchange_account_id: filters.environment === "TESTNET" ? "testnet-account" : "real-account", executor_shard_id: "executor-02" }];
       if (table === "robot_v1_live_runs" || table === "robot_v1_testnet_runs") data = [{
         trading_engine_id: table === "robot_v1_testnet_runs" ? "testnet-engine" : "real-engine",
         status: "ACTIVE", last_reconciled_at: now, created_at: now, last_error: null }];

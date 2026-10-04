@@ -8,7 +8,7 @@ function fixture(accountId = "account-1", engineId = "engine-1", shard = "execut
   const ids = { operator_id: "operator", exchange_account_id: accountId, trading_engine_id: engineId };
   return { operatorId: "operator", now,
     accounts: [{ id: accountId, operator_id: "operator", display_name: accountId, status: "ACTIVE", executor_shard_id: shard, onboarding_environment: "REAL" }],
-    engines: [{ id: engineId, ...ids, environment: "REAL", symbol: `SOL${currency}`, base_asset: "SOL", quote_asset: currency, status: "ACTIVE", kill_switch: false }],
+    engines: [{ id: engineId, ...ids, environment: "REAL", symbol: `SOL${currency}`, base_asset: "SOL", quote_asset: currency, status: "ACTIVE", kill_switch: false, executor_shard_id: shard }],
     runs: [{ id: `run-${engineId}`, ...ids, status: "ACTIVE", last_reconciled_at: at }],
     slotAccounts: Array.from({ length: 25 }, (_, index) => ({ ...ids, slot_number: index + 1, balance_quote: "11.00000000", market_pnl_quote: index === 0 ? "0.35" : "0", fees_quote: index === 0 ? "0.05" : "0", gain_count: index === 0 ? 1 : 0 })),
     slots: Array.from({ length: 25 }, (_, index) => ({ ...ids, run_id: `run-${engineId}`, slot_number: index + 1, position_quantity: index === 0 ? "0.02" : "0", position_committed_quote: index === 0 ? "11" : "0" })),
@@ -57,6 +57,19 @@ test("multiple engines never repeat the same account wallet", () => {
   assert.equal(result.accounts[0]!.currencies[0]!.monitored, "316.000000000000"); // 264 + 12 + 40
   assert.equal(result.counts.activeAccounts, 1);
   assert.equal(result.counts.activeEngines, 2);
+});
+
+test("same-symbol cross-shard engines preserve one account wallet and shard-local allocations", () => {
+  const a = fixture("account-1", "A", "executor-02"), b = fixture("account-1", "B", "executor-03");
+  const input = combined(a, b); input.accounts = a.accounts; input.wallets = a.wallets;
+  input.wallets![0].balances[1].locked = "0.04";
+  const result = buildFinopsCapital(input);
+  assert.equal(result.counts.accounts, 1);
+  assert.equal(result.counts.engines, 2);
+  assert.equal(result.counts.shards, 2);
+  assert.equal(result.accounts[0].currencies[0].monitored, "288.000000000000"); // one cash wallet264 + 2 own positions12
+  assert.deepEqual(result.accounts[0].shardIds, ["executor-02", "executor-03"]);
+  assert.deepEqual(result.markets.map((row) => row.shardId), ["executor-02", "executor-03"]);
 });
 
 test("native currencies and shards remain separate without implicit FX", () => {

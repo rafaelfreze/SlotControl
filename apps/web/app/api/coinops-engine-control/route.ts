@@ -18,6 +18,12 @@ import { createClient } from "@/lib/supabase/server";
 import { previewAccountCapacity, reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
 import { engineCatalogAccount } from "@/lib/execution/engine-account-catalog";
 import { activationAdmissionFromEvidence } from "@/lib/coinops-capacity/activation-admission-view";
+import { loadEngineAdmissionOptions } from "@/lib/execution/engine-admission-router-server";
+import { allocatedCapital, previewEngineAppend, provisionEngineAppend, type AppendPlanInput } from "@/lib/execution/engine-append-server";
+import { allocationSnapshotFingerprint } from "@/lib/execution/engine-append-exposure";
+import { resolveExecutorForConnection } from "@/lib/execution/executor-shards-server";
+import { collectAccountOrderBudget, previewAccountOrderBudget } from "@/lib/execution/account-order-budget-server";
+import { completeLedgerRead } from "@/lib/execution/complete-ledger-read";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,6 +36,18 @@ type Service = ReturnType<typeof createServiceRoleClient>;
 type Scope = { operator: { id: string; product_id: string; tenant_id: string; user_id: string };
   service: Service };
 type Environment = "REAL" | "TESTNET";
+async function paged<T extends { id: string }>(page: Parameters<typeof completeLedgerRead<T>>[0]) {
+  return { data: await completeLedgerRead(page, "COINOPS_ENGINE_STATUS_UNAVAILABLE"), error: null };
+}
+async function runRows<T extends { id: string }>(ids: string[], page: (ids: string[], start: number, end: number) => ReturnType<Parameters<typeof completeLedgerRead<T>>[0]>) {
+  const data: T[] = [];
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    const group = ids.slice(offset, offset + 200);
+    data.push(...await completeLedgerRead((start, end) => page(group, start, end), "COINOPS_ENGINE_STATUS_UNAVAILABLE"));
+  }
+  if (new Set(data.map((row) => row.id)).size !== data.length) throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
+  return { data, error: null };
+}
 
 async function adminScope(): Promise<Scope> {
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_ENGINE_SCHEMA_DENIED");
@@ -175,67 +193,66 @@ export async function GET(request: NextRequest) {
       checkByAccount.get(item.id) ?? null));
     if (!accountId) return json({ accounts, engines: [], caps: [] });
     const [engines, caps, runs, testnetRuns, profiles, readyChecks, preparations, alerts] = await Promise.all([
-      service.from("trading_engines")
-        .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config")
+      paged((start, end) => service.from("trading_engines")
+        .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config,executor_shard_id,created_at")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
-        .eq("environment", "REAL").order("symbol"),
+        .eq("environment", "REAL").order("id").range(start, end)),
       service.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId),
-      service.from("robot_v1_live_runs")
+      paged((start, end) => service.from("robot_v1_live_runs")
         .select("id,trading_engine_id,status,last_error,last_reconciled_at,created_at")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
-        .in("status", ["PREPARING", "ACTIVE", "PAUSED"]),
-      service.from("robot_v1_testnet_runs")
+        .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).order("id").range(start, end)),
+      paged((start, end) => service.from("robot_v1_testnet_runs")
         .select("id,trading_engine_id,status,last_error,last_reconciled_at,created_at")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
-        .in("status", ["ACTIVE", "PAUSED"]),
-      service.from("robot_v1_ath_profiles")
-        .select("trading_engine_id,gain_rate,normal_spacing_rate,post_ath_spacing_rate,config_version")
+        .in("status", ["ACTIVE", "PAUSED"]).order("id").range(start, end)),
+      paged((start, end) => service.from("robot_v1_ath_profiles")
+        .select("id,trading_engine_id,gain_rate,normal_spacing_rate,post_ath_spacing_rate,config_version")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
-        .in("environment", ["REAL", "TESTNET"]),
+        .in("environment", ["REAL", "TESTNET"]).order("id").range(start, end)),
       service.from("account_onboarding_checks")
         .select("trading_engine_id,status,checked_at")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
         .eq("check_key", "TESTNET_READY")
         .order("checked_at", { ascending: false }).limit(100),
-      service.from("robot_v1_live_preparations")
-        .select("trading_engine_id,live_enabled,kill_switch")
-        .eq("operator_id", operator.id).eq("exchange_account_id", accountId),
-      service.from("robot_v1_live_alerts").select("trading_engine_id")
+      paged((start, end) => service.from("robot_v1_live_preparations")
+        .select("id,trading_engine_id,live_enabled,kill_switch")
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId).order("id").range(start, end)),
+      paged((start, end) => service.from("robot_v1_live_alerts").select("id,trading_engine_id")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
-        .is("resolved_at", null),
+        .is("resolved_at", null).order("id").range(start, end)),
     ]);
     if ([engines, caps, runs, testnetRuns, profiles, readyChecks, preparations, alerts].some((item) => item.error))
       throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
     const runIds = (runs.data ?? []).map((run) => run.id);
     const testnetRunIds = (testnetRuns.data ?? []).map((run) => run.id);
     const [slots, orders] = runIds.length ? await Promise.all([
-      service.from("robot_v1_live_slots").select("run_id,trading_engine_id,entry_state")
-        .in("run_id", runIds),
-      service.from("robot_v1_live_orders").select("run_id,trading_engine_id,side,status")
-        .in("run_id", runIds).in("status", ["NEW", "PARTIALLY_FILLED"]),
+      runRows(runIds, (ids, start, end) => service.from("robot_v1_live_slots").select("id,run_id,trading_engine_id,entry_state")
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId).in("run_id", ids).order("id").range(start, end)),
+      runRows(runIds, (ids, start, end) => service.from("robot_v1_live_orders").select("id,run_id,trading_engine_id,side,status")
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId).in("run_id", ids).in("status", ["NEW", "PARTIALLY_FILLED"]).order("id").range(start, end)),
     ]) : [{ data: [], error: null }, { data: [], error: null }];
     const [testnetSlots, testnetOrders] = testnetRunIds.length ? await Promise.all([
-      service.from("robot_v1_testnet_slots").select("run_id,trading_engine_id,entry_state")
-        .in("run_id", testnetRunIds),
-      service.from("robot_v1_testnet_orders").select("run_id,trading_engine_id,side,status")
-        .in("run_id", testnetRunIds).in("status", ["NEW", "PARTIALLY_FILLED"]),
+      runRows(testnetRunIds, (ids, start, end) => service.from("robot_v1_testnet_slots").select("id,run_id,trading_engine_id,entry_state")
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId).in("run_id", ids).order("id").range(start, end)),
+      runRows(testnetRunIds, (ids, start, end) => service.from("robot_v1_testnet_orders").select("id,run_id,trading_engine_id,side,status")
+        .eq("operator_id", operator.id).eq("exchange_account_id", accountId).in("run_id", ids).in("status", ["NEW", "PARTIALLY_FILLED"]).order("id").range(start, end)),
     ]) : [{ data: [], error: null }, { data: [], error: null }];
     if (slots.error || orders.error || testnetSlots.error || testnetOrders.error)
       throw new Error("COINOPS_ENGINE_STATUS_UNAVAILABLE");
-    const preparing = (engines.data ?? []).some((engine) => engine.environment === "REAL"
-      && (runs.data ?? []).some((run) => run.trading_engine_id === engine.id && run.status === "PREPARING"));
-    const selectedAccount = accounts.find((item) => item.id === accountId);
-    // One internal read per selected account; never collect Binance or advance
-    // hysteresis on GET. A missing decision fails closed for new activation only.
-    const admissionRead = preparing && selectedAccount?.executor_shard_id
-      ? await service.rpc("preview_executor_admission", {
-        p_shard_id: selectedAccount.executor_shard_id, p_environment: "REAL", p_engines: 1,
-      }) : null;
-    const activationAdmission = preparing
-      ? activationAdmissionFromEvidence(admissionRead?.error ? null : admissionRead?.data) : null;
+    // Per-engine persisted capacity only. No Binance collection or hysteresis
+    // clock mutation on GET; account bootstrap is not routing authority.
+    const engineAdmissions = new Map(await Promise.all((engines.data ?? []).filter((engine) => engine.environment === "REAL"
+      && (runs.data ?? []).some((run) => run.trading_engine_id === engine.id && run.status === "PREPARING"))
+      .map(async (engine) => {
+        const read = engine.executor_shard_id ? await service.rpc("preview_executor_admission", {
+          p_shard_id: engine.executor_shard_id, p_environment: "REAL", p_engines: 1, p_exclude_engine: engine.id,
+        }) : null;
+        return [engine.id, activationAdmissionFromEvidence(read?.error ? null : read?.data)] as const;
+      })));
     const accountById = new Map(accounts.map((item) => [item.id, item]));
-    return json({ accounts, activationAdmission,
+    return json({ accounts,
       engines: (engines.data ?? []).filter((item) => accountById.has(item.exchange_account_id)).map((item) => {
         const isTestnet = item.environment === "TESTNET";
         const run = (isTestnet ? testnetRuns.data : runs.data)?.find((row) => row.trading_engine_id === item.id) ?? null;
@@ -256,6 +273,7 @@ export async function GET(request: NextRequest) {
           : run?.status === "PREPARING" && !run.last_error && runSlots.length === 25
             && prep?.kill_switch && !prep.live_enabled;
         return { ...item, run, operational: Boolean(operational), ready: Boolean(ready),
+          activationAdmission: engineAdmissions.get(item.id) ?? null,
           evidence: { physicalSlots: runSlots.length, open, residentTp: tp, nextBuy, recent, clean },
           profile: profiles.data?.find((profile) => profile.trading_engine_id === item.id) ?? null };
       }),
@@ -264,7 +282,8 @@ export async function GET(request: NextRequest) {
 }
 
 type Intent = { action?: string; accountId?: string; engineId?: string;
-  requestId?: string; quote?: string; capital?: string; engines?: EnginePlanInput["engines"] };
+  requestId?: string; quote?: string; capital?: string; engines?: EnginePlanInput["engines"];
+  shardId?: string; previewHash?: string };
 
 export async function POST(request: NextRequest) {
   try {
@@ -272,9 +291,14 @@ export async function POST(request: NextRequest) {
     const raw = await request.text();
     if (Buffer.byteLength(raw) > 4096) throw new Error("COINOPS_ENGINE_BODY_TOO_LARGE");
     const input = JSON.parse(raw) as Intent;
-    if (!input || !["PREVIEW", "PROVISION", "SYNC", "PREPARE", "ACTIVATE", "RECOVER", "PAUSE", "RESUME"].includes(input.action ?? ""))
+    if (!input || !["PREVIEW", "PROVISION", "SYNC", "PREPARE", "ACTIVATE", "RECOVER", "PAUSE", "RESUME",
+      "APPEND_OPTIONS", "APPEND_PREVIEW", "APPEND_PROVISION"].includes(input.action ?? ""))
       throw new Error("COINOPS_ENGINE_ACTION_INVALID");
     const scope = await adminScope();
+    if (input.action === "APPEND_OPTIONS") return json({ options: await loadEngineAdmissionOptions(
+      scope.service, scope.operator.id, String(input.accountId), 1) });
+    if (input.action === "APPEND_PREVIEW") return json(await previewEngineAppend(scope.service, scope.operator.id, input as AppendPlanInput));
+    if (input.action === "APPEND_PROVISION") return json(await provisionEngineAppend(scope.service, scope.operator.id, input as AppendPlanInput));
     if (input.action === "PREVIEW" || input.action === "PROVISION") {
       const planInput = input as EnginePlanInput;
       const preview = await planPreview(scope, planInput);
@@ -444,7 +468,7 @@ export async function POST(request: NextRequest) {
       }
     }
     if (input.action === "PREPARE") {
-      if (account.data.is_legacy_default || engine.status !== "INACTIVE")
+      if (engine.legacy_compatible || engine.status !== "INACTIVE")
         throw new Error("COINOPS_ENGINE_PREPARATION_DENIED");
       const health = await loadLiveEngineExecutorStatus(engine);
       if (health.gate !== "LIVE_EXECUTOR_READY")
@@ -471,7 +495,7 @@ export async function POST(request: NextRequest) {
         || engine.engine_kill_switch))) throw new Error("COINOPS_ENGINE_NOT_PAUSED");
       return json(await resumeLiveRun(run.id, scope.operator.user_id, asset));
     }
-    if (input.action !== "ACTIVATE" || account.data.is_legacy_default
+    if (input.action !== "ACTIVATE" || engine.legacy_compatible
       || process.env.COINOPS_LIVE_CRON_ENABLED !== "true")
       throw new Error("COINOPS_ENGINE_ACTIVATION_DENIED");
     if (run.status === "ACTIVE") return json({ status: "ALREADY_ACTIVE", cycleId: run.id });
@@ -486,16 +510,30 @@ export async function POST(request: NextRequest) {
     if (capRead.error || prepRead.error || !capRead.data || !prepRead.data
       || !prepRead.data.kill_switch || prepRead.data.live_enabled)
       throw new Error("COINOPS_ENGINE_CAP_UNAVAILABLE");
+    if (!engine.executor_shard_id) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+    const connection = await resolveExecutorForConnection(scope.operator.id, engine.exchange_account_id, engine.executor_shard_id);
     const snapshot = await operatorAccountSnapshot(scope.operator.id, engine.exchange_account_id,
-      engine.quote_asset, [engine.symbol]);
+      engine.quote_asset, [`BTC${engine.quote_asset}`, `SOL${engine.quote_asset}`], connection.credentialRef, "REAL", engine.trading_engine_id);
+    const allocation = await allocatedCapital(scope.service, scope.operator.id, engine.exchange_account_id, engine.quote_asset, snapshot);
+    const confirmed = await operatorAccountSnapshot(scope.operator.id, engine.exchange_account_id,
+      engine.quote_asset, [`BTC${engine.quote_asset}`, `SOL${engine.quote_asset}`], connection.credentialRef, "REAL", engine.trading_engine_id);
+    if (allocation.free + 1e-8 < allocation.requiredFree
+      || allocationSnapshotFingerprint(snapshot) !== allocationSnapshotFingerprint(confirmed))
+      throw new Error("COINOPS_ENGINE_ACTIVATION_ALLOCATION_DENIED");
     const free = snapshot.balances.find((item) => item.asset === engine.quote_asset)?.free ?? 0;
     const ownPrefix = `C2-${(await import("node:crypto")).createHash("sha256")
       .update(`${engine.exchange_account_id}|${engine.trading_engine_id}`).digest("hex").slice(0, 10)}-`;
     if (free + 1e-8 < Number(prepRead.data.configured_live_capital_brl)
-      || snapshot.markets[0]?.open_orders.some((order) => order.clientOrderId?.startsWith(ownPrefix))
+      || snapshot.markets.flatMap((market) => market.open_orders).some((order) => order.clientOrderId?.startsWith(ownPrefix))
       || Number(engine.hard_cap_quote) > Number(capRead.data.hard_cap_quote))
       throw new Error("COINOPS_ENGINE_ACTIVATION_SNAPSHOT_DENIED");
-    await requireAccountIdentityBinding(scope.service, scope.operator.id, engine.exchange_account_id, "REAL");
+    await requireAccountIdentityBinding(scope.service, scope.operator.id, engine.exchange_account_id, "REAL", engine.executor_shard_id);
+    await collectAccountOrderBudget(scope.service, scope.operator.id, engine.exchange_account_id,
+      engine.executor_shard_id, [engine.symbol]);
+    // Resident engine is already in the account inventory. Its individual
+    // dispatch cost is reserved later under the engine lease, before POST.
+    const accountBudget = await previewAccountOrderBudget(scope.service, scope.operator.id, engine.exchange_account_id, [], [engine.symbol]);
+    if (accountBudget.code !== "PASS") throw new Error(`COINOPS_${accountBudget.code}`);
     await reserveEngineCapacity(scope.service, engine.trading_engine_id, engine.exchange_account_id);
     if (account.data.status === "INACTIVE") {
       const opened = await scope.service.from("exchange_accounts")
@@ -516,7 +554,7 @@ export async function POST(request: NextRequest) {
     const promoted = await operatorExecutorAdmin<{ status: string; trading_engine_id: string }>(
       "/v1/admin/promote", { operator_id: scope.operator.id,
         exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id,
-        credential_ref: account.data.credential_ref, environment: "REAL",
+        credential_ref: connection.credentialRef, environment: "REAL",
         symbol: engine.symbol, hard_cap_quote: Number(engine.hard_cap_quote),
         account_cap_quote: Number(capRead.data.hard_cap_quote),
         max_order_quote: Number(engine.hard_cap_quote) }, "PROMOTE");

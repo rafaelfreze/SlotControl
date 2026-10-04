@@ -56,6 +56,18 @@ test("ALL and missing/ambiguous engines never authorize a mutation target", () =
   assert.equal(concretePremiumEngine(engines, { accountId: "A", symbol: "BTCUSDT" }, "REAL")?.engineId, "A:BTCUSDT");
 });
 
+test("same-symbol engines require exact engine selection without account/shard fallback", () => {
+  const a = { ...make("A", "SOLBRL", "BRL", 275), engineId: "engine-A" };
+  const b = { ...a, engineId: "engine-B", capital: 400 };
+  const selected = { accountId: "A", symbol: "SOLBRL" };
+  assert.equal(concretePremiumEngine([a, b], selected, "REAL"), null);
+  assert.equal(concretePremiumEngine([a, b], selected, "REAL", "engine-A"), a);
+  assert.equal(concretePremiumEngine([a, b], selected, "REAL", "engine-B"), b);
+  assert.equal(concretePremiumEngine([a, b], selected, "REAL", "missing"), null);
+  assert.equal(concretePremiumEngine([a, b], { ...selected, accountId: "B" }, "REAL", "engine-B"), null);
+  assert.equal(concretePremiumEngine([a, b], selected, "TESTNET", "engine-B"), null);
+});
+
 test("public market quote updates only the read-only native presentation", () => {
   const original = { ...engines[2], price: null, openPnl: null,
     slots: [{ state: "OPEN", quantity: .1, committed: 10, currentPrice: null, openPnl: null },

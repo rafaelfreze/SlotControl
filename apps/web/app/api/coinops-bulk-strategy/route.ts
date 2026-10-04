@@ -122,7 +122,7 @@ async function preview(scope: Scope, draft: Draft) {
     || new Set(ids).size !== ids.length || ids.some((id) => !isIdentity(id)))
     throw new Error("COINOPS_BULK_SELECTION_INVALID");
   const registry = await loadOperatorRegistry(scope.service, scope.operator);
-  const shardIds = [...new Set(registry.accounts.map((account) => account.executor_shard_id)
+  const shardIds = [...new Set(registry.engines.map((engine) => engine.executor_shard_id)
     .filter((id): id is string => !!id))];
   const samples = shardIds.length ? await scope.service.from("executor_capacity_samples")
     .select("shard_id,heartbeat_at").in("shard_id", shardIds) : { data: [], error: null };
@@ -165,8 +165,8 @@ async function preview(scope: Scope, draft: Draft) {
       run?.entry_regime as string | null | undefined);
     const partialBuys = ownOrders.filter((item) => item.side === "BUY" && item.status === "PARTIALLY_FILLED").length;
     const reasons = [account.status !== "ACTIVE" || account.kill_switch ? "ACCOUNT_GATE" : null,
-      !account.executor_shard_id || !Number.isFinite(heartbeatByShard.get(account.executor_shard_id))
-        || Date.now() - heartbeatByShard.get(account.executor_shard_id)! > 3 * 60_000 ? "EXECUTOR_STALE" : null,
+      !engine.executor_shard_id || !Number.isFinite(heartbeatByShard.get(engine.executor_shard_id))
+        || Date.now() - heartbeatByShard.get(engine.executor_shard_id)! > 3 * 60_000 ? "EXECUTOR_STALE" : null,
       engine.status !== "ACTIVE" || engine.kill_switch ? "ENGINE_GATE" : null,
       engine.strategy_config_pending ? "CONFIG_UPDATE_PENDING" : null,
       !isParameterCompatible(definition, engine.base_asset) ? "PARAMETER_MARKET_INCOMPATIBLE" : null,

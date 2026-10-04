@@ -15,13 +15,14 @@ import type { DomainRegistry } from "../execution/operator-context.ts";
 import { buildScopedEngineReports } from "./engine-report-scope.ts";
 import { buildLivePerformanceEvidence } from "./live-performance-audit.ts";
 import { buildSlotPresentationAudit } from "./slot-presentation-audit.ts";
+import { buildEngineIsolationAudit } from "./engine-isolation-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1";
   exchangeAccountId?: string; tradingEngineId?: string; symbol?: string };
 export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string }; registry?: DomainRegistry };
-export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments", "contributions"] as const;
+export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments", "contributions", "engine_isolation"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
 export type ReportRuleDefinition = { parameter: string; field: string; unit: string; version: number; notes?: string };
@@ -791,7 +792,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
           && timestamp(candidate.created_at) < timestamp(filters.end)) ? "REVERSED_LATER" : "APPLIED",
         reversal_of: batch.reversal_of, reason: batch.reason,
         evidence_basis: "IMMUTABLE_LIVE_ADJUSTMENT_BATCH_AND_SLOT_ITEM; NO_EXCHANGE_ORDER" };
-    })
+    }), engine_isolation: []
   };
   const preparation = filters.environments.includes("REAL")
     ? buildLivePreparationAudit(input.sources, input.generatedAt) : null;
@@ -835,6 +836,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       row.active_errors = number(row.active_errors) + currentFailures.length;
     } else if (row.environment === "TESTNET" && str(row.health).startsWith("Motor OK") && scopeChecks.some((check) => currentInvariantCodes.has(str(check.code)) && check.status === "WARNING")) row.health = "ATENÇÃO";
   }
+  const isolationAudit = buildEngineIsolationAudit(source("engine_isolation"));
+  datasets.engine_isolation.push(...isolationAudit.rows);
+  datasets.checks.push(...isolationAudit.checks);
   datasets.checks.push(buildPreLiveAuditGate(datasets, incompleteSources));
   for (const check of datasets.checks.filter((row) => row.status !== "PASS")) warnings.push(`${check.code}: ${check.explanation}`);
   for (const key of REPORT_DATASET_KEYS) datasets[key].sort(byTime);

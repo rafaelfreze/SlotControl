@@ -172,6 +172,9 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     reason: string; openedAt: string; resolvedAt: string | null } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const requestedEngine = params.get("engine");
+    if (requestedEngine && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedEngine))
+      setEngineId(requestedEngine);
     let pending: string | null = null;
     try { pending = sessionStorage.getItem("coinops.pending-panel"); sessionStorage.removeItem("coinops.pending-panel"); } catch { /* optional UI preference */ }
     const requestedPanel = params.get("panel") ?? pending;
@@ -232,7 +235,7 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     withLiveMarketPrice(engine, market.status !== "stale" ? market.prices[engine.symbol] ?? null : null)),
     [engines, environment, selection, market.prices, market.status]);
   const overview = useMemo(() => view === "overview" ? (["SHADOW", "TESTNET", "REAL"] as const).map((env) => ({ env, assets: selectPremiumEngines(engines, env, selection) })) : [], [engines, selection, view]);
-  const active = assets.find((item) => item.engineId === engineId) ?? assets[0];
+  const active = engineId ? assets.find((item) => item.engineId === engineId) : assets[0];
   const asset = active?.asset ?? "BTC";
   const currency = active?.currency ?? (environment === "REAL" ? "BRL" : "USDC");
   const groups = premiumNativeGroups(assets);
@@ -250,7 +253,7 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     `${groups.length > 1 ? `${group.accountDisplayName} · ` : ""}${money(groupAmount(group, key), group.currency)}`).join(" · ") || "—";
   const nativeValues = (key: Parameters<typeof premiumNativeTotal>[1]) => groups.length < 2 ? nativeMoney(key)
     : <span className="px-native-values">{groups.map((group) => <span key={`${group.accountId}:${group.currency}`}><small>{group.accountDisplayName} · {group.currency}</small><b>{money(groupAmount(group, key), group.currency)}</b></span>)}</span>;
-  const concrete = concretePremiumEngine(engines, selection, environment);
+  const concrete = concretePremiumEngine(engines, selection, environment, engineId);
   const scopedData = active ? data.operator?.engineData[active.engineId] ?? data : data;
   const allowedControls = !data.operator || Boolean(concrete && active?.engineId === concrete.engineId);
   const changeSelection = (next: PremiumSelection) => { setSelection(next); setPanel(null); setEngineId(null); setSelectedSlot(null); setAccountLimit(30); };
@@ -375,7 +378,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {visited.strategy || panel === "strategy" ? <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
         {view === "live" ? <BulkStrategyEditor operator={data.operator} /> : null}
         <EngineControlCenter active={panel === "strategy"} initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
-          onEditEngine={(accountId, symbol) => { setSelection({ accountId, symbol }); setEngineId(null); }}
+          onEditEngine={(accountId, symbol, selectedEngineId) => { setSelection({ accountId, symbol }); setEngineId(selectedEngineId); }}
           onOpenCredentials={() => setPanel("config")} />
         {concrete && strategyPanels?.[concrete.engineId] ? <div className="px-engine-existing-profile">
           <h3>Regras do motor selecionado · {concrete.accountDisplayName} / {concrete.symbol}</h3>
@@ -384,8 +387,8 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
         : allowedControls ? concrete && strategyPanels?.[concrete.engineId] ? <AthProfilesPanel {...strategyPanels[concrete.engineId]} /> : strategyPanel
           : <p role="status">Selecione uma conta e um mercado específicos nos filtros para alterar a estratégia.</p>}</div> : null}
       {/* Keep the one adjustment form mounted: previews and idempotency keys must survive closing the drawer. */}
-      {visited.adjustments || panel === "adjustments" ? <div key={`adjustments:${selection.accountId}:${selection.symbol}`} hidden={panel !== "adjustments"}>{environment === "REAL" && data.operator
-        ? <LiveAdjustmentsCenter active={panel === "adjustments"} initialAccountId={selection.accountId} initialSymbol={selection.symbol} />
+      {visited.adjustments || panel === "adjustments" ? <div key={`adjustments:${selection.accountId}:${selection.symbol}:${engineId ?? "ALL"}`} hidden={panel !== "adjustments"}>{environment === "REAL" && data.operator
+        ? <LiveAdjustmentsCenter active={panel === "adjustments"} initialAccountId={selection.accountId} initialSymbol={selection.symbol} initialEngineId={engineId ?? undefined} />
         : data.unavailableModules?.includes("manual-history") ? <p role="status">Histórico de ajustes indisponível nesta consulta. Nenhum valor anterior foi tratado como atual. Atualize este módulo antes de ajustar.</p> : allowedControls ? concrete && adjustmentPanels?.[concrete.engineId] ? <ManualAdjustmentsPanel {...adjustmentPanels[concrete.engineId]} /> : adjustmentsPanel : <p role="status">Selecione uma conta e um mercado específicos nos filtros para ajustar um slot. Nenhum ajuste usa o escopo Todos.</p>}</div> : null}
       {panel === "simulator" ? <div className="px-simulator-links"><a href="/automacao/simulador-ath"><PremiumIcon name="strategy" /><strong>Simulador ATH</strong><p>Regime, Top 15 / Reserve, floor e prioridade de reentrada.</p><span>Explorar cenários →</span></a><a href="/automacao/simulador-ajustes"><PremiumIcon name="adjust" /><strong>Simulador de ajustes A–J</strong><p>Provas contábeis de gains, aportes e posições abertas.</p><span>Ver cenários determinísticos →</span></a><p>Simulações isoladas. Não criam ordens nem movimentam saldo.</p></div> : null}
       {panel === "onboarding" && data.operator ? data.unavailableModules?.includes("onboarding") ? <p role="status">Verificações de onboarding indisponíveis nesta consulta. Nenhum gate de admissão foi presumido.</p> : <OperatorOnboardingPanel operator={data.operator} checks={data.onboardingChecks ?? []} /> : null}

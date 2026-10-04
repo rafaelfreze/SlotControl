@@ -3,14 +3,15 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { STRATEGY_VERSION } from "./strategy-engine.ts";
 import type { LiveConfig } from "./live-preparation.ts";
 import type { ExecutorEngineScope } from "./live-executor-transport.ts";
-import { resolveExecutorForAccount, withExecutorShard, type ExecutorAccountResolver } from "./executor-shards-server.ts";
+import { resolveExecutorForEngine, withExecutorShard, type ExecutorEngineResolver } from "./executor-shards-server.ts";
 
 export function signedExecutorHeaders(secret: string, path: string, body: string, idempotencyKey: string,
   timestamp = Date.now(), nonce = randomBytes(18).toString("base64url")): Headers {
   if (Buffer.byteLength(secret) < 32) throw new Error("EXECUTOR_AUTH_NOT_CONFIGURED");
   if (!["/v1/health", "/v1/capacity", "/v1/dry-run", "/v1/state", "/v1/query-order", "/v1/trades", "/v1/reconciliation",
     "/v1/create-order", "/v1/cancel-order", "/v1/admin/credentials", "/v1/admin/registry",
-    "/v1/admin/snapshot", "/v1/admin/promote", "/v1/admin/capital", "/v1/testnet/transport"].includes(path)) throw new Error("EXECUTOR_ROUTE_DENIED");
+    "/v1/admin/snapshot", "/v1/admin/order-budget", "/v1/admin/account-policy", "/v1/admin/promote", "/v1/admin/capital", "/v1/admin/account-cap",
+    "/v1/admin/registry-append", "/v1/testnet/transport"].includes(path)) throw new Error("EXECUTOR_ROUTE_DENIED");
   const hash = createHash("sha256").update(body).digest("hex");
   const canonical = ["POST", path, String(timestamp), nonce, hash].join("\n");
   const signature = createHmac("sha256", secret).update(canonical).digest("hex");
@@ -26,8 +27,8 @@ export function signedDryRunHeaders(secret: string, body: string, idempotencyKey
 
 export async function requestExecutorDryRun(config: LiveConfig, portfolioCaps: { BTC: number; SOL: number },
   globalCapBrl: number, engine: ExecutorEngineScope, fetcher: typeof fetch = fetch,
-  resolver: ExecutorAccountResolver = resolveExecutorForAccount) {
-  const target = await resolver(engine.operator_id, engine.exchange_account_id);
+  resolver: ExecutorEngineResolver = resolveExecutorForEngine) {
+  const target = await resolver(engine.operator_id, engine.exchange_account_id, engine.trading_engine_id);
   const { base, secret } = target;
   const requestId = randomUUID();
   const decisionId = `COINOPS:REAL:${config.asset}:diagnostic:${requestId}`;

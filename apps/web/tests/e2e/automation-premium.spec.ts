@@ -102,11 +102,17 @@ function clientModules() {
 
 async function mount(page: Page, view: View, width: number, height = 960,
   data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null,
-  watchdogData: unknown = null) {
+  watchdogData: unknown = null, engineControlData: unknown = null) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
   await page.route("**/*", async (route) => { requests.push(route.request().url()); await route.abort(); });
+  if (engineControlData) {
+    // The real control center constructs same-origin URLs. Give this fixture
+    // a loopback origin via interception, without starting/contacting a server.
+    await page.route("http://127.0.0.1:39999/", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
+    await page.goto("http://127.0.0.1:39999/");
+  }
   await page.setViewportSize({ width, height });
   await page.clock.setFixedTime(new Date(AUTOMATION_FIXTURE_NOW));
   const css = styles.filter((file) => existsSync(resolve(appRoot, file))).map((file) => readFileSync(resolve(appRoot, file), "utf8")).join("\n");
@@ -122,9 +128,18 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const capacityFixture = ${JSON.stringify(capacityData)};
     const assetHealthFixture = ${JSON.stringify(assetHealthData)};
     const watchdogFixture = ${JSON.stringify(watchdogData)};
+    const engineFixture = ${JSON.stringify(engineControlData)};
+    window.__fixtureEngineCommands = [];
     window.__fixtureReads = [];
-    window.fetch = async (url) => {
+    window.fetch = async (url, settings) => {
       window.__fixtureReads.push(String(url));
+      if (String(url).includes('/api/coinops-engine-control') && engineFixture) {
+        if (!settings?.body) return { ok: true, json: async () => engineFixture.inventory };
+        const command = JSON.parse(settings.body); window.__fixtureEngineCommands.push(command);
+        const response = command.action === 'APPEND_OPTIONS' ? { options: engineFixture.options }
+          : command.action === 'APPEND_PREVIEW' ? engineFixture.preview : null;
+        return { ok: Boolean(response), json: async () => response || { error: 'WRITE_DISABLED_IN_UI_FIXTURE' } };
+      }
       const data = String(url).startsWith('/api/coinops-asset-health?') ? assetHealthFixture
         : String(url) === '/api/coinops-capacity' ? capacityFixture
         : String(url) === '/api/coinops-watchdog' ? watchdogFixture : null;
@@ -177,6 +192,46 @@ async function mount(page: Page, view: View, width: number, height = 960,
   await expect(page.locator("#premium-fixture-root")).toContainText("CoinOps");
   return { browserErrors, requests };
 }
+
+for (const width of [390, 1440]) test(`multi-engine append existente, mesmo SOLBRL, roteamento 03 e preview sem escrita ${width}px`, async ({ page }, testInfo) => {
+  const evidence = { physicalSlots: 25, open: 1, residentTp: 1, nextBuy: 1, recent: true, clean: true };
+  const engineFixture = {
+    inventory: { accounts: [{ id: ACCOUNT_A, display_name: "Rafael Demo", status: "ACTIVE", kill_switch: false,
+      is_legacy_default: true, credentialValidated: true, environment: "REAL", executor_shard_id: "executor-02" }],
+    engines: ["executor-02", "executor-03"].map((shard, index) => ({ id: `20000000-0000-4000-8000-00000000000${index + 1}`,
+      exchange_account_id: ACCOUNT_A, symbol: "SOLBRL", quote_asset: "BRL", executor_shard_id: shard,
+      environment: "REAL", status: "ACTIVE", kill_switch: false, hard_cap_quote: 100, created_at: `2026-10-0${index + 1}T12:00:00Z`,
+      operational: true, ready: false, evidence, run: { id: `run-${index}`, status: "ACTIVE", last_error: null,
+        last_reconciled_at: AUTOMATION_FIXTURE_NOW }, profile: null })) },
+    options: [{ shardId: "executor-02", ip: "203.0.113.2", capacityCode: "CAPACITY_REQUIRED", credential: "VALIDATED" },
+      { shardId: "executor-03", ip: "203.0.113.3", capacityCode: "CAPACITY_OK", credential: "VALIDATED" }],
+    preview: { previewHash: "a".repeat(64), status: "PREVIEW_NO_ORDER", executorIp: "203.0.113.3", quote: "BRL",
+      free: 300, allocatedCapital: 200, availableCapital: 100, capital: 100,
+      engines: [{ symbol: "SOLBRL", validSlots: 25, minimumCapital: 80, monthlyTarget: 2,
+        firstEntry: 100, firstTp: 105.5, nextBuy: 97, currentPrice: 100, minNotional: 1 }] },
+  };
+  const audit = await mount(page, "live", width, 844, automationOperatorFixture(), null, null, null, engineFixture);
+  await page.getByRole("button", { name: "Estratégia", exact: true }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Conta Binance para motores").selectOption(ACCOUNT_A);
+  await expect(dialog).toContainText("SOLBRL · Motor 1 · Executor 02");
+  await expect(dialog).toContainText("SOLBRL · Motor 2 · Executor 03");
+  await dialog.getByRole("button", { name: "+ Adicionar motor", exact: true }).click();
+  await expect(dialog.getByLabel("Executor do novo motor")).toHaveValue("executor-03");
+  await expect(dialog.getByLabel("Executor do novo motor").locator('option[value="executor-02"]')).toHaveAttribute("disabled", "");
+  await dialog.getByLabel("Capital adicional do novo motor").fill("100,00");
+  await dialog.getByRole("button", { name: "Pré-visualizar novo motor · sem ordens", exact: true }).click();
+  await expect(dialog.getByLabel("Preview do motor adicional")).toContainText("25/25 executáveis");
+  await expect(dialog).toContainText("INACTIVE");
+  await screenshot(page, testInfo, `multi-engine-append-preview-${width}`);
+  expect((await geometry(page)).overflow).toBeLessThanOrEqual(1);
+  const commands = await page.evaluate(() => (window as unknown as { __fixtureEngineCommands: Array<{ action: string; shardId: string; engines: Array<{ asset: string }> }> }).__fixtureEngineCommands);
+  expect(commands.map(command => command.action)).toEqual(["APPEND_OPTIONS", "APPEND_PREVIEW"]);
+  expect(commands[1].shardId).toBe("executor-03"); expect(commands[1].engines[0].asset).toBe("SOL");
+  expect(audit.browserErrors).toEqual([]); expect(audit.requests).toEqual([]);
+  await dialog.getByRole("button", { name: "Fechar novo motor", exact: true }).click();
+  await expect(dialog.getByLabel("Preview do motor adicional")).toHaveCount(0);
+});
 
 for (const width of [320, 360, 375, 390, 430, 1280]) {
   test(`asset health compact cards and closable drawer ${width}px`, async ({ page }, testInfo) => {

@@ -4,6 +4,7 @@ export type ExecutorShardConfig = {
   shardId: string; ip: string; base: string; secret: string; validatedVersion?: string;
 };
 export type ExecutorAccountResolver = (operatorId: string, accountId: string) => Promise<ExecutorShardConfig>;
+export type ExecutorEngineResolver = (operatorId: string, accountId: string, engineId: string) => Promise<ExecutorShardConfig>;
 type Environment = Record<string, string | undefined>;
 const SHARD = /^executor-[0-9]{2,}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,6 +126,159 @@ export function resolveExecutorShard(shardId: string, env: Environment = process
 
 type BoundAccount = { id: string; operator_id: string; executor_shard_id: string };
 type BoundOperator = { id: string; tenant_id: string; status: string };
+type BoundEngine = { id: string; operator_id: string; exchange_account_id: string; executor_shard_id: string };
+type BoundConnection = { operator_id: string; exchange_account_id: string; executor_shard_id: string;
+  environment: string; credential_ref: string; status: string; validation_evidence: Record<string, unknown> };
+type CandidateAccount = { id: string; operator_id: string; status: string;
+  is_legacy_default: boolean; executor_shard_id: string | null };
+/** Credential setup may target another certified IP, but can neither change
+ * an installed binding nor use a different account/tenant's vault reference. */
+export function assertExecutorConnectionCandidate(operator: BoundOperator | null, account: CandidateAccount | null,
+  input: { operatorId: string; accountId: string; shardId: string; tenantId: string;
+    operation: "CONNECT" | "REVALIDATE"; admissionCode: string; connectionRef?: string | null;
+    installedEngine: boolean }) {
+  if (!operator || operator.id !== input.operatorId || operator.tenant_id !== input.tenantId
+    || operator.status !== "ACTIVE" || !account || account.id !== input.accountId
+    || account.operator_id !== input.operatorId || !["ACTIVE", "INACTIVE"].includes(account.status)
+    || !SHARD.test(input.shardId) || !["CONNECT", "REVALIDATE"].includes(input.operation)
+    || input.operation === "CONNECT" && input.admissionCode !== "CAPACITY_OK"
+    || input.operation === "REVALIDATE" && !input.installedEngine && !input.connectionRef)
+    throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const canonicalRef = `account_${account.id.replaceAll("-", "")}`;
+  const ref = input.connectionRef ?? (account.is_legacy_default && input.shardId === "executor-01"
+    && input.installedEngine ? "legacy-binance-production" : canonicalRef);
+  if (ref !== canonicalRef && !(account.is_legacy_default && input.shardId === "executor-01"
+    && input.installedEngine && ref === "legacy-binance-production")
+    || ref === "legacy-binance-production" && input.operation !== "REVALIDATE")
+    throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  return { shardId: input.shardId, credentialRef: ref };
+}
+
+export async function resolveExecutorForConnectionCandidate(operatorId: string, accountId: string,
+  shardId: string, operation: "CONNECT" | "REVALIDATE"): Promise<ExecutorShardConfig & { credentialRef: string }> {
+  if (![operatorId, accountId].every((id) => UUID.test(id ?? "")) || !SHARD.test(shardId))
+    throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const { getCoinOpsServiceTenantId, getSupabaseDataSchema } = await import("../supabase/env");
+  const tenantId = getCoinOpsServiceTenantId();
+  if (getSupabaseDataSchema() !== "coinops" || !tenantId) throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const { createServiceRoleClient } = await import("../supabase/service-role");
+  const service = createServiceRoleClient();
+  const [operator, account, connection, engines, shard, admission] = await Promise.all([
+    service.from("operators").select("id,tenant_id,status").eq("id", operatorId).eq("tenant_id", tenantId).single(),
+    service.from("exchange_accounts").select("id,operator_id,status,is_legacy_default,executor_shard_id")
+      .eq("id", accountId).eq("operator_id", operatorId).single(),
+    service.from("account_executor_connections").select("credential_ref")
+      .eq("exchange_account_id", accountId).eq("operator_id", operatorId).eq("executor_shard_id", shardId)
+      .eq("environment", "REAL").maybeSingle(),
+    service.from("trading_engines").select("id").eq("exchange_account_id", accountId).eq("operator_id", operatorId)
+      .eq("executor_shard_id", shardId).eq("environment", "REAL").limit(1),
+    service.from("executor_shards").select("id,egress_ipv4,enabled").eq("id", shardId).single(),
+    operation === "CONNECT" ? service.rpc("preview_executor_admission", { p_shard_id: shardId,
+      p_environment: "REAL", p_engines: 1 }) : Promise.resolve({ error: null, data: { code: "READ_ONLY_REVALIDATION" } }),
+  ]);
+  if ([operator, account, connection, engines, shard, admission].some((result) => result.error)
+    || shard.data?.id !== shardId || !shard.data.enabled) throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const binding = assertExecutorConnectionCandidate(operator.data, account.data, { operatorId, accountId, shardId,
+    tenantId, operation, admissionCode: admission.data?.code, connectionRef: connection.data?.credential_ref,
+    installedEngine: !!engines.data?.length });
+  const config = resolveExecutorShard(binding.shardId);
+  if (config.ip !== String(shard.data.egress_ipv4 ?? "").replace(/\/32$/, ""))
+    throw new Error("EXECUTOR_SHARD_IP_MISMATCH");
+  return { ...config, credentialRef: binding.credentialRef };
+}
+/** Before an engine exists, routing requires an independently validated account
+ * connection for the selected IP. The browser's shard name is not authority. */
+export function assertExecutorConnectionBinding(operator: BoundOperator | null,
+  account: { id: string; operator_id: string } | null, connection: BoundConnection | null,
+  operatorId: string, accountId: string, shardId: string, tenantId: string, ip: string) {
+  const evidence = connection?.validation_evidence;
+  if (!operator || operator.id !== operatorId || operator.tenant_id !== tenantId || operator.status !== "ACTIVE"
+    || !account || account.id !== accountId || account.operator_id !== operatorId
+    || !connection || connection.operator_id !== operatorId || connection.exchange_account_id !== accountId
+    || connection.executor_shard_id !== shardId || !SHARD.test(shardId) || connection.environment !== "REAL"
+    || connection.status !== "VALIDATED" || isIP(ip) !== 4 || evidence?.status !== "PASS"
+    || evidence.environment !== "REAL" || evidence.executor_shard_id !== shardId || evidence.executor_ip !== ip
+    || connection.credential_ref !== `account_${accountId.replaceAll("-", "")}`
+      && !(shardId === "executor-01" && connection.credential_ref === "legacy-binance-production"))
+    throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  return { shardId, credentialRef: connection.credential_ref };
+}
+
+export async function resolveExecutorForConnection(operatorId: string, accountId: string,
+  shardId: string): Promise<ExecutorShardConfig & { credentialRef: string }> {
+  if (![operatorId, accountId].every((id) => UUID.test(id ?? "")) || !SHARD.test(shardId))
+    throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const { getCoinOpsServiceTenantId, getSupabaseDataSchema } = await import("../supabase/env");
+  const tenantId = getCoinOpsServiceTenantId();
+  if (getSupabaseDataSchema() !== "coinops" || !tenantId) throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const { createServiceRoleClient } = await import("../supabase/service-role");
+  const service = createServiceRoleClient();
+  const [operator, account, connection, shard] = await Promise.all([
+    service.from("operators").select("id,tenant_id,status").eq("id", operatorId).eq("tenant_id", tenantId).single(),
+    service.from("exchange_accounts").select("id,operator_id").eq("id", accountId).eq("operator_id", operatorId).single(),
+    service.from("account_executor_connections").select("operator_id,exchange_account_id,executor_shard_id,environment,credential_ref,status,validation_evidence")
+      .eq("exchange_account_id", accountId).eq("operator_id", operatorId).eq("executor_shard_id", shardId).eq("environment", "REAL").single(),
+    service.from("executor_shards").select("id,egress_ipv4,enabled").eq("id", shardId).single(),
+  ]);
+  if ([operator, account, connection, shard].some((result) => result.error) || shard.data?.id !== shardId || !shard.data.enabled)
+    throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const ip = String(shard.data.egress_ipv4 ?? "").replace(/\/32$/, "");
+  const binding = assertExecutorConnectionBinding(operator.data, account.data, connection.data,
+    operatorId, accountId, shardId, tenantId, ip);
+  const config = resolveExecutorShard(binding.shardId);
+  if (config.ip !== ip) throw new Error("EXECUTOR_SHARD_IP_MISMATCH");
+  return { ...config, credentialRef: binding.credentialRef };
+}
+/** Engine identity is mandatory. Account bootstrap metadata is never a fallback
+ * for an unknown engine, including a same-symbol engine on another IP. */
+export function assertExecutorEngineBinding(operator: BoundOperator | null,
+  account: { id: string; operator_id: string } | null, engine: BoundEngine | null,
+  operatorId: string, accountId: string, engineId: string, tenantId: string) {
+  if (!operator || operator.id !== operatorId || operator.tenant_id !== tenantId || operator.status !== "ACTIVE"
+    || !account || account.id !== accountId || account.operator_id !== operatorId
+    || !engine || engine.id !== engineId || engine.operator_id !== operatorId
+    || engine.exchange_account_id !== accountId || !SHARD.test(engine.executor_shard_id ?? ""))
+    throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+  return engine.executor_shard_id;
+}
+
+const engineBindings = new Map<string, { expires: number; value: Promise<{ shardId: string; ip: string }> }>();
+export async function resolveExecutorForEngine(operatorId: string, accountId: string, engineId: string): Promise<ExecutorShardConfig> {
+  if (![operatorId, accountId, engineId].every((id) => UUID.test(id ?? "")))
+    throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+  const { getCoinOpsServiceTenantId, getSupabaseDataSchema } = await import("../supabase/env");
+  const tenantId = getCoinOpsServiceTenantId();
+  if (getSupabaseDataSchema() !== "coinops" || !tenantId) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+  const cacheKey = `${tenantId}:${operatorId}:${accountId}:${engineId}`;
+  let binding = engineBindings.get(cacheKey);
+  if (!binding || binding.expires <= Date.now()) {
+    const value = (async () => {
+      const { createServiceRoleClient } = await import("../supabase/service-role");
+      const service = createServiceRoleClient();
+      const [operator, account, engine] = await Promise.all([
+        service.from("operators").select("id,tenant_id,status").eq("id", operatorId).eq("tenant_id", tenantId).single(),
+        service.from("exchange_accounts").select("id,operator_id").eq("id", accountId).eq("operator_id", operatorId).single(),
+        service.from("trading_engines").select("id,operator_id,exchange_account_id,executor_shard_id")
+          .eq("id", engineId).eq("exchange_account_id", accountId).eq("operator_id", operatorId).single(),
+      ]);
+      if (operator.error || account.error || engine.error) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+      const shardId = assertExecutorEngineBinding(operator.data, account.data, engine.data,
+        operatorId, accountId, engineId, tenantId);
+      const shard = await service.from("executor_shards").select("id,egress_ipv4").eq("id", shardId).single();
+      const ip = String(shard.data?.egress_ipv4 ?? "").replace(/\/32$/, "");
+      if (shard.error || shard.data?.id !== shardId || isIP(ip) !== 4) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+      return { shardId, ip };
+    })();
+    binding = { expires: Date.now() + 30_000, value };
+    if (engineBindings.size >= 2048) engineBindings.clear();
+    engineBindings.set(cacheKey, binding);
+    value.catch(() => { if (engineBindings.get(cacheKey)?.value === value) engineBindings.delete(cacheKey); });
+  }
+  const bound = await binding.value;
+  const config = resolveExecutorShard(bound.shardId);
+  if (config.ip !== bound.ip) throw new Error("EXECUTOR_SHARD_IP_MISMATCH");
+  return config;
+}
 export function assertExecutorAccountBinding(operator: BoundOperator | null, account: BoundAccount | null,
   operatorId: string, accountId: string, tenantId: string) {
   if (!operator || operator.id !== operatorId || operator.tenant_id !== tenantId || operator.status !== "ACTIVE"

@@ -5,10 +5,11 @@ O provisionamento e `deploy-shard.sh` servem exclusivamente para `executor-02` e
 ## Contrato
 
 - Ubuntu 24.04 LTS amd64, Node 24.21.0, Certbot 5.8.0, Nginx e systemd.
-- Uma conta Binance tem exatamente um shard primário. HMAC/vault exclusivos por servidor; a chave nunca aparece em Git, comandos públicos ou saída dos scripts.
+- O motor pertence a exatamente um shard; uma conta pode ter motores independentes em shards diferentes, inclusive no mesmo par, somente após os gates de `COINOPS_MULTI_ENGINE_MULTI_SHARD.md`. O campo antigo de shard na conta é bootstrap/compatibilidade, não roteamento de engine. Essa evolução não está liberada apenas porque o bootstrap ou um health passou. HMAC/vault exclusivos por servidor; a chave nunca aparece em Git, comandos públicos ou saída dos scripts.
 - GitHub/main é a fonte oficial. Deploy aceita somente SHA completo de 40 caracteres pertencente ao histórico de main; rollback usa outro SHA já revisado com suporte a shards.
 - IPv4 do servidor precisa ser o mesmo observado no egress. Não há rotação de IP nem rebalanceamento de conta LIVE. Destruir/recriar um Droplet pode alterar seu IPv4: não recriar infraestrutura com contas vinculadas.
 - O control plane mantém scheduler, ledger, admission e encaminhamento explícito por shard. O executor não recebe credenciais Supabase nem administra contas de outro shard.
+- Provisionamento continua vazio: nunca copiar registry, vault, contas, locks ou credenciais de outro servidor para criar capacidade. O fluxo futuro de adicionar um motor valida a identidade física da mesma conta, whitelist cumulativa, credential PASS por IP, limite Binance por conta e Capacity PASS por shard antes de registrar apenas o novo engine. Nunca retirar IP anterior nem migrar um engine LIVE. A mesma release comum deve comprovar ownership e STP em todos os shards participantes antes dessa liberação.
 - O catálogo ADMIN de Estratégia pagina todas as contas do operador e usa `exchange_accounts.onboarding_environment` para exibir contas recém-atribuídas, mesmo antes da validação da API. Selecionar `account_id` consulta somente os motores e checks dessa conta; o backend resolve `executor_shard_id` e o IP sem escolha manual do usuário. Aparecer no seletor **não** significa credencial validada: preview/preparação exigem `BINANCE_CREDENTIAL PASS` no mesmo ambiente, e ativação mantém os gates de capacidade e trading. Após salvar credenciais em Configurações, reabrir Estratégia atualiza o estado. Nunca habilitar motores a partir do registro `EXECUTOR_ASSIGNMENT` sozinho.
 
 ## Provisionamento

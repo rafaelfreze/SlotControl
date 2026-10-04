@@ -1,6 +1,7 @@
 "use client";
 import { orderOperationalSlots, ledgerSlotKey } from "@/lib/slotgain/operational-slot-order";
 import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
+import { engineDisplayName } from "@/lib/execution/engine-display";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { allocateBulkSlots, allocateSelectedSlots, splitBulkEngines } from "@/lib/execution/live-adjustment-plans";
@@ -10,6 +11,7 @@ import "./live-adjustments-center.css";
 
 type Account = { id: string; display_name: string; is_legacy_default: boolean };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: "BRL" | "USDT";
+  executor_shard_id?: string; created_at?: string;
   base_asset: "BTC" | "SOL"; status: string; hard_cap_quote: number | string };
 type Slot = { trading_engine_id: string; slot_number: number; operation_sequence: number; entry_state: string;
   position_committed_brl: number | string; target_buy_price: number | string; entry_reference_price: number | string;
@@ -90,8 +92,8 @@ async function control(input: Draft | PresetCommand) {
   return result;
 }
 
-export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initialSymbol = "ALL" }:
-  { active: boolean; initialAccountId?: string; initialSymbol?: string }) {
+export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initialSymbol = "ALL", initialEngineId }:
+  { active: boolean; initialAccountId?: string; initialSymbol?: string; initialEngineId?: string }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [accountId, setAccountId] = useState(initialAccountId === "ALL" ? "" : initialAccountId);
   const [quote, setQuote] = useState<"BRL" | "USDT">("BRL");
@@ -148,7 +150,12 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     const nextAccount = accountId || data.accounts?.[0]?.id;
     if (!accountId && nextAccount) setAccountId(nextAccount);
     const matchingEngines = (data.engines as Engine[]).filter((item) => item.exchange_account_id === nextAccount && item.status === "ACTIVE");
-    const initialEngine = matchingEngines.find((item) => item.symbol === initialSymbol) ?? matchingEngines[0];
+    const matchingSymbol = matchingEngines.filter((item) => item.symbol === initialSymbol);
+    // Ambiguous account+symbol is not a financial target. Explicit engine IDs
+    // never fall back to a sibling when missing from the current catalog.
+    const initialEngine = initialEngineId ? matchingEngines.find((item) => item.id === initialEngineId)
+      : initialSymbol === "ALL" ? matchingEngines[0]
+        : matchingSymbol.length === 1 ? matchingSymbol[0] : undefined;
     if (initialEngine && !matchingEngines.some((item) => item.quote_asset === quote)) {
       setQuote(initialEngine.quote_asset);
       setOriginCurrency(initialEngine.quote_asset);
@@ -156,7 +163,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     if (initialEngine && !engineId) setEngineId(initialEngine.id);
     const firstPreset = (data.presets as Preset[] | undefined)?.find((item) => item.status === "ACTIVE");
     if (!presetId && firstPreset) setPresetId(firstPreset.id);
-  }, [accountId, engineId, initialSymbol, presetId, quote]);
+  }, [accountId, engineId, initialSymbol, initialEngineId, presetId, quote]);
   useEffect(() => { if (active && !status) refresh().catch((cause) => setError(cause.message)); }, [active, status, refresh]);
 
   const account = status?.accounts.find((item) => item.id === accountId);
@@ -409,7 +416,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
           <button type="button" key={key} aria-pressed={kind === key} onClick={() => { setKind(key); invalidate(); }}>{label}</button>)}</div>
       {kind !== "BULK_CAPITAL" ? <div className="lac-grid">
         <label>Motor<select value={engineId} onChange={(event) => { setEngineId(event.target.value); setSelectedSlots([]); setCustomSlotAmounts({}); setPresetAnchorSlot(null); invalidate(); }}>
-          <option value="">Selecione</option>{inQuote.map((item) => <option value={item.id} key={item.id}>{item.symbol}</option>)}</select></label>
+          <option value="">Selecione</option>{inQuote.map((item) => <option value={item.id} key={item.id}>{engineDisplayName(item, accountEngines)}{item.executor_shard_id ? ` · ${item.executor_shard_id.replace("executor-", "Executor ")}` : ""}</option>)}</select></label>
         {kind !== "SELECTIVE_CAPITAL" && kind !== "PRESET_CAPITAL" ? <label>Slot físico<select value={slotNumber} onChange={(event) => { setSlotNumber(Number(event.target.value)); invalidate(); }}>
           {engineSlots.map((slot) => <option value={slot.slot_number} key={slot.slot_number}>#{slot.slot_number} · Rank {slot.operational_rank ?? "—"} · {slot.entry_state}</option>)}</select></label>
           : <p className="lac-slot-note">{kind === "PRESET_CAPITAL"

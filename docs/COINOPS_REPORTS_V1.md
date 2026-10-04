@@ -1,7 +1,7 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 14`. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 16` na implementação multi-engine. A versão 16 acrescenta identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento
@@ -142,3 +142,26 @@ Shadow, Testnet e Real usam a mesma composição visual de resultados na Automa�
 ## v15 — apresentação operacional de slots
 
 O snapshot LIVE distingue rank da grade de rank vigente, posição visual, Mês/meta e lifetime. A ordem reutiliza estado + rank da Strategy Engine, sem escrever no ledger. Cutoff histórico ou fonte incompleta não recebe projeção atual. Ver [contrato de apresentação](./COINOPS_OPERATIONAL_SLOT_PRESENTATION.md).
+
+## v16 — identidade e isolamento engine/shard
+
+`ENGINE_ISOLATION.csv` e `engine_isolation` no JSON conservam operador, conta,
+engine, símbolo, shard e namespace de ownership. Todos os datasets engine-scoped
+incluem `executor_shard_id`; símbolo repetido não agrega ciclos de motores
+diferentes. O pacote possui 27 CSVs, mantendo os anteriores.
+
+Fonte: RPC somente leitura `coinops.read_engine_isolation_report`, com sessão
+autenticada, lista de até 100 IDs por lote e autorização do operador. IDs
+ausentes, repetidos ou de outro operador falham fechados. O export usa allowlist:
+não inclui chave, secret, HMAC, UID Binance, credential proof bruto ou vault.
+
+Metadados de credential PASS/IP, política `ENGINE_ISOLATION_V2`, versão declarada,
+STP `EXPIRE_TAKER`, amostra de orçamento por conta, dispatches sem ACK e créditos
+de proteção permanecem separados. `RECENT_SAMPLE_NOT_ADMISSION_PROOF` não é
+certificação. Checks de identidade/enforcement declarados não provam runtime,
+whitelist ou saúde atual; não devem ser convertidos em READY. Política ausente
+em engine histórico é explicitada, não preenchida artificialmente.
+
+O relatório não coleta orçamento Binance, habilita política, provisiona engine,
+reconcilia com writes nem altera ordens. Fonte incompleta é WARNING, nunca zero
+ou PASS presumido. Ver [arquitetura multi-engine](./COINOPS_MULTI_ENGINE_MULTI_SHARD.md).

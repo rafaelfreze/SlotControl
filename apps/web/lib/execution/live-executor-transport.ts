@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { EngineContext } from "./operator-context.ts";
-import { resolveExecutorForAccount, withExecutorShard, type ExecutorAccountResolver } from "./executor-shards-server.ts";
+import { resolveExecutorForEngine, withExecutorShard, type ExecutorEngineResolver } from "./executor-shards-server.ts";
+import { accountBudgetPermitHeaders, type AccountBudgetReservation } from "./account-order-budget-permit.ts";
+import { AccountOrderNotSubmitted, verifyAccountOrderUnsentProof } from "./account-order-unsent-proof.ts";
 
 export type ExecutorEngineScope = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "symbol" | "quote_asset">;
 export type ExecutorContext = ExecutorEngineScope & { environment: "REAL"; decision_id: string; idempotency_key: string };
@@ -46,15 +48,30 @@ function validState(value: LiveExecutorState, engine: ExecutorEngineScope) {
 }
 
 async function request<T>(path: string, input: Record<string, unknown>, key: string,
-  fetcher: typeof fetch = fetch, resolver: ExecutorAccountResolver = resolveExecutorForAccount): Promise<T> {
-  const target = await resolver(String(input.operator_id ?? ""), String(input.exchange_account_id ?? ""));
+  fetcher: typeof fetch = fetch, resolver: ExecutorEngineResolver = resolveExecutorForEngine,
+  reservation?: AccountBudgetReservation): Promise<T> {
+  const target = await resolver(String(input.operator_id ?? ""), String(input.exchange_account_id ?? ""), String(input.trading_engine_id ?? ""));
   const { base, secret } = target;
   const body = JSON.stringify(withExecutorShard(input, target));
+  const permitScope = { operator_id: String(input.operator_id), exchange_account_id: String(input.exchange_account_id),
+    trading_engine_id: String(input.trading_engine_id), executor_shard_id: target.shardId,
+    environment: String(input.environment), symbol: String(input.symbol), side: String(input.side),
+    clientOrderId: String(input.clientOrderId) };
+  const permit: Record<string, string> = reservation ? accountBudgetPermitHeaders(secret, reservation, permitScope, body) : {};
+  const headers = signedExecutorHeaders(secret, path, body, key);
+  for (const [name, value] of Object.entries(permit)) headers.set(name, value);
   const response = await fetcher(`${base}${path}`, { method: "POST", cache: "no-store",
-    headers: signedExecutorHeaders(secret, path, body, key), body,
+    headers, body,
     signal: AbortSignal.timeout(path === "/v1/state" ? 25_000 : 35_000) });
-  const payload = await response.json().catch(() => ({})) as T & { error?: string };
+  const payload = await response.json().catch(() => ({})) as T & { error?: string; unsent_proof?: unknown };
   if (!response.ok) {
+    if (path === "/v1/create-order" && payload.error === "EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED"
+      && response.status === 403 && payload.unsent_proof) {
+      const { side, ...proofScope } = permitScope;
+      void side;
+      throw new AccountOrderNotSubmitted(verifyAccountOrderUnsentProof(secret, payload.unsent_proof,
+        { ...proofScope, decision_id: String(input.decision_id), request_nonce: headers.get("x-coinops-nonce")! }, body));
+    }
     const code = payload.error && /^EXECUTOR_[A-Z0-9_]+$/.test(payload.error)
       ? payload.error : `EXECUTOR_HTTP_${response.status}`;
     throw new Error(code);
@@ -76,7 +93,7 @@ function transientReadError(error: unknown) {
 }
 async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades",
   input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch,
-  resolver: ExecutorAccountResolver = resolveExecutorForAccount): Promise<T> {
+  resolver: ExecutorEngineResolver = resolveExecutorForEngine): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const key = readKey();
@@ -91,14 +108,14 @@ async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-or
   throw new Error("EXECUTOR_READ_UNAVAILABLE");
 }
 export async function readLiveExecutorHealth(engine: ExecutorEngineScope, fetcher?: typeof fetch,
-  resolver?: ExecutorAccountResolver) {
+  resolver?: ExecutorEngineResolver) {
   // A single failed observation (e.g. transient Binance read/egress timeout) must not
   // irreversibly kill-switch an otherwise protected engine. Only GET-equivalent reads retry.
   return readWithRetry<import("./live-executor-health").LiveExecutorHealth>("/v1/health",
     (key) => executorContext(engine, key, key), fetcher, resolver);
 }
 export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher?: typeof fetch,
-  resolver?: ExecutorAccountResolver) {
+  resolver?: ExecutorEngineResolver) {
   // Retry only an observation. Never retry create/cancel after an uncertain result.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -114,7 +131,7 @@ export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher
   throw new Error("EXECUTOR_STATE_INVALID");
 }
 export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, fetcher?: typeof fetch,
-  resolver?: ExecutorAccountResolver) {
+  resolver?: ExecutorEngineResolver) {
   const key = readKey();
   return request<{
     capabilities: { readEnabled: boolean; tradingEnabled: boolean;
@@ -127,24 +144,24 @@ export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, 
   }>("/v1/reconciliation", { scope: "COINOPS_SHADOW_READ_ONLY", ...executorContext(engine, key, key) }, key, fetcher, resolver);
 }
 export async function readLiveExecutorOrder(engine: ExecutorEngineScope, clientOrderId: string,
-  orderId?: string | null, fetcher?: typeof fetch, resolver?: ExecutorAccountResolver) {
+  orderId?: string | null, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
   return readWithRetry<{ order: LiveOrder | null }>("/v1/query-order",
     (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher, resolver);
 }
 export async function readLiveExecutorTrades(engine: ExecutorEngineScope, clientOrderId: string,
-  orderId: string, fetcher?: typeof fetch, resolver?: ExecutorAccountResolver) {
+  orderId: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
   return readWithRetry<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/trades",
     (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), fetcher, resolver);
 }
 export async function createLiveExecutorOrder(input: Record<string, unknown> & { clientOrderId: string }, engine: ExecutorEngineScope,
   decisionId: string,
-  fetcher?: typeof fetch, resolver?: ExecutorAccountResolver) {
+  fetcher?: typeof fetch, resolver?: ExecutorEngineResolver, reservation?: AccountBudgetReservation) {
   return request<{ order: LiveOrder; replayed: boolean }>("/v1/create-order", { ...input, ...executorContext(engine, decisionId, input.clientOrderId) },
-    input.clientOrderId, fetcher, resolver);
+    input.clientOrderId, fetcher, resolver, reservation);
 }
 export async function cancelLiveExecutorOrder(input: { symbol: string;
   clientOrderId: string; orderId: string; onlyUnfilled?: boolean }, engine: ExecutorEngineScope, fetcher?: typeof fetch,
-  resolver?: ExecutorAccountResolver) {
+  resolver?: ExecutorEngineResolver) {
   const key = `${input.onlyUnfilled === true ? "CANCEL_UNFILLED" : "CANCEL"}:${input.clientOrderId}`;
   return request<{ order: LiveOrder; replayed: boolean }>("/v1/cancel-order", { ...input,
     ...executorContext(engine, key, key) }, key, fetcher, resolver);

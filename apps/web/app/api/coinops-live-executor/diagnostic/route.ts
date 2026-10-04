@@ -36,7 +36,7 @@ export async function POST(request: Request) {
         db.from("robot_v1_ath_profiles").select("*").eq("trading_engine_id", engine.trading_engine_id).single(),
         db.from("account_quote_caps").select("hard_cap_quote").eq("exchange_account_id", engine.exchange_account_id)
           .eq("quote_asset", engine.quote_asset).single(),
-        db.from("trading_engines").select("base_asset,hard_cap_quote").eq("exchange_account_id", engine.exchange_account_id)
+        db.from("trading_engines").select("id,base_asset,hard_cap_quote").eq("exchange_account_id", engine.exchange_account_id)
           .eq("environment", "REAL").eq("quote_asset", engine.quote_asset),
       ]);
       if (preparation.error || profile.error || cap.error || portfolio.error
@@ -47,8 +47,10 @@ export async function POST(request: Request) {
         gain_rate: p.next_gain_rate ?? p.gain_rate,
         normal_spacing_rate: p.next_normal_spacing_rate ?? p.normal_spacing_rate,
         post_ath_spacing_rate: p.next_post_ath_spacing_rate ?? p.post_ath_spacing_rate, regime: p.regime };
-      const caps = { BTC: Number(portfolio.data.find((item) => item.base_asset === "BTC")?.hard_cap_quote ?? 0),
-        SOL: Number(portfolio.data.find((item) => item.base_asset === "SOL")?.hard_cap_quote ?? 0) };
+      const own = portfolio.data.find((item) => item.id === engine.trading_engine_id);
+      if (!own || own.base_asset !== engine.base_asset) throw new Error("EXECUTOR_CONFIG_UNAVAILABLE");
+      const caps = { BTC: engine.base_asset === "BTC" ? Number(own.hard_cap_quote) : 0,
+        SOL: engine.base_asset === "SOL" ? Number(own.hard_cap_quote) : 0 };
       return { exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id,
         quote_asset: engine.quote_asset, ...await requestExecutorDryRun(config, caps, Number(cap.data.hard_cap_quote), engine) };
     }));

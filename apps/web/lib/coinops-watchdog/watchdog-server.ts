@@ -114,7 +114,7 @@ export async function runServerWatchdog() {
     ? await Promise.all([
       service.from("exchange_accounts").select("id,executor_shard_id,status,kill_switch")
         .in("id", ids(runs.map((run) => run.exchange_account_id))),
-      service.from("trading_engines").select("id,exchange_account_id,symbol,status,kill_switch,strategy_config_pending")
+      service.from("trading_engines").select("id,exchange_account_id,symbol,status,kill_switch,strategy_config_pending,executor_shard_id")
         .in("id", ids(runs.map((run) => run.trading_engine_id))),
       service.from("robot_v1_live_slots").select("run_id,id,entry_state,position_quantity,updated_at")
         .in("run_id", runs.map((run) => run.id)),
@@ -147,7 +147,7 @@ export async function runServerWatchdog() {
   const now = Date.now();
   const findings = runs.map((run) => {
     const account = accounts.get(run.exchange_account_id) ?? null;
-    const shardId = account?.executor_shard_id ?? "unassigned";
+    const shardId = engines.get(run.trading_engine_id)?.executor_shard_id ?? "unassigned";
     return { run, shardId, finding: evaluateFastRun({ run,
       engine: engines.get(run.trading_engine_id) ?? null, account, shardId,
       slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], alerts,

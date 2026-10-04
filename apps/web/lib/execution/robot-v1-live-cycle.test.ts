@@ -23,6 +23,20 @@ test("LIVE TP covers only owned net fills, never a second resident quantity", ()
   assert.equal(liveUncoveredQuantity([orders[0]], 0.00001), 0.00004);
 });
 
+test("STP expiry preserves actual BUY/TP partial fills and protects only the remaining own quantity", () => {
+  const buy = { side: "BUY" as const, status: "EXPIRED_IN_MATCH", executed_quantity: .1,
+    fee_base: .001, cumulative_quote: 10, reserved_notional_brl: 20 };
+  assert.equal(liveUncoveredQuantity([buy], .001), .099);
+  const expiredTp = { side: "SELL" as const, status: "EXPIRED_IN_MATCH", executed_quantity: .04,
+    requested_quantity: .099, fee_base: 0 };
+  assert.equal(liveUncoveredQuantity([buy, expiredTp], .001), .059);
+  assert.equal(liveUncoveredQuantity([buy, expiredTp, { ...expiredTp, status: "NEW",
+    executed_quantity: 0, requested_quantity: .059 }], .001), 0);
+  assert.deepEqual(liveExposure([{ asset: "BTC", committedBrl: 10 }], [{ ...buy, asset: "BTC" }]),
+    { BTC: 10, SOL: 0, global: 10 });
+  assert.equal(liveUncoveredQuantity([{ ...buy, executed_quantity: 0, fee_base: 0 }], .001), 0);
+});
+
 test("LIVE exposure includes partial BUY reservations and rejects any hard-cap breach", () => {
   const positions = [{ asset: "BTC" as const, committedBrl: 430 }, { asset: "SOL" as const, committedBrl: 250 }];
   const orders = [{ asset: "BTC" as const, side: "BUY" as const, status: "PARTIALLY_FILLED",

@@ -14,6 +14,8 @@ import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
 import * as strategyParameterRegistry from "../execution/strategy-parameter-registry.ts";
 import * as scope from "../execution/operator-context.ts";
+import * as engineExposure from "../execution/engine-exposure.ts";
+import * as ledgerRead from "../execution/complete-ledger-read.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
@@ -107,6 +109,7 @@ function harness(options: Options = {}) {
       let update: Row | undefined;
       let insert: Row | undefined;
       let conflict = "id";
+      let page: [number, number] | null = null;
       const result = () => {
         const rows = tables[table];
         const matches = rows.filter((row) => predicates.every((predicate) => predicate(row)));
@@ -128,10 +131,11 @@ function harness(options: Options = {}) {
             writes.push({ table, values: structuredClone(insert), ids: [] });
           }
         }
-        return { data: structuredClone(matches), error: null };
+        return { data: structuredClone(page ? matches.slice(page[0], page[1] + 1) : matches), error: null };
       };
       const query = {
         select() { return query; }, order() { return query; }, limit() { return query; },
+        range(start: number, end: number) { page = [start, end]; return query; },
         eq(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         is(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         in(key: string, value: unknown[]) { predicates.push((row) => value.includes(row[key])); return query; },
@@ -201,6 +205,7 @@ function harness(options: Options = {}) {
       .map((o) => ({ ...o, id: o.orderId })),
   });
   const dependencies: Record<string, unknown> = {
+    "./engine-exposure": engineExposure, "./complete-ledger-read": ledgerRead,
     "./robot-v1-live-cycle": cycle, "./strategy-engine": strategy, "./live-entry-capital-refresh": capitalRefresh,
     "./strategy-price-invariant": priceInvariant, "./live-reconciliation-shortcut": shortcut,
     "./live-unsent-tp-recovery": unsentTp,

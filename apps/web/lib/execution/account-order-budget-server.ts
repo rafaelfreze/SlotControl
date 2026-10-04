@@ -1,0 +1,120 @@
+import { randomUUID } from "node:crypto";
+import { completeLedgerRead } from "./complete-ledger-read.ts";
+import { projectAccountBudgetObservation, type BudgetObservation, type BudgetEngineIdentity, type KnownBudgetOrder } from "./account-order-budget-observation.ts";
+import { parseExecutorValidatedVersions, resolveExecutorForConnection, withExecutorShard } from "./executor-shards-server.ts";
+import { signedExecutorHeaders } from "./live-executor-client.ts";
+import type { createServiceRoleClient } from "../supabase/service-role";
+import type { ExecutorEngineScope } from "./live-executor-transport.ts";
+import type { AccountBudgetReservation } from "./account-order-budget-permit.ts";
+import { resolveExecutorForEngine } from "./executor-shards-server.ts";
+
+type Service = ReturnType<typeof createServiceRoleClient>;
+const code = "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN";
+export class AccountOrderBudgetHold extends Error {
+  readonly clientOrderId: string;
+  readonly side: string;
+  constructor(reason: string, clientOrderId: string, side: string) {
+    super(reason); this.clientOrderId = clientOrderId; this.side = side;
+  }
+}
+export async function accountExecutionPolicyRequired(service: Service, engine: ExecutorEngineScope) {
+  const result = await service.from("account_execution_policies").select("contract,status")
+    .eq("exchange_account_id", engine.exchange_account_id).eq("operator_id", engine.operator_id).maybeSingle();
+  if (result.error || result.data && (result.data.contract !== "ENGINE_ISOLATION_V2"
+    || !["PREPARING", "ACTIVE"].includes(result.data.status))) throw new Error("COINOPS_ENGINE_ISOLATION_POLICY_UNKNOWN");
+  return Boolean(result.data);
+}
+
+/** Called only at a new engine-owned dispatch under its current run lease.
+ * Reservation precedes submission_guarded_at. A BUSY/unknown sample defers
+ * dispatch, never releases uncertain ownership or triggers a Binance POST. */
+export async function reserveAccountOrderDispatch(service: Service, engine: ExecutorEngineScope,
+  clientOrderId: string, side: string, leaseOwner: string | null, required: boolean): Promise<AccountBudgetReservation | undefined> {
+  if (!required) return undefined;
+  const reserve = () => service.rpc("reserve_account_order_budget", { p_operator_id: engine.operator_id,
+    p_account_id: engine.exchange_account_id, p_engine_id: engine.trading_engine_id,
+    p_client_order_id: clientOrderId, p_lease_owner: leaseOwner });
+  let result = await reserve();
+  if (!result.error && result.data?.code === "ACCOUNT_ORDER_BUDGET_UNKNOWN") {
+    const target = await resolveExecutorForEngine(engine.operator_id, engine.exchange_account_id, engine.trading_engine_id);
+    try { await collectAccountOrderBudget(service, engine.operator_id, engine.exchange_account_id, target.shardId, [engine.symbol]); }
+    catch { throw new AccountOrderBudgetHold(code, clientOrderId, side); }
+    result = await reserve();
+  }
+  if (result.error) throw new Error("COINOPS_ACCOUNT_ORDER_RESERVE_FAILED");
+  if (result.data?.code !== "PASS") throw new AccountOrderBudgetHold(
+    result.data?.code === "ACCOUNT_ORDER_CAPACITY_REQUIRED" ? "COINOPS_ACCOUNT_ORDER_CAPACITY_REQUIRED" : code, clientOrderId, side);
+  const reservation = result.data as AccountBudgetReservation;
+  if (reservation.operatorId !== engine.operator_id || reservation.accountId !== engine.exchange_account_id
+    || reservation.engineId !== engine.trading_engine_id || reservation.clientOrderId !== clientOrderId)
+    throw new Error("COINOPS_ACCOUNT_ORDER_RESERVE_SCOPE_DENIED");
+  return reservation;
+}
+
+export async function acknowledgeAccountOrderDispatch(service: Service, engine: ExecutorEngineScope,
+  clientOrderId: string, leaseOwner: string | null) {
+  const existing = await service.from("account_order_budget_reservations").select("client_order_id")
+    .eq("client_order_id", clientOrderId).eq("operator_id", engine.operator_id)
+    .eq("exchange_account_id", engine.exchange_account_id).eq("trading_engine_id", engine.trading_engine_id).maybeSingle();
+  if (existing.error) throw new Error("COINOPS_ACCOUNT_ORDER_ACK_UNKNOWN");
+  if (!existing.data) return; // Installed historic orders have no new reservation.
+  const result = await service.rpc("acknowledge_account_order_budget", { p_operator_id: engine.operator_id,
+    p_account_id: engine.exchange_account_id, p_engine_id: engine.trading_engine_id,
+    p_client_order_id: clientOrderId, p_lease_owner: leaseOwner });
+  if (result.error || result.data !== true) throw new Error("COINOPS_ACCOUNT_ORDER_ACK_UNPROVEN");
+}
+/** Explicit onboarding/preflight collection only. No render/GET, hidden cron,
+ * exchange writes, account-primary fallback or full Binance trade history. */
+export async function collectAccountOrderBudget(service: Service, operatorId: string, accountId: string,
+  shardId: string, newSymbols: readonly string[], fetcher: typeof fetch = fetch) {
+  const target = await resolveExecutorForConnection(operatorId, accountId, shardId);
+  const versions = parseExecutorValidatedVersions(target.validatedVersion);
+  if (!versions || newSymbols.some((symbol) => !/^(BTC|SOL)(BRL|USDT)$/.test(symbol))) throw new Error(code);
+  const engines = await completeLedgerRead<BudgetEngineIdentity>(async (start, end) =>
+    service.from("trading_engines").select("id,operator_id,exchange_account_id,symbol")
+      .eq("operator_id", operatorId).eq("exchange_account_id", accountId).eq("environment", "REAL")
+      .order("id").range(start, end), code);
+  const symbols = [...new Set([...engines.map((engine) => engine.symbol), ...newSymbols])].sort();
+  if (!symbols.length || symbols.some((symbol) => !/^(BTC|SOL)(BRL|USDT)$/.test(symbol))) throw new Error(code);
+  const rawOrders = await completeLedgerRead<Omit<KnownBudgetOrder, "symbol">>(async (start, end) =>
+    service.from("robot_v1_live_orders").select("id,operator_id,exchange_account_id,trading_engine_id,client_order_id,exchange_order_id,side")
+      .eq("operator_id", operatorId).eq("exchange_account_id", accountId)
+      .in("status", ["NEW", "PARTIALLY_FILLED"]).not("exchange_order_id", "is", null)
+      .order("id").range(start, end), code);
+  const engineById = new Map(engines.map((engine) => [engine.id, engine]));
+  const ledger = rawOrders.map((order) => ({ ...order, symbol: engineById.get(order.trading_engine_id)?.symbol ?? "" }));
+  const leaseOwner = randomUUID();
+  const lease = await service.rpc("acquire_account_order_budget_probe", { p_operator_id: operatorId,
+    p_account_id: accountId, p_lease_owner: leaseOwner });
+  if (lease.error || lease.data !== true) throw new Error("COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY");
+  const requestId = randomUUID(), path = "/v1/admin/order-budget", key = `ORDER_BUDGET:${requestId}`;
+  const body = JSON.stringify(withExecutorShard({ operator_id: operatorId, exchange_account_id: accountId,
+    environment: "REAL", credential_ref: target.credentialRef, symbols, request_id: requestId }, target));
+  const response = await fetcher(`${target.base}${path}`, { method: "POST", cache: "no-store", body,
+    headers: signedExecutorHeaders(target.secret, path, body, key), signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(code);
+  const observed = await response.json() as BudgetObservation;
+  const sample = projectAccountBudgetObservation(observed, { operatorId, accountId, shardId, ip: target.ip,
+    credentialRef: target.credentialRef, versions, symbols, engines, ledger });
+  const saved = await service.rpc("record_account_order_budget_sample", { p_operator_id: operatorId,
+    p_account_id: accountId, p_lease_owner: leaseOwner, p_shard_id: shardId,
+    p_observed_at: new Date(sample.observedAt).toISOString(), p_server_time_ms: sample.serverTime,
+    p_intervals: sample.intervals, p_symbol_limits: sample.symbols, p_restrictions: sample.restrictions,
+    p_exchange_limits: sample.exchangeOrders ?? null });
+  if (saved.error || saved.data !== true) throw new Error(code);
+  return { observedAt: new Date(sample.observedAt).toISOString(), shardId };
+}
+
+export async function previewAccountOrderBudget(service: Service, operatorId: string, accountId: string,
+  newSymbols: readonly string[], existingSymbols: readonly string[] = []) {
+  if ([...newSymbols, ...existingSymbols].some((symbol) => !/^(BTC|SOL)(BRL|USDT)$/.test(symbol))) throw new Error(code);
+  const resident = Object.fromEntries(existingSymbols.map((symbol) => [symbol, 0]));
+  const counts = newSymbols.reduce<Record<string, number>>((result, symbol) => {
+    result[symbol] = (result[symbol] ?? 0) + 1; return result;
+  }, resident);
+  const result = await service.rpc("preview_account_order_budget", { p_operator_id: operatorId,
+    p_account_id: accountId, p_new_orders: 3 * newSymbols.length, p_symbol_counts: counts });
+  if (result.error || !result.data || !["PASS", "ACCOUNT_ORDER_BUDGET_UNKNOWN", "ACCOUNT_ORDER_CAPACITY_REQUIRED"].includes(result.data.code))
+    throw new Error(code);
+  return result.data as { code: string; reason: string; intervals: Array<{ intervalMs: number; projected: number; limit: number }> };
+}

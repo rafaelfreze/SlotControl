@@ -27,7 +27,16 @@ test("plan requires explicit account, same quote, exact sum and general profiles
   assert.deepEqual(result.engines.map((item) => item.allocation.reduce((sum, amount) => sum + Math.round(amount * 100), 0)), [41900, 41900]);
   assert.deepEqual(result.engines.map((item) => item.monthlyTarget), [7, 2]);
   assert.throws(() => validateEnginePlan({ ...plan, capital: "838.01" }), /CAP_SUM_MISMATCH/);
-  assert.throws(() => validateEnginePlan({ ...plan, accountId: requestId, engines: [plan.engines[0], plan.engines[0]] }), /INPUT_INVALID/);
+  assert.equal(validateEnginePlan({ ...plan, accountId: requestId, engines: [plan.engines[0], plan.engines[0]] }).engines.length, 2);
   assert.throws(() => validateEnginePlan({ ...plan, engines: [{ ...plan.engines[0], postAthPercent: "21" }] }), /RATE_INVALID/);
   assert.throws(() => validateEnginePlan({ ...plan, engines: [{ ...plan.engines[0], capital: "419.001" }] }), /AMOUNT_INVALID/);
+});
+
+test("N same-symbol plans have independent allocation and explicit monthly targets", () => {
+  const result = validateEnginePlan({ accountId, requestId, quote: "BRL", capital: "1000.00",
+    engines: Array.from({ length: 10 }, (_, i) => ({ asset: "SOL", capital: "100.00",
+      gainPercent: "5.5", spacingPercent: "3", postAthPercent: "8", monthlyTarget: i + 1 })) });
+  assert.equal(result.engines.length, 10);
+  assert.deepEqual(result.engines.map((engine) => engine.monthlyTarget), Array.from({ length: 10 }, (_, i) => i + 1));
+  assert.notEqual(result.engines[0].allocation, result.engines[1].allocation);
 });

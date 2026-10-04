@@ -12,6 +12,7 @@ export type TradingEngineRow = {
   kill_switch: boolean; strategy_config_pending?: boolean;
   hard_cap_quote: number | string; legacy_compatible: boolean;
   ath_reference_symbol?: string;
+  executor_shard_id?: string;
 };
 export type DomainRegistry = {
   operator: OperatorRow; accounts: ExchangeAccountRow[]; engines: TradingEngineRow[];
@@ -24,6 +25,7 @@ export type EngineContext = {
   strategy_config_pending?: boolean;
   status: string; hard_cap_quote: number | string; legacy_compatible: boolean;
   ath_reference_symbol: string;
+  executor_shard_id?: string;
 };
 export type EngineSelection = {
   environment: EngineEnvironment; asset?: string; symbol?: string;
@@ -59,15 +61,14 @@ export function assertDomainRegistry(registry: DomainRegistry, scope: OperatorSc
   }
   if (registry.accounts.filter((account) => account.is_legacy_default).length > 1)
     throw new Error("COINOPS_LEGACY_ACCOUNT_AMBIGUOUS");
-  const engines = new Set<string>(), markets = new Set<string>();
+  const engines = new Set<string>();
   for (const engine of registry.engines) {
-    const marketKey = `${engine.exchange_account_id}:${engine.environment}:${engine.symbol}`;
     if (!isIdentity(engine.id) || engine.operator_id !== operator.id || !accounts.has(engine.exchange_account_id)
-      || engines.has(engine.id) || markets.has(marketKey) || !["REAL", "SHADOW", "TESTNET"].includes(engine.environment)
+      || engines.has(engine.id) || !["REAL", "SHADOW", "TESTNET"].includes(engine.environment)
       || typeof engine.kill_switch !== "boolean" || !Number.isFinite(Number(engine.hard_cap_quote))
       || Number(engine.hard_cap_quote) < 0) throw new Error("COINOPS_ENGINE_SCOPE_DENIED");
     assertNativeMarket(engine.base_asset, engine.quote_asset, engine.symbol);
-    engines.add(engine.id); markets.add(marketKey);
+    engines.add(engine.id);
   }
 }
 
@@ -96,7 +97,7 @@ export function resolveEngineContext(registry: DomainRegistry, selection: Engine
     global_kill_switch: registry.operator.kill_switch, account_kill_switch: account.kill_switch || account.status !== "ACTIVE",
     engine_kill_switch: engine.kill_switch, strategy_config_pending: engine.strategy_config_pending,
     status: engine.status, hard_cap_quote: engine.hard_cap_quote,
-    legacy_compatible: engine.legacy_compatible,
+    legacy_compatible: engine.legacy_compatible, executor_shard_id: engine.executor_shard_id,
     ath_reference_symbol: engine.ath_reference_symbol ?? (engine.legacy_compatible ? `${engine.base_asset}USDC` : engine.symbol) };
 }
 

@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import ts from "typescript";
-import { assertExecutorAccountBinding, parseExecutorValidatedVersions, resolveExecutorShard,
+import { assertExecutorAccountBinding, assertExecutorConnectionBinding, assertExecutorConnectionCandidate, assertExecutorEngineBinding, parseExecutorValidatedVersions, resolveExecutorShard,
   resolveExecutorValidatedVersion, withExecutorShard } from "./executor-shards-server.ts";
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import { readLiveExecutorState, createLiveExecutorOrder } from "./live-executor-transport.ts";
@@ -15,6 +15,58 @@ const environment = { LIVE_EXECUTOR_EGRESS_IP: "46.101.104.48", LIVE_EXECUTOR_BA
   COINOPS_EXECUTOR_HMAC_SECRET: "first-shard-fixture-secret".repeat(2), LIVE_EXECUTOR_VALIDATED_VERSION: "legacy01",
   COINOPS_EXECUTOR_SHARDS_JSON: JSON.stringify(configs) };
 const target = resolveExecutorShard("executor-02", environment);
+
+test("additional credential setup never replaces the account bootstrap or fabricates admission", () => {
+  const operator = { id: "operator", tenant_id: "tenant", status: "ACTIVE" };
+  const account = { id: "00000000-0000-4000-8000-000000000002", operator_id: operator.id,
+    status: "ACTIVE", is_legacy_default: false, executor_shard_id: "executor-02" };
+  const input = { operatorId: operator.id, accountId: account.id, tenantId: "tenant", shardId: "executor-03",
+    operation: "CONNECT" as const, admissionCode: "CAPACITY_OK", installedEngine: false };
+  assert.deepEqual(assertExecutorConnectionCandidate(operator, account, input), { shardId: "executor-03",
+    credentialRef: `account_${account.id.replaceAll("-", "")}` });
+  assert.equal(account.executor_shard_id, "executor-02");
+  for (const change of [{ admissionCode: "CAPACITY_REQUIRED" }, { admissionCode: "CAPACITY_UNKNOWN" },
+    { tenantId: "foreign" }, { operatorId: "foreign" }, { accountId: "foreign" },
+    { shardId: "missing" }, { connectionRef: "legacy-binance-production" }])
+    assert.throws(() => assertExecutorConnectionCandidate(operator, account, { ...input, ...change }), /CONNECTION_SHARD_DENIED/);
+  const legacy = { ...account, is_legacy_default: true, executor_shard_id: "executor-01" };
+  assert.equal(assertExecutorConnectionCandidate(operator, legacy, { ...input, shardId: "executor-01",
+    operation: "REVALIDATE", admissionCode: "CAPACITY_REQUIRED", installedEngine: true }).credentialRef, "legacy-binance-production");
+  assert.throws(() => assertExecutorConnectionCandidate(operator, legacy, { ...input, shardId: "executor-01",
+    installedEngine: true }), /CONNECTION_SHARD_DENIED/);
+  assert.throws(() => assertExecutorConnectionCandidate(operator, account, { ...input, operation: "REVALIDATE" }), /CONNECTION_SHARD_DENIED/);
+});
+
+test("new-engine target requires its own validated credential/IP without removing the old connection", () => {
+  const operator = { id: "operator", tenant_id: "tenant", status: "ACTIVE" };
+  const account = { id: "00000000-0000-4000-8000-000000000002", operator_id: "operator" };
+  const connection = { operator_id: operator.id, exchange_account_id: account.id,
+    executor_shard_id: "executor-03", environment: "REAL", status: "VALIDATED",
+    credential_ref: `account_${account.id.replaceAll("-", "")}`,
+    validation_evidence: { status: "PASS", environment: "REAL", executor_shard_id: "executor-03", executor_ip: "203.0.113.33" } };
+  assert.deepEqual(assertExecutorConnectionBinding(operator, account, connection, operator.id, account.id,
+    "executor-03", "tenant", "203.0.113.33"), { shardId: "executor-03", credentialRef: connection.credential_ref });
+  for (const invalid of [null, { ...connection, status: "VALIDATION_REQUIRED" }, { ...connection, operator_id: "other" },
+    { ...connection, exchange_account_id: "other" }, { ...connection, environment: "TESTNET" },
+    { ...connection, executor_shard_id: "executor-02" }, { ...connection, credential_ref: "legacy-binance-production" },
+    { ...connection, validation_evidence: { ...connection.validation_evidence, executor_ip: "203.0.113.22" } }])
+    assert.throws(() => assertExecutorConnectionBinding(operator, account, invalid, operator.id, account.id,
+      "executor-03", "tenant", "203.0.113.33"), /CONNECTION_SHARD_DENIED/);
+  assert.throws(() => assertExecutorConnectionBinding(operator, account, connection, operator.id, account.id,
+    "executor-03", "foreign-tenant", "203.0.113.33"), /CONNECTION_SHARD_DENIED/);
+});
+
+test("same account/symbol routes by immutable engine, never its bootstrap shard", () => {
+  const operator = { id: "operator", tenant_id: "tenant", status: "ACTIVE" };
+  const account = { id: "account", operator_id: "operator", executor_shard_id: "executor-02" };
+  for (const [id, shard] of [["engine-A", "executor-02"], ["engine-B", "executor-03"]]) {
+    const engine = { id, operator_id: "operator", exchange_account_id: "account", executor_shard_id: shard };
+    assert.equal(assertExecutorEngineBinding(operator, account, engine, "operator", "account", id, "tenant"), shard);
+    for (const invalid of [null, { ...engine, id: "missing" }, { ...engine, operator_id: "other" },
+      { ...engine, exchange_account_id: "other" }, { ...engine, executor_shard_id: "" }])
+      assert.throws(() => assertExecutorEngineBinding(operator, account, invalid, "operator", "account", id, "tenant"), /ENGINE_SHARD_DENIED/);
+  }
+});
 test("isolated new-shard config preserves sensitive fleet JSON and existing routing", () => {
   const third = { egressIp: "203.0.113.33", baseUrl: "https://203.0.113.33",
     hmacSecret: "third-shard-fixture-only".repeat(3), validatedVersion: "shard03" };

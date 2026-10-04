@@ -7,7 +7,7 @@ const run: FastRun = { id: "run-a", trading_engine_id: "engine-a",
   exchange_account_id: "account-a", status: "ACTIVE", symbol: "SOLBRL",
   last_reconciled_at: new Date(now - 60_000).toISOString(), last_error: null, lease_until: null };
 const engine = { id: "engine-a", exchange_account_id: "account-a", symbol: "SOLBRL",
-  status: "ACTIVE", kill_switch: false };
+  status: "ACTIVE", kill_switch: false, executor_shard_id: "executor-02" };
 const account = { id: "account-a", executor_shard_id: "executor-02",
   status: "ACTIVE", kill_switch: false };
 const slots: FastSlot[] = Array.from({ length: 25 }, (_, index) => ({
@@ -26,6 +26,21 @@ function check(overrides: Partial<Parameters<typeof evaluateFastRun>[0]> = {}) {
 
 test("healthy engine is screened without exchange writes", () => {
   assert.deepEqual(check(), { state: "HEALTHY", code: null, recoverable: false });
+});
+
+test("same-account SOLBRL on executor03 is unaffected by sibling failure on executor02", () => {
+  const runB = { ...run, id: "run-b", trading_engine_id: "engine-b" };
+  const engineB = { ...engine, id: "engine-b", executor_shard_id: "executor-03" };
+  const ownSlots = slots.map((slot) => ({ ...slot, id: `b-${slot.id}`, run_id: runB.id }));
+  const ownOrders = orders.map((order) => ({ ...order, slot_id: `b-${order.slot_id}`, run_id: runB.id }));
+  const incidentA: FastAlert = { trading_engine_id: run.trading_engine_id, exchange_account_id: account.id,
+    alert_key: `LIVE_RUN:${run.id}:CRITICAL`, severity: "CRITICAL", code: "COINOPS_LIVE_ENGINE_FAILED" };
+  assert.equal(check({ engine: { ...engine, kill_switch: true } }).state, "BLOCKED");
+  const inputB = { run: runB, engine: engineB, account, shardId: "executor-03", slots: ownSlots,
+    orders: ownOrders, alerts: [incidentA], now };
+  assert.equal(evaluateFastRun(inputB).state, "HEALTHY");
+  assert.equal(evaluateFastRun({ ...inputB, shardId: "executor-02" }).code, "WATCHDOG_OWNERSHIP_MISMATCH");
+  assert.equal(evaluateFastRun({ ...inputB, orders }).code, "WATCHDOG_OWNERSHIP_MISMATCH");
 });
 test("missing resident TP becomes an engine-local recovery candidate", () => {
   assert.equal(check({ orders: orders.slice(1) }).code, "WATCHDOG_TP_MISSING");
@@ -92,7 +107,7 @@ test("one and five failed engines have exactly local blast radius in synthetic m
     const accountId = `account-${Math.floor(index / 2)}`;
     const shardId = index < 6 ? "executor-01" : "executor-02";
     return { run: { ...run, id: `run-${index}`, trading_engine_id: id,
-      exchange_account_id: accountId }, engine: { ...engine, id, exchange_account_id: accountId },
+      exchange_account_id: accountId }, engine: { ...engine, id, exchange_account_id: accountId, executor_shard_id: shardId },
       account: { ...account, id: accountId, executor_shard_id: shardId }, shardId,
       slots: slots.map((slot) => ({ ...slot, run_id: `run-${index}` })),
       orders: orders.map((order) => ({ ...order, run_id: `run-${index}` })), now };
@@ -110,7 +125,9 @@ test("a failed credential/account blocks only engines owned by that account", ()
   const sibling = check({ run: { ...run, id: "run-b", trading_engine_id: "engine-b",
     exchange_account_id: "account-b" },
   engine: { ...engine, id: "engine-b", exchange_account_id: "account-b" },
-  account: { ...account, id: "account-b" } });
+  account: { ...account, id: "account-b" },
+  slots: slots.map((slot) => ({ ...slot, run_id: "run-b" })),
+  orders: orders.map((order) => ({ ...order, run_id: "run-b" })) });
   assert.equal(own.state, "BLOCKED");
   assert.equal(sibling.state, "HEALTHY");
 });

@@ -1,6 +1,6 @@
 import { readLiveExecutorHealth, type ExecutorEngineScope } from "./live-executor-transport.ts";
-import { parseExecutorValidatedVersions, resolveExecutorForAccount, resolveExecutorValidatedVersion,
-  type ExecutorAccountResolver } from "./executor-shards-server.ts";
+import { parseExecutorValidatedVersions, resolveExecutorForEngine, resolveExecutorValidatedVersion,
+  type ExecutorEngineResolver } from "./executor-shards-server.ts";
 
 export type LiveExecutorHealth = {
   healthy: boolean;
@@ -19,6 +19,9 @@ export type LiveExecutorHealth = {
   trading_enabled: boolean;
   kill_switch: boolean;
   latency_ms: number;
+  isolation_contract?: string;
+  account_order_budget_protocol?: number;
+  account_order_budget_enforced?: boolean;
 };
 
 export type LiveExecutorStatus = {
@@ -34,10 +37,10 @@ export async function loadLiveExecutorStatus(
   fetcher: typeof fetch = fetch,
   validatedVersion = process.env.LIVE_EXECUTOR_VALIDATED_VERSION,
   engine?: ExecutorEngineScope,
-  resolver: ExecutorAccountResolver = resolveExecutorForAccount,
+  resolver: ExecutorEngineResolver = resolveExecutorForEngine,
 ): Promise<LiveExecutorStatus> {
   try {
-    const target = engine ? await resolver(engine.operator_id, engine.exchange_account_id) : null;
+    const target = engine ? await resolver(engine.operator_id, engine.exchange_account_id, engine.trading_engine_id) : null;
     if (target) {
       baseUrl = target.base; expectedIp = target.ip; validatedVersion = target.validatedVersion;
     }

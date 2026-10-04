@@ -52,7 +52,7 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     Object.assign(row, { operator_id: context.operator_id, exchange_account_id: context.exchange_account_id,
       account_display_name: context.account_display_name, trading_engine_id: context.trading_engine_id,
       environment: context.environment, symbol: context.symbol, quote_asset: context.quote_asset,
-      ath_reference_symbol: context.ath_reference_symbol });
+      ath_reference_symbol: context.ath_reference_symbol, executor_shard_id: context.executor_shard_id ?? null });
     if (row.unit === "USDC" || row.unit === "BRL") row.unit = context.quote_asset;
     // Suffixes of legacy storage/exports are retained for compatibility only;
     // their native equivalents and quote are the canonical 5.6 contract.

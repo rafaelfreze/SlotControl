@@ -7,11 +7,13 @@ const NOW = Date.parse("2026-09-24T03:00:00.000Z");
 const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
 
 function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false,
-  restrictionsStatus = 200, deleteOutcome = null, loseDeleteAck = false } = {}) {
+  restrictionsStatus = 200, deleteOutcome = null, loseDeleteAck = false,
+  stpModes, requireSelfTradePrevention = false } = {}) {
   const calls = [];
   let order = existingOrder;
   let openOrderFailures = 0;
   const filters = { symbol: "BTCBRL", status: "TRADING", baseAsset: "BTC", quoteAsset: "BRL",
+    ...(stpModes === undefined ? {} : { allowedSelfTradePreventionModes: stpModes }),
     filters: [
       { filterType: "LOT_SIZE", minQty: "0.00001", maxQty: "100", stepSize: "0.00001" },
       { filterType: "PRICE_FILTER", minPrice: "1", maxPrice: "10000000", tickSize: "1" },
@@ -63,7 +65,7 @@ function fixture({ openOrders = [], existingOrder = null, trades = [], failFirst
     throw new Error(`Unexpected ${parsed.pathname}`);
   };
   return { transport: new BinanceLiveTransport({ apiKey: "test-key", apiSecret: "test-secret",
-    fetcher, now: () => NOW }), calls };
+    fetcher, now: () => NOW, requireSelfTradePrevention }), calls };
 }
 
 function marketIntent(overrides = {}) {
@@ -135,6 +137,24 @@ test("Production transport refuses stale own-open-order snapshot before POST", a
   /UNRECONCILED_OWNED_ORDER/);
   assert.equal(calls.filter((call) => call.method === "POST").length, 0);
 });
+
+test("supported STP always preserves resident makers and cannot be overridden by caller", async () => {
+  const { transport, calls } = fixture({ stpModes: ["NONE", "EXPIRE_TAKER", "EXPIRE_BOTH"] });
+  await transport.createOwnedOrder(marketIntent({ selfTradePreventionMode: "EXPIRE_BOTH" }),
+    { allowCreate: true, tradingEnabled: true, killSwitch: false });
+  const post = calls.find((call) => call.path === "/api/v3/order" && call.method === "POST");
+  assert.equal(post.params.get("selfTradePreventionMode"), "EXPIRE_TAKER");
+  assert.equal(calls.filter((call) => call.method === "DELETE").length, 0);
+});
+
+for (const stpModes of [undefined, ["NONE"], ["EXPIRE_MAKER", "EXPIRE_BOTH"]]) {
+  test(`shared pair cannot submit without maker-preserving STP: ${JSON.stringify(stpModes)}`, async () => {
+    const { transport, calls } = fixture({ stpModes, requireSelfTradePrevention: true });
+    await assert.rejects(transport.createOwnedOrder(marketIntent(),
+      { allowCreate: true, tradingEnabled: true, killSwitch: false }), /SELF_TRADE_PREVENTION_UNPROVEN/);
+    assert.equal(calls.filter((call) => call.method === "POST").length, 0);
+  });
+}
 
 test("Trade history uses the Binance-supported orderId combination only", async () => {
   const { transport, calls } = fixture({ existingOrder: {

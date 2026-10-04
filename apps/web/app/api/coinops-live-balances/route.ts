@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
 import { resolveEngineContext } from "@/lib/execution/operator-context";
-import { resolveExecutorForAccount } from "@/lib/execution/executor-shards-server";
+import { resolveExecutorForEngine } from "@/lib/execution/executor-shards-server";
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
@@ -42,10 +42,10 @@ export async function GET(request: Request) {
     }
     // Resolve each account/shard once and bound this optional UI read. A slow
     // balance collection never blocks Home and never triggers a trading action.
-    const targets = new Map<string, ReturnType<typeof resolveExecutorForAccount>>();
-    const resolve: typeof resolveExecutorForAccount = (operatorId, exchangeAccountId) => {
-      const key = `${operatorId}:${exchangeAccountId}`;
-      if (!targets.has(key)) targets.set(key, resolveExecutorForAccount(operatorId, exchangeAccountId));
+    const targets = new Map<string, ReturnType<typeof resolveExecutorForEngine>>();
+    const resolve: typeof resolveExecutorForEngine = (operatorId, exchangeAccountId, engineId) => {
+      const key = `${operatorId}:${exchangeAccountId}:${engineId}`;
+      if (!targets.has(key)) targets.set(key, resolveExecutorForEngine(operatorId, exchangeAccountId, engineId));
       return targets.get(key)!;
     };
     const fetchState: typeof fetch = (url, init) => fetch(url, { ...init,

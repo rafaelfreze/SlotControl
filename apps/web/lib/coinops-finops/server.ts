@@ -272,7 +272,7 @@ function buildExecutors(shards: Shard[], samples: DbRow[], services: FinopsServi
     const costs = services.filter((row) => row.shardId === shard.id && row.enabled);
     const currencies = [...new Set(costs.map((row) => row.currency))];
     const total = costs.length ? sumKnown(costs.map((row) => row.projectedBrl)).total : null;
-    const ownAccounts = new Set(capital.accounts.filter((row) => row.shardId === shard.id).map((row) => row.accountId)).size;
+    const ownAccounts = new Set(capital.markets.filter((row) => row.shardId === shard.id).map((row) => row.accountId)).size;
     const ownEngines = capital.markets.filter((row) => row.shardId === shard.id).length;
     const cost = costs[0];
     return { id: shard.id, name: `Executor ${shard.id.split("-")[1]}`, ip: String(shard.egress_ipv4), enabled: shard.enabled,

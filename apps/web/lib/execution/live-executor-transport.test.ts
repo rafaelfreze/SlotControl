@@ -3,6 +3,9 @@ import test from "node:test";
 
 import * as transport from "./live-executor-transport.ts";
 import { resolveExecutorShard } from "./executor-shards-server.ts";
+import { accountBudgetPermitHeaders } from "./account-order-budget-permit.ts";
+import { signAccountOrderUnsentProof, AccountOrderNotSubmitted } from "./account-order-unsent-proof.ts";
+import { createHash } from "node:crypto";
 
 const resolver = async () => resolveExecutorShard("executor-01");
 const readLiveExecutorHealth = (engine: transport.ExecutorEngineScope, fetcher: typeof fetch) =>
@@ -25,6 +28,38 @@ const state = { ...engine, environment: "REAL",
   price: { symbol: "BTCBRL", price: 430000, observedAt: "2026-09-24T10:00:00Z" },
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
+
+test("create dispatch carries a separate permit on01/03; byte identity, no write retry, and exact signed unsent response", async () => {
+  const secret = "fictional-transport-budget-secret-123456789", now = Date.now();
+  for (const shardId of ["executor-01", "executor-03"]) {
+    const target = { shardId, ip: "203.0.113.33", base: "https://203.0.113.33", secret };
+    const input = { clientOrderId: "C2-fixture-1-B-0123456789abcd", symbol: "BTCBRL", side: "BUY", type: "MARKET", quoteOrderQty: "18" };
+    const decision = "a".repeat(64);
+    const raw = JSON.stringify({ ...input, ...transport.executorContext(engine, decision, input.clientOrderId),
+      ...(shardId === "executor-01" ? {} : { executor_shard_id: shardId }) });
+    const reservation = { code: "PASS", operatorId: engine.operator_id, accountId: engine.exchange_account_id,
+      engineId: engine.trading_engine_id, shardId, clientOrderId: input.clientOrderId, expiresAt: now + 25_000 };
+    let attempts = 0;
+    const fetcher = (async (_url: unknown, init?: RequestInit) => {
+      attempts++;
+      assert.equal(String(init?.body), raw);
+      const headers = new Headers(init?.headers);
+      assert.ok(headers.get("x-coinops-signature"));
+      assert.ok(headers.get("x-coinops-account-order-budget"));
+      assert.ok(accountBudgetPermitHeaders(secret, reservation, { ...JSON.parse(raw), executor_shard_id: shardId }, raw));
+      const proof = signAccountOrderUnsentProof(secret, { ...engine, environment: "REAL", executor_shard_id: shardId,
+        clientOrderId: input.clientOrderId, decision_id: decision, request_nonce: headers.get("x-coinops-nonce")! },
+      createHash("sha256").update(raw).digest("hex"));
+      return Response.json({ error: "EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", unsent_proof: proof }, { status: 403 });
+    }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder(input, engine, decision, fetcher, async () => target, reservation), AccountOrderNotSubmitted);
+    assert.equal(attempts, 1);
+    await assert.rejects(transport.createLiveExecutorOrder(input, engine, decision,
+      (async () => { attempts++; return Response.json({ error: "EXECUTOR_UNAVAILABLE" }, { status: 503 }); }) as typeof fetch,
+      async () => target, reservation), /EXECUTOR_UNAVAILABLE/);
+    assert.equal(attempts, 2, "uncertain POST outcome is never automatically retried or called unsent");
+  }
+});
 
 test("LIVE monitor health retries transient scoped 503 without retrying writes or crossing engines", async () => {
   const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,

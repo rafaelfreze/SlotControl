@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { activationAdmissionView, type ActivationAdmission } from "@/lib/coinops-capacity/activation-admission-view";
+import { engineDisplayName } from "@/lib/execution/engine-display";
+import { EngineAppendBuilder } from "./engine-append-builder";
 
 type Account = { id: string; display_name: string; status: string; kill_switch: boolean;
   is_legacy_default: boolean; credentialValidated: boolean; environment: "REAL" | "TESTNET" | null;
   executor_shard_id: string | null };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: string;
+  executor_shard_id?: string; created_at?: string;
   environment: "REAL" | "TESTNET"; status: string; kill_switch: boolean; hard_cap_quote: number | string;
   operational: boolean; ready: boolean; evidence: { physicalSlots: number; open: number;
     residentTp: number; nextBuy: number; recent: boolean; clean: boolean };
+  activationAdmission?: ActivationAdmission | null;
   run: { id: string; status: string; last_error: string | null; last_reconciled_at: string | null } | null;
   profile: { gain_rate: number | string; normal_spacing_rate: number | string;
     post_ath_spacing_rate: number | string; config_version: number } | null };
@@ -49,7 +53,7 @@ function split(total: string, assets: MarketAsset[]) {
 }
 
 export function EngineControlCenter({ active, initialAccountId, environment, onEditEngine, onOpenCredentials }: {
-  active: boolean; initialAccountId: string; environment: "REAL" | "TESTNET"; onEditEngine: (accountId: string, symbol: string) => void;
+  active: boolean; initialAccountId: string; environment: "REAL" | "TESTNET"; onEditEngine: (accountId: string, symbol: string, engineId: string) => void;
   onOpenCredentials: () => void }) {
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -65,8 +69,6 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [activationAdmission, setActivationAdmission] = useState<ActivationAdmission | null>(null);
-  const admission = activationAdmissionView(activationAdmission);
   const refreshSequence = useRef(0);
   const account = accounts.find((item) => item.id === accountId);
   const testnet = account?.environment === "TESTNET";
@@ -76,7 +78,6 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
   const refresh = useCallback(async () => {
     const sequence = ++refreshSequence.current;
     setLoading(true);
-    setActivationAdmission(null);
     try {
       const url = new URL(api, window.location.origin);
       if (accountId) url.searchParams.set("accountId", accountId);
@@ -87,7 +88,6 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
       setAccounts((payload.accounts ?? []).filter((item: Account) => item.environment === environment));
       setEngines((payload.engines ?? []).filter((item: Engine) =>
         item.exchange_account_id === accountId && item.environment === environment));
-      setActivationAdmission(payload.activationAdmission ?? null);
     } finally { if (sequence === refreshSequence.current) setLoading(false); }
   }, [accountId, environment]);
   useEffect(() => {
@@ -98,7 +98,6 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
     const nextAccountId = initialAccountId === "ALL" ? "" : initialAccountId;
     setAccountId(nextAccountId);
     setEngines([]);
-    setActivationAdmission(null);
     setPreview(null);
   }, [initialAccountId, environment]);
   function invalidate() { setPreview(null); setRequestId(crypto.randomUUID()); }
@@ -170,18 +169,22 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
       <button type="button" className="px-button" onClick={onOpenCredentials}>Contas Binance →</button></header>
     <div className="px-engine-account-picker"><label>Conta Binance<select aria-label="Conta Binance para motores"
       value={accountId} onChange={(event) => { setAccountId(event.target.value); setEngines([]);
-        setActivationAdmission(null);
         setAccounts((current) => current.map((item) => ({ ...item, credentialValidated: false })));
         setQuote(accounts.find((item) => item.id === event.target.value)?.environment === "TESTNET" ? "USDT" : "BRL"); invalidate(); }}>
       <option value="">Selecione uma conta</option>{accounts.map((item) =>
         <option key={item.id} value={item.id}>{item.display_name} · {item.status}</option>)}</select></label>
       {account ? <span className={`px-badge ${account.status === "ACTIVE" ? "" : "px-badge--warning"}`}>
-        {account.status} · {account.environment ?? "ambiente a validar"} · {account.executor_shard_id ?? "shard a definir"} · {loading ? "Verificando API" : account.credentialValidated ? "API validada" : "API a validar"}</span> : null}</div>
+        {account.status} · {account.environment ?? "ambiente a validar"} · {accountEngines.length ? "Executor por motor" : account.executor_shard_id ?? "shard a definir"} · {loading ? "Verificando API" : account.credentialValidated ? "API validada" : "API a validar"}</span> : null}</div>
+    {account && environment === "REAL" ? <EngineAppendBuilder key={account.id} accountId={account.id} name={account.display_name}
+      hostingShards={[...new Set(accountEngines.map((engine) => engine.executor_shard_id).filter((id): id is string => !!id))]}
+      onChanged={async () => { await refresh(); router.refresh(); }} /> : null}
     {account && accountEngines.length > 0 ? <div className="px-engine-list"><h3>Motores da conta</h3>
       <button type="button" className="px-button" disabled={busy || loading}
         onClick={() => void refresh().catch(() => setMessage("Estado dos motores indisponível."))}>Atualizar estado · sem ordens</button>
-      {accountEngines.map((engine) => <article className="px-engine-row" key={engine.id}>
-        <div><strong>{engine.symbol}</strong><small>{money(engine.hard_cap_quote, engine.quote_asset)} cap · 25 slots
+      {accountEngines.map((engine) => {
+        const engineAdmission = activationAdmissionView(engine.activationAdmission ?? null);
+        return <article className="px-engine-row" key={engine.id}>
+        <div><strong>{engineDisplayName(engine, accountEngines)}{engine.executor_shard_id ? ` · ${engine.executor_shard_id.replace("executor-", "Executor ")}` : ""}</strong><small>{money(engine.hard_cap_quote, engine.quote_asset)} cap · 25 slots
           {engine.profile ? ` · gain ${(Number(engine.profile.gain_rate) * 100).toLocaleString("pt-BR")}% · spacing ${(Number(engine.profile.normal_spacing_rate) * 100).toLocaleString("pt-BR")}%` : ""}</small>
           <small>Ciclo: {engine.run?.status ?? "não iniciado"} · Última reconciliação: {engine.run?.last_reconciled_at ?? "—"}</small>
           {engine.run ? <small>Slots {engine.evidence.physicalSlots}/25 · OPEN {engine.evidence.open} ·
@@ -192,16 +195,16 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
             ? engine.operational ? "OPERANDO" : "ATIVO · VERIFICAR"
             : engine.environment === "TESTNET" && engine.status === "ACTIVE" && engine.kill_switch && !engine.run
               ? "BLOQUEADO · SEM CICLO"
-            : engine.ready ? engine.environment === "REAL" && (!admission.allowed || loading)
+            : engine.ready ? engine.environment === "REAL" && (!engineAdmission.allowed || loading)
               ? "PREPARADO · AGUARDANDO ADMISSÃO" : "READY"
               : engine.run?.status === "PREPARING" ? "PREPARANDO · VERIFICAR" : "INACTIVE"}</span>
-        {engine.ready && engine.environment === "REAL" ? <small role="status" style={{ gridColumn: "1 / -1" }}>{loading ? "Conferindo admissão server-side…" : admission.message}</small> : null}
+        {engine.ready && engine.environment === "REAL" ? <small role="status" style={{ gridColumn: "1 / -1" }}>{loading ? "Conferindo admissão server-side…" : engineAdmission.message}</small> : null}
         <div className="px-engine-actions">
-          <button type="button" className="px-button" onClick={() => onEditEngine(accountId, engine.symbol)}>Editar regras</button>
+          <button type="button" className="px-button" onClick={() => onEditEngine(accountId, engine.symbol, engine.id)}>Editar regras</button>
           {engine.status === "INACTIVE" && !engine.run && !engine.ready ? <button type="button" className="px-button"
-            disabled={busy || !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>{engine.environment === "TESTNET" ? "Validar para READY" : "Preparar 25 slots"}</button> : null}
+            disabled={busy || engine.environment === "TESTNET" && !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>{engine.environment === "TESTNET" ? "Validar para READY" : "Preparar 25 slots"}</button> : null}
           {engine.ready ? <button type="button" className="px-button px-button-primary"
-            disabled={busy || loading || !engine.ready || engine.environment === "REAL" && !admission.allowed}
+            disabled={busy || loading || !engine.ready || engine.environment === "REAL" && !engineAdmission.allowed}
             onClick={() => void control(engine, "ACTIVATE")}>Ativar {engine.symbol}</button> : null}
           {engine.environment === "TESTNET" && engine.status === "ACTIVE" && engine.kill_switch && !engine.run
             ? <button type="button" className="px-button" disabled={busy}
@@ -210,7 +213,7 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
             disabled={busy} onClick={() => void control(engine, "PAUSE")}>Pausar</button> : null}
           {engine.run?.status === "PAUSED" || engine.environment === "REAL" && engine.run?.status === "ACTIVE" && engine.kill_switch ? <button type="button" className="px-button px-button-primary"
             disabled={busy} onClick={() => void control(engine, "RESUME")}>Retomar</button> : null}
-        </div></article>)}
+        </div></article>; })}
       {account.environment === "REAL" && account.status === "INACTIVE" && accountEngines.some((engine) => engine.status === "INACTIVE")
         ? <button type="button" className="px-text-button" disabled={busy}
           onClick={() => void action(async () => { await send({ action: "SYNC", accountId });
@@ -255,7 +258,7 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
     {preview ? <section className="px-engine-preview" aria-label="Preview dos motores"><h3>Preview · {preview.account}</h3>
       <p>Binance GET {preview.observedAt} · IPv4 {preview.executorIp} · livre {money(preview.free, preview.quote)} ·
         capital {money(preview.capital, preview.quote)} · fora do CoinOps {money(preview.outsideCoinOps, preview.quote)}.</p>
-      {preview.engines.map((engine) => <article key={engine.symbol}><h4>{engine.symbol}</h4>
+      {preview.engines.map((engine, index) => <article key={`${requestId}:${index}`}><h4>{engine.symbol}{preview.engines.filter((item) => item.symbol === engine.symbol).length > 1 ? ` · Motor ${index + 1}` : ""}</h4>
         <p>Capital {money(engine.capital, preview.quote)} · 25 slots ·
           {money(engine.allocation[0], preview.quote)}/slot{new Set(engine.allocation).size > 1 ? " (sobra de centavos distribuída)" : ""} ·
           {engine.validSlots === 25 ? "OK" : `Valor insuficiente: mínimo estimado ${money(engine.minimumCapital, preview.quote)} para 25 slots.`}</p>

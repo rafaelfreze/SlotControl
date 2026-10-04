@@ -8,6 +8,15 @@ const origin = "https://cripto-flax.vercel.app";
 const valid = { operation: "CONNECT", requestId: randomUUID(), accountId: randomUUID(),
   displayName: "Thyely", environment: "REAL", apiKey: "A".repeat(64), apiSecret: "B".repeat(64) };
 
+test("additional shard credential setup is explicit REAL-only and never replaces/removes old connections", () => {
+  const input = { ...valid, operation: "CONNECT_SHARD", shardId: "executor-03" };
+  assert.doesNotThrow(() => validateCredentialIntent(input));
+  assert.doesNotThrow(() => validateCredentialIntent({ ...input, operation: "REVALIDATE_SHARD", apiKey: undefined, apiSecret: undefined }));
+  for (const patch of [{ shardId: "https://evil.test" }, { shardId: undefined }, { environment: "TESTNET" },
+    { operation: "REPLACE" }, { operation: "REMOVE" }, { operation: "REVALIDATE_SHARD" }, { fromShardId: "executor-02" }])
+    assert.throws(() => validateCredentialIntent({ ...input, ...patch }), /INTENT_INVALID|FORMAT_INVALID/);
+});
+
 test("assignment is explicit, has no credential payload, and supports one or two planned engines", () => {
   const input = { operation: "ASSIGN", requestId: randomUUID(), accountId: randomUUID(),
     displayName: "Fixture", environment: "REAL", plannedEngines: 2 };

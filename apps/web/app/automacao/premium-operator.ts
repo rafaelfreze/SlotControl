@@ -83,9 +83,10 @@ export function legacyPremiumEngines(data: Props): PremiumEngine[] {
 }
 
 export function concretePremiumEngine(engines: PremiumEngine[], selection: PremiumSelection,
-  environment: PremiumEnvironment): PremiumEngine | null {
+  environment: PremiumEnvironment, engineId?: string | null): PremiumEngine | null {
   if (selection.accountId === "ALL" || selection.symbol === "ALL") return null;
   const selected = selectPremiumEngines(engines, environment, selection);
+  if (engineId) return selected.find((engine) => engine.engineId === engineId) ?? null;
   return selected.length === 1 ? selected[0] : null;
 }
 

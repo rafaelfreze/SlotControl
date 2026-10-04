@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { assertOperationalEnvironment } from "@/lib/execution/testnet-policy";
 import { signedExecutorHeaders } from "@/lib/execution/live-executor-client";
 import { requireLiveIdentityCoverage } from "@/lib/execution/initial-identity-bootstrap";
-import { resolveExecutorForAccount, resolveExecutorShard, withExecutorShard } from "@/lib/execution/executor-shards-server";
+import { resolveExecutorForAccount, resolveExecutorForConnectionCandidate, resolveExecutorShard, withExecutorShard,
+  type ExecutorShardConfig } from "@/lib/execution/executor-shards-server";
+import { accountConnectionProof } from "@/lib/execution/account-connection-proof";
 import { assertRetiredRegistry, reassignStagedAccount } from "@/lib/execution/staged-shard-reassignment";
 import { claimAccountIdentity } from "@/lib/execution/binance-identity-server";
 import { syncInactiveBinanceAccount } from "@/lib/execution/binance-account-registry-server";
@@ -30,8 +32,8 @@ async function adminScope() {
   return { operator: result.data, service: createServiceRoleClient() };
 }
 
-async function callExecutor(input: Record<string, unknown>, requestId: string) {
-  const executor = await resolveExecutorForAccount(String(input.operator_id), String(input.exchange_account_id));
+async function callExecutor(input: Record<string, unknown>, requestId: string, candidate?: ExecutorShardConfig) {
+  const executor = candidate ?? await resolveExecutorForAccount(String(input.operator_id), String(input.exchange_account_id));
   const path = "/v1/admin/credentials";
   const key = `CREDENTIAL:${requestId}`;
   const body = JSON.stringify(withExecutorShard(input, executor));
@@ -109,6 +111,32 @@ export async function POST(request: NextRequest) {
       .eq("id", accountId).maybeSingle();
     if (accountRead.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
     const account = accountRead.data;
+    if (["CONNECT_SHARD", "REVALIDATE_SHARD"].includes(operation)) {
+      if (!account || account.operator_id !== operator.id || !["ACTIVE", "INACTIVE"].includes(account.status)
+        || account.onboarding_environment && account.onboarding_environment !== "REAL")
+        throw new Error("COINOPS_ADMIN_ACCOUNT_DENIED");
+      const setupOperation = operation === "CONNECT_SHARD" ? "CONNECT" : "REVALIDATE";
+      const target = await resolveExecutorForConnectionCandidate(operator.id, accountId, input.shardId!, setupOperation);
+      const result = await callExecutor({ operator_id: operator.id, exchange_account_id: accountId,
+        credential_ref: target.credentialRef, environment: "REAL", operation: setupOperation, request_id: requestId,
+        ...(setupOperation === "CONNECT" ? { apiKey: input.apiKey, apiSecret: input.apiSecret } : {}) }, requestId, target);
+      const evidence = accountConnectionProof(result, target, operator.id, accountId);
+      // A new key/IP does not transfer the physical Binance wallet to another
+      // logical account. Claim the unchanged global owner before admitting it.
+      await claimAccountIdentity(service, operator.id, accountId, "REAL", result.uidHash);
+      const saved = await service.from("account_executor_connections").upsert({ operator_id: operator.id,
+        exchange_account_id: accountId, executor_shard_id: target.shardId, environment: "REAL",
+        credential_ref: target.credentialRef, status: "VALIDATED", checked_at: evidence.validated_at,
+        validation_evidence: evidence }, { onConflict: "exchange_account_id,executor_shard_id,environment" });
+      if (saved.error) throw new Error("COINOPS_ADMIN_CONNECTION_AUDIT_FAILED");
+      const audit = await service.from("account_onboarding_checks").upsert({ operator_id: operator.id,
+        exchange_account_id: accountId, check_key: "SHARD_CONNECTION", status: "PASS", evidence,
+        created_by: operator.user_id, idempotency_key: `connection:${requestId}` },
+        { onConflict: "exchange_account_id,idempotency_key", ignoreDuplicates: true });
+      if (audit.error) throw new Error("COINOPS_ADMIN_CONNECTION_AUDIT_FAILED");
+      // No account bootstrap, installed engine, registry, cap or strategy change.
+      return json({ accountId, ...evidence });
+    }
     assertOwnedAccount(account, operator.id);
     assertOperationalEnvironment(account?.onboarding_environment ?? "REAL");
     if (operation === "REASSIGN_STAGED") {
@@ -125,6 +153,13 @@ export async function POST(request: NextRequest) {
           return result.data;
         },
         retire: async () => {
+          // An engine's installed shard is immutable under the new contract.
+          // Check before retiring anything remotely, not after SQL refuses the
+          // update. Completed replays returned above never enter this callback.
+          const installed = await service.from("trading_engines").select("id")
+            .eq("operator_id", operator.id).eq("exchange_account_id", accountId).limit(1);
+          if (installed.error) throw new Error("COINOPS_ADMIN_READ_FAILED");
+          if (installed.data?.length) throw new Error("COINOPS_ENGINE_SHARD_IMMUTABLE");
           // Preview independently checks the stored source. Never resolve from
           // a cached account binding or copy its vault to the destination.
           if (account.executor_shard_id !== input.fromShardId || account.status !== "INACTIVE" || !account.kill_switch)
@@ -212,6 +247,22 @@ export async function POST(request: NextRequest) {
       created_by: operator.user_id, idempotency_key: `credential:${requestId}` },
     { onConflict: "exchange_account_id,idempotency_key", ignoreDuplicates: true });
     if (recorded.error) throw new Error("COINOPS_ADMIN_AUDIT_FAILED");
+    if (environment === "REAL" && ["CONNECT", "REVALIDATE", "REPLACE"].includes(operation)) {
+      const target = await resolveExecutorForAccount(operator.id, accountId);
+      const proof = accountConnectionProof(result, { ...target, credentialRef: account.credential_ref }, operator.id, accountId);
+      await claimAccountIdentity(service, operator.id, accountId, "REAL", result.uidHash);
+      const connection = await service.from("account_executor_connections").upsert({ operator_id: operator.id,
+        exchange_account_id: accountId, executor_shard_id: target.shardId, environment: "REAL",
+        credential_ref: account.credential_ref, status: "VALIDATED", checked_at: proof.validated_at,
+        validation_evidence: proof }, { onConflict: "exchange_account_id,executor_shard_id,environment" });
+      if (connection.error) throw new Error("COINOPS_ADMIN_CONNECTION_AUDIT_FAILED");
+    }
+    if (operation === "REMOVE") {
+      const connection = await service.from("account_executor_connections").update({ status: "VALIDATION_REQUIRED",
+        checked_at: null, validation_evidence: {} }).eq("operator_id", operator.id).eq("exchange_account_id", accountId)
+        .eq("executor_shard_id", account.executor_shard_id).eq("environment", "REAL");
+      if (connection.error) throw new Error("COINOPS_ADMIN_CONNECTION_AUDIT_FAILED");
+    }
     const registry = operation === "REMOVE" || account.status !== "INACTIVE" ? null : await syncInactiveBinanceAccount(service, operator.id,
       accountId, account.credential_ref, environment as "REAL" | "TESTNET");
     return json({ accountId, ...evidence, registry });

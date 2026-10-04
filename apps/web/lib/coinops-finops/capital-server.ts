@@ -36,7 +36,7 @@ export async function loadFinopsCapital(service: Service, scope: { operatorId: s
   };
   const [accounts, engines, runs, slotAccounts, slots, orders, checks] = await Promise.all([
     readPages<CapitalAccount>(() => query("exchange_accounts", "id,operator_id,display_name,status,executor_shard_id,onboarding_environment,credential_ref", false).order("id")),
-    readPages<CapitalEngine>(() => query("trading_engines", "id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch", false)
+    readPages<CapitalEngine>(() => query("trading_engines", "id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch,executor_shard_id", false)
       .eq("environment", "REAL").order("id")),
     readPages<CapitalRun>(() => query("robot_v1_live_runs", "id,operator_id,exchange_account_id,trading_engine_id,status,last_reconciled_at")
       .in("status", ["PREPARING", "ACTIVE", "PAUSED"]).order("id")),
@@ -79,7 +79,17 @@ export async function loadFinopsCapital(service: Service, scope: { operatorId: s
         const quotes = [...new Set(own.map((engine) => engine.quote_asset))];
         if (quotes.length !== 1 || symbols.length < 1 || symbols.length > 2)
           throw new Error("COINOPS_FINOPS_SNAPSHOT_MARKET_CONTRACT_UNSUPPORTED");
-        const snapshot = await operatorAccountSnapshot(scope.operatorId, account.id, quotes[0]!, symbols, account.credential_ref!, "REAL");
+        const source = own.find((engine) => engine.executor_shard_id === account.executor_shard_id) ?? own[0];
+        if (!source?.executor_shard_id) throw new Error("COINOPS_FINOPS_SNAPSHOT_SHARD_UNAVAILABLE");
+        let credentialRef = account.credential_ref!;
+        if (source.executor_shard_id !== account.executor_shard_id) {
+          const connection = await service.from("account_executor_connections").select("credential_ref,status")
+            .eq("operator_id", scope.operatorId).eq("exchange_account_id", account.id)
+            .eq("executor_shard_id", source.executor_shard_id).eq("environment", "REAL").single();
+          if (connection.error || connection.data?.status !== "VALIDATED") throw new Error("COINOPS_FINOPS_CONNECTION_UNAVAILABLE");
+          credentialRef = connection.data.credential_ref;
+        }
+        const snapshot = await operatorAccountSnapshot(scope.operatorId, account.id, quotes[0]!, symbols, credentialRef, "REAL", source.id);
         if (!Array.isArray(snapshot.balances)) throw new Error("COINOPS_FINOPS_WALLET_RESPONSE_INVALID");
         const residentIds = new Set(snapshot.markets.flatMap((market) => market.open_orders.map((order) => order.clientOrderId)));
         const ledgerResident = orders.filter((order) => order.exchange_account_id === account.id && ["NEW", "PARTIALLY_FILLED"].includes(order.status));

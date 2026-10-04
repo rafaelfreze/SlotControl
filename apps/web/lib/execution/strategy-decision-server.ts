@@ -59,9 +59,10 @@ async function update(service: Service, scope: Scope, environment: Environment, 
   if (onlyUndispatched) {
     // The executor must never receive an order if the durable dispatch marker
     // was not actually claimed (for example, after a concurrent transition).
-    const { data, error } = await mutation.select("decision_id").maybeSingle();
+    const { data, error } = await mutation.select("decision_id,dispatched_at").maybeSingle();
     if (error || data?.decision_id !== id)
       throw new Error("COINOPS_STRATEGY_DECISION_UPDATE_FAILED");
+    return data;
   } else {
     const { error } = await mutation;
     if (error) throw new Error("COINOPS_STRATEGY_DECISION_UPDATE_FAILED");
@@ -69,7 +70,9 @@ async function update(service: Service, scope: Scope, environment: Environment, 
 }
 
 export async function dispatchStrategyDecision(service: Service, scope: Scope, environment: Environment, id: string) {
-  await update(service, scope, environment, id, { dispatched_at: new Date().toISOString(), result: "DISPATCHED", error: null }, true);
+  const result = await update(service, scope, environment, id, { dispatched_at: new Date().toISOString(), result: "DISPATCHED", error: null }, true);
+  if (!result?.dispatched_at) throw new Error("COINOPS_STRATEGY_DECISION_UPDATE_FAILED");
+  return String(result.dispatched_at);
 }
 
 export async function completeStrategyDecision(service: Service, scope: Scope, environment: Environment, id: string, observed: Record<string, unknown>, exchangeAck = false) {

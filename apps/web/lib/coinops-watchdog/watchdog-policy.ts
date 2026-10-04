@@ -5,7 +5,7 @@ export type FastRun = {
 };
 
 export type FastEngine = { id: string; exchange_account_id: string; symbol: string;
-  status: string; kill_switch: boolean; strategy_config_pending?: boolean };
+  status: string; kill_switch: boolean; strategy_config_pending?: boolean; executor_shard_id?: string };
 export type FastAccount = { id: string; executor_shard_id: string; status: string;
   kill_switch: boolean };
 export type FastSlot = { run_id: string; id: string; entry_state: string;
@@ -45,7 +45,8 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
   if (!engine || !account || engine.id !== run.trading_engine_id
     || engine.exchange_account_id !== run.exchange_account_id
     || engine.symbol !== run.symbol || account.id !== run.exchange_account_id
-    || account.executor_shard_id !== shardId)
+    || engine.executor_shard_id !== shardId
+    || slots.some((slot) => slot.run_id !== run.id) || orders.some((order) => order.run_id !== run.id))
     return { state: "BLOCKED", code: "WATCHDOG_OWNERSHIP_MISMATCH", recoverable: false };
   if (run.last_error)
     return { state: "BLOCKED", code: /^COINOPS_[A-Z0-9_]+$/.test(run.last_error)

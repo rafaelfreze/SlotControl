@@ -5,7 +5,7 @@ import ts from "typescript";
 import { assertOperationalEnvironment } from "./testnet-policy.ts";
 
 function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alreadyActive = false,
-  identity = "BOUND", accountStatus = "INACTIVE") {
+  identity = "BOUND", accountStatus = "INACTIVE", engineShard = "executor-02", budget = "PASS") {
   const calls: string[] = [];
   const operator = { id: "operator", product_id: "product", tenant_id: "tenant", user_id: "user", kill_switch: false };
   const account = { id: "account", status: accountStatus, kill_switch: accountStatus !== "ACTIVE",
@@ -14,7 +14,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
   const engine = { operator_id: "operator", exchange_account_id: "account", trading_engine_id: "engine",
     environment, base_asset: "SOL", symbol: environment === "REAL" ? "SOLBRL" : "SOLUSDT",
     quote_asset: environment === "REAL" ? "BRL" : "USDT", hard_cap_quote: 100,
-    status: "INACTIVE", engine_kill_switch: true };
+    status: "INACTIVE", engine_kill_switch: true, executor_shard_id: engineShard };
   const service = { from(table: string) {
     let mutation = false;
     const data = () => table === "exchange_accounts" ? account : table === "operators" ? operator
@@ -43,10 +43,26 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
     "@/lib/execution/live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE" }) },
     "@/lib/execution/live-preparation": {},
     "@/lib/execution/operator-executor-admin": {
-      operatorAccountSnapshot: async () => ({ balances: [{ asset: engine.quote_asset, free: 1000 }], markets: [{ open_orders: [] }] }),
-      operatorExecutorAdmin: async () => { calls.push("promote"); return { status: "ACTIVE", trading_engine_id: "engine" }; },
+      operatorAccountSnapshot: async (_op: string, _account: string, _quote: string, _symbols: string[], _ref: string, _env: string, engineId: string) => {
+        assert.equal(engineId, "engine"); return { balances: [{ asset: engine.quote_asset, free: 1000 }], markets: [{ open_orders: [] }] };
+      },
+      operatorExecutorAdmin: async (_path: string, payload: Record<string, unknown>) => {
+        assert.equal(payload.trading_engine_id, "engine"); calls.push("promote"); return { status: "ACTIVE", trading_engine_id: "engine" };
+      },
     },
     "@/lib/execution/operator-engine-plan": {},
+    "@/lib/execution/engine-admission-router-server": {},
+    "@/lib/execution/engine-append-server": { allocatedCapital: async () => ({ free: 1000, requiredFree: 100 }) },
+    "@/lib/execution/engine-append-exposure": { allocationSnapshotFingerprint: () => "stable-fixture-wallet" },
+    "@/lib/execution/executor-shards-server": { resolveExecutorForConnection: async (_op: string, _acct: string, shard: string) => {
+      assert.equal(shard, engineShard); return { shardId: shard, credentialRef: "fixture-vault" };
+    } },
+    "@/lib/execution/account-order-budget-server": {
+      collectAccountOrderBudget: async (_service: unknown, _op: string, _acct: string, shard: string) => { assert.equal(shard, engineShard); },
+      previewAccountOrderBudget: async (_service: unknown, _op: string, _acct: string, additional: string[], resident: string[]) => {
+        assert.deepEqual(additional, []); assert.deepEqual(resident, [engine.symbol]); return { code: budget };
+      } },
+    "@/lib/execution/complete-ledger-read": {},
     "@/lib/execution/engine-account-catalog": {},
     "@/lib/coinops-capacity/activation-admission-view": {},
     "@/lib/execution/operator-context-server": { resolveOperatorEngine: async () => engine },
@@ -102,4 +118,16 @@ test("retired Testnet activation cannot bypass product policy even with prepared
   const scenario = fixture("TESTNET");
   assert.equal((await scenario.run()).body.error, "COINOPS_TESTNET_DISABLED");
   assert.deepEqual(scenario.calls, []);
+});
+
+test("new same-account engine activates on its own shard without mutating the active account; global budget fails before writes", async () => {
+  const valid = fixture("REAL", "CAPACITY_OK", false, "BOUND", "ACTIVE", "executor-03");
+  assert.equal((await valid.run()).body.status, "ACTIVATING");
+  assert.equal(valid.calls.includes("write:exchange_accounts"), false);
+  assert.ok(valid.calls.includes("promote"));
+  for (const code of ["ACCOUNT_ORDER_BUDGET_UNKNOWN", "ACCOUNT_ORDER_CAPACITY_REQUIRED"]) {
+    const blocked = fixture("REAL", "CAPACITY_OK", false, "BOUND", "ACTIVE", "executor-03", code);
+    assert.equal((await blocked.run()).body.error, `COINOPS_${code}`);
+    assert.deepEqual(blocked.calls, ["identity"]);
+  }
 });

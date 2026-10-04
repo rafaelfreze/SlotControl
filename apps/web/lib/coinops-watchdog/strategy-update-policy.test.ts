@@ -8,7 +8,7 @@ const input = () => ({
     status: "ACTIVE", symbol: "SOLBRL", last_reconciled_at: new Date(now - 60_000).toISOString(),
     last_error: null, lease_until: null },
   engine: { id: "engine-1", exchange_account_id: "account-1", symbol: "SOLBRL",
-    status: "ACTIVE", kill_switch: false, strategy_config_pending: true },
+    status: "ACTIVE", kill_switch: false, strategy_config_pending: true, executor_shard_id: "shard-2" },
   account: { id: "account-1", executor_shard_id: "shard-2", status: "ACTIVE", kill_switch: false },
   shardId: "shard-2", slots: Array.from({ length: 25 }, (_, index) => ({
     id: `slot-${index}`, run_id: "run-1", entry_state: "PLANNED", position_quantity: 0,

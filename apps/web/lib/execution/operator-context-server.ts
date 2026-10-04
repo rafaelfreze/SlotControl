@@ -45,7 +45,7 @@ export async function loadOperatorRegistry(client: Client, scope: OperatorScope)
   }
   const [accounts, engines] = await Promise.all([
     pages("exchange_accounts", "id,operator_id,display_name,status,is_legacy_default,kill_switch,executor_shard_id"),
-    pages("trading_engines", "id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch,strategy_config_pending,hard_cap_quote,legacy_compatible,ath_reference_symbol"),
+    pages("trading_engines", "id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch,strategy_config_pending,hard_cap_quote,legacy_compatible,ath_reference_symbol,executor_shard_id"),
   ]);
   // Disabled/revoked accounts remain in the ledger for audit, but must not
   // reappear in operational selectors or be resolved through a stale URL.

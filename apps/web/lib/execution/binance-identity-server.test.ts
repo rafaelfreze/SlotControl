@@ -10,7 +10,7 @@ new Function("require", "exports", compiled)((name: string) => {
   assert.equal(name, "server-only"); return {};
 }, loaded);
 const requireBinding = loaded.requireAccountIdentityBinding as
-  (service: unknown, operator: string, account: string, environment: string) => Promise<void>;
+  (service: unknown, operator: string, account: string, environment: string, shard?: string) => Promise<void>;
 
 function fixture(status: string, identity: boolean, operator = "operator", fail = false,
   credentialPatch: Record<string, unknown> = {}) {
@@ -23,7 +23,9 @@ function fixture(status: string, identity: boolean, operator = "operator", fail 
         ? { id: "executor-01", egress_ipv4: "192.0.2.1" }
         : { operator_id: operator, status, executor_shard_id: "executor-01", onboarding_environment: null } }),
       maybeSingle: async () => ({ error: fail ? { message: "unavailable" } : null,
-        data: table === "account_onboarding_checks" ? { status: "PASS", evidence: {
+        data: table === "account_executor_connections" ? { status: "VALIDATED", validation_evidence: {
+          status: "PASS", environment: "REAL", executor_shard_id: "executor-01", executor_ip: "192.0.2.1",
+          ...credentialPatch } } : table === "account_onboarding_checks" ? { status: "PASS", evidence: {
           status: "PASS", environment: "REAL", executor_shard_id: "executor-01", executor_ip: "192.0.2.1",
           ...credentialPatch } } : identity ? { exchange_account_id: "account" } : null }) };
     return chain;
@@ -38,6 +40,16 @@ test("old executor01 accounts without onboarding metadata never exempt a new eng
     assert.deepEqual(scenario.filters.binance_account_identity_bindings,
       { exchange_account_id: "account", operator_id: "operator", environment: "REAL" });
   }
+});
+
+test("engine-targeted admission verifies that connection, never the account bootstrap shard", async () => {
+  const scenario = fixture("ACTIVE", true);
+  await requireBinding(scenario.service, "operator", "account", "REAL", "executor-01");
+  assert.equal(scenario.filters.account_executor_connections.executor_shard_id, "executor-01");
+  await assert.rejects(requireBinding(fixture("ACTIVE", true).service,
+    "operator", "account", "REAL", "executor-03"), /SHARD_VALIDATION_REQUIRED/);
+  await assert.rejects(requireBinding(fixture("ACTIVE", true, "operator", false, { status: "FAIL" }).service,
+    "operator", "account", "REAL", "executor-01"), /SHARD_VALIDATION_REQUIRED/);
 });
 
 test("physical identity admission requires the authoritative account owner and selected environment", async () => {

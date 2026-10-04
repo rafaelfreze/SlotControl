@@ -4,7 +4,7 @@ import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
 import { resolveEngineContext } from "@/lib/execution/operator-context";
 import { loadLiveExecutorStatus } from "@/lib/execution/live-executor-health";
-import { resolveExecutorForAccount } from "@/lib/execution/executor-shards-server";
+import { resolveExecutorForEngine } from "@/lib/execution/executor-shards-server";
 import { readPublicSymbolRule } from "@/lib/coinops-monitoring/public-symbol-rules";
 
 export const dynamic = "force-dynamic";
@@ -27,10 +27,10 @@ export async function GET() {
       resolveEngineContext(registry, { environment: "REAL", exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id }));
     const rules = Promise.all([...new Set(contexts.map((context) => context.symbol))].map(readPublicSymbolRule));
     // Request-local memoization only; never share authorization/config across users.
-    const targets = new Map<string, ReturnType<typeof resolveExecutorForAccount>>();
-    const resolve: typeof resolveExecutorForAccount = (operatorId, accountId) => {
-      const key = `${operatorId}:${accountId}`;
-      if (!targets.has(key)) targets.set(key, resolveExecutorForAccount(operatorId, accountId));
+    const targets = new Map<string, ReturnType<typeof resolveExecutorForEngine>>();
+    const resolve: typeof resolveExecutorForEngine = (operatorId, accountId, engineId) => {
+      const key = `${operatorId}:${accountId}:${engineId}`;
+      if (!targets.has(key)) targets.set(key, resolveExecutorForEngine(operatorId, accountId, engineId));
       return targets.get(key)!;
     };
     const fetchHealth: typeof fetch = (url, init) => fetch(url, { ...init,

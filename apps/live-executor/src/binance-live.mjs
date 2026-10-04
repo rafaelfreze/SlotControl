@@ -45,7 +45,8 @@ function normalizeOrder(payload, clientOrderId, engine = null) {
 /** Production transport exists only on the fixed-IP VPS. It never accepts an
  * exchange host, asset, or client order namespace from arbitrary callers. */
 export class BinanceLiveTransport {
-  constructor({ apiKey, apiSecret, fetcher = fetch, now = Date.now, engine = null }) {
+  constructor({ apiKey, apiSecret, fetcher = fetch, now = Date.now, engine = null, ownershipEvidence = null,
+    requireSelfTradePrevention = false, beforeOrderSubmit = null }) {
     if (!apiKey || !apiSecret) throw new ExecutorRejection("EXECUTOR_BINANCE_CREDENTIALS_MISSING", 503);
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
@@ -54,6 +55,13 @@ export class BinanceLiveTransport {
     this.reads = new BinanceSpotAdapter({ apiKey, apiSecret }, { fetcher, now, maxReadRetries: 0 });
     this.offset = null;
     this.engine = engine;
+    this.ownershipEvidence = ownershipEvidence;
+    // This requirement is installed server-side, never accepted from an order
+    // payload. Both old and new engines must be certified before sharing a pair.
+    this.requireSelfTradePrevention = requireSelfTradePrevention;
+    this.beforeOrderSubmit = beforeOrderSubmit;
+    this.orderPostAttempted = false;
+    this.observedOrderIdentities = new Map();
   }
 
   ownership(symbol, id, side) {
@@ -146,10 +154,19 @@ export class BinanceLiveTransport {
     const body = response.body;
     if (body.symbol !== symbol || !expectedOrderId && body.clientOrderId !== clientOrderId)
       throw new ExecutorRejection("EXECUTOR_ORDER_IDENTITY_MISMATCH", 503);
-    if (expectedOrderId && (String(body.orderId) !== String(expectedOrderId)
-      || body.clientOrderId !== clientOrderId && body.status !== "CANCELED"))
+    if (expectedOrderId && String(body.orderId) !== String(expectedOrderId))
       throw new ExecutorRejection("EXECUTOR_ORDER_IDENTITY_MISMATCH", 503);
-    return normalizeOrder({ ...body, clientOrderId }, clientOrderId, this.engine);
+    // Binance may replace the client ID when cancelling. CANCELED alone is
+    // not ownership evidence: another engine/account can have that order ID.
+    if (body.clientOrderId !== clientOrderId && !(body.status === "CANCELED" && expectedOrderId
+      && (body.origClientOrderId === clientOrderId
+        || this.observedOrderIdentities.get(clientOrderId) === `${symbol}:${expectedOrderId}:${body.side}`
+        || await this.ownershipEvidence?.verify({ symbol, clientOrderId, orderId: String(expectedOrderId), side: body.side }))))
+      throw new ExecutorRejection("EXECUTOR_ORDER_IDENTITY_MISMATCH", 503);
+    const order = normalizeOrder({ ...body, clientOrderId }, clientOrderId, this.engine);
+    this.observedOrderIdentities.set(clientOrderId, `${symbol}:${order.orderId}:${order.side}`);
+    await this.ownershipEvidence?.record(order);
+    return order;
   }
 
   async ownedTrades(symbol, clientOrderId, orderId) {
@@ -254,7 +271,15 @@ export class BinanceLiveTransport {
     // TP may be protective while kill switch is ON, never an unowned SELL.
     if (killSwitch && side === "SELL" && !input.sourceBuyClientOrderId)
       throw new ExecutorRejection("EXECUTOR_PROTECTION_UNVERIFIED", 403);
+    const stpSupported = snapshot.filters.allowedSelfTradePreventionModes?.includes("EXPIRE_TAKER") === true;
+    if (this.requireSelfTradePrevention && !stpSupported)
+      throw new ExecutorRejection("EXECUTOR_SELF_TRADE_PREVENTION_UNPROVEN", 503);
+    // The incoming order may expire, but an already resident sibling TP/BUY
+    // must never be canceled by EXPIRE_MAKER/BOTH. The caller cannot override it.
+    if (this.beforeOrderSubmit) this.beforeOrderSubmit();
+    this.orderPostAttempted = true;
     const response = await this.signed("POST", "/api/v3/order", { ...fields,
+      ...(stpSupported ? { selfTradePreventionMode: "EXPIRE_TAKER" } : {}),
       newClientOrderId: clientOrderId, newOrderRespType: "FULL" });
     if (response.ok) return normalizeOrder(response.body, clientOrderId, this.engine);
     const recovered = await this.queryOrder(symbol, clientOrderId);

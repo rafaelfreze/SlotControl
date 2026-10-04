@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
+import { liveEngineExposure } from "./engine-exposure.ts";
+import { completeLedgerRead } from "./complete-ledger-read.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
@@ -15,18 +17,19 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
   const run = { ...scope, id: "run-a", asset: "SOL", status: "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date().toISOString(), lease_owner: "lease" };
-  const engine = { ...scope, base_asset: "SOL", status: "ACTIVE", engine_kill_switch: true,
+  const engine = { ...scope, id: "engine-a", hard_cap_quote: 275, base_asset: "SOL", status: "ACTIVE", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false };
   const slots = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index}`, run_id: run.id,
     slot_number: index + 1, position_quantity: index === 0 ? 1 : 0, position_committed_brl: index === 0 ? 10 : 0 }));
   const accounts = slots.map((slot) => ({ ...slot, balance_brl: 11, gain_count: 0 }));
-  const orders = [{ ...scope, run_id: run.id, slot_id: "slot-0", side: "SELL", status: "NEW",
+  const orders = [{ ...scope, id: "order-tp", run_id: run.id, slot_id: "slot-0", side: "SELL", status: "NEW",
     client_order_id: "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
     executed_quantity: 0, cumulative_quote: 0, reserved_notional_brl: 0 }];
   let alertReads = 0;
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
+    let page: [number, number] | null = null;
     const response = (singular = false) => {
       if (mutation) writes.push({ table, data: mutation, filters: { ...filters } });
       let data: unknown;
@@ -55,6 +58,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "account_quote_caps") data = { hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") data = {};
       else assert.fail(`Unexpected table ${table}`);
+      if (page && Array.isArray(data)) data = data.slice(page[0], page[1] + 1);
       return { data, error: null };
     };
     const chain = {
@@ -63,6 +67,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       in: (key: string, value: unknown) => { filters[key] = value; return chain; },
       gte: () => chain, lte: () => chain, limit: () => chain,
       or: () => chain, gt: () => chain, order: () => chain,
+      range: (start: number, end: number) => { page = [start, end]; return chain; },
       update: (data: Record<string, unknown>) => { mutation = data; return chain; },
       upsert: (data: Record<string, unknown>) => { mutation = data; return chain; },
       single: async () => response(true), maybeSingle: async () => response(true),
@@ -71,6 +76,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./engine-exposure": { liveEngineExposure }, "./complete-ledger-read": { completeLedgerRead },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },

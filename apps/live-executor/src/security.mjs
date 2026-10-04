@@ -14,6 +14,10 @@ export class ExecutorRejection extends Error {
   }
 }
 
+/** Emitted only synchronously at the final gate before starting Binance POST.
+ * Never wrap a network error or an exchange response in this class. */
+export class ExecutorPreDispatchRejection extends ExecutorRejection {}
+
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -96,7 +100,7 @@ export async function withDryRunIdempotency({ directory, key, bodyHash, execute 
 
 /** Unlike dry-runs, an uncertain financial dispatch is never released for a
  * second POST. Only exact Binance ownership evidence may complete the claim. */
-export async function withWriteIdempotency({ directory, key, bodyHash, recover, execute }) {
+export async function withWriteIdempotency({ directory, key, bodyHash, recover, execute, beforeClaim, provablyUnsent }) {
   if (!KEY_PATTERN.test(key ?? "")) throw new ExecutorRejection("EXECUTOR_IDEMPOTENCY_KEY_INVALID");
   await assertPrivateDirectory(directory);
   const stem = join(directory, sha256(key));
@@ -125,6 +129,9 @@ export async function withWriteIdempotency({ directory, key, bodyHash, recover, 
     await unlink(pending).catch(() => {});
     return { result: recovered, replayed: true };
   }
+  // Cached/pending ownership recovery does not need a new POST permit. Check
+  // a new dispatch before claiming it, without changing its historical hash.
+  if (beforeClaim) await beforeClaim();
   try {
     const handle = await open(pending, "wx", 0o600);
     try { await handle.writeFile(bodyHash); } finally { await handle.close(); }
@@ -139,8 +146,14 @@ export async function withWriteIdempotency({ directory, key, bodyHash, recover, 
     await unlink(pending).catch(() => {});
     return { result, replayed: false };
   } catch (error) {
-    // Never unlink pending: Binance may have accepted the order despite a
-    // timeout, or persistence may have failed after its successful response.
+    if (error instanceof ExecutorPreDispatchRejection && provablyUnsent?.() === true) {
+      // The synchronous final permit check proves this invocation never began
+      // a POST. The serialized SQL reservation remains; only this unsent local
+      // claim is released for the identical request with a renewed permit.
+      await unlink(pending).catch(() => {});
+    }
+    // All other failures retain pending: Binance may have accepted the order
+    // despite a timeout, or local persistence may have failed afterwards.
     throw error;
   }
 }

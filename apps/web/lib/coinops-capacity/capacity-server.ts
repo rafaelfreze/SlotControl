@@ -89,7 +89,7 @@ export async function refreshExecutorCapacity() {
     service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio").order("id"),
     service.from("exchange_accounts").select("id,executor_shard_id,status")
       .in("operator_id", ids),
-    service.from("trading_engines").select("id,exchange_account_id")
+    service.from("trading_engines").select("id,exchange_account_id,executor_shard_id")
       .in("operator_id", ids).eq("environment", "REAL").eq("status", "ACTIVE"),
     service.from("robot_v1_live_runs").select("trading_engine_id,last_reconciled_at,created_at,status")
       .eq("tenant_id", tenantId).in("status", ["ACTIVE", "PAUSED"]),
@@ -125,7 +125,7 @@ export async function refreshExecutorCapacity() {
       && Math.abs(Date.now() - Date.parse(separate.heartbeat_at)) <= 30_000) {
       try {
         const [testEngines, testRuns] = await Promise.all([
-          service.from("trading_engines").select("id,exchange_account_id")
+          service.from("trading_engines").select("id,exchange_account_id,executor_shard_id")
             .in("operator_id", ids).eq("environment", "TESTNET").eq("status", "ACTIVE"),
           service.from("robot_v1_testnet_runs").select("trading_engine_id,last_reconciled_at,created_at,status,last_error")
             .eq("tenant_id", tenantId).in("status", ["ACTIVE", "PAUSED"]),
@@ -223,23 +223,23 @@ export function asShardMetrics(row: StoredSample): ShardMetrics {
 }
 
 export async function reserveEngineCapacity(service: Service, engineId: string, accountId: string) {
-  const account = await service.from("exchange_accounts").select("executor_shard_id,operator_id")
+  const account = await service.from("exchange_accounts").select("operator_id")
     .eq("id", accountId).single();
-  if (account.error || !account.data?.executor_shard_id) throw new Error("COINOPS_CAPACITY_UNKNOWN");
-  const engine = await service.from("trading_engines").select("environment,exchange_account_id,operator_id")
+  if (account.error || !account.data?.operator_id) throw new Error("COINOPS_CAPACITY_UNKNOWN");
+  const engine = await service.from("trading_engines").select("environment,exchange_account_id,operator_id,executor_shard_id")
     .eq("id", engineId).eq("exchange_account_id", accountId).eq("operator_id", account.data.operator_id).single();
-  if (engine.error || !engine.data || !["REAL", "TESTNET"].includes(engine.data.environment))
+  if (engine.error || !engine.data?.executor_shard_id || !["REAL", "TESTNET"].includes(engine.data.environment))
     throw new Error("COINOPS_CAPACITY_UNKNOWN");
   if (engine.data.environment === "REAL")
     await requireLiveIdentityCoverage(service, getCoinOpsServiceTenantId()!);
   await requireAccountIdentityBinding(service, account.data.operator_id, accountId,
-    engine.data.environment as "REAL" | "TESTNET");
+    engine.data.environment as "REAL" | "TESTNET", engine.data.executor_shard_id);
   const decision = await service.rpc("reserve_executor_capacity", {
-    p_shard_id: account.data.executor_shard_id, p_engine_id: engineId });
+    p_shard_id: engine.data.executor_shard_id, p_engine_id: engineId });
   if (decision.error || !["CAPACITY_OK", "CAPACITY_REQUIRED", "CAPACITY_UNKNOWN"].includes(decision.data))
     throw new Error("COINOPS_CAPACITY_UNKNOWN");
   if (decision.data !== "CAPACITY_OK") throw new Error(`COINOPS_${decision.data}`);
-  return { status: "CAPACITY_OK" as const, shardId: account.data.executor_shard_id };
+  return { status: "CAPACITY_OK" as const, shardId: engine.data.executor_shard_id };
 }
 
 export async function previewAccountCapacity(service: Service, accountId: string, engineCount: number,

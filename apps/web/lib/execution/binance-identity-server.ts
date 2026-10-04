@@ -20,7 +20,7 @@ export async function claimAccountIdentity(service: Service, operatorId: string,
 /** Gate only new onboarding. Existing executor01 engines never depend on this
  * service to reconcile, recover, resume or keep operating. */
 export async function requireAccountIdentityBinding(service: Service, operatorId: string,
-  accountId: string, environment: Environment) {
+  accountId: string, environment: Environment, engineShardId?: string) {
   const account = await service.from("exchange_accounts")
     .select("operator_id,executor_shard_id,onboarding_environment").eq("id", accountId).single();
   if (account.error || !account.data || account.data.operator_id !== operatorId)
@@ -32,6 +32,22 @@ export async function requireAccountIdentityBinding(service: Service, operatorId
     .select("exchange_account_id").eq("exchange_account_id", accountId)
     .eq("operator_id", operatorId).eq("environment", environment).maybeSingle();
   if (identity.error || !identity.data) throw new Error("COINOPS_BINANCE_IDENTITY_REQUIRED");
+  if (engineShardId) {
+    const [connection, shard] = await Promise.all([
+      service.from("account_executor_connections").select("status,validation_evidence")
+        .eq("operator_id", operatorId).eq("exchange_account_id", accountId)
+        .eq("executor_shard_id", engineShardId).eq("environment", environment).maybeSingle(),
+      service.from("executor_shards").select("id,egress_ipv4").eq("id", engineShardId).single(),
+    ]);
+    const expectedIp = String(shard.data?.egress_ipv4 ?? "").replace(/\/32$/, "");
+    const evidence = connection.data?.validation_evidence;
+    if (connection.error || shard.error || connection.data?.status !== "VALIDATED"
+      || shard.data?.id !== engineShardId || !expectedIp || evidence?.status !== "PASS"
+      || evidence?.environment !== environment || evidence?.executor_ip !== expectedIp
+      || evidence?.executor_shard_id !== engineShardId)
+      throw new Error("COINOPS_BINANCE_CREDENTIAL_SHARD_VALIDATION_REQUIRED");
+    return;
+  }
   const [shard, credential] = await Promise.all([
     service.from("executor_shards").select("id,egress_ipv4")
       .eq("id", account.data.executor_shard_id).single(),

@@ -7,6 +7,7 @@ import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
 import { selectedReportEngines } from "./engine-report-scope";
 import type { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { resolveEngineContext } from "@/lib/execution/operator-context";
+import { validateEngineIsolationRows } from "./engine-isolation-audit";
 import {
   readScopedPages, ReportSourceError, validateReportScope,
   type RawReportSources, type ReportFilters, type ReportReadClient, type ReportScope, type SourceDefinition, type SourceRow,
@@ -80,6 +81,20 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   const withShadow = filters.environments.includes("SHADOW");
   const withTestnet = filters.environments.includes("TESTNET");
   const withReal = filters.environments.includes("REAL");
+  if (withReal) {
+    sources.engine_isolation = [];
+    const requested = reportEngines.filter((engine) => engine.environment === "REAL").map((engine) => engine.id);
+    for (let offset = 0; offset < requested.length; offset += 100) {
+      const page = requested.slice(offset, offset + 100);
+      const evidence = await (client as unknown as ReturnType<typeof createClient>).rpc("read_engine_isolation_report", { p_engine_ids: page });
+      if (evidence.error) {
+        incompleteSources.push("engine_isolation:unavailable");
+        warnings.push("Isolamento/roteamento multi-shard indisponível: não equivale a certificação PASS.");
+        sources.engine_isolation = []; break;
+      }
+      sources.engine_isolation.push(...validateEngineIsolationRows(evidence.data, registry, page));
+    }
+  }
 
   async function load(table: string, definition: SourceDefinition, maximum = MAX_SOURCE_ROWS) {
     if (ENGINE_TABLES.has(table)) definition = { ...definition, engineIds };

@@ -23,16 +23,13 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
       .eq("tenant_id", getCoinOpsServiceTenantId()).eq("status", "ACTIVE");
     if (operators.error || !operators.data) throw new Error("COINOPS_LIVE_OPERATOR_DISCOVERY_FAILED");
     if (!operators.data.length) return NextResponse.json({ status: "NO_ACTIVE_OPERATORS", mode }, { headers });
-    const engines = await service.from("trading_engines").select("id")
+    const engines = await service.from("trading_engines").select("id,operator_id,exchange_account_id,executor_shard_id")
       .in("operator_id", operators.data.map((operator) => operator.id))
       .eq("environment", "REAL").eq("status", "ACTIVE");
     if (engines.error || !engines.data) throw new Error("COINOPS_LIVE_ENGINE_DISCOVERY_FAILED");
     if (!engines.data.length) return NextResponse.json({ status: "NO_ACTIVE_ENGINES", mode }, { headers });
-    const accounts = await service.from("exchange_accounts").select("id,operator_id,executor_shard_id")
-      .in("operator_id", operators.data.map((operator) => operator.id));
-    if (accounts.error || !accounts.data) throw new Error("COINOPS_LIVE_ACCOUNT_DISCOVERY_FAILED");
-    const accountShards = new Map(accounts.data.map((account) =>
-      [`${account.operator_id}:${account.id}`, account.executor_shard_id as string]));
+    const engineShards = new Map(engines.data.map((engine) =>
+      [`${engine.operator_id}:${engine.exchange_account_id}:${engine.id}`, engine.executor_shard_id as string]));
     const result = await service.from("robot_v1_live_runs")
       .select("id,asset,status,user_id,operator_id,exchange_account_id,trading_engine_id,symbol,quote_asset")
       .eq("tenant_id", getCoinOpsServiceTenantId()).in("status", ["ACTIVE", "PAUSED"])
@@ -48,7 +45,7 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
     // Four workers per fixed-IP shard preserves Executor01's current budget.
     // A stalled Executor02 owns none of Executor01's execution slots.
     const runs = result.data.map((run) => ({ ...run,
-      executor_shard_id: accountShards.get(`${run.operator_id}:${run.exchange_account_id}`) ?? null }));
+      executor_shard_id: engineShards.get(`${run.operator_id}:${run.exchange_account_id}:${run.trading_engine_id}`) ?? null }));
     const reports = await shardedEngineMap(runs,
       (run) => run.executor_shard_id ?? `unassigned:${run.exchange_account_id}`, 4, async (run) => {
       try {

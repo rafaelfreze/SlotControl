@@ -32,15 +32,16 @@ test("untrusted numeric evidence cannot produce invented countdown", () => {
   assert.doesNotMatch(activationAdmissionView(admission).message, /faltavam/);
 });
 
-test("GET reads one canonical decision without Binance, reservation, or hysteresis mutation", () => {
+test("GET reads the canonical decision per engine's own shard without Binance, reservation, or hysteresis mutation", () => {
   const source = readFileSync(new URL("../../app/api/coinops-engine-control/route.ts", import.meta.url), "utf8");
   const get = source.slice(source.indexOf("export async function GET"), source.indexOf("type Intent"));
   assert.equal((get.match(/rpc\("preview_executor_admission"/g) ?? []).length, 1);
   assert.doesNotMatch(get, /reserveEngineCapacity|operatorAccountSnapshot|\.update\(|\.insert\(/);
-  assert.match(get, /preparing && selectedAccount\?\.executor_shard_id/);
-  assert.match(get, /admissionRead\?\.error \? null/);
+  assert.match(get, /p_shard_id: engine\.executor_shard_id/);
+  assert.match(get, /p_exclude_engine: engine\.id/);
+  assert.doesNotMatch(get, /p_shard_id: selectedAccount/);
   const ui = readFileSync(new URL("../../app/automacao/engine-control-center.tsx", import.meta.url), "utf8");
-  assert.match(ui, /engine\.environment === "REAL" && !admission\.allowed/);
+  assert.match(ui, /engine\.environment === "REAL" && !engineAdmission\.allowed/);
   assert.match(ui, /PREPARADO · AGUARDANDO ADMISSÃO/);
   assert.match(ui, /Atualizar estado · sem ordens/);
 });

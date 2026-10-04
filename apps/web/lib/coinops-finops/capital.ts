@@ -4,7 +4,7 @@ import type { FinopsCapitalRow, FinopsMarketRow } from "./types";
 export type CapitalAccount = { id: string; operator_id: string; display_name: string; status: string;
   executor_shard_id: string | null; onboarding_environment: string | null; credential_ref?: string | null };
 export type CapitalEngine = { id: string; operator_id: string; exchange_account_id: string; environment: string;
-  symbol: string; base_asset: string; quote_asset: string; status: string; kill_switch: boolean };
+  symbol: string; base_asset: string; quote_asset: string; status: string; kill_switch: boolean; executor_shard_id?: string | null };
 export type CapitalRun = { id: string; operator_id: string; exchange_account_id: string; trading_engine_id: string;
   status: string; last_reconciled_at: string | null };
 type NativeValue = string | number | null;
@@ -24,7 +24,7 @@ export type FinopsNativeCapital = { currency: string; ledgerCapital: string | nu
 export type FinopsCapitalMarket = FinopsNativeCapital & { accountId: string; accountName: string; engineId: string;
   shardId: string; symbol: string; baseAsset: string; positionQuantity: string | null; status: string; active: boolean;
   reconciledAt: string | null; priceAt: string | null };
-export type FinopsCapitalAccount = { id: string; name: string; shardId: string; status: string;
+export type FinopsCapitalAccount = { id: string; name: string; shardId: string; shardIds: string[]; status: string;
   wallet: CapitalWallet & { status: "CURRENT" | "STALE" | "UNAVAILABLE" };
   currencies: Array<FinopsNativeCapital & { monitored: string | null; walletFree: string | null;
     walletLocked: string | null; complete: boolean; observedAt: string | null }>;
@@ -115,7 +115,7 @@ export function buildFinopsCapital(input: CapitalInput): FinopsCapital {
     const ledgerValid = validSlots(ledger);
     const positionValid = validSlots(slots) && runRows.length === 1 && fresh(run?.last_reconciled_at ?? null, now);
     if (!ledgerValid || !positionValid) warnings.push(`LEDGER_INCOMPLETE:${engine.id}`);
-    if (!account.executor_shard_id) warnings.push(`SHARD_UNAVAILABLE:${account.id}`);
+    if (!engine.executor_shard_id) warnings.push(`SHARD_UNAVAILABLE:${engine.id}`);
     const ledgerCapital = ledgerValid ? total(ledger.map((row) => row.balance_quote)) : null;
     const positionCost = positionValid ? total(slots.map((row) => row.position_committed_quote)) : null;
     const quantity = positionValid ? total(slots.map((row) => row.position_quantity)) : null;
@@ -126,7 +126,7 @@ export function buildFinopsCapital(input: CapitalInput): FinopsCapital {
       return formatted(remaining === null ? null : remaining < ZERO ? ZERO : remaining);
     })) : null;
     return { accountId: account.id, accountName: account.display_name, engineId: engine.id,
-      shardId: account.executor_shard_id ?? "UNASSIGNED", symbol: engine.symbol, baseAsset: engine.base_asset,
+      shardId: engine.executor_shard_id ?? "UNASSIGNED", symbol: engine.symbol, baseAsset: engine.base_asset,
       positionQuantity: quantity, currency: engine.quote_asset,
       status: engine.status, active: engine.status === "ACTIVE" && !engine.kill_switch && run?.status === "ACTIVE",
       reconciledAt: run?.last_reconciled_at ?? null, priceAt: price?.observedAt ?? null,
@@ -160,7 +160,7 @@ export function buildFinopsCapital(input: CapitalInput): FinopsCapital {
       const balance = candidates.length <= 1 && status === "CURRENT" ? candidates[0] ?? { free: 0, locked: 0 } : null;
       const walletFree = balance ? formatted(decimal(balance.free)) : null;
       const walletLocked = balance ? formatted(decimal(balance.locked)) : null;
-      const monitored = overlappingBaseQuote || !observationConsistent || !account.executor_shard_id
+      const monitored = overlappingBaseQuote || !observationConsistent || ownEngines.some((engine) => !engine.executor_shard_id)
         ? null : total([walletFree, walletLocked, group.positionValue]);
       return { ...group, monitored, walletFree, walletLocked, complete: monitored !== null,
         observedAt: status === "CURRENT" ? wallet.observedAt : null };
@@ -171,13 +171,15 @@ export function buildFinopsCapital(input: CapitalInput): FinopsCapital {
       && (decimal(total([row.free, row.locked])) ?? ZERO) > ZERO).map((row) => row.asset);
     if (excludedWalletAssets.some((asset) => !managedBases.has(asset))) warnings.push(`UNMANAGED_WALLET_ASSETS:${account.id}`);
     if (!currencies.length) warnings.push(`NO_REAL_MARKET:${account.id}`);
-    return { id: account.id, name: account.display_name, shardId: account.executor_shard_id ?? "UNASSIGNED",
+    const shardIds = [...new Set(ownEngines.map((engine) => engine.executor_shard_id).filter((id): id is string => Boolean(id)))].sort();
+    return { id: account.id, name: account.display_name, shardIds,
+      shardId: shardIds.length > 1 ? "MULTI_SHARD" : shardIds[0] ?? "UNASSIGNED",
       status: account.status, wallet, currencies, excludedWalletAssets };
   });
   return { observedAt: new Date(now).toISOString(), counts: { accounts: accounts.length,
     activeAccounts: accounts.filter((account) => account.status === "ACTIVE").length, engines: engines.length,
     activeEngines: markets.filter((market) => market.active).length,
-    shards: new Set(accounts.map((account) => account.executor_shard_id).filter(Boolean)).size }, accounts: accountRows, markets,
+    shards: new Set(engines.map((engine) => engine.executor_shard_id).filter(Boolean)).size }, accounts: accountRows, markets,
     currencies: aggregate(markets), shards: [...new Set(markets.map((row) => row.shardId))].map((shardId) => ({ shardId,
       currencies: aggregate(markets.filter((row) => row.shardId === shardId)) })),
     sources: ["coinops.exchange_accounts / trading_engines", "coinops.robot_v1_live_slot_accounts.balance_quote (alocação, não patrimônio adicional)",

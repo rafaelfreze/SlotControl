@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { alertDeepLink, publicPushReason, pushDeliveryErrorCode, pushIncidentKey, shouldPush, validPushEndpoint } from "./push-policy.ts";
 
+test("same-account same-symbol alerts deep link to the exact engine, never just the market", () => {
+  const account = "00000000-0000-4000-8000-000000000001";
+  const a = "00000000-0000-4000-8000-000000000002", b = "00000000-0000-4000-8000-000000000003";
+  assert.notEqual(alertDeepLink(account, "SOLBRL", "REAL", undefined, a), alertDeepLink(account, "SOLBRL", "REAL", undefined, b));
+  assert.ok(alertDeepLink(account, "SOLBRL", "REAL", undefined, b).includes(`engine=${b}`));
+  assert.throws(() => alertDeepLink(account, "SOLBRL", "REAL", undefined, "../foreign"), /ENGINE_ID_INVALID/);
+});
+
 test("classifies provider failures without exposing endpoint or response content", () => {
   assert.equal(pushDeliveryErrorCode(410), "COINOPS_PUSH_SUBSCRIPTION_EXPIRED");
   assert.equal(pushDeliveryErrorCode(403), "COINOPS_PUSH_PROVIDER_AUTH_FAILED");

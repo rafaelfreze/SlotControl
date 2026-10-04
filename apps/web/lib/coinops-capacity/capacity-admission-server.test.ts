@@ -12,7 +12,7 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
   const now = new Date().toISOString();
   const rows: Record<string, unknown> = {
     exchange_accounts: { executor_shard_id: "executor-01", operator_id: "operator" },
-    trading_engines: { environment, exchange_account_id: "account", operator_id: "operator" },
+    trading_engines: { environment, exchange_account_id: "account", operator_id: "operator", executor_shard_id: "executor-03" },
     executor_shards: { id: "executor-01", enabled: true, binance_limit_per_min: 6000,
       admission_ratio: .65, incremental_engine_weight: 900 },
     executor_capacity_samples: { shard_id: "executor-01", observed_at: now, heartbeat_at: now,
@@ -37,9 +37,10 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
       single: async () => result, maybeSingle: async () => result,
       then: (fn: (value: unknown) => unknown) => Promise.resolve(result).then(fn) };
     return chain;
-  }, rpc: async (name: string) => { if(name === "preview_executor_admission") {
+  }, rpc: async (name: string, args: Record<string, unknown>) => { if(name === "preview_executor_admission") {
     calls.push("preview-rpc"); return {data:{code: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN"
       : (environment === "REAL" ? realReserved : testnetReserved) > 0 ? "CAPACITY_REQUIRED" : "CAPACITY_OK"},error:null}; }
+    assert.equal(args.p_shard_id, "executor-03", "reserve follows engine03, not account bootstrap01");
     calls.push("reserve"); return {
     data: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN" : "CAPACITY_OK", error: null }; } };
   const dependencies: Record<string, unknown> = {

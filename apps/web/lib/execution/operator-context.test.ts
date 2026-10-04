@@ -61,6 +61,24 @@ test("inactive account cannot admit new entries even when its engine is active",
   assert.equal(context.engine_kill_switch, false);
 });
 
+test("same-symbol siblings coexist but only explicit engine identity selects each", () => {
+  const registry = fixtureRegistry();
+  const sibling = { ...registry.engines[5], id: identity(99), executor_shard_id: "executor-03" };
+  registry.engines[5].executor_shard_id = "executor-02";
+  registry.engines.push(sibling);
+  assertDomainRegistry(registry, registry.operator);
+  for (const engine of [registry.engines[5], sibling]) {
+    const context = resolveEngineContext(registry, { environment: "REAL",
+      exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id, symbol: engine.symbol });
+    assert.equal(context.trading_engine_id, engine.id);
+    assert.equal(context.executor_shard_id, engine.executor_shard_id);
+  }
+  assert.throws(() => resolveEngineContext(registry, { environment: "REAL", symbol: sibling.symbol,
+    exchange_account_id: sibling.exchange_account_id }), /INCOMPLETE/);
+  registry.engines.push({ ...sibling });
+  assert.throws(() => assertDomainRegistry(registry, registry.operator), /SCOPE_DENIED/);
+});
+
 test("retired Testnet account and engines disappear without hiding active Production", () => {
   const registry = fixtureRegistry();
   registry.accounts[1]!.status = "DISABLED";

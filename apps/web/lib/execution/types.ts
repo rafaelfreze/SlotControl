@@ -5,6 +5,7 @@ export type SupportedAsset = "BTC" | "SOL";
 export type OrderSide = "BUY" | "SELL";
 
 export type ExchangeSymbolInfo = {
+  allowedSelfTradePreventionModes?: string[];
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
@@ -65,6 +66,7 @@ export type ExchangeOrder = {
   side: OrderSide;
   status: string;
   executedQuantity: number;
+  originalQuantity?: number;
   price: number | null;
   clientOrderId: string | null;
   updateTime: string | null;

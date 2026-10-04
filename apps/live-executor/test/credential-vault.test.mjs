@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createExecutorHandler } from "../src/server.mjs";
 import { assertNoExchangeOpenOrders, credentialAccountIds, inspectBinanceCredential, loadCredential, saveCredential } from "../src/credential-vault.mjs";
 import { requestSignature, sha256 } from "../src/security.mjs";
 import { loadCombinedRegistry, resolveExecutorContext, saveInactiveRegistryAccount, validateExecutorRegistry } from "../src/account-registry.mjs";
-import { ACCOUNT_A, engineFixture, registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
+import { ACCOUNT_A, OPERATOR, engineFixture, registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
 
 const masterSecret = "fictional-HMAC-secret-for-vault-unit-tests-1234";
 const now = Date.parse("2026-09-24T18:00:00Z");
@@ -158,6 +158,53 @@ test("signed admin route encrypts at rest, binds operator/account, rejects repla
     assert.ok(!JSON.stringify(logs).includes(apiKey)); assert.ok(!JSON.stringify(logs).includes(apiSecret));
     await assert.rejects(loadCredential(join(stateDirectory, "credentials"), masterSecret,
       { ...scope, operator_id: randomUUID() }), /(?:SCOPE_INVALID|CREDENTIALS_MISSING)/);
+  } finally {
+    await new Promise((done) => server.close(done));
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("legacy revalidation is signed GET-only on its installed account and never copies a vault", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "coinops-legacy-proof-"));
+  const fixture = binanceFixture(), logs = [];
+  const registry = { ...registryFixture(), legacy_account_id: ACCOUNT_A };
+  const reference = registry.credentials["legacy-binance-production"];
+  const environment = { ...credentialEnvironment, [reference.api_key_env]: apiKey,
+    [reference.api_secret_env]: apiSecret };
+  const server = createServer(createExecutorHandler({ secret: masterSecret, stateDirectory,
+    registry, credentialEnvironment: environment, expectedEgressIp: "203.0.113.10",
+    fetcher: fixture.fetcher, now: () => now, logger: (entry) => logs.push(entry) }));
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  async function send(patch = {}) {
+    const request_id = randomUUID(), nonce = randomUUID().replaceAll("-", "");
+    const input = { operator_id: OPERATOR, exchange_account_id: ACCOUNT_A, environment: "REAL",
+      executor_shard_id: "executor-01", credential_ref: "legacy-binance-production",
+      operation: "REVALIDATE", request_id, ...patch };
+    const path = "/v1/admin/credentials", body = JSON.stringify(input);
+    return fetch(`http://127.0.0.1:${server.address().port}${path}`, { method: "POST", body,
+      headers: { "content-type": "application/json", "x-coinops-timestamp": String(now),
+        "x-coinops-nonce": nonce, "x-coinops-body-sha256": sha256(body),
+        "x-coinops-signature": requestSignature(masterSecret, "POST", path, now, nonce, body),
+        "x-coinops-idempotency-key": `CREDENTIAL:${request_id}` } });
+  }
+  try {
+    const response = await send();
+    assert.equal(response.status, 200);
+    const proof = await response.json();
+    assert.equal(proof.status, "PASS");
+    assert.equal(proof.credential_ref, "legacy-binance-production");
+    assert.equal(proof.exchange_account_id, ACCOUNT_A);
+    assert.equal(proof.executor_shard_id, "executor-01");
+    assert.ok(!JSON.stringify(proof).includes(apiKey)); assert.ok(!JSON.stringify(proof).includes(apiSecret));
+    for (const patch of [{ operation: "CONNECT" }, { operation: "REPLACE" }, { operation: "REMOVE" },
+      { exchange_account_id: randomUUID() }, { operator_id: randomUUID() }, { executor_shard_id: "executor-03" },
+      { apiKey }, { apiSecret }]) assert.equal((await send(patch)).status, 403);
+    assert.ok(fixture.calls.every((call) => call.method === "GET"));
+    assert.equal(fixture.calls.length, 4);
+    assert.ok(!(await readdir(stateDirectory)).includes("credentials"));
+    assert.equal(environment[reference.api_key_env], apiKey);
+    assert.equal(environment[reference.api_secret_env], apiSecret);
+    assert.ok(!JSON.stringify(logs).includes(apiKey)); assert.ok(!JSON.stringify(logs).includes(apiSecret));
   } finally {
     await new Promise((done) => server.close(done));
     await rm(stateDirectory, { recursive: true, force: true });

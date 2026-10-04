@@ -15,11 +15,12 @@ export function pushIncidentKey(alertId: string, openedAt: string, subscriptionI
   return `${alertId}:${openedAt}:${subscriptionId}`;
 }
 
-export function alertDeepLink(accountId: string, symbol: string, environment: "REAL" | "TESTNET" = "REAL", alertId?: string) {
+export function alertDeepLink(accountId: string, symbol: string, environment: "REAL" | "TESTNET" = "REAL", alertId?: string, engineId?: string) {
   if (!/^[0-9a-f-]{36}$/i.test(accountId) || !/^[A-Z0-9]{4,20}$/.test(symbol))
     throw new Error("COINOPS_PUSH_SCOPE_INVALID");
   if (alertId && !/^[0-9a-f-]{36}$/i.test(alertId)) throw new Error("COINOPS_PUSH_ALERT_ID_INVALID");
-  return `/automacao?view=${environment === "REAL" ? "live" : "testnet"}&account=${encodeURIComponent(accountId)}&market=${encodeURIComponent(symbol)}&tab=alerts${alertId ? `&alert=${encodeURIComponent(alertId)}` : ""}#premium-operations`;
+  if (engineId && !/^[0-9a-f-]{36}$/i.test(engineId)) throw new Error("COINOPS_PUSH_ENGINE_ID_INVALID");
+  return `/automacao?view=${environment === "REAL" ? "live" : "testnet"}&account=${encodeURIComponent(accountId)}&market=${encodeURIComponent(symbol)}&tab=alerts${alertId ? `&alert=${encodeURIComponent(alertId)}` : ""}${engineId ? `&engine=${encodeURIComponent(engineId)}` : ""}#premium-operations`;
 }
 
 export function publicPushReason(code: string) {

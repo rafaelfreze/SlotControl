@@ -3,21 +3,26 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertPrivateDirectory, ExecutorRejection, sha256, verifySignedRequest,
+import { assertPrivateDirectory, ExecutorRejection, ExecutorPreDispatchRejection, sha256, verifySignedRequest,
   withDryRunIdempotency, withWriteIdempotency } from "./security.mjs";
 import { getProductionRestrictedSpotStatus, getPublicMarket, observeEgressIp } from "./binance-readonly.mjs";
 import { buildExecutorDryRun, EXECUTOR_CAPS } from "./preparation.mjs";
 import { BinanceLiveTransport, unfilledCancelResolved } from "./binance-live.mjs";
+import { durableOrderOwnership } from "./order-identity.mjs";
 import { loadExecutorRegistry, resolveExecutorContext, responseContext, durableIntent,
-  assertExecutorShardContext, assertRegistryShard } from "./account-registry.mjs";
+  assertExecutorShardContext, assertRegistryShard, installedLegacyCredentialForRead } from "./account-registry.mjs";
 import { assertCredentialScope, assertNoExchangeOpenOrders, inspectBinanceCredential, loadCredential, refreshCredential,
   removeCredential, saveCredential } from "./credential-vault.mjs";
-import { loadCombinedRegistry, saveInactiveRegistryAccount } from "./account-registry.mjs";
+import { loadCombinedRegistry, saveInactiveRegistryAccount, appendInactiveRegistryEngines, increaseRegistryAccountCap } from "./account-registry.mjs";
 import { changeRegistryCapital, promoteRegistryEngine } from "./account-registry.mjs";
 import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { forwardTestnetRequest } from "./testnet-transport.mjs";
 import { createCapacityTelemetry } from "./capacity-telemetry.mjs";
 import { isTestnetEnabled } from "../../web/lib/execution/testnet-policy.ts";
+import { createAccountOrderBudgetReader } from "./account-order-budget.mjs";
+import { accountOrderPolicyEnabled, enableAccountOrderPolicy, ACCOUNT_ORDER_POLICY } from "./account-order-policy.mjs";
+import { verifyAccountBudgetPermit } from "../../web/lib/execution/account-order-budget-permit.ts";
+import { signAccountOrderUnsentProof } from "../../web/lib/execution/account-order-unsent-proof.ts";
 
 const BODY_LIMIT_BYTES = 16_384;
 const healthCacheMs = 20_000;
@@ -54,6 +59,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
   // LIVE tracking keeps the same transport, per-IP budget and recovery policy.
   const capacity = createCapacityTelemetry({ fetcher: rawFetcher, now, shardId });
   const fetcher = capacity.trackedFetch;
+  const readOrderBudget = createAccountOrderBudgetReader({ now });
   let cachedHealth = null;
   const engineHealthCache = new Map();
   async function health() {
@@ -85,6 +91,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       account_permission: permissionStatus, egress_ipv4: observedIp,
       egress_ipv4_verified: egressVerified, trading_enabled: tradingEnabled, kill_switch: killSwitch,
       caps: EXECUTOR_CAPS, latency_ms: now() - started };
+    value.isolation_contract = ACCOUNT_ORDER_POLICY;
+    value.account_order_budget_protocol = 1;
     cachedHealth = { at: now(), value };
     return value;
   }
@@ -97,8 +105,12 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       : path === "/v1/admin/credentials" ? "CREDENTIAL_ADMIN"
       : path === "/v1/admin/registry" ? "REGISTRY_ADMIN"
       : path === "/v1/admin/snapshot" ? "ACCOUNT_SNAPSHOT"
+      : path === "/v1/admin/order-budget" ? "ACCOUNT_ORDER_BUDGET_READ"
+      : path === "/v1/admin/account-policy" ? "ACCOUNT_ORDER_POLICY_ENABLE"
       : path === "/v1/admin/promote" ? "REGISTRY_PROMOTION"
       : path === "/v1/admin/capital" ? "REGISTRY_CAPITAL"
+      : path === "/v1/admin/account-cap" ? "SHARED_ACCOUNT_CAP_METADATA"
+      : path === "/v1/admin/registry-append" ? "REGISTRY_APPEND"
       : path === "/v1/testnet/transport" ? "TESTNET_TRANSPORT"
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
@@ -119,8 +131,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       }
       if (request.method !== "POST" || !["/v1/health", "/v1/capacity", "/v1/dry-run", "/v1/state", "/v1/query-order",
         "/v1/trades", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
-        "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/promote",
-        "/v1/admin/capital", "/v1/testnet/transport"].includes(path))
+        "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/order-budget", "/v1/admin/account-policy", "/v1/admin/promote",
+        "/v1/admin/capital", "/v1/admin/account-cap", "/v1/admin/registry-append", "/v1/testnet/transport"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
       if (!request.headers["content-type"]?.startsWith("application/json"))
         throw new ExecutorRejection("EXECUTOR_CONTENT_TYPE_INVALID", 415);
@@ -181,23 +193,52 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         writeJson(response, 200, { ...scope, ...result });
         return;
       }
+      if (path === "/v1/admin/account-policy") {
+        if (key !== `ACCOUNT_POLICY:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || input.environment !== "REAL" || input.contract !== ACCOUNT_ORDER_POLICY || input.executor_version !== version
+          || input.apiKey !== undefined || input.apiSecret !== undefined)
+          throw new ExecutorRejection("EXECUTOR_ACCOUNT_ORDER_POLICY_SCOPE_DENIED", 403);
+        if (input.credential_ref === "legacy-binance-production")
+          installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId);
+        else {
+          assertCredentialScope(input);
+          await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        }
+        const result = await enableAccountOrderPolicy(stateDirectory, input, shardId);
+        for (const [engineId, cached] of engineHealthCache)
+          if (cached.value.exchange_account_id === input.exchange_account_id) engineHealthCache.delete(engineId);
+        status = 200; outcome = "ACCOUNT_ORDER_POLICY_ENABLED";
+        writeJson(response, 200, { ...result, executor_version: version, executor_ip: expectedEgressIp });
+        return;
+      }
+      if (path === "/v1/admin/order-budget") {
+        if (key !== `ORDER_BUDGET:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
+          || input.environment !== "REAL" || !Array.isArray(input.symbols) || !input.symbols.length
+          || input.symbols.length > 4 || new Set(input.symbols).size !== input.symbols.length
+          || input.symbols.some((item) => !/^(BTC|SOL)(BRL|USDT)$/.test(item))
+          || input.apiKey !== undefined || input.apiSecret !== undefined)
+          throw new ExecutorRejection("EXECUTOR_ACCOUNT_ORDER_BUDGET_SCOPE_DENIED", 403);
+        let credential;
+        if (input.credential_ref === "legacy-binance-production")
+          credential = installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId);
+        else {
+          assertCredentialScope(input);
+          credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        }
+        if (!expectedEgressIp || await observeEgressIp(fetcher) !== expectedEgressIp)
+          throw new ExecutorRejection("EXECUTOR_ACCOUNT_ORDER_BUDGET_SCOPE_DENIED", 503);
+        const snapshot = await readOrderBudget(input, new BinanceLiveTransport({ ...credential, fetcher, now }), input.symbols);
+        scope = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
+          environment: "REAL", executor_shard_id: shardId };
+        status = 200; outcome = "READ_ONLY_ACCOUNT_ORDER_BUDGET";
+        writeJson(response, 200, { ...snapshot, ...scope, executor_ip: expectedEgressIp,
+          credential_ref: input.credential_ref, executor_version: version });
+        return;
+      }
       if (path === "/v1/admin/snapshot") {
         let credential;
         if (input.credential_ref === "legacy-binance-production") {
-          const reference = registry?.credentials?.[input.credential_ref];
-          const rows = registry?.engines?.filter((row) => row.operator_id === input.operator_id
-            && row.exchange_account_id === input.exchange_account_id
-            && row.credential_ref === input.credential_ref && row.is_legacy_default
-            && row.legacy_ownership && row.environment === "REAL") ?? [];
-          if (registry?.legacy_account_id !== input.exchange_account_id
-            || !rows.length || !reference || !reference.api_key_env || !reference.api_secret_env
-            || !credentialEnvironment[reference.api_key_env]
-            || !credentialEnvironment[reference.api_secret_env]
-            || !Array.isArray(input.symbols)
-            || input.symbols.some((item) => !rows.some((row) => row.symbol === item)))
-            throw new ExecutorRejection("EXECUTOR_SNAPSHOT_SCOPE_DENIED", 403);
-          credential = { apiKey: credentialEnvironment[reference.api_key_env],
-            apiSecret: credentialEnvironment[reference.api_secret_env] };
+          credential = installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId);
         } else {
           assertCredentialScope(input);
           credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
@@ -232,17 +273,20 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           markets: market.markets.map((item, index) => ({ symbol: input.symbols[index],
             price: item.priceBrl, observed_at: item.observedAt, rules: item.raw,
             open_orders: orders[index].map((order) => ({ clientOrderId: order.clientOrderId,
-              side: order.side, status: order.status })) })) };
+              side: order.side, status: order.status, orderId: order.id,
+              origQty: order.originalQuantity, executedQty: order.executedQuantity, price: order.price })) })) };
         status = 200; outcome = "READ_ONLY_SNAPSHOT";
         writeJson(response, 200, result);
         return;
       }
       if (path === "/v1/admin/promote") {
-        assertCredentialScope(input);
+        const installed = input.credential_ref === "legacy-binance-production"
+          ? installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId) : null;
+        if (!installed) assertCredentialScope(input);
         if (key !== `PROMOTE:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
           || input.environment !== "REAL")
           throw new ExecutorRejection("EXECUTOR_REGISTRY_PROMOTION_DENIED", 403);
-        await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        const credential = installed ?? await loadCredential(join(stateDirectory, "credentials"), secret, input);
         const active = await loadCombinedRegistry(registry, stateDirectory,
           (code) => logger({ action: "DYNAMIC_REGISTRY_FAIL_CLOSED", code }));
         const row = active.engines.find((item) => item.trading_engine_id === input.trading_engine_id);
@@ -250,7 +294,6 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           || row.symbol !== input.symbol || row.status !== "INACTIVE" && row.status !== "ACTIVE")
           throw new ExecutorRejection("EXECUTOR_REGISTRY_PROMOTION_DENIED", 403);
         if (row.status === "INACTIVE") {
-          const credential = await loadCredential(join(stateDirectory, "credentials"), secret, input);
           const transport = new BinanceLiveTransport({ ...credential, fetcher, now, engine: row });
           const exchange = await transport.safetySnapshot(row.symbol);
           if (exchange.openOrders.some((order) => order.clientOrderId?.startsWith(`C2-${sha256(`${row.exchange_account_id}|${row.trading_engine_id}`).slice(0, 10)}-`)))
@@ -265,20 +308,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       }
       if (path === "/v1/admin/capital") {
         if (input.credential_ref === "legacy-binance-production") {
-          const reference = registry?.credentials?.[input.credential_ref];
-          const rows = registry?.engines?.filter((row) => row.operator_id === input.operator_id
-            && row.exchange_account_id === input.exchange_account_id
-            && row.credential_ref === input.credential_ref && row.is_legacy_default
-            && row.legacy_ownership && row.environment === "REAL"
-            && row.quote_asset === input.quote_asset) ?? [];
-          if (registry?.legacy_account_id !== input.exchange_account_id || !rows.length
-            || !reference?.api_key_env || !reference?.api_secret_env
-            || !credentialEnvironment[reference.api_key_env]
-            || !credentialEnvironment[reference.api_secret_env]
-            || !Array.isArray(input.engines) || input.engines.length !== rows.length
-            || input.engines.some((item) => !rows.some((row) => row.trading_engine_id === item.trading_engine_id
-              && row.symbol === item.symbol)))
-            throw new ExecutorRejection("EXECUTOR_CAP_CHANGE_DENIED", 403);
+          installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId);
         } else {
           assertCredentialScope(input);
           await loadCredential(join(stateDirectory, "credentials"), secret, input);
@@ -293,12 +323,32 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           exchange_account_id: input.exchange_account_id, quote_asset: input.quote_asset });
         return;
       }
-      if (path === "/v1/admin/registry") {
-        assertCredentialScope(input);
+      if (path === "/v1/admin/account-cap") {
+        if (key !== `SHARED_CAP:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? ""))
+          throw new ExecutorRejection("EXECUTOR_SHARED_ACCOUNT_CAP_DENIED", 403);
+        if (input.credential_ref === "legacy-binance-production") {
+          if (registry.legacy_account_id !== input.exchange_account_id || !registry.engines.some((row) =>
+            row.operator_id === input.operator_id && row.exchange_account_id === input.exchange_account_id && row.legacy_ownership))
+            throw new ExecutorRejection("EXECUTOR_SHARED_ACCOUNT_CAP_DENIED", 403);
+        } else {
+          assertCredentialScope(input);
+          await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        }
+        const result = await increaseRegistryAccountCap(registry, stateDirectory, input);
+        status = 200; outcome = "ACCOUNT_CAP_METADATA_SYNCED";
+        writeJson(response, 200, { ...result, executor_shard_id: shardId, operator_id: input.operator_id,
+          exchange_account_id: input.exchange_account_id, environment: input.environment });
+        return;
+      }
+      if (path === "/v1/admin/registry" || path === "/v1/admin/registry-append") {
+        const installed = path === "/v1/admin/registry-append" && input.credential_ref === "legacy-binance-production"
+          ? installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId) : null;
+        if (!installed) assertCredentialScope(input);
         if (key !== `REGISTRY:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? ""))
           throw new ExecutorRejection("EXECUTOR_REGISTRY_SYNC_DENIED", 403);
-        await loadCredential(join(stateDirectory, "credentials"), secret, input);
-        const result = await saveInactiveRegistryAccount(registry, stateDirectory, input,
+        if (!installed) await loadCredential(join(stateDirectory, "credentials"), secret, input);
+        const sync = path === "/v1/admin/registry-append" ? appendInactiveRegistryEngines : saveInactiveRegistryAccount;
+        const result = await sync(registry, stateDirectory, input,
           Array.isArray(input.engines) ? input.engines.map((row) => ({ ...row,
             executor_shard_id: row.executor_shard_id ?? shardId })) : input.engines);
         status = 200; outcome = "INACTIVE_SYNC";
@@ -308,7 +358,12 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         return;
       }
       if (path === "/v1/admin/credentials") {
-        assertCredentialScope(input);
+        const legacyRead = input.credential_ref === "legacy-binance-production";
+        if (legacyRead && input.operation !== "REVALIDATE")
+          throw new ExecutorRejection("EXECUTOR_LEGACY_CREDENTIAL_READ_DENIED", 403);
+        const legacyCredential = legacyRead
+          ? installedLegacyCredentialForRead(registry, input, credentialEnvironment, shardId) : null;
+        if (!legacyRead) assertCredentialScope(input);
         if (key !== `CREDENTIAL:${input.request_id}` || !/^[0-9a-f-]{36}$/i.test(input.request_id ?? "")
           || !["CONNECT", "REVALIDATE", "REPLACE", "REMOVE"].includes(input.operation))
           throw new ExecutorRejection("EXECUTOR_CREDENTIAL_INTENT_INVALID", 400);
@@ -323,6 +378,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         const { result, replayed } = await withDryRunIdempotency({
           directory: join(stateDirectory, "credential-intents"), key, bodyHash: verified.bodyHash,
           execute: async () => {
+            if (legacyCredential) return { ...await inspectBinanceCredential({ ...legacyCredential,
+              environment: "REAL", expectedEgressIp, fetcher, now }), credential_ref: safeInput.credential_ref };
             if (input.operation === "REVALIDATE") return refreshCredential({ directory, masterSecret: secret,
               scope: safeInput, expectedEgressIp, fetcher, now });
             if (input.operation === "REMOVE") {
@@ -360,8 +417,22 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       legacyClient = resolved.legacyClient;
       const engine = resolved.engine;
       scope = { ...responseContext(engine), executor_shard_id: shardId };
+      const accountBudgetEnabled = await accountOrderPolicyEnabled(stateDirectory, engine, shardId);
+      const assertBudgetPermit = () => {
+        if (!accountBudgetEnabled) return;
+        try { verifyAccountBudgetPermit(secret, request.headers["x-coinops-account-order-budget"],
+          request.headers["x-coinops-account-order-budget-signature"], { ...scope,
+            clientOrderId: input.clientOrderId, side: input.side }, verified.bodyHash, now()); }
+        catch {
+          const denied = new ExecutorPreDispatchRejection("EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", 403);
+          denied.unsentProof = signAccountOrderUnsentProof(secret, { ...scope,
+            clientOrderId: input.clientOrderId, decision_id: input.decision_id, request_nonce: verified.nonce }, verified.bodyHash, now());
+          throw denied;
+        }
+      };
       const transport = new BinanceLiveTransport({ apiKey: resolved.apiKey, apiSecret: resolved.apiSecret,
-        fetcher, now, engine });
+        fetcher, now, engine, ownershipEvidence: durableOrderOwnership(stateDirectory, engine),
+        requireSelfTradePrevention: accountBudgetEnabled, beforeOrderSubmit: assertBudgetPermit });
       const flags = { tradingEnabled: tradingEnabled && engine.execution_allowed,
         killSwitch: killSwitch || engine.kill_switch || engine.account_kill_switch || engine.global_kill_switch };
       if (path === "/v1/health") {
@@ -384,6 +455,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           region, clock: new Date(now()).toISOString(),
           clock_drift_ms: market.driftMs, binance_connectivity: "OK", account_permission: permission,
           egress_ipv4: ip, egress_ipv4_verified: ip === expectedEgressIp,
+          isolation_contract: ACCOUNT_ORDER_POLICY, account_order_budget_protocol: 1,
+          account_order_budget_enforced: accountBudgetEnabled,
           trading_enabled: flags.tradingEnabled, kill_switch: flags.killSwitch, latency_ms: now() - started };
         engineHealthCache.set(engine.trading_engine_id, { at: now(), value });
         writeJson(response, status, value);
@@ -430,6 +503,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           const claim = durableIntent(engine, input, key, verified.bodyHash, action);
           const { result, replayed } = await withWriteIdempotency({ directory: join(stateDirectory, "orders"),
             ...claim,
+            beforeClaim: assertBudgetPermit,
+            provablyUnsent: () => !transport.orderPostAttempted,
             recover: () => transport.queryOrder(symbol, input.clientOrderId),
             execute: () => transport.createOwnedOrder(input, { allowCreate: true, ...flags }) });
           outcome = replayed ? "REPLAYED" : "CREATED"; status = 200;
@@ -475,7 +550,8 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           ? "EXECUTOR_BINANCE_RATE_LIMITED"
           : error instanceof BinanceReadOnlyError && error.code === "BINANCE_NETWORK_UNAVAILABLE"
             ? "EXECUTOR_BINANCE_READ_UNAVAILABLE" : "EXECUTOR_UNAVAILABLE";
-      writeJson(response, status, { error: outcome, request_id: requestId });
+      writeJson(response, status, { error: outcome, request_id: requestId,
+        ...(error instanceof ExecutorPreDispatchRejection && error.unsentProof ? { unsent_proof: error.unsentProof } : {}) });
     } finally {
       logger({ request_id: requestId, decision_id: decisionId, idempotency_key_hash: keyHash,
         ...scope, executor_shard_id: shardId, symbol, action, legacy_client: legacyClient, result: outcome, http_status: status, latency_ms: now() - started,

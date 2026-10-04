@@ -12,7 +12,7 @@ test("monthly audit keeps policy adoption after 4.2 and rejects malformed versio
 
 test("monthly audit uses the signed ledger at entry time, not the first crossing or current total", () => {
   const input = { adoptedAt: Date.parse("2026-09-01T00:00:00Z"),
-    goals: [{ physical_slot_number: 5, period_key: "2026-09", monthly_gain_target: 2 }],
+    goals: Array.from({ length: 25 }, (_, index) => ({ physical_slot_number: index + 1, period_key: "2026-09", monthly_gain_target: 2 })),
     credits: [
       { slot_number: 5, period_key: "2026-09", gain_units: 2, credited_at: "2026-09-10T12:00:00Z" },
       { slot_number: 5, period_key: "2026-09", gain_units: -1, credited_at: "2026-09-11T12:00:00Z" },

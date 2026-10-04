@@ -13,6 +13,8 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { createClient } from "@/lib/supabase/server";
 import { projectCurrentLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
+import { completeLedgerRead } from "@/lib/execution/complete-ledger-read";
+import { adjustmentEngineInventory } from "@/lib/execution/adjustment-engine-inventory";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,10 +24,29 @@ export const maxDuration = 60;
 const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers });
 type Service = ReturnType<typeof createServiceRoleClient>;
+async function paged<T extends { id: string }>(page: Parameters<typeof completeLedgerRead<T>>[0]) {
+  return { data: await completeLedgerRead(page, "COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE"), error: null };
+}
+async function inventoryRows<T>(ids: string[], page: (ids: string[], start: number, end: number) =>
+  PromiseLike<{ data: T[] | null; error: unknown }>, key: (row: T) => string) {
+  const data: T[] = [], seen = new Set<string>();
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    const chunk = ids.slice(offset, offset + 200);
+    const rows = await completeLedgerRead(async (start, end) => {
+      const result = await page(chunk, start, end);
+      return { error: result.error, data: result.data?.map(row => ({ id: key(row), row })) ?? null };
+    }, "COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY");
+    for (const { id, row } of rows) {
+      if (seen.has(id)) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY");
+      seen.add(id); data.push(row);
+    }
+  }
+  return { data, error: null };
+}
 type Scope = { service: Service; operator: { id: string; user_id: string; product_id: string; tenant_id: string } };
 type Engine = { id: string; exchange_account_id: string; operator_id: string; symbol: string;
   quote_asset: "BRL" | "USDT"; base_asset: "BTC" | "SOL"; status: string;
-  hard_cap_quote: number | string };
+  hard_cap_quote: number | string; executor_shard_id: string };
 type Run = { id: string; trading_engine_id: string; status: string; last_error: string | null;
   last_reconciled_at: string | null; lease_until: string | null };
 type Slot = { id: string; trading_engine_id: string; slot_number: number; operation_sequence: number;
@@ -106,48 +127,57 @@ async function loadAccount(scope: Scope, accountId: string, quote: string) {
     scope.service.from("exchange_accounts")
       .select("id,operator_id,display_name,status,is_legacy_default,credential_ref")
       .eq("id", accountId).eq("operator_id", scope.operator.id).single(),
-    scope.service.from("trading_engines")
-      .select("id,exchange_account_id,operator_id,symbol,quote_asset,base_asset,status,hard_cap_quote")
+    paged((start, end) => scope.service.from("trading_engines")
+      .select("id,exchange_account_id,operator_id,symbol,quote_asset,base_asset,status,hard_cap_quote,executor_shard_id")
       .eq("exchange_account_id", accountId).eq("operator_id", scope.operator.id)
-      .eq("environment", "REAL").eq("quote_asset", quote).order("symbol"),
+      .eq("environment", "REAL").eq("quote_asset", quote).order("id").range(start, end)),
     scope.service.from("account_quote_caps").select("hard_cap_quote")
       .eq("exchange_account_id", accountId).eq("operator_id", scope.operator.id)
       .eq("quote_asset", quote).single(),
   ]);
   if (account.error || engines.error || cap.error || !account.data || !cap.data
-    || account.data.status !== "ACTIVE" || !engines.data?.length
-    || engines.data.some((engine) => engine.status !== "ACTIVE"))
+    || account.data.status !== "ACTIVE" || !engines.data?.length)
     throw new Error("COINOPS_ADJUSTMENT_ACCOUNT_UNAVAILABLE");
+  adjustmentEngineInventory(engines.data as Engine[]);
   return { account: account.data, engines: engines.data as Engine[], cap: Number(cap.data.hard_cap_quote) };
 }
 
 function fingerprint(value: unknown) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 
 async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
-  const loaded = await loadAccount(scope, accountId, quote);
+  const inventory = await loadAccount(scope, accountId, quote);
+  const loaded = { ...inventory, engines: adjustmentEngineInventory(inventory.engines).active };
   const ids = loaded.engines.map((engine) => engine.id);
-  const runs = await scope.service.from("robot_v1_live_runs")
+  const runs = await inventoryRows(ids, (selected, start, end) => scope.service.from("robot_v1_live_runs")
     .select("id,trading_engine_id,status,last_error,last_reconciled_at,lease_until")
-    .in("trading_engine_id", ids).in("status", ["ACTIVE", "PAUSED"]);
-  if (runs.error || runs.data?.length !== ids.length)
+    .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+    .in("trading_engine_id", selected).in("status", ["ACTIVE", "PAUSED"]).order("id").range(start, end), row => row.id);
+  if (runs.error || runs.data?.length !== ids.length || new Set(runs.data.map(run => run.trading_engine_id)).size !== ids.length)
     throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY");
   const runIds = runs.data.map((run) => run.id);
   const [slotRows, accounts, orderRows, totals, alerts, preparations] = await Promise.all([
-    scope.service.from("robot_v1_live_slots")
+    inventoryRows(runIds, (selected, start, end) => scope.service.from("robot_v1_live_slots")
       .select("id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank,post_ath_group")
-      .in("run_id", runIds),
-    scope.service.from("robot_v1_live_slot_accounts")
+      .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+      .in("run_id", selected).order("id").range(start, end), row => row.id),
+    inventoryRows(ids, (selected, start, end) => scope.service.from("robot_v1_live_slot_accounts")
       .select("trading_engine_id,slot_number,balance_quote,contribution_quote,gain_count")
-      .in("trading_engine_id", ids),
-    scope.service.from("robot_v1_live_orders")
-      .select("trading_engine_id,client_order_id,side,status,reserved_notional_brl")
-      .in("run_id", runIds).in("status", ["NEW", "PARTIALLY_FILLED", "PREPARED", "SUBMITTING"]),
-    scope.service.from("robot_v1_slot_gain_totals")
+      .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+      .in("trading_engine_id", selected).order("trading_engine_id").order("slot_number").range(start, end), row => `${row.trading_engine_id}:${row.slot_number}`),
+    inventoryRows(runIds, (selected, start, end) => scope.service.from("robot_v1_live_orders")
+      .select("id,trading_engine_id,client_order_id,side,status,reserved_notional_brl")
+      .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+      .in("run_id", selected).in("status", ["NEW", "PARTIALLY_FILLED", "PREPARED", "SUBMITTING"]).order("id").range(start, end), row => row.id),
+    inventoryRows(ids, (selected, start, end) => scope.service.from("robot_v1_slot_gain_totals")
       .select("trading_engine_id,slot_number,lifetime_gain_count,monthly_gain_count")
-      .in("trading_engine_id", ids).eq("environment", "REAL"),
-    scope.service.from("robot_v1_live_alerts").select("id,trading_engine_id")
-      .in("trading_engine_id", ids).is("resolved_at", null).limit(1),
-    scope.service.from("robot_v1_live_preparations").select("trading_engine_id,monthly_target").in("trading_engine_id", ids),
+      .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+      .in("trading_engine_id", selected).eq("environment", "REAL").order("trading_engine_id").order("slot_number").range(start, end), row => `${row.trading_engine_id}:${row.slot_number}`),
+    inventoryRows(ids, (selected, start, end) => scope.service.from("robot_v1_live_alerts").select("id,trading_engine_id")
+      .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+      .in("trading_engine_id", selected).is("resolved_at", null).order("id").range(start, end), row => row.id),
+    inventoryRows(ids, (selected, start, end) => scope.service.from("robot_v1_live_preparations").select("id,trading_engine_id,monthly_target")
+      .eq("operator_id", scope.operator.id).eq("exchange_account_id", accountId)
+      .in("trading_engine_id", selected).order("id").range(start, end), row => row.id),
   ]);
   if ([slotRows, accounts, orderRows, totals, alerts, preparations].some((result) => result.error)
     || slotRows.data?.length !== ids.length * 25
@@ -158,7 +188,9 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
     || Date.now() - Date.parse(run.last_reconciled_at) > 10 * 60_000))
     throw new Error("COINOPS_ADJUSTMENT_RECONCILIATION_STALE");
   const snapshot = await operatorAccountSnapshot(scope.operator.id, accountId, quote,
-    loaded.engines.map((engine) => engine.symbol), loaded.account.credential_ref);
+    [...new Set(loaded.engines.map((engine) => engine.symbol))],
+    loaded.account.is_legacy_default && loaded.engines[0].executor_shard_id === "executor-01"
+      ? "legacy-binance-production" : `account_${accountId.replaceAll("-", "")}`, "REAL", loaded.engines[0].id);
   const ownOpen = (orderRows.data ?? []).filter((order) => ["NEW", "PARTIALLY_FILLED"].includes(order.status));
   if ((orderRows.data ?? []).some((order) => ["PREPARED", "SUBMITTING"].includes(order.status)))
     throw new Error("COINOPS_ADJUSTMENT_ORDER_UNCERTAIN");
@@ -183,7 +215,7 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
     (totals.data ?? []).filter((slot) => slot.trading_engine_id === engine.id), engine.base_asset,
     Number(preparations.data?.find((row) => row.trading_engine_id === engine.id)?.monthly_target
       ?? (engine.base_asset === "BTC" ? 7 : 2)), new Date().toISOString()));
-  return { ...loaded, runs: runList, slots: rankedSlots,
+  return { ...loaded, allEngines: inventory.engines, runs: runList, slots: rankedSlots,
     slotAccounts: accounts.data as SlotAccount[], totals: totals.data ?? [],
     free, exposure, availableForNewCapital, observedAt: snapshot.observed_at,
     executorIp: snapshot.executor_ip, openOrders: exchangeOwn.length };
@@ -358,17 +390,43 @@ async function verifyReplay(scope: Scope, input: Draft, existing: NonNullable<Aw
 
 async function changeCaps(scope: Scope, state: Awaited<ReturnType<typeof inspect>>,
   allocations: Array<{ engineId: string; amount: number }>, targetAccountCap: number) {
-  const list = state.engines.map((engine) => ({ trading_engine_id: engine.id, symbol: engine.symbol,
+  const list = state.allEngines.map((engine) => ({ trading_engine_id: engine.id, symbol: engine.symbol,
     expected_hard_cap_quote: Number(engine.hard_cap_quote),
     target_hard_cap_quote: Number((Number(engine.hard_cap_quote)
       + allocations.filter((item) => item.engineId === engine.id)
         .reduce((sum, item) => sum + item.amount, 0)).toFixed(2)) }));
-  return operatorExecutorAdmin<{ status: string }>("/v1/admin/capital", {
+  return synchronizeCapitalPartitions(scope, { ...state, engines: state.allEngines }, {
     operator_id: scope.operator.id, exchange_account_id: state.account.id,
     credential_ref: state.account.credential_ref, environment: "REAL", quote_asset: state.engines[0].quote_asset,
     expected_account_cap_quote: state.cap, target_account_cap_quote: targetAccountCap,
     engines: list,
   }, "CAPITAL");
+}
+
+/** Account cap is global, but numeric engine overrides go only to their own
+ * immutable host. Sequential retries are exact and never move an engine. */
+async function synchronizeCapitalPartitions(scope: Scope,
+  state: { account: { id: string; is_legacy_default: boolean }; engines: Engine[] },
+  payload: Record<string, unknown> & { engines: Array<{ trading_engine_id: string; symbol: string;
+    expected_hard_cap_quote: number; target_hard_cap_quote: number }> }, _prefix: "CAPITAL") {
+  const representatives = new Map<string, Engine>();
+  for (const engine of state.engines) {
+    if (!/^executor-[0-9]{2,4}$/.test(engine.executor_shard_id)) throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
+    representatives.set(engine.executor_shard_id, engine);
+  }
+  const global = payload.engines.map((item) => {
+    const owned = state.engines.find((engine) => engine.id === item.trading_engine_id);
+    if (!owned) throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
+    return { ...item, executor_shard_id: owned.executor_shard_id };
+  });
+  for (const [shard, engine] of [...representatives].sort(([a], [b]) => a.localeCompare(b))) {
+    const result = await operatorExecutorAdmin<{ status: string }>("/v1/admin/capital", { ...payload,
+      trading_engine_id: engine.id, engines: global,
+      credential_ref: state.account.is_legacy_default && shard === "executor-01"
+        ? "legacy-binance-production" : `account_${state.account.id.replaceAll("-", "")}` }, "CAPITAL");
+    if (result.status !== "UPDATED") throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
+  }
+  return { status: "UPDATED" };
 }
 
 async function syncRecordedCaps(scope: Scope, accountId: string, quote: "BRL" | "USDT",
@@ -382,7 +440,7 @@ async function syncRecordedCaps(scope: Scope, accountId: string, quote: "BRL" | 
     (changes.get(item.trading_engine_id) ?? 0) + Number(item.amount_quote));
   const delta = [...changes.values()].reduce((sum, value) => sum + value, 0);
   const sign = reversal ? 1 : -1;
-  const result = await operatorExecutorAdmin<{ status: string }>("/v1/admin/capital", {
+  const result = await synchronizeCapitalPartitions(scope, loaded, {
     operator_id: scope.operator.id, exchange_account_id: accountId,
     credential_ref: loaded.account.credential_ref, environment: "REAL", quote_asset: quote,
     expected_account_cap_quote: Number((loaded.cap + sign * delta).toFixed(2)),
@@ -402,7 +460,7 @@ async function syncSelectiveRecordedCaps(scope: Scope, accountId: string, quote:
     .select("trading_engine_id,amount_quote").eq("id", batchId).eq("operator_id", scope.operator.id).single();
   if (batch.error || !batch.data) throw new Error("COINOPS_ADJUSTMENT_CAP_SYNC_PENDING");
   const delta = Number(batch.data.amount_quote);
-  const result = await operatorExecutorAdmin<{ status: string }>("/v1/admin/capital", {
+  const result = await synchronizeCapitalPartitions(scope, loaded, {
     operator_id: scope.operator.id, exchange_account_id: accountId,
     credential_ref: loaded.account.credential_ref, environment: "REAL", quote_asset: quote,
     expected_account_cap_quote: Number((loaded.cap - delta).toFixed(2)),
@@ -422,22 +480,22 @@ export async function GET() {
       selectiveBatches, selectiveAllocations, presets, preparations] = await Promise.all([
       scope.service.from("exchange_accounts").select("id,display_name,status,is_legacy_default")
         .eq("operator_id", scope.operator.id).eq("status", "ACTIVE").order("display_name"),
-      scope.service.from("trading_engines")
-        .select("id,exchange_account_id,symbol,quote_asset,base_asset,status,hard_cap_quote")
-        .eq("operator_id", scope.operator.id).eq("environment", "REAL").order("symbol"),
+      paged((start, end) => scope.service.from("trading_engines")
+      .select("id,exchange_account_id,symbol,quote_asset,base_asset,status,hard_cap_quote,executor_shard_id,created_at")
+        .eq("operator_id", scope.operator.id).eq("environment", "REAL").order("id").range(start, end)),
       scope.service.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
         .eq("operator_id", scope.operator.id),
-      scope.service.from("robot_v1_live_runs").select("id,trading_engine_id,status,last_reconciled_at,last_error")
-        .eq("operator_id", scope.operator.id).in("status", ["ACTIVE", "PAUSED"]),
-      scope.service.from("robot_v1_live_slot_accounts")
-        .select("trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
-        .eq("operator_id", scope.operator.id),
-      scope.service.from("robot_v1_live_slots")
-        .select("run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank,post_ath_group")
-        .eq("operator_id", scope.operator.id),
-      scope.service.from("robot_v1_slot_gain_totals")
+      paged((start, end) => scope.service.from("robot_v1_live_runs").select("id,trading_engine_id,status,last_reconciled_at,last_error")
+        .eq("operator_id", scope.operator.id).in("status", ["ACTIVE", "PAUSED"]).order("id").range(start, end)),
+      paged((start, end) => scope.service.from("robot_v1_live_slot_accounts")
+        .select("id,trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
+        .eq("operator_id", scope.operator.id).order("id").range(start, end)),
+      paged((start, end) => scope.service.from("robot_v1_live_slots")
+        .select("id,run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank,post_ath_group")
+        .eq("operator_id", scope.operator.id).order("id").range(start, end)),
+      inventoryRows([scope.operator.id], (_ids, start, end) => scope.service.from("robot_v1_slot_gain_totals")
         .select("trading_engine_id,slot_number,lifetime_gain_count,monthly_gain_count")
-        .eq("operator_id", scope.operator.id).eq("environment", "REAL"),
+        .eq("operator_id", scope.operator.id).eq("environment", "REAL").order("trading_engine_id").order("slot_number").range(start, end), row => `${row.trading_engine_id}:${row.slot_number}`),
       scope.service.from("robot_v1_live_adjustment_batches")
         .select("id,exchange_account_id,kind,quote_asset,origin_currency,origin_amount,amount_quote,reason,reversal_of,created_at")
         .eq("operator_id", scope.operator.id).order("created_at", { ascending: false }).limit(1000),
@@ -454,19 +512,19 @@ export async function GET() {
         .select("id,name,total_slots,open_slots,following_slots,status,built_in,usage_count,created_at,updated_at")
         .eq("operator_id", scope.operator.id).order("built_in", { ascending: false })
         .order("created_at", { ascending: true }).limit(100),
-      scope.service.from("robot_v1_live_preparations").select("trading_engine_id,monthly_target")
-        .eq("operator_id", scope.operator.id),
+      paged((start, end) => scope.service.from("robot_v1_live_preparations").select("id,trading_engine_id,monthly_target")
+        .eq("operator_id", scope.operator.id).order("id").range(start, end)),
     ]);
     const currentRunIds = (runs.data ?? []).map((run) => run.id);
-    const orders = currentRunIds.length ? await scope.service.from("robot_v1_live_orders")
-      .select("run_id,trading_engine_id,slot_number,operation_sequence,side,purpose,status,cumulative_quote,executed_quantity,price")
-      .eq("operator_id", scope.operator.id).in("run_id", currentRunIds)
-      .order("created_at", { ascending: false }).limit(5000) : { data: [], error: null };
+    const orders = await inventoryRows(currentRunIds, (ids, start, end) => scope.service.from("robot_v1_live_orders")
+      .select("id,run_id,trading_engine_id,slot_number,operation_sequence,side,purpose,status,cumulative_quote,executed_quantity,price")
+      .eq("operator_id", scope.operator.id).in("run_id", ids)
+      .order("id").range(start, end), row => row.id);
     if ([accounts, engines, caps, runs, slotAccounts, slots, totals, batches, plans,
       selectiveBatches, selectiveAllocations, presets, orders, preparations].some((item) => item.error)
       || batches.data?.length === 1000 || plans.data?.length === 100
       || selectiveBatches.data?.length === 1000 || selectiveAllocations.data?.length === 25000
-      || presets.data?.length === 100 || orders.data?.length === 5000)
+      || presets.data?.length === 100)
       throw new Error("COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE");
     const currentRunIdSet = new Set(currentRunIds);
     return json({ accounts: accounts.data, engines: engines.data, caps: caps.data,

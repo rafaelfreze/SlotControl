@@ -19,9 +19,9 @@ type Sleep = (milliseconds: number) => Promise<void>;
 type BinanceErrorPayload = { code?: number; msg?: string };
 type BinanceAccountPayload = { canTrade?: boolean; canWithdraw?: boolean; canDeposit?: boolean; updateTime?: number; balances?: Array<{ asset?: string; free?: string; locked?: string }> };
 type BinanceRestrictionsPayload = { enableReading?: boolean; enableSpotAndMarginTrading?: boolean; enableWithdrawals?: boolean; ipRestrict?: boolean };
-type BinanceOrderPayload = { orderId?: number | string; symbol?: string; side?: string; status?: string; executedQty?: string; price?: string; clientOrderId?: string; updateTime?: number };
+type BinanceOrderPayload = { orderId?: number | string; symbol?: string; side?: string; status?: string; executedQty?: string; origQty?: string; price?: string; clientOrderId?: string; updateTime?: number };
 type BinanceTradePayload = { id?: number | string; orderId?: number | string; symbol?: string; qty?: string; price?: string; quoteQty?: string; time?: number; isBuyer?: boolean; isMaker?: boolean };
-type BinanceExchangeInfo = { symbols?: Array<{ symbol?: string; baseAsset?: string; quoteAsset?: string; filters?: Array<{ filterType?: string; minQty?: string; maxQty?: string; minNotional?: string; notional?: string; stepSize?: string; tickSize?: string }> }> };
+type BinanceExchangeInfo = { symbols?: Array<{ symbol?: string; baseAsset?: string; quoteAsset?: string; allowedSelfTradePreventionModes?: unknown; filters?: Array<{ filterType?: string; minQty?: string; maxQty?: string; minNotional?: string; notional?: string; stepSize?: string; tickSize?: string }> }> };
 
 export class BinanceReadOnlyError extends Error {
   readonly code: string;
@@ -57,7 +57,12 @@ function optionalIso(value: number | undefined) {
 function normalizeOrder(payload: BinanceOrderPayload): ExchangeOrder {
   const side = payload.side === "BUY" || payload.side === "SELL" ? payload.side : null;
   if (!payload.orderId || !payload.symbol || !side || !payload.status) throw new BinanceReadOnlyError("BINANCE_ORDER_INVALID");
-  return { id: String(payload.orderId), symbol: payload.symbol, side, status: payload.status, executedQuantity: finiteNumber(payload.executedQty, "BINANCE_ORDER_INVALID"), price: payload.price && Number(payload.price) > 0 ? finiteNumber(payload.price, "BINANCE_ORDER_INVALID") : null, clientOrderId: payload.clientOrderId || null, updateTime: optionalIso(payload.updateTime) };
+  const original = payload.origQty === undefined ? undefined : finiteNumber(payload.origQty, "BINANCE_ORDER_INVALID");
+  const executed = finiteNumber(payload.executedQty, "BINANCE_ORDER_INVALID");
+  if (executed < 0 || original !== undefined && (original < 0 || original + 1e-12 < executed)) throw new BinanceReadOnlyError("BINANCE_ORDER_INVALID");
+  return { id: String(payload.orderId), symbol: payload.symbol, side, status: payload.status, executedQuantity: executed,
+    ...(original === undefined ? {} : { originalQuantity: original }),
+    price: payload.price && Number(payload.price) > 0 ? finiteNumber(payload.price, "BINANCE_ORDER_INVALID") : null, clientOrderId: payload.clientOrderId || null, updateTime: optionalIso(payload.updateTime) };
 }
 
 function normalizeTrade(payload: BinanceTradePayload): ExchangeTrade {
@@ -176,7 +181,11 @@ export class BinanceSpotAdapter implements ExchangeAdapter {
     const minNotional = finiteNumber(notional?.minNotional ?? notional?.notional, "BINANCE_SYMBOL_INFO_INVALID");
     const priceTick = finiteNumber(price?.tickSize, "BINANCE_SYMBOL_INFO_INVALID");
     if (!item?.baseAsset || !item.quoteAsset || minQuantity <= 0 || maxQuantity <= 0 || quantityStep <= 0 || minNotional <= 0 || priceTick <= 0) throw new BinanceReadOnlyError("BINANCE_SYMBOL_INFO_INVALID");
-    return { symbol, baseAsset: item.baseAsset, quoteAsset: item.quoteAsset, minQuantity, maxQuantity, minNotional, quantityStep, priceTick };
+    const modes = item.allowedSelfTradePreventionModes;
+    if (modes !== undefined && (!Array.isArray(modes) || modes.some((mode) => typeof mode !== "string")))
+      throw new BinanceReadOnlyError("BINANCE_SYMBOL_INFO_INVALID");
+    return { symbol, baseAsset: item.baseAsset, quoteAsset: item.quoteAsset, minQuantity, maxQuantity, minNotional, quantityStep, priceTick,
+      ...(Array.isArray(modes) ? { allowedSelfTradePreventionModes: modes as string[] } : {}) };
   }
 
   async getOpenOrders(symbol?: string) {
