@@ -1,0 +1,337 @@
+{
+  "task": "multi-engine-multi-shard",
+  "observed_at": "2026-10-04T18:37:10.011Z",
+  "project_ref": "otdfpmsegjxpqrzisfmi",
+  "schema": "coinops",
+  "environment": "Production",
+  "main_sha": "98310f463ee091a2e8a9312c0fbc8b83fe93e242",
+  "runtime_sha": "ad59af32e886d02bd150f0934e196dba22e508cc",
+  "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6",
+  "migration": {
+    "file": "20261004125202_add_same_symbol_engine_provisioning.sql",
+    "remote_version": "20261004181602",
+    "applied_once": true
+  },
+  "rollout": {
+    "sequence": [
+      "executor-01",
+      "executor-02",
+      "executor-03"
+    ],
+    "only_service": "coinops-live-executor",
+    "simultaneous_restarts": false,
+    "starts_utc": [
+      "2026-10-04T18:18:35.548683Z",
+      "2026-10-04T18:20:40.404908Z",
+      "2026-10-04T18:22:54.255189Z"
+    ]
+  },
+  "fleet": {
+    "status": "FLEET_PARITY_PASS",
+    "target_sha": "ad59af32e886d02bd150f0934e196dba22e508cc",
+    "checked_at": "2026-10-04T18:37:10.011Z",
+    "verified": 3,
+    "total": 3,
+    "shards": [
+      {
+        "shard_id": "executor-01",
+        "ip": "46.101.104.48",
+        "status": "PASS",
+        "reasons": [],
+        "actual_sha": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:36:59.460Z",
+        "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6"
+      },
+      {
+        "shard_id": "executor-02",
+        "ip": "164.90.223.159",
+        "status": "PASS",
+        "reasons": [],
+        "actual_sha": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:37:05.277Z",
+        "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6"
+      },
+      {
+        "shard_id": "executor-03",
+        "ip": "167.71.37.166",
+        "status": "PASS",
+        "reasons": [],
+        "actual_sha": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:37:09.940Z",
+        "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6"
+      }
+    ],
+    "git": {
+      "head_sha": "98310f463ee091a2e8a9312c0fbc8b83fe93e242",
+      "cached_main_sha": "98310f463ee091a2e8a9312c0fbc8b83fe93e242"
+    },
+    "evidence": [
+      {
+        "shard_id": "executor-01",
+        "ip": "46.101.104.48",
+        "observed_at": "2026-10-04T18:36:59.460Z",
+        "probe_contract_version": 1,
+        "node_version": "v24.21.0",
+        "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6",
+        "public_file_count": 28,
+        "runtime_root": "/opt/coinops/source",
+        "process_identity_verified": true,
+        "code_loaded_evidence": "DISK_UNCHANGED_SINCE_PROCESS_START",
+        "newest_code_change_at": "2026-10-04T18:18:34.731Z",
+        "service": {
+          "active_state": "active",
+          "sub_state": "running",
+          "pid": 185772,
+          "user": "coinops-executor",
+          "group": "coinops-executor",
+          "uid": 999,
+          "started_at": "Sun 2026-10-04 18:18:35.548683 UTC",
+          "protect_system": "strict",
+          "no_new_privileges": "yes",
+          "private_tmp": "yes"
+        },
+        "health": {
+          "healthy": true,
+          "executor_shard_id": "executor-01",
+          "actual_executor_version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+          "clock": "2026-10-04T18:36:59.422Z",
+          "egress_ipv4": "46.101.104.48",
+          "egress_ipv4_verified": true
+        }
+      },
+      {
+        "shard_id": "executor-02",
+        "ip": "164.90.223.159",
+        "observed_at": "2026-10-04T18:37:05.277Z",
+        "probe_contract_version": 1,
+        "node_version": "v24.21.0",
+        "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6",
+        "public_file_count": 28,
+        "runtime_root": "/opt/coinops/releases/ad59af32e886d02bd150f0934e196dba22e508cc",
+        "process_identity_verified": true,
+        "code_loaded_evidence": "DISK_UNCHANGED_SINCE_PROCESS_START",
+        "newest_code_change_at": "2026-10-04T18:20:38.945Z",
+        "service": {
+          "active_state": "active",
+          "sub_state": "running",
+          "pid": 106886,
+          "user": "coinops-executor",
+          "group": "coinops-executor",
+          "uid": 997,
+          "started_at": "Sun 2026-10-04 18:20:40.404908 UTC",
+          "protect_system": "strict",
+          "no_new_privileges": "yes",
+          "private_tmp": "yes"
+        },
+        "health": {
+          "healthy": true,
+          "executor_shard_id": "executor-02",
+          "actual_executor_version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+          "clock": "2026-10-04T18:37:05.238Z",
+          "egress_ipv4": "164.90.223.159",
+          "egress_ipv4_verified": true
+        }
+      },
+      {
+        "shard_id": "executor-03",
+        "ip": "167.71.37.166",
+        "observed_at": "2026-10-04T18:37:09.940Z",
+        "probe_contract_version": 1,
+        "node_version": "v24.21.0",
+        "runtime_sha256": "a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6",
+        "public_file_count": 28,
+        "runtime_root": "/opt/coinops/releases/ad59af32e886d02bd150f0934e196dba22e508cc",
+        "process_identity_verified": true,
+        "code_loaded_evidence": "DISK_UNCHANGED_SINCE_PROCESS_START",
+        "newest_code_change_at": "2026-10-04T18:22:53.024Z",
+        "service": {
+          "active_state": "active",
+          "sub_state": "running",
+          "pid": 10426,
+          "user": "coinops-executor",
+          "group": "coinops-executor",
+          "uid": 999,
+          "started_at": "Sun 2026-10-04 18:22:54.255189 UTC",
+          "protect_system": "strict",
+          "no_new_privileges": "yes",
+          "private_tmp": "yes"
+        },
+        "health": {
+          "healthy": true,
+          "executor_shard_id": "executor-03",
+          "actual_executor_version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+          "clock": "2026-10-04T18:37:09.903Z",
+          "egress_ipv4": "167.71.37.166",
+          "egress_ipv4_verified": true
+        }
+      }
+    ]
+  },
+  "validation": {
+    "web_pass": 412,
+    "optional_web_skipped": 51,
+    "executor_pass": 129,
+    "sql_pass": 39,
+    "synthetic_browser_pass": 2,
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build": "PASS"
+  },
+  "production_smoke": {
+    "browser": "authenticated Chrome",
+    "account": "Dete",
+    "existing_symbol": "SOLBRL",
+    "existing_executor": "executor-02",
+    "add_engine_button": true,
+    "mobile_width": 390,
+    "horizontal_overflow": false,
+    "real_engine_created": false,
+    "order_test": false,
+    "credential_or_whitelist_changed": false,
+    "new_destination_credential": "REQUIRED_BEFORE_NEW_ENGINE"
+  },
+  "admission": {
+    "status": "PASS",
+    "certification": "ADMISSION_PREFLIGHT_PASS",
+    "registry_source": "authenticated Supabase connector; re-read after SSH",
+    "payload_source": "official capacity-preflight.mjs certificateForFleet",
+    "certified_after_samples": [
+      {
+        "shard": "executor-02",
+        "errors": 0,
+        "backlog": 0,
+        "samples": 16,
+        "version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:36:42.019+00:00",
+        "registry_match": true
+      },
+      {
+        "shard": "executor-01",
+        "errors": 0,
+        "backlog": 0,
+        "samples": 16,
+        "version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:36:42.053+00:00",
+        "registry_match": true
+      },
+      {
+        "shard": "executor-03",
+        "errors": 0,
+        "backlog": 0,
+        "samples": 15,
+        "version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:36:42.057+00:00",
+        "registry_match": true
+      }
+    ],
+    "premature_certification_rejected": true,
+    "checked_at": "2026-10-04 18:49:26.329357+00",
+    "decisions": [
+      {
+        "shard_id": "executor-01",
+        "plus_one": {
+          "code": "CAPACITY_OK",
+          "projected_percent": 55.32,
+          "reason": "SUSTAINED_HEADROOM_AVAILABLE"
+        },
+        "plus_two": {
+          "code": "CAPACITY_REQUIRED",
+          "projected_percent": 70.32,
+          "reason": "SUSTAINED_PROJECTION_ABOVE_ADMISSION_LIMIT"
+        },
+        "readiness": {
+          "ready": true,
+          "failures": [],
+          "policy_version": "capacity-v3-20260930"
+        }
+      },
+      {
+        "shard_id": "executor-02",
+        "plus_one": {
+          "code": "CAPACITY_OK",
+          "projected_percent": 49.59,
+          "reason": "SUSTAINED_HEADROOM_AVAILABLE"
+        },
+        "plus_two": {
+          "code": "CAPACITY_REQUIRED",
+          "projected_percent": 64.59,
+          "reason": "RECOVERY_MARGIN_NOT_REACHED"
+        },
+        "readiness": {
+          "ready": true,
+          "failures": [],
+          "policy_version": "capacity-v3-20260930"
+        }
+      },
+      {
+        "shard_id": "executor-03",
+        "plus_one": {
+          "code": "CAPACITY_OK",
+          "projected_percent": 26.64,
+          "reason": "SUSTAINED_HEADROOM_AVAILABLE"
+        },
+        "plus_two": {
+          "code": "CAPACITY_OK",
+          "projected_percent": 41.64,
+          "reason": "SUSTAINED_HEADROOM_AVAILABLE"
+        },
+        "readiness": {
+          "ready": true,
+          "failures": [],
+          "policy_version": "capacity-v3-20260930"
+        }
+      }
+    ],
+    "latest_telemetry": [
+      {
+        "shard": "executor-02",
+        "errors": 0,
+        "backlog": 0,
+        "engines": 6,
+        "samples": 16,
+        "version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:48:42.05+00:00",
+        "registry_match": true,
+        "reconciliation_age_ms": 25432
+      },
+      {
+        "shard": "executor-03",
+        "errors": 0,
+        "backlog": 0,
+        "engines": 2,
+        "samples": 16,
+        "version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:48:42.069+00:00",
+        "registry_match": true,
+        "reconciliation_age_ms": 25426
+      },
+      {
+        "shard": "executor-01",
+        "errors": 0,
+        "backlog": 0,
+        "engines": 7,
+        "samples": 16,
+        "version": "ad59af32e886d02bd150f0934e196dba22e508cc",
+        "observed_at": "2026-10-04T18:48:42.078+00:00",
+        "registry_match": true,
+        "reconciliation_age_ms": 24579
+      }
+    ]
+  },
+  "financial_gates": {
+    "current_real_active_engines": 15,
+    "watchdog_healthy_counts": [
+      7,
+      6,
+      2
+    ],
+    "open_incidents": 0,
+    "all_engines_25_slots": true,
+    "tp_and_next_buy_present": true,
+    "observed_at": "2026-10-04 18:49:18.489857+00",
+    "resident_tp": 22,
+    "next_buy": 15,
+    "positions": 22,
+    "errors": 0
+  }
+}

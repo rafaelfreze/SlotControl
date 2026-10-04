@@ -6,10 +6,11 @@ Requisito autorizado em 04/10/2026: **a conta não é presa ao shard; o engine �
 N motores podem compartilhar conta e símbolo e residir em N executores, sujeitos
 à capacidade e aos limites reais da Binance. Não mover motores existentes.
 
-**Implementação validada localmente; publicação ainda não liberada.** Este documento não é
-certificação nem prova de deploy. Base local/origin main reconferida:
-`d71731cf722a0f1eaac838b55e1bb545174a2589`. A publicação exige a sequência
-versionada abaixo; nenhum teste local autoriza declarar rollout concluído.
+**Implementação publicada; paridade, certificação e admissão aprovadas.**
+Base anterior `d71731cf722a0f1eaac838b55e1bb545174a2589`; main publicado
+`98310f463ee091a2e8a9312c0fbc8b83fe93e242`; runtime comum
+`ad59af32e886d02bd150f0934e196dba22e508cc`. Estado da infraestrutura demonstrado
+na evidência versionada abaixo, nunca inferido somente de testes locais.
 
 ## Auditoria e causa
 
@@ -85,7 +86,7 @@ Fontes oficiais:
 - [Self-trade prevention](https://developers.binance.com/en/docs/products/spot/faqs/stp_faq)
 - [Filtros](https://developers.binance.com/en/docs/products/spot/filters)
 
-## Fluxo implementado localmente / liberação pendente
+## Fluxo implementado / gates de liberação
 
 `+ Adicionar motor` deve existir em conta já operante, inclusive conta legada.
 Escolher/configurar novo engine → consultar todos os shards certificados →
@@ -94,7 +95,7 @@ preferir elegível/validado → apresentar executor/IP → validar conexão se p
 → gate final serializado → ativação pelo proprietário. Nenhum engine REAL é
 criado pela implementação ou por smoke.
 
-Implementados no diff local: conexão adicional pelo painel, orçamento global
+Implementados na release publicada: conexão adicional pelo painel, orçamento global
 serializado com ACK/proteção e enforcement de dispatch, preview/append com
 capital livre não duplamente alocado, sincronização de caps e aportes por
 partição de engines/shards, compatibilidade staged, UI engine-aware e relatório
@@ -114,9 +115,14 @@ policy entre hosts e sincronização staged; UI Chromium sintética em 390/1440p
 com o mesmo SOLBRL em 02/03 e preview sem writes. Não equivalem a credential
 multi-IP real, runtime publicado ou smoke Production.
 
-A migration local `20261004125202_add_same_symbol_engine_provisioning.sql` ainda
-não foi aplicada. Lint, typecheck e build passaram. Faltam publicação,
-migration remota, rollout sequencial, fleet/preflight e smoke Production.
+A migration `20261004125202_add_same_symbol_engine_provisioning.sql` foi aplicada
+uma vez em Production sob a versão remota `20261004181602`. Lint, typecheck e
+build passaram. Release web READY; rollout sequencial e paridade 3/3 comprovados.
+Certificação via payload do helper oficial `capacity-preflight.mjs` e RPC
+`certify_executor_admission` no control plane autenticado: `ADMISSION_PREFLIGHT_PASS`
+em 18:37 UTC, após amostras 16/16/15 e nova paridade SSH 3/3. Não foram extraídos
+secrets para executar o CLI local; registry/política foram lidos pela integração
+Supabase. A admissão continua sujeita à histerese canônica, sem relaxar gates.
 
 ## Publicação obrigatória
 
@@ -138,14 +144,45 @@ de versão revisada. Marcador de conta é monotônico, não se apaga para passar
 
 ## Checkpoint externo desta implementação
 
-Não foram feitos commit/push, migration remota, deploy, restart, mudança de
-credencial, whitelist, conta, capital ou ordem. Leituras remotas registraram
-15 engines REAL ACTIVE sem kill switch na observação de 04/10/2026 17:57:41 UTC,
-Watchdog HEALTHY 7/6/2, backlog/erros zero. Leitura 17:58 UTC: cada ciclo com
-25 slots, TP residente e uma ENTRY/NEXT BUY. São snapshots anteriores ao rollout,
-não certificado de preservação posterior ou leitura direta da exchange.
-Não repetir operações externas de tarefas anteriores na retomada.
+Commit/push e migration única concluídos. Vercel Git publicou
+`dpl_YMwM2gwNy4LyqK4qDdEtnDTkNGXn` READY. Serviço `coinops-live-executor`
+atualizado um por vez: 01 18:18:35 UTC, 02 18:20:40 UTC, 03 18:22:54 UTC.
+Antes de avançar, cada shard foi lido com reconciliação posterior ao restart,
+TP/NEXT BUY, 25 slots e Watchdog HEALTHY. Paridade oficial 18:24:11 UTC:
+3/3, Node v24.21.0, 28 arquivos públicos e fingerprint
+`a786518e80721442b3187631f4e125634e51ddd54560dbc3cd2166514d2c8ac6`.
+Leitura 18:25:17 UTC: 15 engines ACTIVE sem kill switch ou erro, zero incidente
+aberto, Watchdog 7/6/2 HEALTHY, TP residente por posição e uma ENTRY por motor.
+Nenhuma conta/motor REAL criado, movido ou ativado; nenhuma ordem de teste,
+credencial ou whitelist alterada. O laço financeiro normal permaneceu ativo.
+Smoke autenticado Chrome: Dete/SOLBRL no 02, botão de adição, formulário desktop
+e 390px sem overflow. Não prova whitelist real de Dete no 03. A única mensagem
+Console observada foi erro de conexão de extensão, sem stack de aplicação.
+Não foram inspecionados todos os requests de Network.
+Evidência: `docs/evidence/coinops-multi-engine-rollout-20261004.json`.
+Não repetir deploy, migration ou operações externas já concluídas na retomada.
 
 Gates multi-engine, cross-shard, credential multi-IP, orçamento account-global,
 admission, Watchdog, ordens/ledger/slots, idempotência e motores existentes só
-recebem PASS após a evidência correspondente. Estado atual: **NÃO LIBERADO**.
+recebem PASS após a evidência correspondente. Admissão atual:
+**PASS em 04/10/2026 18:49 UTC**. Coleta com 16 amostras em cada shard,
+certificação e período saudável passaram sem forçar histerese. Executor 03
+reabriu em 18:46:42 UTC: +1 projetado 26,64%, +2 41,64%, limite 65% e
+reserva única de 35% preservada. Executor 01 +1 SIM/+2 NÃO (70,32%);
+Executor 02 +1 SIM/+2 NÃO (64,59%, ainda acima da margem de reabertura 60%).
+A tentativa antecipada foi rejeitada antes de qualquer escrita e não foi
+contornada: nova prova foi coletada somente após atingir as 15 amostras.
+
+Leitura final 18:49:18 UTC: 15/15 ACTIVE, 25 slots por motor, 23 posições com
+23 TPs residentes, 15 NEXT BUY, nenhum erro/kill switch ou incidente aberto.
+Watchdog HEALTHY 7/6/2 e reconciliação recente. Smoke final autenticado: Dete
+mantém SOLBRL no 02; novo SOLBRL pode selecionar o 03 com +1 SIM. Preview
+permanece desabilitado até validar conexão no destino. Não foi instalada
+credencial de Dete no 03 nem alterada whitelist: essa prova concreta é exigida
+pelo produto no onboarding, não inventada a partir dos testes sintéticos.
+
+Gates de mesmo símbolo/cross-shard, ownership, ledger/slots, Watchdog,
+idempotência, orçamento account-global e roteamento passaram nos testes
+sintéticos e SQL local; runtime efetivo tem paridade 3/3. Nenhum teste criou
+engine REAL. A validação de cada chave/IP concreto continua obrigatória e
+não equivale a declarar qualquer chave existente autorizada em múltiplos IPs.
