@@ -9,6 +9,8 @@ import * as capitalRefresh from "../execution/live-entry-capital-refresh.ts";
 import * as priceInvariant from "../execution/strategy-price-invariant.ts";
 import * as shortcut from "../execution/live-reconciliation-shortcut.ts";
 import * as unsentTp from "../execution/live-unsent-tp-recovery.ts";
+import * as unsentEntry from "../execution/live-unsent-entry-recovery.ts";
+import * as unsentProof from "../execution/account-order-unsent-proof.ts";
 import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
@@ -209,6 +211,24 @@ function harness(options: Options = {}) {
     "./robot-v1-live-cycle": cycle, "./strategy-engine": strategy, "./live-entry-capital-refresh": capitalRefresh,
     "./strategy-price-invariant": priceInvariant, "./live-reconciliation-shortcut": shortcut,
     "./live-unsent-tp-recovery": unsentTp,
+    "./live-unsent-entry-recovery": unsentEntry,
+    "./account-order-unsent-proof": unsentProof,
+    // This legacy-capital fixture has no V2 account-budget policy. Its budget
+    // boundary remains mocked, but must enforce the same engine and lease.
+    // Account-budget concurrency/permits have their own execution tests.
+    "./account-order-budget-server": {
+      accountExecutionPolicyRequired: async () => false,
+      reserveAccountOrderDispatch: async (_s: unknown, owner: Row, _id: string, _side: string, lease: string, required: boolean) => {
+        assert.equal(owner.trading_engine_id, run.trading_engine_id);
+        assert.equal(lease, run.lease_owner);
+        assert.equal(required, false);
+        return undefined;
+      },
+      acknowledgeAccountOrderDispatch: async (_s: unknown, owner: Row, _id: string, lease: string) => {
+        assert.equal(owner.trading_engine_id, run.trading_engine_id);
+        assert.equal(lease, run.lease_owner);
+      },
+    },
     "./live-strategy-snapshot": strategySnapshot,
     "./ath-ladder": athLadder, "./monthly-slot-policy": monthlyPolicy,
     "./strategy-parameter-registry": strategyParameterRegistry,

@@ -13,4 +13,7 @@ test("v18 publishes the observation and recurrence contract without claiming mis
   assert.equal(rule?.evidence_scope, "CURRENT_CODE_CONTRACT");
   assert.match(String(rule?.notes), /UNKNOWN, não 0%/);
   assert.match(String(rule?.notes), /RECURRENCE_REGRESSION/);
+  assert.equal(rule?.version, 2);
+  assert.match(String(rule?.notes), /registry: somente timeout comprovado/);
+  assert.match(String(rule?.notes), /sem reutilizar autorização parcial/);
 });

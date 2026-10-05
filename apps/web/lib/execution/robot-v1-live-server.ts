@@ -1499,6 +1499,10 @@ export async function auditLiveRun(runId: string) {
   } catch (error) {
     if (error instanceof Error && error.message === "COINOPS_LIVE_FILLED_DURING_SNAPSHOT")
       return { status: "RETRY", asset: run.asset, code: error.message };
+    // The monitor never authorizes trading. A failed registry observation is
+    // retried by the normal cron; it is not evidence of invalid permissions.
+    if (error instanceof LiveReadUnavailable && error.code === "COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT")
+      return { status: "RETRY", asset: run.asset, code: error.message };
     const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "COINOPS_LIVE_MONITOR_FAILED";
     await preventNewBuys(service, run, code);
@@ -1570,7 +1574,7 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
  * after a fresh exchange/ledger match, protected positions and hard caps. */
 async function readVerifiedRecoveryIncident(service: Service, run: Run, expected?: ReadRecoveryAlert) {
   const alerts = await service.from("robot_v1_live_alerts")
-    .select("alert_key,code,first_seen_at,last_seen_at")
+    .select("alert_key,code,first_seen_at,last_seen_at,details")
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
     .eq("trading_engine_id", run.trading_engine_id).eq("severity", "CRITICAL").is("resolved_at", null);

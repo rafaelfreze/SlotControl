@@ -25,6 +25,21 @@ test("monitor health recovery remains fail-closed before successful reconciliati
     assert.equal(mayRecoverReadOutage("ACTIVE", result, "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY"), false);
 });
 
+test("legacy registry outage requires LOAD_LEDGER evidence and completed active reconciliation", () => {
+  const code = "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+    last_seen_at: "2026-10-05T19:43:09.975Z", details: { stage: "LOAD_LEDGER", root_code: code } };
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code), false);
+  assert.equal(mayRecoverReadOutage("PAUSED", "OK", code), false);
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+  for (const details of [undefined, { stage: "ARM_ENTRY", root_code: code },
+    { stage: "LOAD_LEDGER", root_code: "PERMISSION_DENIED" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  for (const denied of ["COINOPS_OPERATOR_SCOPE_UNAVAILABLE", "COINOPS_OPERATOR_SCOPE_DENIED", "COINOPS_ENGINE_SCOPE_DENIED"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", denied), false);
+});
+
 test("recovery under lease requires the same sole, scoped incident", () => {
   const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
     last_seen_at: "2026-09-27T00:00:12.000Z" };

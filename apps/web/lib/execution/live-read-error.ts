@@ -1,4 +1,4 @@
-/** Only observation endpoints may construct this error. A failed write remains
+/** Only observation endpoints/registry reads may construct this error. A failed write remains
  * ambiguous even when its HTTP status or message looks like a read failure. */
 export class LiveReadUnavailable extends Error {
   readonly code: string; readonly path: string; readonly attempts: number; readonly httpStatus: number | null;

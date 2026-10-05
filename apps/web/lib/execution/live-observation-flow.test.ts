@@ -6,7 +6,7 @@ import * as readErrors from "./live-read-error.ts";
 
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
-function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a") {
+function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registryFailure=false) {
   const writes:Array<{table:string,data:Record<string,unknown>,filters:Record<string,unknown>}>=[];
   const run={id:`run-${engineId}`,trading_engine_id:engineId,exchange_account_id:"same-account",operator_id:"operator",
     tenant_id:"tenant",product_id:"product",user_id:"user",asset:"SOL",symbol:"SOLBRL",quote_asset:"BRL",strategy_version:"fixture",lease_owner:"lease"};
@@ -31,11 +31,11 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a") {
   const compiled=ts.transpileModule(readFileSync(new URL("./robot-v1-live-server.ts",import.meta.url),"utf8"),
     {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports:Record<string,unknown>={};
-  new Function("require","exports","fixtureRun",compiled+`
-    assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{};
+  new Function("require","exports","fixtureRun","registryError",compiled+`
+    assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError)throw registryError;};
     runRows=async()=>({slots:[],orders:[],accounts:[]}); assertLiveResidentPrices=()=>{};
     exports.testAdvance=()=>advanceLiveRunOnce(fixtureRun.id,"LIVE_CRON");
-  `)((name:string)=>deps[name]??{},exports,run);
+  `)((name:string)=>deps[name]??{},exports,run,registryFailure?error:null);
   return {execute:exports.testAdvance as ()=>Promise<{status:string}>,writes,run};
 }
 
@@ -51,6 +51,30 @@ test("exhausted observation resumes through normal cron checkpoint, never Watchd
     assert.equal(release.data.last_error,null);assert.equal(release.data.last_reconciled_at,undefined);
     assert.equal(release.filters.id,f.run.id);assert.equal(release.filters.lease_owner,"lease");
   }
+});
+
+test("registry timeout before any exchange access checkpoints RETRY and does not claim freshness", async () => {
+  for (const engineId of ["engine-a", "engine-b"]) {
+    const f = fixture(new readErrors.LiveReadUnavailable("COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT",
+      "registry/trading_engines", 2), undefined, engineId, true);
+    assert.equal((await f.execute()).status, "RETRY");
+    assert.ok(f.writes.every(w => !w.data.kill_switch));
+    const alert = f.writes.find(w => w.table === "robot_v1_live_alerts")!;
+    assert.equal(alert.data.trading_engine_id, engineId);
+    assert.equal((alert.data.details as Record<string, unknown>).stage, "LOAD_LEDGER");
+    assert.equal((alert.data.details as Record<string, unknown>).read_attempts, 2);
+    assert.equal(f.writes.find(w => w.table === "robot_v1_live_runs")!.data.last_reconciled_at, undefined);
+  }
+});
+
+test("persistent registry outage blocks only the affected engine; permission errors never become RETRY", async () => {
+  const f = fixture(new readErrors.LiveReadUnavailable("COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT",
+    "registry/trading_engines", 2), new Date(Date.now() - 301000).toISOString(), "engine-b", true);
+  await assert.rejects(f.execute(), /COINOPS_LIVE_EXECUTOR_READ_STALE/);
+  assert.ok(f.writes.some(w => w.table === "trading_engines" && w.filters.id === "engine-b" && w.data.kill_switch));
+  const denied = fixture(new Error("COINOPS_OPERATOR_SCOPE_DENIED"), undefined, "engine-a", true);
+  await assert.rejects(denied.execute(), /COINOPS_OPERATOR_SCOPE_DENIED/);
+  assert.ok(denied.writes.some(w => w.table === "trading_engines" && w.filters.id === "engine-a" && w.data.kill_switch));
 });
 test("persistent observation outage remains engine-local fail-closed and keeps root evidence",async()=>{
   const f=fixture(new readErrors.LiveReadUnavailable("EXECUTOR_ORDER_QUERY_FAILED","/v1/query-order",4,503),new Date(Date.now()-301000).toISOString());

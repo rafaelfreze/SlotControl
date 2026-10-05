@@ -6,6 +6,7 @@ import type * as DecisionServer from "../execution/strategy-decision-server.ts";
 import { assertDomainRegistry, isIdentity, resolveEngineContext, visibleOperatorRegistry,
   type DomainRegistry } from "../execution/operator-context.ts";
 import { planStrategyInitialEntry } from "../execution/strategy-engine.ts";
+import { LiveReadUnavailable } from "../execution/live-read-error.ts";
 
 type Row = Record<string, unknown>;
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -29,6 +30,7 @@ function compile(relative: string, dependencies: Record<string, unknown>) {
   return exports;
 }
 const registryServer = compile("../execution/operator-context-server.ts", {
+  "./live-read-error": { LiveReadUnavailable },
   "server-only": {}, "./operator-context": { assertDomainRegistry, resolveEngineContext,
     visibleOperatorRegistry },
 });

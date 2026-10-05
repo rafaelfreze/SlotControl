@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { createServiceRoleClient } from "../supabase/service-role";
+import { LiveReadUnavailable } from "./live-read-error";
 import { assertDomainRegistry, resolveEngineContext, visibleOperatorRegistry, type DomainRegistry, type EngineSelection,
   type OperatorScope } from "./operator-context";
 
@@ -8,28 +9,43 @@ type Client = ReturnType<typeof createServiceRoleClient>;
 const REGISTRY_READ_TIMEOUT_MS = 5_000;
 
 function registryFailure(stage: string, startedAt: number, deadline: AbortSignal,
-  error: unknown, publicCode: string): never {
+  error: unknown, publicCode: string, attempt: number): never {
   const providerCode = error && typeof error === "object" && "code" in error && typeof error.code === "string"
     ? error.code.trim() : "";
   const code = providerCode || (deadline.aborted ? "TIMEOUT" : "UNKNOWN");
   console.error("COINOPS_OPERATOR_REGISTRY_READ_FAILED", {
     stage, code, duration_ms: Math.max(0, Date.now() - startedAt),
   });
+  // Only our expired observation deadline is retryable. A provider permission,
+  // scope, missing-row or validation error must never inherit this treatment.
+  if (deadline.aborted && !providerCode)
+    throw new LiveReadUnavailable("COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT", `registry/${stage}`, attempt);
   throw new Error(publicCode);
 }
 
 /** Accepts authenticated/RLS or service clients, but never discovers a user or
  * tenant from browser IDs. Callers supply their already authenticated scope. */
 export async function loadOperatorRegistry(client: Client, scope: OperatorScope): Promise<DomainRegistry> {
+  for (let attempt = 1; ; attempt++) {
+    try { return await readRegistryAttempt(client, scope, attempt); }
+    catch (error) {
+      if (!(error instanceof LiveReadUnavailable)
+        || error.code !== "COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT" || attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+async function readRegistryAttempt(client: Client, scope: OperatorScope, attempt: number): Promise<DomainRegistry> {
   const startedAt = Date.now();
-  // One deadline covers the complete critical read. A degraded dependency must
-  // fail closed quickly instead of leaving the Home waiting for minutes.
+  // One 5s deadline per complete attempt; never reuse a partial registry or a
+  // cached permission. Exhaustion remains a typed, bounded read failure.
   const deadline = AbortSignal.timeout(REGISTRY_READ_TIMEOUT_MS);
   const op = await client.from("operators").select("id,product_id,tenant_id,user_id,status,kill_switch")
     .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
     .abortSignal(deadline).single();
   if (op.error || !op.data)
-    registryFailure("operators", startedAt, deadline, op.error, "COINOPS_OPERATOR_SCOPE_UNAVAILABLE");
+    registryFailure("operators", startedAt, deadline, op.error, "COINOPS_OPERATOR_SCOPE_UNAVAILABLE", attempt);
   const operatorId = op.data.id;
   const pageSize = 500;
   async function pages(table: "exchange_accounts" | "trading_engines", columns: string) {
@@ -38,7 +54,7 @@ export async function loadOperatorRegistry(client: Client, scope: OperatorScope)
       const result = await client.from(table).select(columns).eq("operator_id", operatorId)
         .order("id").range(offset, offset + pageSize - 1).abortSignal(deadline);
       if (result.error || !result.data)
-        registryFailure(table, startedAt, deadline, result.error, "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE");
+        registryFailure(table, startedAt, deadline, result.error, "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE", attempt);
       rows.push(...result.data as unknown as Record<string, unknown>[]);
       if (result.data.length < pageSize) return rows;
     }

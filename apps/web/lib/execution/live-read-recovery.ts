@@ -11,13 +11,16 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
       // Eligibility only: the guarded resume must still prove fresh executor
       // health, exchange/ledger agreement, protected positions and hard caps.
       "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
+      // Legacy registry read failure: verifiedReadRecoveryAlert additionally
+      // requires LOAD_LEDGER evidence; resume reloads/validates the full scope.
+      "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE",
       // Eligibility only. resumeLiveRun also requires a trade-backed fill at
       // incident time plus current exchange/ledger/protection agreement.
       "COINOPS_LIVE_EXCHANGE_ORDER_MISSING"].includes(alertCode ?? "");
 }
 
 export type ReadRecoveryAlert = { alert_key: string; code: string; first_seen_at?: string;
-  last_seen_at: string };
+  last_seen_at: string; details?: { stage?: unknown; root_code?: unknown } | null };
 
 /** The caller must load all unresolved CRITICAL alerts in the exact engine /
  * account scope while holding the run lease. Never clear a changed cause. */
@@ -26,6 +29,8 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
   const alert = alerts.length === 1 ? alerts[0] : null;
   if (!alert || alert.alert_key !== `LIVE_RUN:${runId}:CRITICAL`
     || !mayRecoverReadOutage(status, "OK", alert.code)
+    || alert.code === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE"
+      && (alert.details?.stage !== "LOAD_LEDGER" || alert.details?.root_code !== alert.code)
     || !Number.isFinite(Date.parse(alert.last_seen_at))
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
       || alert.first_seen_at !== expected.first_seen_at))

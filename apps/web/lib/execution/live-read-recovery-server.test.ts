@@ -10,7 +10,7 @@ const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITO
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
 
 function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
-  casLost?: boolean; lateFill?: boolean } = {}) {
+  casLost?: boolean; lateFill?: boolean; registryDenied?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -81,7 +81,10 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     "./live-read-recovery": { verifiedReadRecoveryAlert },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
-    "./operator-context-server": { resolveOperatorEngine: async () => engine },
+    "./operator-context-server": { resolveOperatorEngine: async () => {
+      if (options.registryDenied) throw new Error("COINOPS_OPERATOR_SCOPE_DENIED");
+      return engine;
+    } },
     "./operator-context": { assertRowEngine: (row: Record<string, unknown>) => {
       assert.equal(row.trading_engine_id, "engine-a"); assert.equal(row.exchange_account_id, "account-a");
     } },
@@ -128,6 +131,20 @@ test("missing-order alert recovers only after a late trade-backed fill and curre
   const unproven = fixture({ alerts: [[missing]], lateFill: false });
   await assert.rejects(unproven.run(), /RECOVERY_FILL_EVIDENCE_MISSING/);
   assert.equal(unproven.writes.some((write) => write.data.kill_switch === false), false);
+});
+
+test("registry recovery revalidates real permissions and TP before opening only its engine", async () => {
+  const incident = { ...known, code: "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE",
+    details: { stage: "LOAD_LEDGER", root_code: "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE" } };
+  const safe = fixture({ alerts: [[incident]] });
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.ok(safe.writes.filter(w => w.table === "trading_engines")
+    .every(w => w.filters.id === "engine-a" && w.filters.exchange_account_id === "account-a"));
+  for (const options of [{ registryDenied: true }, { healthy: false }, { missingTp: true }]) {
+    const denied = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(denied.run(), /SCOPE_DENIED|RESUME_EXECUTOR_NOT_ACTIVE|EXCHANGE_ORDER_MISSING/);
+    assert.equal(denied.writes.some(w => w.data.kill_switch === false), false);
+  }
 });
 
 test("unknown/additional/changed critical incidents never open the BUY gate", async () => {
