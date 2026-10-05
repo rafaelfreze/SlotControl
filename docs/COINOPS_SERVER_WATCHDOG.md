@@ -1,5 +1,10 @@
 # CoinOps — watchdog server-side
 
+Política de observação, distinção RECONCILING/RECOVERING, registry de recorrência
+e SLO v18: `COINOPS_TRADING_RELIABILITY_20261005.md`. Watchdog é fallback, nunca
+uma etapa obrigatória de gain/fill. Não contar recovery do cron normal como ação
+do Watchdog.
+
 O navegador, o PC e o Codex não participam do laço operacional. A Vercel executa
 `/api/cron/live-execution` a cada minuto; esse worker é a autoridade para
 reconciliar Binance ↔ ledger e, quando provado seguro, proteger TP, armar a
@@ -49,7 +54,7 @@ execução retoma o run persistido e reconcilia Binance antes de qualquer novo
 write. Resultado financeiro ambíguo continua fail-closed no engine afetado.
 
 O sucessor é avançado pelo cron que concluiu o ciclo, com lease próprio. Enquanto
-esse lease está ativo o watchdog exibe `RECOVERING` sem código/alerta. Se o cron
+esse lease está ativo o watchdog exibe `RECONCILING` sem código/alerta. Se o cron
 cair antes de reivindicá-lo, o watchdog chama o mesmo `advanceLiveRun`; nunca
 uma segunda implementação. Falha breve 502/503 mantém apenas o alerta WARNING
 transitório e não grava `last_error`; persistência superior à janela segura

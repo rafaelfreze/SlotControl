@@ -66,10 +66,20 @@ test("account or shard mismatch cannot target another engine's credential", () =
 });
 test("active lease is left to its current owner", () => {
   assert.deepEqual(check({ run: { ...run, lease_until: new Date(now + 60_000).toISOString() } }),
-    { state: "RECOVERING", code: null, recoverable: false });
+    { state: "RECONCILING", code: null, recoverable: false });
   assert.deepEqual(check({ run: { ...run, last_reconciled_at: null,
     lease_until: new Date(now + 60_000).toISOString() } }),
-  { state: "RECOVERING", code: null, recoverable: false });
+  { state: "RECONCILING", code: null, recoverable: false });
+});
+
+test("first empty activation waits at most 90s for normal cron, never grants grace to an OPEN position", () => {
+  const starting = { ...run, last_reconciled_at: null, created_at: new Date(now-30_000).toISOString() };
+  const empty = slots.map(slot=>({...slot,position_quantity:0}));
+  assert.equal(check({run:starting,slots:empty,orders:[]}).state,"RECONCILING");
+  assert.equal(check({run:{...starting,created_at:new Date(now-86_400_000).toISOString(),
+    activated_at:new Date(now-30_000).toISOString()},slots:empty,orders:[]}).state,"RECONCILING");
+  assert.equal(check({run:{...starting,created_at:new Date(now-90_000).toISOString()},slots:empty,orders:[]}).code,"WATCHDOG_RECONCILIATION_STALE");
+  assert.equal(check({run:starting,orders:[]}).state,"STALE");
 });
 
 const monitorAlert: FastAlert = { trading_engine_id: run.trading_engine_id,

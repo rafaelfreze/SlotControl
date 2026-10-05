@@ -71,8 +71,8 @@ const sample: PackagedAudit = { datasets: { summary: [{ environment: "SHADOW", a
 test("pacote v17 contém contexto de conta/motor/shard e evidência LIVE/ATH/aportes com hashes", () => {
   const packaged = buildReportPackage(sample, filters, now.toISOString(), "abc123");
   const files = unzip(packaged.zip()), manifest = JSON.parse(files.get("manifest.json")!);
-  assert.equal(files.size, 27); assert.equal(manifest.report_version, 17); assert.equal(manifest.timezone, "America/Campo_Grande"); assert.equal(manifest.app_commit_sha, "abc123");
-  assert.equal(manifest.schema_version, "coinops/robot-v1/reports-v17-unsent-recovery"); assert.ok(files.has("16_MISSED_TEMPORAL.csv")); assert.ok(files.has("17_METAS_MENSAIS.csv")); assert.ok(files.has("REGIME_ATH.csv")); assert.ok(files.has("AJUSTES_MANUAIS.csv")); assert.ok(files.has("LIVE_PREPARATION.csv")); assert.ok(files.has("LIVE_EXECUTION.csv")); assert.ok(files.has("APORTES.csv")); assert.ok(files.has("ENGINE_ISOLATION.csv"));
+  assert.equal(files.size, 27); assert.equal(manifest.report_version, 18); assert.equal(manifest.timezone, "America/Campo_Grande"); assert.equal(manifest.app_commit_sha, "abc123");
+  assert.equal(manifest.schema_version, "coinops/robot-v1/reports-v18-trading-reliability"); assert.ok(files.has("16_MISSED_TEMPORAL.csv")); assert.ok(files.has("17_METAS_MENSAIS.csv")); assert.ok(files.has("REGIME_ATH.csv")); assert.ok(files.has("AJUSTES_MANUAIS.csv")); assert.ok(files.has("LIVE_PREPARATION.csv")); assert.ok(files.has("LIVE_EXECUTION.csv")); assert.ok(files.has("APORTES.csv")); assert.ok(files.has("ENGINE_ISOLATION.csv"));
   for (const file of REPORT_FILES) assert.match(files.get(file.name)!, /exchange_account_id.*trading_engine_id.*quote_asset/);
   for (const file of REPORT_FILES) assert.equal(manifest.row_counts[file.name], sample.datasets[file.key]?.length || 0);
   assert.deepEqual([...files.keys()].sort(), manifest.included_files.sort());

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error";
 
 import { planAthLadder } from "./ath-ladder";
 import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
@@ -50,6 +51,7 @@ type Preparation = Scope & EngineScope & { asset: V1Asset; symbol: Symbol; slot_
   max_total_exposure_brl: number | string; monthly_target: number;
   live_enabled: boolean; kill_switch: boolean; config_version: number };
 type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; status: string;
+  execution_source?: string;
   anchor_price: number | string; slot_notional_brl: number | string; gain_rate: number | string;
   entry_spacing: number | string; entry_regime: "NORMAL" | "POST_ATH";
   config_version: number; config_snapshot: Record<string, unknown>; strategy_version: string;
@@ -182,6 +184,19 @@ async function event(service: Service, run: Run, key: string, type: string,
   if (result.error) throw new Error("COINOPS_LIVE_EVENT_PERSIST_FAILED");
 }
 
+async function flowOwner(service: Service, run: Run, kind: "GAIN" | "FILL", clientId: string,
+  slot: number, quantity?: number) {
+  try {
+    await event(service, run, `FLOW_OWNER:${kind}:${clientId}:${quantity ?? "gain"}`, "TRADING_FLOW_OWNER", slot,
+      { kind, client_order_id: clientId, ...(quantity !== undefined ? { executed_quantity: quantity } : {}),
+        source: run.execution_source?.startsWith("WATCHDOG") ? "WATCHDOG" : run.execution_source ? "ENGINE" : "UNKNOWN" });
+  } catch {
+    // Missing attribution is UNKNOWN in the SLO, not 0% dependency. Telemetry
+    // failure must never interrupt protection after an already persisted fill.
+    console.error(JSON.stringify({ event: "COINOPS_FLOW_ATTRIBUTION_FAILED", engine_id: run.trading_engine_id, run_id: run.id }));
+  }
+}
+
 function candidate(slot: Slot, account: Account, rank: number | null,
   reached: boolean, eligible: boolean): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
@@ -229,7 +244,7 @@ async function release(service: Service, run: Run, error: string | null, reconci
   if (result.error) throw new Error("COINOPS_LIVE_LEASE_RELEASE_FAILED");
 }
 
-async function preventNewBuys(service: Service, run: Run, code: string) {
+async function preventNewBuys(service: Service, run: Run, code: string, evidence: Record<string, unknown> = {}) {
   const gate = await service.from("trading_engines").update({ kill_switch: true })
     .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
     .eq("exchange_account_id", run.exchange_account_id);
@@ -240,7 +255,7 @@ async function preventNewBuys(service: Service, run: Run, code: string) {
   if (result.error) throw new Error("COINOPS_LIVE_KILL_SWITCH_PERSIST_FAILED");
   const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
     alert_key: `LIVE_RUN:${run.id}:CRITICAL`, severity: "CRITICAL", code,
-    details: { run_id: run.id }, last_seen_at: new Date().toISOString(), resolved_at: null },
+    details: { ...evidence, run_id: run.id }, last_seen_at: new Date().toISOString(), resolved_at: null },
   { onConflict: "trading_engine_id,alert_key" });
   if (alert.error) throw new Error("COINOPS_LIVE_ALERT_PERSIST_FAILED");
 }
@@ -253,19 +268,20 @@ const TRANSIENT_EXECUTOR_READ_CODES = new Set([
 /** A failed observation never authorizes a new order. Keep the run retryable
  * while the exchange is briefly unavailable; only a prolonged outage locks
  * this engine. Neither path changes a sibling engine or an existing TP. */
-async function holdTransientExecutorRead(service: Service, run: Run) {
+async function holdTransientExecutorRead(service: Service, run: Run, evidence: Record<string, unknown> = {}) {
   const alertKey = `LIVE_RUN:${run.id}:TRANSIENT_EXECUTOR_READ`;
   const previous = await service.from("robot_v1_live_alerts").select("first_seen_at")
     .eq("trading_engine_id", run.trading_engine_id).eq("alert_key", alertKey)
     .is("resolved_at", null).maybeSingle();
   if (previous.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_READ_FAILED");
   if (previous.data && Date.now() - Date.parse(previous.data.first_seen_at) > 5 * 60_000) {
-    await preventNewBuys(service, run, "COINOPS_LIVE_EXECUTOR_READ_STALE");
+    await preventNewBuys(service, run, "COINOPS_LIVE_EXECUTOR_READ_STALE", evidence);
     return false;
   }
   const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
     alert_key: alertKey, severity: "WARNING", code: "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ",
-    details: { run_id: run.id }, last_seen_at: new Date().toISOString(), resolved_at: null },
+    details: { ...evidence, run_id: run.id }, first_seen_at: previous.data?.first_seen_at ?? new Date().toISOString(),
+    last_seen_at: new Date().toISOString(), resolved_at: null },
   { onConflict: "trading_engine_id,alert_key" });
   if (alert.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_PERSIST_FAILED");
   return true;
@@ -550,6 +566,8 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
   });
   const saved = (Array.isArray(synced.data) ? synced.data[0] : synced.data) as Order | null;
   if (synced.error || !saved || saved.id !== order.id) throw new Error("COINOPS_LIVE_ORDER_RECONCILIATION_FAILED");
+  if (amount(saved.executed_quantity) > amount(order.executed_quantity))
+    await flowOwner(service, run, "FILL", order.client_order_id, order.slot_number, amount(saved.executed_quantity));
   Object.assign(order, saved);
   await acknowledgeAccountOrderDispatch(service, run, order.client_order_id, run.lease_owner);
   if (order.strategy_decision_id && (amount(order.executed_quantity) > 0 || order.status === "NEW"))
@@ -677,6 +695,7 @@ async function creditClosedSlots(service: Service, run: Run, ledger: Ledger,
     const account = (Array.isArray(result.data) ? result.data[0] : result.data) as Account | null;
     if (result.error || !account || account.slot_number !== slot.slot_number)
       throw new Error("COINOPS_LIVE_CREDIT_FAILED");
+    await flowOwner(service, run, "GAIN", tp.client_order_id, slot.slot_number);
     Object.assign(ledger.accounts.find((item) => item.slot_number === slot.slot_number)!, account);
     await updateSlot(service, run, slot, { entry_state: "CLOSED" });
   }
@@ -1278,8 +1297,9 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
   const service = createServiceRoleClient();
   const run = await claim(service, runId);
   if (!run) return { status: "BUSY_OR_INACTIVE" };
+  run.execution_source = source;
   let errorCode: string | null = null;
-  let budgetHeld = false;
+  let reconciliationComplete = false;
   let stage = "LOAD_LEDGER";
   try {
     await validateRunEngine(service, run);
@@ -1362,6 +1382,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       .eq("alert_key", `LIVE_RUN:${run.id}:TRANSIENT_EXECUTOR_READ`)
       .is("resolved_at", null);
     if (held.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_RESOLUTION_FAILED");
+    reconciliationComplete = true;
     return { status: "OK", next };
   } catch (error) {
     if (error instanceof Error && error.message === "COINOPS_LIVE_FILLED_DURING_SNAPSHOT") {
@@ -1372,7 +1393,6 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     if (error instanceof Error && error.message === "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING")
       return { status: "RETRY", code: error.message };
     if (error instanceof AccountOrderBudgetHold) {
-      budgetHeld = true;
       await event(service, run, `ACCOUNT_ORDER_HOLD:${error.clientOrderId}:${monthlyPeriodKey(new Date())}`,
         "ACCOUNT_ORDER_BUDGET_HOLD", null, { code: error.message, side: error.side, client_order_id: error.clientOrderId });
       const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
@@ -1393,10 +1413,10 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
         && Date.now() - Date.parse(pending.data.updated_at) < 10 * 60_000)
         return { status: "RETRY", code: "COINOPS_BULK_TRANSIENT_EXECUTOR_READ" };
     }
-    if (["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
+    if (error instanceof LiveReadUnavailable || ["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
       && error instanceof Error && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
       errorCode = "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
-      if (await holdTransientExecutorRead(service, run)) {
+      if (await holdTransientExecutorRead(service, run, liveFailureEvidence(error, stage, source))) {
         // The warning row is the durable retry checkpoint. A short 502/503 is
         // not a failed run and must not be promoted by the watchdog through
         // last_error while the official reconciler remains retryable.
@@ -1409,10 +1429,10 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : `COINOPS_LIVE_${stage}_FAILED`;
     if (stage === "CONFIG_UPDATE") await markBulkUpdateBlocked(service, run, errorCode);
-    await preventNewBuys(service, run, errorCode);
+    await preventNewBuys(service, run, errorCode, liveFailureEvidence(error, stage, source));
     throw new Error(errorCode);
   } finally {
-    await release(service, run, errorCode, !budgetHeld);
+    await release(service, run, errorCode, reconciliationComplete);
   }
 }
 

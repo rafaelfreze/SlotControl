@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { ExecutorHttpError, observationFailure, retryableObservation } from "./live-read-error.ts";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { EngineContext } from "./operator-context.ts";
@@ -86,7 +87,7 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
     }
     const code = payload.error && /^EXECUTOR_[A-Z0-9_]+$/.test(payload.error)
       ? payload.error : `EXECUTOR_HTTP_${response.status}`;
-    throw new Error(code);
+    throw new ExecutorHttpError(code, response.status);
   }
   for (const field of ["operator_id", "exchange_account_id", "trading_engine_id", "environment", "symbol", "quote_asset"])
     if ((payload as Record<string, unknown>)[field] !== input[field]) throw new Error("EXECUTOR_RESPONSE_SCOPE_MISMATCH");
@@ -109,12 +110,6 @@ export async function proveLiveExecutorUnsentOrder(engine: ExecutorEngineScope, 
 }
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
-function transientReadError(error: unknown) {
-  const code = error instanceof Error ? error.message : "";
-  return ["EXECUTOR_HTTP_502", "EXECUTOR_HTTP_503", "EXECUTOR_HTTP_504", "EXECUTOR_UNAVAILABLE"].includes(code)
-    || error instanceof TypeError
-    || error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
-}
 async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades",
   input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch,
   resolver: ExecutorEngineResolver = resolveExecutorForEngine): Promise<T> {
@@ -123,7 +118,8 @@ async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-or
       const key = readKey();
       return await request<T>(path, input(key), key, fetcher, resolver);
     } catch (error) {
-      if (attempt === 3 || !transientReadError(error)) throw error;
+      if (!retryableObservation(error)) throw error;
+      if (attempt === 3) throw observationFailure(error, path, attempt + 1);
       // Rolling executor restarts may interrupt a GET. Retry observations only;
       // create/cancel requests must still resolve through persisted ownership.
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
@@ -169,8 +165,14 @@ export function readLegacyProductionReconciliation(engine: ExecutorEngineScope, 
 }
 export async function readLiveExecutorOrder(engine: ExecutorEngineScope, clientOrderId: string,
   orderId?: string | null, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
-  return readWithRetry<{ order: LiveOrder | null }>("/v1/query-order",
-    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher, resolver);
+  for (let confirmation = 0; ; confirmation++) {
+    const result = await readWithRetry<{ order: LiveOrder | null }>("/v1/query-order",
+      (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher, resolver);
+    if (result.order || !orderId || confirmation === 2) return result;
+    // Confirm temporary invisibility only for an already acknowledged exact ID.
+    // Persistent absence still reaches the existing fail-closed ownership gate.
+    await new Promise(resolve => setTimeout(resolve, 250 * (confirmation + 1)));
+  }
 }
 export async function readLiveExecutorTrades(engine: ExecutorEngineScope, clientOrderId: string,
   orderId: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {

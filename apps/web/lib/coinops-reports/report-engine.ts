@@ -371,6 +371,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   }
   const rules: AuditRow[] = [];
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "normal_trading_observation_retry", value: "READ_ONLY_BOUNDED_RETRY_WITH_PERSISTENT_CHECKPOINT", unit: "enum", version: 1,
+    source: "robot_v1_live_events:TRADING_FLOW_OWNER + robot_v1_live_alerts + incident_knowledge", evidence_scope: "CURRENT_CODE_CONTRACT",
+    notes: "Watchdog é fallback, não etapa de gain/fill. GET-equivalente: 4 tentativas; identidade/permissão/POST ambíguo não ganha retry. Ausência transitória: somente ordem já reconhecida por ID exato; nunca autoriza novo POST. Reconciliação incompleta não atualiza freshness. Atribuição ausente = UNKNOWN, não 0%. Assinatura corrigida reincidente = RECURRENCE_REGRESSION." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "unsent_entry_recovery", value: "SIGNED_NO_FETCH_OR_FENCED_DURABLE_ABSENCE_AND_EXACT_GET", unit: "enum", version: 1,
     source: "robot_v1_live_events:ACCOUNT_ORDER_NOT_SUBMITTED + robot_v1_strategy_decisions", evidence_scope: "CURRENT_CODE_CONTRACT",
     notes: "Ausência de ordem/timeout não comprova não envio. Claim pendente/concluído impede recuperação; guard e clientOrderId permanecem. Novo despacho exige lease, orçamento fresco e proteção. Evento persistido comprova a liberação, não fill ou nova ordem." });

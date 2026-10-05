@@ -95,7 +95,7 @@ export async function runServerWatchdog() {
     service.from("executor_shards").select("id,enabled").eq("enabled", true).order("id"),
     service.from("executor_capacity_samples").select("shard_id,heartbeat_at,observed_at,scheduler_backlog"),
     service.from("robot_v1_live_runs")
-      .select("id,product_id,tenant_id,user_id,operator_id,asset,trading_engine_id,exchange_account_id,status,symbol,last_reconciled_at,last_error,lease_until")
+      .select("id,product_id,tenant_id,user_id,operator_id,asset,trading_engine_id,exchange_account_id,status,symbol,last_reconciled_at,last_error,lease_until,created_at")
       .eq("tenant_id", tenantId).eq("status", "ACTIVE"),
     service.from("watchdog_incidents")
       .select("incident_id,shard_id,engine_id,incident_key,opened_at,last_recovery_attempt_at")
@@ -109,6 +109,16 @@ export async function runServerWatchdog() {
     throw new Error("COINOPS_WATCHDOG_SNAPSHOT_FAILED");
   if (!shards.data?.length) throw new Error("COINOPS_WATCHDOG_NO_ENABLED_SHARDS");
   const runs = (runsResult.data ?? []) as ScopedRun[];
+  // PREPARING may have existed for hours. The first immutable activation event,
+  // not updated_at/lease activity, anchors the one-time first-cron window.
+  await Promise.all(runs.filter(run => !run.last_reconciled_at).map(async run => {
+    const activation = await service.from("robot_v1_live_events").select("observed_at")
+      .eq("operator_id", run.operator_id).eq("trading_engine_id", run.trading_engine_id)
+      .eq("run_id", run.id).eq("event_type", "RUN_ACTIVATED")
+      .order("observed_at", { ascending: true }).limit(1).maybeSingle();
+    if (activation.error) throw new Error("COINOPS_WATCHDOG_ACTIVATION_READ_FAILED");
+    if (activation.data) run.activated_at = activation.data.observed_at;
+  }));
   const ids = <T,>(items: T[]) => [...new Set(items)];
   const [accountsResult, enginesResult, slotsResult, ordersResult, configResult] = runs.length
     ? await Promise.all([
@@ -167,11 +177,12 @@ export async function runServerWatchdog() {
       && item.incident_key === "SHARD:EXECUTOR_OFFLINE");
     if (offline) await openIncident(service, shard.id, null, "EXECUTOR_OFFLINE", "OFFLINE", now, open);
     const own = findings.filter((item) => item.shardId === shard.id);
-    let healthy = 0; let recovering = 0; let blocked = 0; let stale = 0;
+    let healthy = 0; let recovering = 0; let reconciling = 0; let blocked = 0; let stale = 0;
     const candidates: typeof own = [];
     for (const item of own) {
       const { run, finding } = item;
       if (finding.state === "HEALTHY") healthy++;
+      else if (finding.state === "RECONCILING") reconciling++;
       else if (finding.state === "RECOVERING") recovering++;
       else if (finding.state === "STALE") stale++;
       else blocked++;
@@ -193,7 +204,7 @@ export async function runServerWatchdog() {
       } else await updateEngineAlert(service, run, finding.code, now);
       if (!offline && finding.recoverable) candidates.push(item);
     }
-    if (offline) { healthy = 0; recovering = 0; blocked = 0; stale = own.length; }
+    if (offline) { healthy = 0; recovering = 0; reconciling = 0; blocked = 0; stale = own.length; }
     if (!offline && own.every((item) => item.finding.state === "HEALTHY"))
       for (const incident of shardOpen) await resolveIncident(service, incident, now);
     const capacityCodes = new Set((capacityAlertsResult.data ?? [])
@@ -204,7 +215,7 @@ export async function runServerWatchdog() {
         ? "CAPACITY_WARNING" : "HEALTHY";
     const saved = await service.from("watchdog_checks").upsert({ shard_id: shard.id,
       checked_at: new Date(now).toISOString(), shard_state: state, healthy_engines: healthy,
-      recovering_engines: recovering, blocked_engines: blocked, stale_engines: stale,
+      recovering_engines: recovering, reconciling_engines: reconciling, blocked_engines: blocked, stale_engines: stale,
       check_duration_ms: Date.now() - started, updated_at: new Date().toISOString() },
     { onConflict: "shard_id" });
     if (saved.error) throw new Error("COINOPS_WATCHDOG_CHECK_WRITE_FAILED");

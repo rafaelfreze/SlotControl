@@ -1,5 +1,5 @@
 export type WatchdogCheck = { shard_id: string; checked_at: string; shard_state: string;
-  healthy_engines: number; recovering_engines: number; blocked_engines: number; stale_engines: number };
+  healthy_engines: number; recovering_engines: number; reconciling_engines?: number; blocked_engines: number; stale_engines: number };
 
 const OPERATIONALLY_HEALTHY_SHARD_STATES = new Set([
   'HEALTHY',
@@ -27,6 +27,7 @@ export function aggregateWatchdogStatus(enabledIds: string[], checks: WatchdogCh
     || rows.some((row) => !isOperationallyHealthyShard(row.shard_state)) ? 'ATTENTION' : 'HEALTHY',
   checkedAt, activeCriticalAlerts: criticalAlerts,
   engines: { healthy: rows.reduce((n, row) => n + row.healthy_engines, 0),
+    reconciling: rows.reduce((n, row) => n + (row.reconciling_engines ?? 0), 0),
     recovering: rows.reduce((n, row) => n + row.recovering_engines, 0),
     blocked: rows.reduce((n, row) => n + row.blocked_engines, 0),
     stale: rows.reduce((n, row) => n + row.stale_engines, 0) },

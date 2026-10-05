@@ -29,6 +29,39 @@ const state = { ...engine, environment: "REAL",
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
 
+test("named query 503 reproduces Production: retry exact engine/order, preserve cross-shard isolation", async () => {
+  for (const shardId of ["executor-02", "executor-03"]) {
+    const scoped = { ...engine, trading_engine_id: shardId === "executor-02" ? engine.trading_engine_id : "00000000-0000-4000-8000-000000000004" };
+    const target = { shardId, ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };
+    const calls: Record<string, unknown>[] = [];
+    const order = { clientOrderId: "owned-1", orderId: "100", symbol: scoped.symbol, side: "SELL", status: "FILLED", executedQuantity: 1, cumulativeQuoteQuantity: 10, price: 10 };
+    const fetcher = (async (url: unknown, init?: RequestInit) => {
+      assert.equal(new URL(String(url)).pathname, "/v1/query-order");
+      const body = JSON.parse(String(init?.body)); calls.push(body);
+      assert.equal(body.trading_engine_id, scoped.trading_engine_id); assert.equal(body.executor_shard_id, shardId);
+      assert.equal(body.clientOrderId, "owned-1"); assert.equal(body.orderId,"100");
+      return calls.length === 1 ? Response.json({error:"EXECUTOR_ORDER_QUERY_FAILED"},{status:503})
+        : Response.json({...scoped,environment:"REAL",executor_shard_id:shardId,order});
+    }) as typeof fetch;
+    assert.equal((await transport.readLiveExecutorOrder(scoped,"owned-1","100",fetcher,async()=>target)).order?.status,"FILLED");
+    assert.equal(calls.length,2);
+  }
+});
+
+test("acknowledged order delayed visibility confirms exact ID; permanent absence cannot authorize a write", async () => {
+  const target={shardId:"executor-02",ip:"203.0.113.2",base:"https://203.0.113.2",secret:"x".repeat(32)};
+  let calls=0;
+  const fetcher=(async(url:unknown)=>{
+    assert.equal(new URL(String(url)).pathname,"/v1/query-order");calls++;
+    return Response.json({...engine,environment:"REAL",executor_shard_id:target.shardId,order:null});
+  }) as typeof fetch;
+  assert.equal((await transport.readLiveExecutorOrder(engine,"owned","100",fetcher,async()=>target)).order,null);
+  assert.equal(calls,3);
+  calls=0;
+  await transport.readLiveExecutorOrder(engine,"owned",null,fetcher,async()=>target);
+  assert.equal(calls,1,"an unacknowledged new intent has no invented Binance ID");
+});
+
 test("permit expiry before fetch has scoped proof and zero network attempts; timeout stays uncertain", async () => {
   const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://203.0.113.2", secret: "fixture-secret-not-real-123456789123456789" };
   const input = { clientOrderId: "C2-fixture-2-B-0123456789abcd", symbol: engine.symbol, side: "BUY", purpose: "ENTRY" };

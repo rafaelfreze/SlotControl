@@ -2,6 +2,8 @@ export type FastRun = {
   id: string; trading_engine_id: string; exchange_account_id: string;
   status: string; symbol: string; last_reconciled_at: string | null;
   last_error: string | null; lease_until: string | null;
+  created_at?: string;
+  activated_at?: string;
 };
 
 export type FastEngine = { id: string; exchange_account_id: string; symbol: string;
@@ -15,7 +17,7 @@ export type FastOrder = { run_id: string; slot_id: string; side: string; status:
 export type FastAlert = { trading_engine_id: string; exchange_account_id: string;
   alert_key: string; severity: string; code: string; details?: unknown };
 
-export type FastFinding = { state: "HEALTHY" | "RECOVERING" | "BLOCKED" | "STALE" | "DEGRADED";
+export type FastFinding = { state: "HEALTHY" | "RECONCILING" | "RECOVERING" | "BLOCKED" | "STALE" | "DEGRADED";
   code: string | null; recoverable: boolean };
 export type FastConfigUpdate = { status: string; updated_at: string };
 
@@ -59,7 +61,14 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
     || engine.kill_switch || account.kill_switch)
     return { state: "BLOCKED", code: "WATCHDOG_LOCAL_GATE_CLOSED", recoverable: false };
   if (run.lease_until && Date.parse(run.lease_until) > now)
-    return { state: "RECOVERING", code: null, recoverable: false };
+    return { state: "RECONCILING", code: null, recoverable: false };
+  // A newly activated empty run has not missed a cron yet. Give the normal
+  // worker one bounded scheduling window, never a grace period for an OPEN TP.
+  const startedAt = run.activated_at ?? run.created_at;
+  const age = startedAt ? now - Date.parse(startedAt) : NaN;
+  if (!run.last_reconciled_at && age >= 0 && age < 90_000 && slots.length === 25
+    && slots.every(slot => Number(slot.position_quantity) === 0) && orders.length === 0)
+    return { state: "RECONCILING", code: null, recoverable: false };
   const last = run.last_reconciled_at ? Date.parse(run.last_reconciled_at) : NaN;
   if (!Number.isFinite(last) || now - last > 5 * 60_000)
     return { state: "STALE", code: "WATCHDOG_RECONCILIATION_STALE", recoverable: true };

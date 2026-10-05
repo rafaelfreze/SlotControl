@@ -3,7 +3,7 @@ import test from "node:test";
 import { buildAuditReport } from "./report-engine.ts";
 import { REPORT_VERSION } from "./filters.ts";
 test("report v17 distinguishes unsent evidence from a fill and declares the fenced recovery contract", () => {
-  assert.equal(REPORT_VERSION, 17);
+  assert.equal(REPORT_VERSION, 18);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
     generatedAt: "2026-10-04T20:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
     { start: "2026-10-04T00:00:00Z", end: "2026-10-05T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });
