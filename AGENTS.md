@@ -190,6 +190,14 @@ no ambiente de destino antes de operação remota.
 
 ## Custos & Operação (FinOps ADMIN)
 
+- Redução de custo comprovada em 05/10/2026: watchdog/LIVE/Capacity/push continuam
+  a cada minuto. Não recriar supervisão Codex de 2h: a automação existente usa
+  auditoria diária. Alertas de capacidade saudáveis não fazem UPDATE vazio;
+  transições reais permanecem imediatas. Logs LIVE saudáveis são sumários amostrados,
+  nunca substituem o ledger; falha/retry/recovery e transição não são amostrados.
+  Custos faturados, incluídos e projetados permanecem separados. Ver
+  `docs/COINOPS_VERCEL_COST_AUDIT_20261005.md`.
+
 - `/custos-operacao` é exclusivamente ADMIN; VIEWER não acessa custos internos nem APIs FinOps. Tabelas `coinops.finops_*` são server-only, com RLS e escopo tenant/operator.
 - Capital Binance e P&L de estratégias nunca são receita da plataforma. Custos seguem `REAL > ESTIMADO > RATEIO_ESTIMADO > INDISPONIVEL`; `MANUAL` identifica entrada/evidência, não cobrança confirmada. Sem fatura não significa custo zero.
 - A tela lê snapshots persistidos; coleta agendada independente a cada seis horas e atualização operacional sob demanda. Não acoplar billing, câmbio ou FinOps a trading, watchdog, admissão ou reconciliação com escrita. Falha de billing não bloqueia nenhum motor.

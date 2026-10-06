@@ -1,7 +1,9 @@
-# CoinOps — monitor Production a cada 2 horas
+# CoinOps — auditoria diária de Production e recorrências
 
-Política operacional atualizada em 27/09/2026. Este runbook orienta a rotina
-Codex existente; não cria outro agendamento nem substitui o watchdog.
+Política operacional atualizada em 05/10/2026. Este runbook orienta a rotina
+Codex existente; não cria outro agendamento nem substitui o watchdog. O nome
+do arquivo foi mantido para preservar links antigos. A rotina de duas horas
+foi convertida em auditoria diária às 09:30, preservando o fuso vigente no PC.
 
 ## Responsabilidades
 
@@ -9,16 +11,17 @@ Codex existente; não cria outro agendamento nem substitui o watchdog.
   telemetria e reconciliador LIVE, conforme `COINOPS_SERVER_WATCHDOG.md`.
   Resolve somente classes conhecidas e comprovadamente seguras. Não depende
   de navegador, PC, Codex ou sessão do ADMIN.
-- **Camada 2 — Codex, a cada duas horas, sem prazo final:** supervisão de
-  Production REAL, validação de incidentes e evolução dirigida do watchdog.
+- **Camada 2 — Codex, diariamente, sem prazo final:** auditoria de
+  Production REAL, incidentes/recorrências e evolução dirigida do watchdog.
   A execução saudável deve ser rápida, barata e somente leitura.
 - Testnet, chaos tests, carga sintética e auditoria de escala **não fazem parte
-  desta rotina**. Fixtures/Testnet podem validar uma correção específica
+  desta rotina**. Fixtures offline podem validar uma correção específica
   quando necessárias; nunca provocar falhas ou trades para testar Production.
 
 ## Fontes, descoberta e checkpoint
 
-Usar o registry oficial e o vínculo validado conta → `executor_shard_id`.
+Usar o registry oficial e o vínculo validado engine → `executor_shard_id`.
+O shard bootstrap da conta não substitui o ownership do engine.
 Descobrir todos os shards, contas e motores REAL atuais; nunca manter lista
 fixa de nomes, IPs, quantidades ou mercados.
 
@@ -33,6 +36,10 @@ por incidente/atualização para não perder recovery entre execuções. Persist
 UTC de início/fim, fontes consultadas, IDs e estado final no registro da rotina.
 Não avançar o watermark de sucesso se a leitura ficou incompleta; indicar a
 lacuna e preservá-la para a próxima execução.
+
+A rodada diária usa snapshots internos. Não coletar billing novamente,
+repetir leituras Binance completas ou duplicar as rotinas FinOps já existentes.
+O Watchdog server-side continua detectando incidentes a cada minuto.
 
 ## Fast path normal — somente leitura
 
@@ -57,7 +64,7 @@ Binance ou qualquer mutação. Não repetir notificações por estado saudável 
 aviso conhecido e inalterado; respeitar a preferência da automação.
 
 ```text
-COINOPS_2H_OK
+COINOPS_DAILY_OK
 executores: X/X
 motores: X/X
 incidentes novos: 0
@@ -79,7 +86,7 @@ de push pela existência da outbox.
 
 Registrar `WATCHDOG_RECOVERY_CONFIRMED` quando a evidência demonstrar o
 recovery. Não modificar código, reabrir auditoria ou repetir testes sem
-necessidade. Não renotificar o mesmo episódio a cada duas horas sem mudança.
+necessidade. Não renotificar o mesmo episódio em nova rodada sem mudança.
 
 ## Incidente não resolvido — engenharia no menor escopo
 
@@ -97,7 +104,7 @@ material, preservar estado e alertar; não prolongar observação apenas pela pr
    credencial inválida, dependência externa ou decisão humana.
 5. Corrigir o menor escopo. Só ampliar política/runbook automático quando
    detecção, ação determinística, idempotência e isolamento forem provados.
-6. Adicionar regression test; validar em fixtures/Testnet quando aplicável,
+6. Adicionar regression test; validar em fixtures offline quando aplicável,
    nunca reproduzindo o incidente artificialmente em REAL.
 7. Executar testes direcionados e validação proporcional; revisar diff,
    commit/push/deploy pelo fluxo oficial e confirmar a versão publicada.
@@ -166,3 +173,11 @@ RECOVERY FUTURO AUTOMÁTICO: SIM/NÃO + motivo
 Usar “não aplicável” para código/teste/deploy quando não houve mudança.
 Classificar conclusões como COMPROVADO, INFERIDO ou NÃO TESTADO. Nunca declarar
 recuperação, isolamento, health, deploy ou push por inferência.
+
+## Aplicação da cadência
+
+Em 06/10/2026 00:22 UTC, o gerenciador oficial do PC confirmou por releitura
+a alteração da automação existente `relat-rio-live-coinops-amanh`, ACTIVE,
+destino preservado `01a071e2-9451-7f03-9fd5-bb5d04a16b9e`. Somente nome,
+prompt, cadência e timestamp mudaram. Nenhuma rotina duplicada foi criada;
+modelo, notificações e demais automações foram preservados.

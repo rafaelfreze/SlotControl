@@ -6,8 +6,15 @@ export const COLLECTION_INTERVALS_MS: Record<AssetHealthCadence, number> = {
 export type CollectorState = {
   last_run_at: string | null; last_success_at: string | null; status: string;
   cadence_completed_at: Partial<Record<AssetHealthCadence, string>>;
-  source_failures?: number; watchdog_checked_at?: string | null;
+  source_failures?: number; watchdog_checked_at?: string | null; watchdog_status?: string | null;
 };
+/** Observe every minute, persist transitions immediately and a bounded liveness checkpoint.
+ * Snapshot freshness still comes from last_success_at, never this observation. */
+export function shouldPersistCollectorObservation(state: CollectorState, status: string, now: Date) {
+  const last = Date.parse(state.watchdog_checked_at ?? "");
+  return state.watchdog_status !== status || !Number.isFinite(last)
+    || last > now.getTime() || now.getTime() - last >= COLLECTION_INTERVALS_MS.FAST;
+}
 export function dueCadences(state: CollectorState | null, now: Date): AssetHealthCadence[] {
   return (Object.keys(COLLECTION_INTERVALS_MS) as AssetHealthCadence[]).filter((key) => {
     const last = Date.parse(state?.cadence_completed_at?.[key] ?? "");

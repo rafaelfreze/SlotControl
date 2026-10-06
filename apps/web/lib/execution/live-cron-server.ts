@@ -6,6 +6,7 @@ import { mayRecoverReadOutage } from "./live-read-recovery";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "../supabase/env";
 import { createServiceRoleClient } from "../supabase/service-role";
 import { recordVerifiedReadRecovery } from "../coinops-watchdog/watchdog-recovery-audit";
+import { liveCronLog } from "./live-cron-log-policy";
 
 const headers = { "cache-control": "no-store" };
 
@@ -82,8 +83,11 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
     const status = failed ? "PARTIAL_FAILURE" : reports.length ? "COMPLETED" : "NO_ACTIVE_RUNS";
     const summary = { event: "COINOPS_LIVE_CRON", mode, status, reports,
       app_commit_sha: process.env.VERCEL_GIT_COMMIT_SHA ?? null };
-    if (failed) console.error(JSON.stringify(summary));
-    else console.info(JSON.stringify(summary));
+    const log = liveCronLog(mode, status, reports, summary.app_commit_sha);
+    if (log) {
+      if (failed) console.error(JSON.stringify(log));
+      else console.info(JSON.stringify(log));
+    }
     return NextResponse.json(summary, { status: failed ? 503 : 200, headers });
   } catch (error) {
     const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)

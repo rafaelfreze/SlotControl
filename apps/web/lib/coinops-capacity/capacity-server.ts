@@ -54,24 +54,35 @@ const CAPACITY_ALERT_CODES = ["BINANCE_WEIGHT_WARNING", "EXECUTOR_CAPACITY_WARNI
   "EXECUTOR_OFFLINE", "SCHEDULER_BACKLOG_WARNING", "ENGINE_STALE", "EXECUTOR_RESOURCE_WARNING"] as const;
 type CapacityAlertCode = typeof CAPACITY_ALERT_CODES[number];
 
-async function updateCapacityAlerts(service: Service, shardId: string,
+export async function updateCapacityAlerts(service: Service, shardId: string,
   codes: Array<{ code: CapacityAlertCode;
     severity: "WARNING" | "CRITICAL" }>, details: Record<string, string | number | boolean | null>,
   resolveAbsent = true) {
   const at = new Date().toISOString();
-  for (const code of CAPACITY_ALERT_CODES) {
-    const active = codes.find((item) => item.code === code);
-    if (active) {
-      const result = await service.from("executor_capacity_alerts").upsert({ shard_id: shardId,
-        code, severity: active.severity, details, last_seen_at: at, resolved_at: null },
+  // Healthy collection previously sent seven empty UPDATEs per shard/minute.
+  // Read only open infrastructure alerts; never touch closed history or another shard.
+  const open = resolveAbsent ? await service.from("executor_capacity_alerts").select("code")
+    .eq("shard_id", shardId).in("code", [...CAPACITY_ALERT_CODES]).is("resolved_at", null)
+    : { data: [], error: null };
+  if (open.error || !Array.isArray(open.data)) throw new Error("COINOPS_CAPACITY_ALERT_READ_FAILED");
+  const active = CAPACITY_ALERT_CODES.flatMap((code) => {
+    const item = codes.find((entry) => entry.code === code);
+    return item ? [{ shard_id: shardId, code, severity: item.severity, details,
+      last_seen_at: at, resolved_at: null }] : [];
+  });
+  if (active.length) {
+    const saved = await service.from("executor_capacity_alerts").upsert(active,
       { onConflict: "shard_id,code" });
-      if (result.error) throw new Error("COINOPS_CAPACITY_ALERT_WRITE_FAILED");
-    } else if (resolveAbsent) {
-      const result = await service.from("executor_capacity_alerts")
-        .update({ resolved_at: at, last_seen_at: at })
-        .eq("shard_id", shardId).eq("code", code).is("resolved_at", null);
-      if (result.error) throw new Error("COINOPS_CAPACITY_ALERT_RESOLVE_FAILED");
-    }
+    if (saved.error) throw new Error("COINOPS_CAPACITY_ALERT_WRITE_FAILED");
+  }
+  const absent = [...new Set(open.data.map((row) => row.code as string))]
+    .filter((code) => CAPACITY_ALERT_CODES.includes(code as CapacityAlertCode)
+      && !active.some((item) => item.code === code));
+  if (absent.length) {
+    const cleared = await service.from("executor_capacity_alerts")
+      .update({ resolved_at: at, last_seen_at: at })
+      .eq("shard_id", shardId).in("code", absent).is("resolved_at", null);
+    if (cleared.error) throw new Error("COINOPS_CAPACITY_ALERT_RESOLVE_FAILED");
   }
 }
 
