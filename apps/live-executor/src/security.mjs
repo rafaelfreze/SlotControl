@@ -150,7 +150,7 @@ export async function withWriteIdempotency({ directory, key, bodyHash, recover, 
       // The synchronous final permit check proves this invocation never began
       // a POST. The serialized SQL reservation remains; only this unsent local
       // claim is released for the identical request with a renewed permit.
-      await unlink(pending).catch(() => {});
+      await unlink(pending).catch((failure) => { if (failure.code !== "ENOENT") throw failure; });
     }
     // All other failures retain pending: Binance may have accepted the order
     // despite a timeout, or local persistence may have failed afterwards.

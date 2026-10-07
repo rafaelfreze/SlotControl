@@ -40,6 +40,7 @@ import { accountExecutionPolicyRequired, reserveAccountOrderDispatch, acknowledg
   AccountOrderBudgetHold } from "./account-order-budget-server";
 import { AccountOrderNotSubmitted } from "./account-order-unsent-proof";
 import { mayAttestUnsentEntry } from "./live-unsent-entry-recovery";
+import { liveQuoteBalanceCheck } from "./live-quote-balance";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Symbol = string;
@@ -490,6 +491,13 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
     assertLiveOrderPrice(run, rows, order, state.filters.priceTick);
     const expectedOwnedOpenIds = await assertExchangeMatchesLedger(run, rows.orders, state,
       order.client_order_id);
+    if (order.side === "BUY") {
+      const slot = rows.slots.find(item => item.id === order.slot_id);
+      if (!slot) throw new Error("COINOPS_LIVE_ORDER_SLOT_MISSING");
+      if (await holdEntryForQuoteBalance(service, run, slot, state,
+        order.purpose === "INITIAL" ? amount(order.requested_quote)
+          : amount(order.requested_quantity) * amount(order.price))) return order;
+    }
     const caps = await service.from("robot_v1_live_preparations")
       .select("max_total_exposure_brl,kill_switch,live_enabled")
       .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
@@ -547,6 +555,14 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
         p_dispatched_at: dispatchedAt, p_proof: error.receipt });
       if (reset.error || reset.data !== true) throw new Error("COINOPS_ACCOUNT_ORDER_UNSENT_UNPROVEN");
       order.account_order_unsent_receipt = error.receipt;
+      if (order.side === "BUY") {
+        const fresh = await readLiveExecutorState(run);
+        const slot = rows.slots.find(item => item.id === order.slot_id);
+        if (!slot) throw new Error("COINOPS_LIVE_ORDER_SLOT_MISSING");
+        if (await holdEntryForQuoteBalance(service, run, slot, fresh,
+          order.purpose === "INITIAL" ? amount(order.requested_quote)
+            : amount(order.requested_quantity) * amount(order.price))) return order;
+      }
       throw new AccountOrderBudgetHold("COINOPS_ACCOUNT_ORDER_NOT_SUBMITTED", order.client_order_id, order.side);
     }
   }
@@ -1144,6 +1160,37 @@ async function confirmCapitalRefreshes(service: Service, run: Run, ledger: Ledge
   }
 }
 
+async function holdEntryForQuoteBalance(service: Service, run: Run, slot: Slot,
+  state: LiveExecutorState, requiredQuote: number, reclaimedQuote = 0) {
+  const evidence = liveQuoteBalanceCheck(state, run.quote_asset, requiredQuote, reclaimedQuote);
+  const alertKey = `LIVE_RUN:${run.id}:QUOTE_BALANCE`;
+  const prior = await service.from("robot_v1_live_alerts").select("code,resolved_at")
+    .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("alert_key", alertKey).maybeSingle();
+  if (prior.error) throw new Error("COINOPS_LIVE_QUOTE_BALANCE_ALERT_UNAVAILABLE");
+  if (!evidence.sufficient) {
+    if (!prior.data || prior.data.resolved_at !== null) {
+      await event(service, run, `QUOTE_BALANCE_HOLD:${slot.id}:${slot.operation_sequence}:${state.observed_at}`,
+        "ENTRY_QUOTE_BALANCE_HOLD", slot.slot_number, evidence);
+      const saved = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
+        alert_key: alertKey, severity: "WARNING", code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT",
+        details: { run_id: run.id, slot_number: slot.slot_number, ...evidence },
+        last_seen_at: new Date().toISOString(), resolved_at: null }, { onConflict: "trading_engine_id,alert_key" });
+      if (saved.error) throw new Error("COINOPS_LIVE_QUOTE_BALANCE_ALERT_PERSIST_FAILED");
+    }
+    return true;
+  }
+  if (prior.data?.resolved_at === null) {
+    const resolved = await service.from("robot_v1_live_alerts").update({ resolved_at: new Date().toISOString() })
+      .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
+      .eq("alert_key", alertKey).eq("code", "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT").is("resolved_at", null);
+    if (resolved.error) throw new Error("COINOPS_LIVE_QUOTE_BALANCE_ALERT_RESOLVE_FAILED");
+    await event(service, run, `QUOTE_BALANCE_AVAILABLE:${slot.id}:${slot.operation_sequence}:${state.observed_at}`,
+      "ENTRY_QUOTE_BALANCE_AVAILABLE", slot.slot_number, evidence);
+  }
+  return false;
+}
+
 async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState) {
   await validateRunEngine(service, run);
@@ -1175,6 +1222,7 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const account = ledger.accounts.find((item) => item.slot_number === selected.slot_number)!;
     const quote = Number(spendable(amount(account.balance_brl)).toFixed(8));
     if (quote < state.filters.minNotional) return "CAPACITY_HOLD";
+    if (await holdEntryForQuoteBalance(service, run, selected, state, quote)) return "QUOTE_BALANCE_HOLD";
     const selectedStatus = ranks.get(selected.slot_number)!;
     const decision = planStrategyInitialEntry(context(run),
       { ...candidate(selected, account, selected.operational_rank,
@@ -1191,6 +1239,15 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   if (active && amount(active.executed_quantity) > 0) return "BUY_PARTIAL";
   const reclaimed = active ? Math.max(0, amount(active.reserved_notional_brl) - amount(active.cumulative_quote)) : 0;
   const activeSlot = ledger.slots.find((s) => s.id === active?.slot_id);
+  if (active?.status === "PREPARED") {
+    // The reconciler verified/released the exact unsent receipt under lease.
+    // Keep its identity and continue TP/fill reconciliation while cash is absent.
+    if (active.account_order_unsent_receipt?.request_nonce && activeSlot
+      && await holdEntryForQuoteBalance(service, run, activeSlot, state,
+        active.purpose === "INITIAL" ? amount(active.requested_quote)
+          : amount(active.requested_quantity) * amount(active.price))) return "QUOTE_BALANCE_HOLD";
+    throw new Error("COINOPS_LIVE_PREPARED_BUY_UNRESOLVED");
+  }
   const observedActive = state.open_orders.find((o) => o.clientOrderId === active?.client_order_id
     && o.id === active?.exchange_order_id && o.side === "BUY" && o.status === "NEW"
     && o.executedQuantity === 0 && o.price === amount(active?.price));
@@ -1244,6 +1301,17 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   if (planned.decision.action_type === "WAIT") return planned.decision.reason;
   const selected = ledger.slots.find((item) => item.id === planned.nextCandidateId);
   if (!selected) throw new Error("COINOPS_LIVE_NEXT_SLOT_MISSING");
+  const quantity = floorStep(spendable(amount(ledger.accounts.find((item) => item.slot_number === selected.slot_number)!.balance_brl), reclaimed)
+    / amount(selected.target_buy_price), state.filters.quantityStep);
+  if (quantity * amount(selected.target_buy_price) < state.filters.minNotional) return "CAPACITY_HOLD";
+  if (quantity < state.filters.minQuantity || quantity > state.filters.maxQuantity)
+    throw new Error("COINOPS_LIVE_NEXT_ENTRY_FILTER_INVALID");
+  // Check before preparing/guarding/dispatching or canceling any resident BUY.
+  // Locked quote is not cash; reclaim only the exact verified own unfilled BUY.
+  const verifiedReclaim = active?.status === "NEW" && observedActive && amount(active.executed_quantity) === 0
+    ? reclaimed : 0;
+  if (await holdEntryForQuoteBalance(service, run, selected, state,
+    quantity * amount(selected.target_buy_price), verifiedReclaim)) return "QUOTE_BALANCE_HOLD";
   await persistStrategyDecision(service, owned(run), "REAL", planned.decision,
     selected.operation_sequence);
   const revision = Math.max(0, ...ledger.orders.filter((item) => item.slot_id === selected.id
@@ -1271,11 +1339,6 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     await renewLease(service, run);
     await updateSlot(service, run, previous, { entry_state: "PLANNED" });
   }
-  const quantity = floorStep(spendable(amount(ledger.accounts.find((item) => item.slot_number === selected.slot_number)!.balance_brl), reclaimed)
-    / amount(selected.target_buy_price), state.filters.quantityStep);
-  if (quantity * amount(selected.target_buy_price) < state.filters.minNotional) return "CAPACITY_HOLD";
-  if (quantity < state.filters.minQuantity || quantity > state.filters.maxQuantity)
-    throw new Error("COINOPS_LIVE_NEXT_ENTRY_FILTER_INVALID");
   const order = await prepareOrder(service, run, selected, planned.decision, "BUY", "ENTRY",
     revision, quantity, null, amount(selected.target_buy_price));
   ledger.orders.push(order);

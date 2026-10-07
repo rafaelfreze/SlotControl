@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 
 import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
-import { ExecutorRejection } from "./security.mjs";
+import { ExecutorRejection, ExecutorPreDispatchRejection } from "./security.mjs";
 import { EXECUTOR_CAPS } from "./preparation.mjs";
 import { getProductionRestrictedSpotStatus } from "./binance-readonly.mjs";
 import { assertEngineOrder, engineOrderPrefix } from "./account-registry.mjs";
@@ -258,7 +258,7 @@ export class BinanceLiveTransport {
         || notional + 1e-8 < snapshot.filters.minNotional)
         throw new ExecutorRejection("EXECUTOR_LIMIT_FILTER_INVALID", 403);
       if (side === "BUY" && !snapshot.account.balances.some((b) => b.asset === (this.engine?.quote_asset ?? "BRL") && b.free + 1e-8 >= notional))
-        throw new ExecutorRejection("EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", 403);
+        throw new ExecutorPreDispatchRejection("EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", 403);
       if (side === "SELL") {
         const source = this.ownership(symbol, input.sourceBuyClientOrderId, "BUY");
         if (source[2] !== match[2] || !/^\d+$/.test(String(input.sourceBuyOrderId ?? "")))

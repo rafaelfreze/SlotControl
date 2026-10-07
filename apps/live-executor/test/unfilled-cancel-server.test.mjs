@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { createExecutorHandler } from "../src/server.mjs";
 import { requestSignature, sha256 } from "../src/security.mjs";
-import { engineOrderPrefix, validateExecutorRegistry } from "../src/account-registry.mjs";
+import { engineOrderPrefix, validateExecutorRegistry, durableIntent } from "../src/account-registry.mjs";
 import { ACCOUNT_B, engineFixture, registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
 import { enableAccountOrderPolicy } from "../src/account-order-policy.mjs";
 import { verifyAccountOrderUnsentProof } from "../../web/lib/execution/account-order-unsent-proof.ts";
@@ -19,7 +19,7 @@ const CLIENT = "COR1-BTC-2-1-BUY-0123456789abcd";
 const ORDER = { symbol: "BTCBRL", clientOrderId: CLIENT, orderId: 123, side: "BUY",
   status: "NEW", executedQty: "0", cummulativeQuoteQty: "0", price: "437000" };
 
-async function fixture({ native = false, missingOrder = false } = {}) {
+async function fixture({ native = false, missingOrder = false, freeQuote = "730" } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "coinops-unfilled-cancel-"));
   const shardId = native ? "executor-03" : "executor-01";
   const rawRegistry = native ? { ...registryFixture([
@@ -41,7 +41,7 @@ async function fixture({ native = false, missingOrder = false } = {}) {
     if (parsed.hostname.includes("ipify")) return Response.json({ ip: "203.0.113.10" });
     if (parsed.pathname === "/api/v3/time") return Response.json({ serverTime: NOW });
     if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [
-      { asset: engine.quote_asset, free: "730", locked: "0" }, { asset: engine.base_asset, free: "0", locked: "0" },
+      { asset: engine.quote_asset, free: freeQuote, locked: "0" }, { asset: engine.base_asset, free: "0", locked: "0" },
       { asset: "BNB", free: "0.005", locked: "0" }] });
     if (parsed.pathname === "/sapi/v1/account/apiRestrictions") return Response.json({
       ipRestrict: true, enableReading: true, enableSpotAndMarginTrading: true,
@@ -132,6 +132,34 @@ test("signed historical attestation is read-only, scope-bound and unavailable fo
       assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
     } finally { await f.close(); }
   }
+});
+
+test("legacy account without budget policy can attest absence, but never an existing pending claim", async () => {
+  const f = await fixture({ native: true, missingOrder: true });
+  try {
+    const patch = { clientOrderId: f.clientId, side: "BUY", purpose: "ENTRY", dispatched_at: new Date(NOW - 180000).toISOString() };
+    assert.equal((await f.send("/v1/prove-unsent-order", patch, f.clientId)).status, 200);
+    const claim = durableIntent(f.engine, {}, f.clientId, "", "CREATE_ORDER");
+    await writeFile(join(f.directory, "orders", `${sha256(claim.key)}.pending`), "a".repeat(64), { mode: 0o600 });
+    assert.equal((await f.send("/v1/prove-unsent-order", patch, f.clientId)).body.error, "EXECUTOR_UNSENT_RECOVERY_CLAIM_EXISTS");
+    assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+  } finally { await f.close(); }
+});
+
+test("quote shortage returns signed NOT_SUBMITTED and no pending claim or exchange POST", async () => {
+  const f = await fixture({ native: true, missingOrder: true, freeQuote: "0.0043" });
+  try {
+    const patch = { clientOrderId: f.clientId, side: "BUY", purpose: "ENTRY", type: "LIMIT", quantity: "0.05", price: "119.79",
+      expectedOwnedOpenIds: [], assetCapBrl: 275, globalCapBrl: 725, assetExposureBeforeBrl: 0, globalExposureBeforeBrl: 0 };
+    const result = await f.send("/v1/create-order", patch, f.clientId);
+    assert.equal(result.status, 403); assert.equal(result.body.error, "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT");
+    const proof = JSON.parse(Buffer.from(result.body.unsent_proof.receipt, "base64url").toString());
+    const raw = JSON.stringify({ ...intentContext(f.engine, f.clientId), executor_shard_id: f.shardId, ...patch });
+    assert.equal(verifyAccountOrderUnsentProof(SECRET, result.body.unsent_proof, proof, raw, NOW).outcome, "NOT_SUBMITTED");
+    const claim = durableIntent(f.engine, {}, f.clientId, "", "CREATE_ORDER");
+    await assert.rejects(readFile(join(f.directory, "orders", `${sha256(claim.key)}.pending`)), { code: "ENOENT" });
+    assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+  } finally { await f.close(); }
 });
 
 test("native SOLUSDT on executor-03 advertises own caps and cancels an empty BUY exactly once", async () => {

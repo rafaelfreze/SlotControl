@@ -1,6 +1,9 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v18: retry read-only com checkpoint, diagnósticos de origem e
+Contrato atual v19: saldo Spot físico antes de BUY, HOLD/AVAILABLE preservando
+TP/fills e rejeição pré-POST assinada. Compatibilidade histórica exige journal
+do runtime fixado, claim exato, fence e GET; nunca DELETE manual de claim.
+Ver `COINOPS_QUOTE_BALANCE_RECOVERY_20261007.md`. Retry read-only com checkpoint, diagnósticos de origem e
 TRADING_FLOW_OWNER ficam nos eventos/alertas exportados. Ausência de atribuição
 é UNKNOWN, não 0%. Registry e SLO administrativos: `COINOPS_TRADING_RELIABILITY_20261005.md`.
 
@@ -11,7 +14,7 @@ os eventos `ACCOUNT_ORDER_NOT_SUBMITTED` sem tratar não envio como fill.
 Procedimento: `COINOPS_UNSENT_ENTRY_RECOVERY.md`.
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 18`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 19`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento

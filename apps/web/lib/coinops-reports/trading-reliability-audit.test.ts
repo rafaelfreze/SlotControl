@@ -3,8 +3,8 @@ import test from "node:test";
 import { buildAuditReport } from "./report-engine.ts";
 import { REPORT_VERSION } from "./filters.ts";
 
-test("v18 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
-  assert.equal(REPORT_VERSION, 18);
+test("v19 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
+  assert.equal(REPORT_VERSION, 19);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
     generatedAt: "2026-10-05T12:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
   { start: "2026-10-05T00:00:00Z", end: "2026-10-06T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });

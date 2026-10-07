@@ -500,13 +500,16 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           return;
         }
         if (path === "/v1/prove-unsent-order") {
-          if (key !== input.clientOrderId || input.side !== "BUY" || input.purpose !== "ENTRY" || !accountBudgetEnabled)
+          if (key !== input.clientOrderId || input.side !== "BUY" || input.purpose !== "ENTRY")
             throw new ExecutorRejection("EXECUTOR_UNSENT_RECOVERY_SCOPE_DENIED", 403);
           transport.ownership(symbol, input.clientOrderId, "BUY");
           const claim = durableIntent(engine, input, key, verified.bodyHash, "CREATE_ORDER");
           await attestNeverDispatched({ directory: join(stateDirectory, "orders"), key: claim.key,
             dispatchedAt: input.dispatched_at, now,
-            query: () => transport.queryOrder(symbol, input.clientOrderId) });
+            query: () => transport.queryOrder(symbol, input.clientOrderId),
+            historical: { secret, scope: { operator_id: engine.operator_id, exchange_account_id: engine.exchange_account_id,
+              trading_engine_id: engine.trading_engine_id, executor_shard_id: shardId, symbol,
+              clientOrderId: input.clientOrderId, decisionId: input.decision_id } } });
           const proof = signAccountOrderUnsentProof(secret, { ...scope, clientOrderId: input.clientOrderId,
             decision_id: input.decision_id, request_nonce: verified.nonce }, verified.bodyHash, now());
           outcome = "PROVEN_NOT_SUBMITTED"; status = 200;
@@ -521,12 +524,20 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           if (!expectedEgressIp || await observeEgressIp(fetcher) !== expectedEgressIp)
             throw new ExecutorRejection("EXECUTOR_SAFETY_GATE_NOT_READY", 503);
           const claim = durableIntent(engine, input, key, verified.bodyHash, action);
-          const { result, replayed } = await withWriteIdempotency({ directory: join(stateDirectory, "orders"),
+          let result, replayed;
+          try { ({ result, replayed } = await withWriteIdempotency({ directory: join(stateDirectory, "orders"),
             ...claim,
             beforeClaim: assertBudgetPermit,
             provablyUnsent: () => !transport.orderPostAttempted,
             recover: () => transport.queryOrder(symbol, input.clientOrderId),
-            execute: () => transport.createOwnedOrder(input, { allowCreate: true, ...flags }) });
+            execute: () => transport.createOwnedOrder(input, { allowCreate: true, ...flags }) })); }
+          catch (error) {
+            if (error instanceof ExecutorPreDispatchRejection && !transport.orderPostAttempted
+              && error.code === "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT")
+              error.unsentProof = signAccountOrderUnsentProof(secret, { ...scope, clientOrderId: input.clientOrderId,
+                decision_id: input.decision_id, request_nonce: verified.nonce }, verified.bodyHash, now());
+            throw error;
+          }
           outcome = replayed ? "REPLAYED" : "CREATED"; status = 200;
           writeJson(response, 200, { ...scope, order: result, replayed });
           return;

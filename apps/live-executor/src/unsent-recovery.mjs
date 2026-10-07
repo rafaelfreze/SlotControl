@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { assertPrivateDirectory, ExecutorRejection, ExecutorPreDispatchRejection, sha256 } from "./security.mjs";
+import { verifiedHistoricalRejection } from "./pre-dispatch-evidence.mjs";
 
 function read(path) {
   try { return readFileSync(path, "utf8"); }
@@ -19,15 +20,17 @@ export function assertUnsentFence(directory, key, requestTimestamp) {
 /** No existing claim is ever removed. Absent exchange order alone is NOT proof.
  * Fence all pre-existing requests first, inspect durable claims before/after
  * an exact GET, and fail closed on pending, completed, corrupt or IO failure. */
-export async function attestNeverDispatched({ directory, key, dispatchedAt, query, now = Date.now }) {
+export async function attestNeverDispatched({ directory, key, dispatchedAt, query, now = Date.now, historical }) {
   const dispatched = Date.parse(dispatchedAt);
   if (!Number.isFinite(dispatched) || now() - dispatched < 90_000)
     throw new ExecutorRejection("EXECUTOR_UNSENT_RECOVERY_TOO_RECENT", 409);
   await assertPrivateDirectory(directory);
   const base = stem(directory, key);
+  const rejection = historical ? verifiedHistoricalRejection(base, historical.secret, historical.scope, key, dispatchedAt) : null;
   const absent = () => {
-    if (read(`${base}.pending`) !== null || read(`${base}.json`) !== null)
+    if (read(`${base}.json`) !== null || read(`${base}.pending`) !== null && !rejection)
       throw new ExecutorRejection("EXECUTOR_UNSENT_RECOVERY_CLAIM_EXISTS", 409);
+    if (rejection) verifiedHistoricalRejection(base, historical.secret, historical.scope, key, dispatchedAt);
   };
   absent();
   const temporary = `${base}.${randomUUID()}.fence-tmp`;
@@ -39,5 +42,9 @@ export async function attestNeverDispatched({ directory, key, dispatchedAt, quer
   absent();
   if (await query()) throw new ExecutorRejection("EXECUTOR_UNSENT_RECOVERY_ORDER_EXISTS", 409);
   absent();
+  // Preserve, never delete, the proven rejected claim. Fence blocks every old
+  // request at beforeClaim and at the final POST gate, including legacy engines.
+  if (rejection && read(`${base}.pending`) !== null)
+    renameSync(`${base}.pending`, `${base}.${rejection.archiveHash}.rejected`);
   return true;
 }

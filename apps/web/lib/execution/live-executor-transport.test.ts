@@ -113,14 +113,20 @@ test("create dispatch carries a separate permit on01/03; byte identity, no write
       const proof = signAccountOrderUnsentProof(secret, { ...engine, environment: "REAL", executor_shard_id: shardId,
         clientOrderId: input.clientOrderId, decision_id: decision, request_nonce: headers.get("x-coinops-nonce")! },
       createHash("sha256").update(raw).digest("hex"));
-      return Response.json({ error: "EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", unsent_proof: proof }, { status: 403 });
+      return Response.json({ error: attempts === 1 ? "EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED"
+        : "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", unsent_proof: proof }, { status: 403 });
     }) as typeof fetch;
     await assert.rejects(transport.createLiveExecutorOrder(input, engine, decision, fetcher, async () => target, reservation), AccountOrderNotSubmitted);
     assert.equal(attempts, 1);
+    await assert.rejects(transport.createLiveExecutorOrder(input, engine, decision, fetcher, async () => target, reservation), AccountOrderNotSubmitted);
+    assert.equal(attempts, 2);
     await assert.rejects(transport.createLiveExecutorOrder(input, engine, decision,
       (async () => { attempts++; return Response.json({ error: "EXECUTOR_UNAVAILABLE" }, { status: 503 }); }) as typeof fetch,
       async () => target, reservation), /EXECUTOR_UNAVAILABLE/);
-    assert.equal(attempts, 2, "uncertain POST outcome is never automatically retried or called unsent");
+    assert.equal(attempts, 3, "uncertain POST outcome is never automatically retried or called unsent");
+    await assert.rejects(transport.createLiveExecutorOrder(input, engine, decision,
+      (async () => Response.json({ error: "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", unsent_proof: { signature: "fake" } }, { status: 403 })) as typeof fetch,
+      async () => target, reservation), error => !(error instanceof AccountOrderNotSubmitted));
   }
 });
 
