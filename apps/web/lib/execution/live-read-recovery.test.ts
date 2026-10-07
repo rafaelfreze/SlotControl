@@ -97,3 +97,23 @@ test("monthly read recovery requires exact read-stage evidence and rejects ambig
   assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a",
     [{ ...alert, last_seen_at: "2026-10-07T20:03:13Z" }], alert), /INCIDENT_CHANGED/);
 });
+
+test("bulk checkpoint legacy recovery qualifies only the exact GET stage, never an actual edit failure", () => {
+  const code = "COINOPS_BULK_CHECKPOINT_UNAVAILABLE";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code, last_seen_at: "2026-10-07T21:02:17Z",
+    details: { stage: "CONFIG_UPDATE", root_code: code } };
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+  for (const details of [undefined, { stage: "ARM_ENTRY", root_code: code },
+    { stage: "CONFIG_UPDATE", root_code: "COINOPS_BULK_CLAIM_FAILED" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  for (const denied of ["COINOPS_BULK_GATE_UNAVAILABLE", "COINOPS_BULK_CLAIM_FAILED", "COINOPS_BULK_PROFILE_UPDATE_FAILED",
+    "COINOPS_BULK_FINISH_FAILED", "COINOPS_BULK_SCOPE_OR_GATE_INVALID", "COINOPS_BULK_VALUE_INVALID"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", denied), false);
+  for (const path of ["bulk_checkpoint", "config_gate", "quote_cap", "preparation", "operator"]) {
+    const stale = { ...alert, code: "COINOPS_LIVE_LEDGER_READ_STALE",
+      details: { ...alert.details, root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", read_path: `ledger/${path}` } };
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [stale]), stale);
+  }
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a",
+    [{ ...alert, last_seen_at: "2026-10-07T21:03:17Z" }], alert), /INCIDENT_CHANGED/);
+});

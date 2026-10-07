@@ -22,6 +22,10 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
       // Legacy monthly GET failures discarded their provider error. Recovery
       // still reloads/validates monthly facts plus exchange/TP/caps under lease.
       "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE",
+      // Legacy checkpoint GET discarded the provider response. Only the exact
+      // read stage qualifies; resume also proves there is no pending/blocked
+      // bulk edit and conditionally opens the config gate under its run lease.
+      "COINOPS_BULK_CHECKPOINT_UNAVAILABLE",
       // Eligibility only. resumeLiveRun also requires a trade-backed fill at
       // incident time plus current exchange/ledger/protection agreement.
       "COINOPS_LIVE_EXCHANGE_ORDER_MISSING"].includes(alertCode ?? "");
@@ -45,7 +49,10 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
     || alert.code === "COINOPS_LIVE_LEDGER_READ_STALE"
       && (alert.details?.root_code !== "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE"
         || !["ledger/slots", "ledger/orders", "ledger/slot_accounts", "ledger/monthly_target",
-          "ledger/monthly_gains"].includes(String(alert.details?.read_path)))
+          "ledger/monthly_gains", "ledger/bulk_checkpoint", "ledger/config_gate", "ledger/quote_cap",
+          "ledger/preparation", "ledger/operator"].includes(String(alert.details?.read_path)))
+    || alert.code === "COINOPS_BULK_CHECKPOINT_UNAVAILABLE"
+      && (alert.details?.stage !== "CONFIG_UPDATE" || alert.details?.root_code !== alert.code)
     || alert.code === "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE"
       && (alert.details?.root_code !== alert.code || !["CREDIT_SLOTS", "RECYCLE_SLOTS", "RESTART_CYCLE",
         "ATH_TRANSITION", "ARM_ENTRY"].includes(String(alert.details?.stage)))

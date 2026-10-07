@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error";
-import { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger } from "./live-ledger-read";
+import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read";
 
 import { planAthLadder } from "./ath-ladder";
 import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
@@ -114,23 +114,27 @@ async function validateRunEngine(service: Service, run: Run) {
   return engine;
 }
 async function quoteCap(service: Service, run: Run | Preparation) {
-  const result = await service.from("account_quote_caps").select("hard_cap_quote")
+  const row = await boundedLedgerRead((deadline, attempt) => observeLedgerRecord<{ hard_cap_quote: number | string }>("quote_cap",
+    service.from("account_quote_caps").select("hard_cap_quote")
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
-    .eq("quote_asset", run.quote_asset).single();
-  if (result.error || !result.data || !(Number(result.data.hard_cap_quote) > 0))
+    .eq("quote_asset", run.quote_asset).abortSignal(deadline).single(),
+    deadline, attempt, "COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE"));
+  if (!(Number(row.hard_cap_quote) > 0))
     throw new Error("COINOPS_LIVE_GLOBAL_CAP_UNAVAILABLE");
-  return Number(result.data.hard_cap_quote);
+  return Number(row.hard_cap_quote);
 }
 function entryBlocked(run: Run) {
   return !run.engine || run.engine.status !== "ACTIVE" || run.engine.global_kill_switch
     || run.engine.account_kill_switch || run.engine.engine_kill_switch;
 }
 async function configUpdatePending(service: Service, run: Run) {
-  const result = await service.from("trading_engines").select("strategy_config_pending")
+  const row = await boundedLedgerRead((deadline, attempt) => observeLedgerRecord<{ strategy_config_pending: boolean }>("config_gate",
+    service.from("trading_engines").select("strategy_config_pending")
     .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
-    .eq("exchange_account_id", run.exchange_account_id).single();
-  if (result.error || !result.data) throw new Error("COINOPS_BULK_GATE_UNAVAILABLE");
-  return result.data.strategy_config_pending === true;
+    .eq("exchange_account_id", run.exchange_account_id).abortSignal(deadline).single(),
+    deadline, attempt, "COINOPS_BULK_GATE_UNAVAILABLE"));
+  if (typeof row.strategy_config_pending !== "boolean") throw new Error("COINOPS_BULK_GATE_UNAVAILABLE");
+  return row.strategy_config_pending;
 }
 const context = (run: Run, transitionKey?: string) => ({ asset: run.asset, cycleId: run.id,
   observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey });
@@ -150,16 +154,18 @@ async function publicRules(symbol: Symbol) {
 }
 
 async function scopedPreparation(service: Service, userId: string, asset: V1Asset, selection?: EngineSelection): Promise<Preparation> {
-  const owner = await service.from("operators").select("product_id,tenant_id,user_id")
-    .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId).eq("status", "ACTIVE").single();
-  if (owner.error || !owner.data) throw new Error("COINOPS_LIVE_OPERATOR_UNAVAILABLE");
-  const engine = await resolveOperatorEngine(service, owner.data, selection ?? { environment: "REAL", asset });
-  const result = await service.from("robot_v1_live_preparations").select("*")
+  const owner = await boundedLedgerRead((deadline, attempt) => observeLedgerRecord<Scope>("operator",
+    service.from("operators").select("product_id,tenant_id,user_id")
+    .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId).eq("status", "ACTIVE")
+    .abortSignal(deadline).single(), deadline, attempt, "COINOPS_LIVE_OPERATOR_UNAVAILABLE"));
+  const engine = await resolveOperatorEngine(service, owner, selection ?? { environment: "REAL", asset });
+  const row = await boundedLedgerRead((deadline, attempt) => observeLedgerRecord<Preparation>("preparation",
+    service.from("robot_v1_live_preparations").select("*")
     .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", userId)
-    .eq("trading_engine_id", engine.trading_engine_id).single();
-  if (result.error || !result.data) throw new Error("COINOPS_LIVE_PREPARATION_UNAVAILABLE");
-  assertRowEngine(result.data, engine);
-  return { ...result.data, engine } as Preparation;
+    .eq("trading_engine_id", engine.trading_engine_id).abortSignal(deadline).single(),
+    deadline, attempt, "COINOPS_LIVE_PREPARATION_UNAVAILABLE"));
+  assertRowEngine(row, engine);
+  return { ...row, engine } as Preparation;
 }
 
 async function runRows(service: Service, run: Run) {
@@ -907,12 +913,13 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
  * both the profile and current ladder have been reconciled. */
 async function applyPendingStrategyUpdate(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState): Promise<"NONE" | "APPLIED"> {
-  const pending = await service.from("strategy_bulk_engine_updates").select("*")
+  const rows = await boundedLedgerRead((deadline, attempt) => observeLedgerRows<BulkUpdate>("bulk_checkpoint",
+    service.from("strategy_bulk_engine_updates").select("*")
     .eq("trading_engine_id", run.trading_engine_id).eq("run_id", run.id)
-    .in("status", ["PENDING", "APPLYING"]).order("created_at", { ascending: true }).limit(1).maybeSingle();
-  if (pending.error) throw new Error("COINOPS_BULK_CHECKPOINT_UNAVAILABLE");
-  if (!pending.data) return "NONE";
-  const item = pending.data as BulkUpdate;
+    .in("status", ["PENDING", "APPLYING"]).order("created_at", { ascending: true }).limit(1)
+    .abortSignal(deadline), deadline, attempt));
+  if (!rows.length) return "NONE";
+  const item = rows[0];
   // Rows admitted by the immediately previous post-ATH-only release receive
   // these exact defaults in the additive migration. Keep the runtime tolerant
   // during the zero-downtime deploy window as well.
@@ -1665,6 +1672,18 @@ async function readVerifiedRecoveryIncident(service: Service, run: Run, expected
   return verifiedReadRecoveryAlert(run.status, run.id, alerts.data ?? [], expected);
 }
 
+/** Recovery is not a way to approve or skip an actual strategy edit. Look
+ * across this engine's runs: a queued successor edit also keeps BUY closed. */
+async function assertNoPendingStrategyUpdate(service: Service, run: Run) {
+  if (await configUpdatePending(service, run)) throw new Error("COINOPS_STRATEGY_CONFIG_UPDATE_PENDING");
+  const updates = await boundedLedgerRead((deadline, attempt) => observeLedgerRows("bulk_checkpoint",
+    service.from("strategy_bulk_engine_updates").select("id")
+      .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+      .eq("trading_engine_id", run.trading_engine_id)
+      .in("status", ["PENDING", "APPLYING", "BLOCKED_SAFE"]).limit(1).abortSignal(deadline), deadline, attempt));
+  if (updates.length) throw new Error("COINOPS_STRATEGY_CONFIG_UPDATE_PENDING");
+}
+
 async function assertLateReconciledFill(service: Service, run: Run, incident: ReadRecoveryAlert) {
   const detected = Date.parse(incident.first_seen_at ?? "");
   if (!Number.isFinite(detected)) throw new Error("COINOPS_LIVE_RECOVERY_FILL_EVIDENCE_MISSING");
@@ -1709,6 +1728,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
     if (source === "VERIFIED_READ_RECOVERY")
       recoveryIncident = await readVerifiedRecoveryIncident(service, run);
+    await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
     const health = await loadLiveEngineExecutorStatus(run);
@@ -1737,6 +1757,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.
     if (recoveryIncident) await readVerifiedRecoveryIncident(service, run, recoveryIncident);
+    await assertNoPendingStrategyUpdate(service, run);
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
       .update({ kill_switch: false })
@@ -1749,7 +1770,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     unlocked = true;
     const engineGate = await service.from("trading_engines").update({ kill_switch: false })
       .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
-      .eq("exchange_account_id", run.exchange_account_id).select("id").single();
+      .eq("exchange_account_id", run.exchange_account_id).eq("strategy_config_pending", false)
+      .select("id").single();
     if (engineGate.error || !engineGate.data) throw new Error("COINOPS_LIVE_RESUME_ENGINE_GATE_FAILED");
     if (run.status === "PAUSED") {
       const resumed = await service.from("robot_v1_live_runs").update({ status: "ACTIVE" })

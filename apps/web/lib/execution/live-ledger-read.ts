@@ -1,6 +1,7 @@
 import { LiveLedgerReadFailed, LiveReadUnavailable } from "./live-read-error.ts";
 
-type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "monthly_gains";
+type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "monthly_gains"
+  | "bulk_checkpoint" | "config_gate" | "quote_cap" | "preparation" | "operator";
 type Response<T> = { data: T[] | null; error: unknown; status?: number };
 const CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
   "08000", "08003", "08006", "53300", "57014"]);
@@ -48,6 +49,19 @@ export async function boundedLedgerRead<T>(read: (deadline: AbortSignal, attempt
       await new Promise(resolve => setTimeout(resolve, 250));
     }
   }
+}
+
+/** Required singleton GET: keep the provider evidence, but never turn a
+ * successful missing/malformed configuration into an observation retry. */
+export async function observeLedgerRecord<T extends object>(resource: Resource,
+  query: PromiseLike<{ data: T | null; error: unknown; status?: number }>,
+  deadline: AbortSignal, attempt: number, missingCode: string): Promise<T> {
+  const rows = await observeLedgerRows<T>(resource, Promise.resolve(query).then(result => ({
+    ...result, data: result.data === null ? [] : [result.data],
+  })), deadline, attempt);
+  if (rows.length !== 1 || !rows[0] || typeof rows[0] !== "object" || Array.isArray(rows[0]))
+    throw new Error(missingCode);
+  return rows[0];
 }
 
 export function assertPhysicalLedger(rows: { slot_number: number }[]) {

@@ -3,8 +3,8 @@ import test from "node:test";
 import { buildAuditReport } from "./report-engine.ts";
 import { REPORT_VERSION } from "./filters.ts";
 
-test("v21 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
-  assert.equal(REPORT_VERSION, 21);
+test("v22 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
+  assert.equal(REPORT_VERSION, 22);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
     generatedAt: "2026-10-05T12:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
   { start: "2026-10-05T00:00:00Z", end: "2026-10-06T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });
@@ -22,9 +22,15 @@ test("v21 publishes the observation and recurrence contract without claiming mis
   assert.match(String(rule?.notes), /ledger\/monthly_gains/);
   assert.match(String(rule?.notes), /nunca zeram gains por falha/);
   assert.match(String(rule?.notes), /Target ausente, ganho divergente ou ambíguo permanece fechado/);
+  const config = report.datasets.rules.find(row => row.parameter === "strategy_config_observation_retry");
+  assert.equal(config?.value, "SHARED_LEDGER_GET_POLICY_NO_MUTATION_RETRY");
+  assert.equal(config?.version, 1);
+  assert.match(String(config?.notes), /zero PENDING\/APPLYING\/BLOCKED_SAFE/);
+  assert.match(String(config?.notes), /strategy_config_pending=false por CAS/);
+  assert.match(String(config?.notes), /Nenhum POST\/RPC\/mutação recebe retry/);
 });
 
-test("v21 exports persisted ledger read diagnostics without inventing provider error or recovery", () => {
+test("v22 exports persisted ledger read diagnostics without inventing provider error or recovery", () => {
   const details = { stage: "RECONCILE_ORDERS", source: "ENGINE", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE",
     read_path: "ledger/orders", read_attempts: 2, http_status: 504, provider_code: "PGRST003" };
   const report = buildAuditReport({ sources: { robot_v1_live_alerts: [{ id: "alert", asset: "SOL",

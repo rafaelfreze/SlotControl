@@ -3,18 +3,19 @@
 import { readFile } from 'node:fs/promises';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 
-const [accountId, engineId, symbol, shardId, expectedIp] = process.argv.slice(2);
+const [accountId, engineId, symbol, shardId, expectedIp, sourceRoot = '/opt/coinops/current'] = process.argv.slice(2);
 if (![accountId, engineId].every((id) => /^[0-9a-f-]{36}$/.test(id ?? ''))
   || !/^[A-Z0-9]{5,16}$/.test(symbol ?? '') || !/^executor-\d+$/.test(shardId ?? '')
-  || !/^\d{1,3}(\.\d{1,3}){3}$/.test(expectedIp ?? '')) throw new Error('INVALID_READ_SCOPE');
+  || !/^\d{1,3}(\.\d{1,3}){3}$/.test(expectedIp ?? '')
+  || !['/opt/coinops/source', '/opt/coinops/current'].includes(sourceRoot)) throw new Error('INVALID_READ_SCOPE');
 const env = Object.fromEntries((await readFile('/etc/coinops/live-executor.env', 'utf8'))
   .split(/\r?\n/).filter((line) => /^[A-Z][A-Z0-9_]*=/.test(line)).map((line) => {
     const index = line.indexOf('=');
     return [line.slice(0, index), line.slice(index + 1).replace(/^(["'])(.*)\1$/, '$2')];
   }));
-if (env.COINOPS_EXECUTOR_SHARD_ID !== shardId || env.LIVE_EXECUTOR_EGRESS_IP !== expectedIp)
+if ((env.COINOPS_EXECUTOR_SHARD_ID || 'executor-01') !== shardId || env.LIVE_EXECUTOR_EGRESS_IP !== expectedIp)
   throw new Error('EXECUTOR_SCOPE_MISMATCH');
-const { loadExecutorRegistry, loadCombinedRegistry } = await import('/opt/coinops/current/apps/live-executor/src/account-registry.mjs');
+const { loadExecutorRegistry, loadCombinedRegistry } = await import(`${sourceRoot}/apps/live-executor/src/account-registry.mjs`);
 const registry = await loadCombinedRegistry(await loadExecutorRegistry(env.COINOPS_EXECUTOR_REGISTRY_PATH),
   env.COINOPS_EXECUTOR_STATE_DIR, () => { throw new Error('REGISTRY_READ_FAILED'); });
 const engine = registry.engines?.find((row) => row.trading_engine_id === engineId

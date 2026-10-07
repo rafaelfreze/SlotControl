@@ -1,6 +1,9 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v21: inclui target e totais mensais REAL no snapshot GET-only
+Contrato atual v22: checkpoint/gate/configuração e cap compartilham a política
+GET-only do ledger. Exporta `strategy_config_observation_retry`, diagnósticos
+sanitizados e a proibição de retomar edição pendente/ambígua. Ver
+`COINOPS_CONFIG_READ_RECOVERY_20261007.md`. Preserva v21: inclui target e totais mensais REAL no snapshot GET-only
 limitado, sem zerar ganhos por falha de consulta. Recuperação do legado exige
 ledger mensal válido, Binance/TP/caps e CAS sob lease. Ver
 `COINOPS_MONTHLY_LEDGER_RECOVERY_20261007.md`. Preserva v20: observação do ledger com retry read-only limitado, diagnóstico
@@ -19,7 +22,7 @@ os eventos `ACCOUNT_ORDER_NOT_SUBMITTED` sem tratar não envio como fill.
 Procedimento: `COINOPS_UNSENT_ENTRY_RECOVERY.md`.
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 21`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 22`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento

@@ -97,7 +97,7 @@ test("refresh report remains native for BTC/SOL and BRL/USDT and exports complet
     const csv = pack.files.find((file) => file.name === "LIVE_EXECUTION.csv")!.content;
     assert.match(csv, /NEXT_BUY_CAPITAL_REFRESH_CONFIRMED/);
     for (const field of Object.keys(payload)) assert.ok(csv.includes(field), field);
-    assert.equal(pack.manifest.report_version, 21);
+    assert.equal(pack.manifest.report_version, 22);
     assert.equal(pack.manifest.financial_writes_from_export, 0);
   }
 });

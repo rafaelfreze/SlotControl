@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildAuditReport } from "./report-engine.ts";
 import { REPORT_VERSION } from "./filters.ts";
-test("v21 preserves physical cash and signed historical proof without claiming fill or resetting strategy", () => {
-  assert.equal(REPORT_VERSION, 21);
+test("v22 preserves physical cash and signed historical proof without claiming fill or resetting strategy", () => {
+  assert.equal(REPORT_VERSION, 22);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
     generatedAt: "2026-10-07T14:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
     { start: "2026-10-07T00:00:00Z", end: "2026-10-08T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });

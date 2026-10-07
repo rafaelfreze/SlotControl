@@ -5,7 +5,7 @@ import ts from "typescript";
 import { verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
 import { liveEngineExposure } from "./engine-exposure.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
-import { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger } from "./live-ledger-read.ts";
+import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
@@ -13,7 +13,8 @@ const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITO
 
 function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
-  ledgerDenied?: boolean; monthlyFailure?: boolean } = {}) {
+  ledgerDenied?: boolean; monthlyFailure?: boolean; configPending?: boolean; bulkStatus?: string;
+  lateBulk?: boolean; bulkDenied?: boolean; configCasLost?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -21,7 +22,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   const run = { ...scope, id: "run-a", asset: "SOL", status: "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date().toISOString(), lease_owner: "lease" };
   const engine = { ...scope, id: "engine-a", hard_cap_quote: 275, base_asset: "SOL", status: "ACTIVE", engine_kill_switch: true,
-    global_kill_switch: false, account_kill_switch: false };
+    global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
   const slots = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index}`, run_id: run.id,
     slot_number: index + 1, position_quantity: index === 0 ? 1 : 0, position_committed_brl: index === 0 ? 10 : 0 }));
   const accounts = slots.map((slot) => ({ ...slot, balance_brl: 11, gain_count: 0 }));
@@ -31,6 +32,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     client_order_id: "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
     executed_quantity: 0, cumulative_quote: 0, reserved_notional_brl: 0 }];
   let alertReads = 0;
+  let bulkReads = 0;
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
@@ -53,7 +55,18 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       } else if (table === "operators") data = scope;
       else if (table === "robot_v1_live_preparations") data = { ...scope, id: "prep", live_enabled: true,
         kill_switch: mutation?.kill_switch ?? true, max_total_exposure_brl: 275 };
-      else if (table === "trading_engines") data = singular ? engine : [engine];
+      else if (table === "trading_engines") data = options.configCasLost && mutation?.kill_switch === false
+        ? null : singular ? engine : [engine];
+      else if (table === "strategy_bulk_engine_updates") {
+        assert.equal(filters.trading_engine_id, "engine-a");
+        assert.equal(filters.exchange_account_id, "account-a");
+        assert.equal(filters.operator_id, "operator");
+        assert.deepEqual(filters.status, ["PENDING", "APPLYING", "BLOCKED_SAFE"]);
+        // No run filter: another run's queued edit must still prevent resume.
+        assert.equal(filters.run_id, undefined);
+        bulkReads++;
+        data = options.bulkStatus || options.lateBulk && bulkReads > 1 ? [{ id: "edit" }] : [];
+      }
       else if (table === "robot_v1_live_slots") data = slots;
       else if (table === "robot_v1_live_slot_accounts") data = accounts;
       else if (table === "robot_v1_live_fills") data = options.lateFill ? [{ order_id: "filled-order",
@@ -64,6 +77,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "robot_v1_live_events") data = {};
       else assert.fail(`Unexpected table ${table}`);
       if (page && Array.isArray(data)) data = data.slice(page[0], page[1] + 1);
+      if (options.bulkDenied && table === "strategy_bulk_engine_updates")
+        return { data: null, error: { code: "42501" }, status: 403 };
       return options.ledgerDenied && table === "robot_v1_live_slots"
         ? { data: null, error: { code: "42501" }, status: 403 } : { data, error: null };
     };
@@ -83,7 +98,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   } };
   const dependencies: Record<string, unknown> = {
     "./engine-exposure": { liveEngineExposure }, "./complete-ledger-read": { completeLedgerRead },
-    "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger },
+    "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert },
@@ -198,6 +213,30 @@ test("unknown/additional/changed critical incidents never open the BUY gate", as
     await assert.rejects(scenario.run(), /RECOVERY_INCIDENT_CHANGED/);
     assert.equal(scenario.writes.some((write) => write.data.kill_switch === false), false);
   }
+});
+
+test("legacy checkpoint outage resumes only with no bulk edit, fresh gate, TP and incident proof", async () => {
+  const code = "COINOPS_BULK_CHECKPOINT_UNAVAILABLE";
+  const incident = { ...known, code, details: { stage: "CONFIG_UPDATE", root_code: code } };
+  const safe = fixture({ alerts: [[incident]] });
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.ok(safe.writes.filter(w => w.table === "trading_engines")
+    .every(w => w.filters.strategy_config_pending === false && w.filters.id === "engine-a"));
+  for (const options of [{ configPending: true }, ...["PENDING", "APPLYING", "BLOCKED_SAFE"].map(bulkStatus => ({ bulkStatus })),
+    { lateBulk: true }, { bulkDenied: true }, { missingTp: true }, { healthy: false }, { monthlyFailure: true }]) {
+    const denied = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(denied.run(), /CONFIG_UPDATE_PENDING|LEDGER_READ_FAILED|EXCHANGE_ORDER_MISSING|EXECUTOR_NOT_ACTIVE|MONTHLY_GAIN_LEDGER_MISMATCH/);
+    assert.equal(denied.writes.some(w => w.data.kill_switch === false), false);
+  }
+});
+
+test("a concurrent config gate CAS loss recloses only its engine/preparation, never emits RESUMED", async () => {
+  const scenario = fixture({ configCasLost: true });
+  await assert.rejects(scenario.run(), /RESUME_ENGINE_GATE_FAILED/);
+  const gates = scenario.writes.filter(w => w.table === "trading_engines");
+  assert.deepEqual(gates.map(w => w.data.kill_switch), [false, true]);
+  assert.ok(gates.every(w => w.filters.id === "engine-a" && w.filters.exchange_account_id === "account-a"));
+  assert.equal(scenario.writes.some(w => w.table === "robot_v1_live_events" && w.data.event_type === "LIVE_RESUMED"), false);
 });
 
 test("known monitor code still cannot bypass unhealthy executor or missing exchange TP", async () => {
