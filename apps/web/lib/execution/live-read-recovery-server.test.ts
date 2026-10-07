@@ -5,12 +5,15 @@ import ts from "typescript";
 import { verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
 import { liveEngineExposure } from "./engine-exposure.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
+import { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger } from "./live-ledger-read.ts";
+import * as readErrors from "./live-read-error.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
 
 function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
-  casLost?: boolean; lateFill?: boolean; registryDenied?: boolean } = {}) {
+  casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
+  ledgerDenied?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -22,6 +25,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   const slots = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index}`, run_id: run.id,
     slot_number: index + 1, position_quantity: index === 0 ? 1 : 0, position_committed_brl: index === 0 ? 10 : 0 }));
   const accounts = slots.map((slot) => ({ ...slot, balance_brl: 11, gain_count: 0 }));
+  if (options.missingSlot) slots.pop();
+  if (options.duplicateSlot) slots[24].slot_number = slots[0].slot_number;
   const orders = [{ ...scope, id: "order-tp", run_id: run.id, slot_id: "slot-0", side: "SELL", status: "NEW",
     client_order_id: "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
     executed_quantity: 0, cumulative_quote: 0, reserved_notional_brl: 0 }];
@@ -59,14 +64,15 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "robot_v1_live_events") data = {};
       else assert.fail(`Unexpected table ${table}`);
       if (page && Array.isArray(data)) data = data.slice(page[0], page[1] + 1);
-      return { data, error: null };
+      return options.ledgerDenied && table === "robot_v1_live_slots"
+        ? { data: null, error: { code: "42501" }, status: 403 } : { data, error: null };
     };
     const chain = {
       select: () => chain, eq: (key: string, value: unknown) => { filters[key] = value; return chain; },
       is: (key: string, value: unknown) => { filters[key] = value; return chain; },
       in: (key: string, value: unknown) => { filters[key] = value; return chain; },
       gte: () => chain, lte: () => chain, limit: () => chain,
-      or: () => chain, gt: () => chain, order: () => chain,
+      or: () => chain, gt: () => chain, order: () => chain, abortSignal: () => chain,
       range: (start: number, end: number) => { page = [start, end]; return chain; },
       update: (data: Record<string, unknown>) => { mutation = data; return chain; },
       upsert: (data: Record<string, unknown>) => { mutation = data; return chain; },
@@ -77,6 +83,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   } };
   const dependencies: Record<string, unknown> = {
     "./engine-exposure": { liveEngineExposure }, "./complete-ledger-read": { completeLedgerRead },
+    "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger },
+    "./live-read-error": readErrors,
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
@@ -131,6 +139,21 @@ test("missing-order alert recovers only after a late trade-backed fill and curre
   const unproven = fixture({ alerts: [[missing]], lateFill: false });
   await assert.rejects(unproven.run(), /RECOVERY_FILL_EVIDENCE_MISSING/);
   assert.equal(unproven.writes.some((write) => write.data.kill_switch === false), false);
+});
+
+test("legacy ledger incident opens only after complete physical rows, permissions and exchange TP proof", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_LEDGER_INCOMPLETE",
+    details: { stage: "RECONCILE_ORDERS", root_code: "COINOPS_LIVE_LEDGER_INCOMPLETE" } };
+  const safe = fixture({ alerts: [[incident]] });
+  assert.equal((await safe.run()).status, "RESUMED");
+  for (const options of [{ missingSlot: true }, { duplicateSlot: true }, { ledgerDenied: true },
+    { missingTp: true }, { healthy: false }]) {
+    const denied = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(denied.run(), /LEDGER_INCOMPLETE|LEDGER_READ_FAILED|EXCHANGE_ORDER_MISSING|EXECUTOR_NOT_ACTIVE/);
+    assert.equal(denied.writes.some(w => w.data.kill_switch === false), false);
+  }
+  assert.ok(safe.writes.filter(w => w.table === "trading_engines")
+    .every(w => w.filters.id === "engine-a" && w.filters.exchange_account_id === "account-a"));
 });
 
 test("registry recovery revalidates real permissions and TP before opening only its engine", async () => {

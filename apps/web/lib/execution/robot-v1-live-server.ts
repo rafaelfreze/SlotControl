@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error";
+import { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger } from "./live-ledger-read";
 
 import { planAthLadder } from "./ath-ladder";
 import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
@@ -162,19 +163,33 @@ async function scopedPreparation(service: Service, userId: string, asset: V1Asse
 }
 
 async function runRows(service: Service, run: Run) {
-  const [s, o, a] = await Promise.all([
-    service.from("robot_v1_live_slots").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id)
-      .eq("trading_engine_id", run.trading_engine_id).order("slot_number"),
-    service.from("robot_v1_live_orders").select("*").eq("run_id", run.id).eq("tenant_id", run.tenant_id)
-      .eq("trading_engine_id", run.trading_engine_id).order("created_at"),
-    service.from("robot_v1_live_slot_accounts").select("*").eq("product_id", run.product_id)
-      .eq("tenant_id", run.tenant_id).eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).order("slot_number"),
-  ]);
-  if (s.error || o.error || a.error || s.data?.length !== 25 || a.data?.length !== 25)
-    throw new Error("COINOPS_LIVE_LEDGER_INCOMPLETE");
-  if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
-  for (const row of [...s.data, ...(o.data ?? []), ...a.data]) assertRowEngine(row, run.engine);
-  return { slots: s.data as Slot[], orders: o.data as Order[], accounts: a.data as Account[] };
+  return boundedLedgerRead(async (deadline, attempt) => {
+    const [s, o, a] = await Promise.allSettled([
+      observeLedgerRows<Slot>("slots", service.from("robot_v1_live_slots").select("*")
+        .eq("run_id", run.id).eq("tenant_id", run.tenant_id).eq("trading_engine_id", run.trading_engine_id)
+        .order("slot_number").abortSignal(deadline), deadline, attempt),
+      completeLedgerRead<Order>(async (start, end) => ({ error: null,
+        data: await observeLedgerRows<Order>("orders", service.from("robot_v1_live_orders").select("*")
+          .eq("run_id", run.id).eq("tenant_id", run.tenant_id).eq("trading_engine_id", run.trading_engine_id)
+          .order("created_at").order("id").range(start, end).abortSignal(deadline), deadline, attempt) }),
+      "COINOPS_LIVE_LEDGER_INCOMPLETE"),
+      observeLedgerRows<Account>("slot_accounts", service.from("robot_v1_live_slot_accounts").select("*")
+        .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+        .eq("trading_engine_id", run.trading_engine_id).order("slot_number").abortSignal(deadline), deadline, attempt),
+    ]);
+    // Wait for every bounded observation: a transient response must not hide
+    // a simultaneous permission/schema failure from another ledger table.
+    for (const result of [s, o, a]) if (result.status === "rejected"
+      && !(result.reason instanceof LiveReadUnavailable)) throw result.reason;
+    if (s.status === "rejected") throw s.reason;
+    if (o.status === "rejected") throw o.reason;
+    if (a.status === "rejected") throw a.reason;
+    const slots = s.value, orders = o.value, accounts = a.value;
+    assertPhysicalLedger(slots); assertPhysicalLedger(accounts);
+    if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
+    for (const row of [...slots, ...orders, ...accounts]) assertRowEngine(row, run.engine);
+    return { slots, orders, accounts };
+  });
 }
 
 async function event(service: Service, run: Run, key: string, type: string,
@@ -270,17 +285,20 @@ const TRANSIENT_EXECUTOR_READ_CODES = new Set([
  * while the exchange is briefly unavailable; only a prolonged outage locks
  * this engine. Neither path changes a sibling engine or an existing TP. */
 async function holdTransientExecutorRead(service: Service, run: Run, evidence: Record<string, unknown> = {}) {
+  const ledgerRead = evidence.root_code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE";
   const alertKey = `LIVE_RUN:${run.id}:TRANSIENT_EXECUTOR_READ`;
   const previous = await service.from("robot_v1_live_alerts").select("first_seen_at")
     .eq("trading_engine_id", run.trading_engine_id).eq("alert_key", alertKey)
     .is("resolved_at", null).maybeSingle();
   if (previous.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_READ_FAILED");
   if (previous.data && Date.now() - Date.parse(previous.data.first_seen_at) > 5 * 60_000) {
-    await preventNewBuys(service, run, "COINOPS_LIVE_EXECUTOR_READ_STALE", evidence);
+    await preventNewBuys(service, run, ledgerRead ? "COINOPS_LIVE_LEDGER_READ_STALE"
+      : "COINOPS_LIVE_EXECUTOR_READ_STALE", evidence);
     return false;
   }
   const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
-    alert_key: alertKey, severity: "WARNING", code: "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ",
+    alert_key: alertKey, severity: "WARNING", code: ledgerRead ? "COINOPS_LIVE_TRANSIENT_LEDGER_READ"
+      : "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ",
     details: { ...evidence, run_id: run.id }, first_seen_at: previous.data?.first_seen_at ?? new Date().toISOString(),
     last_seen_at: new Date().toISOString(), resolved_at: null },
   { onConflict: "trading_engine_id,alert_key" });
@@ -1478,15 +1496,17 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     }
     if (error instanceof LiveReadUnavailable || ["RECONCILE_ORDERS", "READ_STATE"].includes(stage)
       && error instanceof Error && TRANSIENT_EXECUTOR_READ_CODES.has(error.message)) {
-      errorCode = "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
+      const ledgerRead = error instanceof LiveReadUnavailable && error.code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE";
+      const retryCode = ledgerRead ? "COINOPS_LIVE_TRANSIENT_LEDGER_READ" : "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ";
+      errorCode = retryCode;
       if (await holdTransientExecutorRead(service, run, liveFailureEvidence(error, stage, source))) {
         // The warning row is the durable retry checkpoint. A short 502/503 is
         // not a failed run and must not be promoted by the watchdog through
         // last_error while the official reconciler remains retryable.
         errorCode = null;
-        return { status: "RETRY", code: "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ" };
+        return { status: "RETRY", code: retryCode };
       }
-      errorCode = "COINOPS_LIVE_EXECUTOR_READ_STALE";
+      errorCode = ledgerRead ? "COINOPS_LIVE_LEDGER_READ_STALE" : "COINOPS_LIVE_EXECUTOR_READ_STALE";
       throw new Error(errorCode);
     }
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)

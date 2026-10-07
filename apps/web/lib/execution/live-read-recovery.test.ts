@@ -56,3 +56,21 @@ test("recovery under lease requires the same sole, scoped incident", () => {
   assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a",
     [{ ...known, code: "COINOPS_LIVE_READ_STATE_FAILED" }], known), /INCIDENT_CHANGED/);
 });
+
+test("ledger recovery requires exact diagnosed read origin, never failed/partial reconciliation", () => {
+  const code = "COINOPS_LIVE_LEDGER_INCOMPLETE";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code, last_seen_at: "2026-10-07T15:25:09Z",
+    details: { stage: "RECONCILE_ORDERS", root_code: code } };
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+  for (const status of ["RETRY", "FAILED", "BUSY_OR_INACTIVE"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", status, code), false);
+  for (const details of [undefined, { stage: "ARM_ENTRY", root_code: code },
+    { stage: "LOAD_LEDGER", root_code: "42501" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  const stale = { ...alert, code: "COINOPS_LIVE_LEDGER_READ_STALE",
+    details: { stage: "READ_STATE", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", read_path: "ledger/orders" } };
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [stale]), stale);
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...stale,
+    details: { ...stale.details, read_path: "POST/order" } }]), /INCIDENT_CHANGED/);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_LEDGER_READ_FAILED"), false);
+});

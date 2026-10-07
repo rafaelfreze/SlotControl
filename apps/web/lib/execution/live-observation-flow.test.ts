@@ -92,3 +92,18 @@ test("snapshot fill race stays retryable without claiming completed reconciliati
   assert.equal((await f.execute()).status,"RETRY");
   assert.equal(f.writes.length,1); assert.equal(f.writes[0].data.last_reconciled_at,undefined);
 });
+
+test("ledger outage uses its own diagnostic code, durable retry and engine-local prolonged block", async () => {
+  const error = new readErrors.LiveReadUnavailable("COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", "ledger/orders", 2, 504, "PGRST003");
+  const transient = fixture(error);
+  assert.equal((await transient.execute()).status, "RETRY");
+  assert.ok(transient.writes.every(w => !w.data.kill_switch));
+  const alert = transient.writes.find(w => w.table === "robot_v1_live_alerts")!;
+  assert.equal(alert.data.code, "COINOPS_LIVE_TRANSIENT_LEDGER_READ");
+  assert.equal((alert.data.details as Record<string, unknown>).provider_code, "PGRST003");
+  assert.equal(transient.writes.find(w => w.table === "robot_v1_live_runs")!.data.last_reconciled_at, undefined);
+  const stale = fixture(error, new Date(Date.now() - 301000).toISOString(), "engine-b");
+  await assert.rejects(stale.execute(), /COINOPS_LIVE_LEDGER_READ_STALE/);
+  assert.ok(stale.writes.filter(w => w.table === "trading_engines")
+    .every(w => w.filters.id === "engine-b" && w.data.kill_switch === true));
+});
