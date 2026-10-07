@@ -66,3 +66,12 @@ test("foreign/tampered proof, changed claim, completed claim, real order or fail
     assert.ok(await readFile(`${f.base}.pending`));
   }
 });
+
+test("PostgREST +00:00 and ISO Z are the same exact dispatch instant; another millisecond never releases a claim", async () => {
+  const valid = await fixture();
+  await attestNeverDispatched({ ...valid.args, dispatchedAt: dispatchedAt.replace("Z", "+00:00"), query: async () => null });
+  const changed = await fixture();
+  await assert.rejects(attestNeverDispatched({ ...changed.args,
+    dispatchedAt: new Date(Date.parse(dispatchedAt) + 1).toISOString(), query: async () => null }), /EVIDENCE_INVALID/);
+  assert.ok(await readFile(`${changed.base}.pending`));
+});

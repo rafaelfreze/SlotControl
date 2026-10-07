@@ -51,7 +51,8 @@ export function verifiedHistoricalRejection(base, secret, scope, claimKey, dispa
     || proof.protocol !== 1 || proof.source !== "PINNED_EXECUTOR_JOURNAL"
     || proof.runtimeSha !== HISTORICAL_REJECTION_RUNTIME || proof.runtimeFingerprint !== HISTORICAL_REJECTION_FINGERPRINT
     || proof.rejection_code !== "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT"
-    || proof.claimKey !== claimKey || proof.dispatchedAt !== dispatchedAt
+    || proof.claimKey !== claimKey || !Number.isFinite(Date.parse(proof.dispatchedAt))
+    || Date.parse(proof.dispatchedAt) !== Date.parse(dispatchedAt)
     || Object.entries(scope).some(([key, value]) => proof[key] !== value)) denied();
   let pending;
   try { pending = readFileSync(`${base}.pending`, "utf8"); }

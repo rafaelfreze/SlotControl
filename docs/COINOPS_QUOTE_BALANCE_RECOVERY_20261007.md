@@ -44,6 +44,8 @@ Sem evidência completa: parar; nunca remover `.pending` manualmente.
 
 Argumentos: shard, IP, engine_id, clientOrderId, decision_id, dispatched_at, PID.
 O import grava somente certificado HMAC privado 0600 junto ao claim, mantendo
+o instante UTC exato; ISO `Z` e PostgREST `+00:00` são equivalentes somente se
+`Date.parse` coincidir em milissegundos. Outra data/instante é negada. Mantém
 o original; não faz request Binance nem modifica registry/credenciais/ledger.
 O reconciliador oficial depois valida assinatura/claim, fence durável, GET da
 identidade exata, segunda verificação contra race, e arquiva o claim original.
