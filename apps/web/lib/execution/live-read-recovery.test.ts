@@ -74,3 +74,26 @@ test("ledger recovery requires exact diagnosed read origin, never failed/partial
     details: { ...stale.details, read_path: "POST/order" } }]), /INCIDENT_CHANGED/);
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_LEDGER_READ_FAILED"), false);
 });
+
+test("monthly read recovery requires exact read-stage evidence and rejects ambiguous gains or a changed incident", () => {
+  const code = "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code, last_seen_at: "2026-10-07T20:02:13Z",
+    details: { stage: "RECYCLE_SLOTS", root_code: code } };
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code), true);
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+  for (const status of ["RETRY", "FAILED", "BUSY_OR_INACTIVE"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", status, code), false);
+  for (const details of [undefined, { stage: "PROTECT_TP", root_code: code },
+    { stage: "RECYCLE_SLOTS", root_code: "42501" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  for (const denied of ["COINOPS_MONTHLY_GAIN_LEDGER_AMBIGUOUS", "COINOPS_MONTHLY_GAIN_LEDGER_MISMATCH",
+    "COINOPS_MONTHLY_TARGET_UNAVAILABLE", "COINOPS_LIVE_LEDGER_READ_FAILED"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", denied), false);
+  for (const path of ["ledger/monthly_target", "ledger/monthly_gains"]) {
+    const stale = { ...alert, code: "COINOPS_LIVE_LEDGER_READ_STALE",
+      details: { ...alert.details, root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", read_path: path } };
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [stale]), stale);
+  }
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a",
+    [{ ...alert, last_seen_at: "2026-10-07T20:03:13Z" }], alert), /INCIDENT_CHANGED/);
+});

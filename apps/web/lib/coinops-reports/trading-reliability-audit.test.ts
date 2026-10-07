@@ -3,8 +3,8 @@ import test from "node:test";
 import { buildAuditReport } from "./report-engine.ts";
 import { REPORT_VERSION } from "./filters.ts";
 
-test("v20 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
-  assert.equal(REPORT_VERSION, 20);
+test("v21 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
+  assert.equal(REPORT_VERSION, 21);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
     generatedAt: "2026-10-05T12:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
   { start: "2026-10-05T00:00:00Z", end: "2026-10-06T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });
@@ -13,15 +13,18 @@ test("v20 publishes the observation and recurrence contract without claiming mis
   assert.equal(rule?.evidence_scope, "CURRENT_CODE_CONTRACT");
   assert.match(String(rule?.notes), /UNKNOWN, não 0%/);
   assert.match(String(rule?.notes), /RECURRENCE_REGRESSION/);
-  assert.equal(rule?.version, 3);
+  assert.equal(rule?.version, 4);
   assert.match(String(rule?.notes), /registry: somente timeout comprovado/);
   assert.match(String(rule?.notes), /sem reutilizar autorização parcial/);
   assert.match(String(rule?.notes), /LEDGER_READ_STALE local/);
   assert.match(String(rule?.notes), /25 slots físicos únicos/);
   assert.match(String(rule?.notes), /CAS do mesmo incidente/);
+  assert.match(String(rule?.notes), /ledger\/monthly_gains/);
+  assert.match(String(rule?.notes), /nunca zeram gains por falha/);
+  assert.match(String(rule?.notes), /Target ausente, ganho divergente ou ambíguo permanece fechado/);
 });
 
-test("v20 exports persisted ledger read diagnostics without inventing provider error or recovery", () => {
+test("v21 exports persisted ledger read diagnostics without inventing provider error or recovery", () => {
   const details = { stage: "RECONCILE_ORDERS", source: "ENGINE", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE",
     read_path: "ledger/orders", read_attempts: 2, http_status: 504, provider_code: "PGRST003" };
   const report = buildAuditReport({ sources: { robot_v1_live_alerts: [{ id: "alert", asset: "SOL",

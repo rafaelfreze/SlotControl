@@ -19,6 +19,9 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
       // is not proof: runRows must now validate all physical rows, complete
       // orders and ownership; resume still proves exchange/TP/caps under lease.
       "COINOPS_LIVE_LEDGER_INCOMPLETE",
+      // Legacy monthly GET failures discarded their provider error. Recovery
+      // still reloads/validates monthly facts plus exchange/TP/caps under lease.
+      "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE",
       // Eligibility only. resumeLiveRun also requires a trade-backed fill at
       // incident time plus current exchange/ledger/protection agreement.
       "COINOPS_LIVE_EXCHANGE_ORDER_MISSING"].includes(alertCode ?? "");
@@ -41,7 +44,11 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
         || alert.details?.root_code !== alert.code)
     || alert.code === "COINOPS_LIVE_LEDGER_READ_STALE"
       && (alert.details?.root_code !== "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE"
-        || !["ledger/slots", "ledger/orders", "ledger/slot_accounts"].includes(String(alert.details?.read_path)))
+        || !["ledger/slots", "ledger/orders", "ledger/slot_accounts", "ledger/monthly_target",
+          "ledger/monthly_gains"].includes(String(alert.details?.read_path)))
+    || alert.code === "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE"
+      && (alert.details?.root_code !== alert.code || !["CREDIT_SLOTS", "RECYCLE_SLOTS", "RESTART_CYCLE",
+        "ATH_TRANSITION", "ARM_ENTRY"].includes(String(alert.details?.stage)))
     || !Number.isFinite(Date.parse(alert.last_seen_at))
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
       || alert.first_seen_at !== expected.first_seen_at))

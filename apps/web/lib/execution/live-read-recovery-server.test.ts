@@ -13,7 +13,7 @@ const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITO
 
 function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
-  ledgerDenied?: boolean } = {}) {
+  ledgerDenied?: boolean; monthlyFailure?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -97,7 +97,10 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       assert.equal(row.trading_engine_id, "engine-a"); assert.equal(row.exchange_account_id, "account-a");
     } },
     "./strategy-engine": { STRATEGY_VERSION: "fixture-v1" },
-    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => [] },
+    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => {
+      if (options.monthlyFailure) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_MISMATCH");
+      return [];
+    } },
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => {
       calls.push("health"); return { gate: options.healthy === false ? "ATTENTION" : "LIVE_EXECUTOR_PROTECTED" };
     } },
@@ -168,6 +171,21 @@ test("registry recovery revalidates real permissions and TP before opening only 
     await assert.rejects(denied.run(), /SCOPE_DENIED|RESUME_EXECUTOR_NOT_ACTIVE|EXCHANGE_ORDER_MISSING/);
     assert.equal(denied.writes.some(w => w.data.kill_switch === false), false);
   }
+});
+
+test("legacy monthly outage resumes under lease only after monthly, health, TP and incident CAS proofs", async () => {
+  const incident = { ...known, code: "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE",
+    details: { stage: "RECYCLE_SLOTS", root_code: "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE" } };
+  const safe = fixture({ alerts: [[incident]] });
+  assert.equal((await safe.run()).status, "RESUMED");
+  for (const options of [{ monthlyFailure: true }, { missingTp: true }, { healthy: false },
+    { ledgerDenied: true }, { missingSlot: true }]) {
+    const denied = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(denied.run(), /MONTHLY_GAIN_LEDGER_MISMATCH|EXCHANGE_ORDER_MISSING|EXECUTOR_NOT_ACTIVE|LEDGER_READ_FAILED|LEDGER_INCOMPLETE/);
+    assert.equal(denied.writes.some(w => w.data.kill_switch === false), false);
+  }
+  assert.ok(safe.writes.filter(w => w.table === "trading_engines")
+    .every(w => w.filters.id === "engine-a" && w.filters.exchange_account_id === "account-a"));
 });
 
 test("unknown/additional/changed critical incidents never open the BUY gate", async () => {

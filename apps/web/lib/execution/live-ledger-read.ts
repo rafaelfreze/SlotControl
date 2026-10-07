@@ -1,6 +1,6 @@
 import { LiveLedgerReadFailed, LiveReadUnavailable } from "./live-read-error.ts";
 
-type Resource = "slots" | "orders" | "slot_accounts";
+type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "monthly_gains";
 type Response<T> = { data: T[] | null; error: unknown; status?: number };
 const CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
   "08000", "08003", "08006", "53300", "57014"]);
