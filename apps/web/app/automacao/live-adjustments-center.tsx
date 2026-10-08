@@ -139,30 +139,35 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   const [reverse, setReverse] = useState<{ originalId: string; draft: Draft; previewHash: string;
     after: Array<{ engineId: string; slotNumber: number; delta: number; gainUnits: number }> } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/coinops-live-adjustments", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error ?? "COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE");
-    setStatus(data);
-    const nextAccount = accountId || data.accounts?.[0]?.id;
-    if (!accountId && nextAccount) setAccountId(nextAccount);
-    const matchingEngines = (data.engines as Engine[]).filter((item) => item.exchange_account_id === nextAccount && item.status === "ACTIVE");
-    const matchingSymbol = matchingEngines.filter((item) => item.symbol === initialSymbol);
-    // Ambiguous account+symbol is not a financial target. Explicit engine IDs
-    // never fall back to a sibling when missing from the current catalog.
-    const initialEngine = initialEngineId ? matchingEngines.find((item) => item.id === initialEngineId)
-      : initialSymbol === "ALL" ? matchingEngines[0]
-        : matchingSymbol.length === 1 ? matchingSymbol[0] : undefined;
-    if (initialEngine && !matchingEngines.some((item) => item.quote_asset === quote)) {
-      setQuote(initialEngine.quote_asset);
-      setOriginCurrency(initialEngine.quote_asset);
-    }
-    if (initialEngine && !engineId) setEngineId(initialEngine.id);
-    const firstPreset = (data.presets as Preset[] | undefined)?.find((item) => item.status === "ACTIVE");
-    if (!presetId && firstPreset) setPresetId(firstPreset.id);
+    setLoadingStatus(true);
+    setError("");
+    try {
+      const response = await fetch("/api/coinops-live-adjustments", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(liveAdjustmentErrorMessage(data.error ?? "COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE"));
+      setStatus(data);
+      const nextAccount = accountId || data.accounts?.[0]?.id;
+      if (!accountId && nextAccount) setAccountId(nextAccount);
+      const matchingEngines = (data.engines as Engine[]).filter((item) => item.exchange_account_id === nextAccount && item.status === "ACTIVE");
+      const matchingSymbol = matchingEngines.filter((item) => item.symbol === initialSymbol);
+      // Ambiguous account+symbol is not a financial target. Explicit engine IDs
+      // never fall back to a sibling when missing from the current catalog.
+      const initialEngine = initialEngineId ? matchingEngines.find((item) => item.id === initialEngineId)
+        : initialSymbol === "ALL" ? matchingEngines[0]
+          : matchingSymbol.length === 1 ? matchingSymbol[0] : undefined;
+      if (initialEngine && !matchingEngines.some((item) => item.quote_asset === quote)) {
+        setQuote(initialEngine.quote_asset);
+        setOriginCurrency(initialEngine.quote_asset);
+      }
+      if (initialEngine && !engineId) setEngineId(initialEngine.id);
+      const firstPreset = (data.presets as Preset[] | undefined)?.find((item) => item.status === "ACTIVE");
+      if (!presetId && firstPreset) setPresetId(firstPreset.id);
+    } finally { setLoadingStatus(false); }
   }, [accountId, engineId, initialSymbol, initialEngineId, presetId, quote]);
   useEffect(() => { if (active && !status) refresh().catch((cause) => setError(cause.message)); }, [active, status, refresh]);
 
@@ -401,7 +406,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     <header><h3>Ajustes · capital e gains</h3><p>Real · Binance Spot. Conta, moeda, motor e slot são obrigatórios. Preview não cria ordens.</p></header>
     {error ? <p className="lac-error" role="alert">{error}</p> : null}
     {notice ? <p className="lac-notice" role="status">{notice}</p> : null}
-    {!status ? <p role="status">Carregando contas e ledger…</p> : <>
+    {!status ? loadingStatus ? <p role="status">Carregando contas e ledger…</p> :
+      <button type="button" disabled={busy} onClick={() => refresh().catch((cause) => setError(cause.message))}>
+        Tentar carregar novamente · sem alterações
+      </button> : <>
       <div className="lac-kpis"><span>Capital externo registrado<strong>{format(externalContributions, quote)}</strong></span>
         <span>Resultado líquido de mercado<strong>{format(marketResult, quote)}</strong></span>
         <span>Saldo operacional nos slots<strong>{format(operationalBalance, quote)}</strong></span></div>

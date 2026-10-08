@@ -487,9 +487,10 @@ export async function GET() {
         .eq("operator_id", scope.operator.id),
       paged((start, end) => scope.service.from("robot_v1_live_runs").select("id,trading_engine_id,status,last_reconciled_at,last_error")
         .eq("operator_id", scope.operator.id).in("status", ["ACTIVE", "PAUSED"]).order("id").range(start, end)),
-      paged((start, end) => scope.service.from("robot_v1_live_slot_accounts")
-        .select("id,trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
-        .eq("operator_id", scope.operator.id).order("id").range(start, end)),
+      inventoryRows([scope.operator.id], (_ids, start, end) => scope.service.from("robot_v1_live_slot_accounts")
+        .select("trading_engine_id,slot_number,balance_quote,contribution_quote,market_pnl_quote,fees_quote,gain_count")
+        .eq("operator_id", scope.operator.id).order("trading_engine_id").order("slot_number").range(start, end),
+        row => `${row.trading_engine_id}:${row.slot_number}`),
       paged((start, end) => scope.service.from("robot_v1_live_slots")
         .select("id,run_id,trading_engine_id,slot_number,operation_sequence,entry_state,position_committed_brl,target_buy_price,entry_reference_price,operational_rank,post_ath_group")
         .eq("operator_id", scope.operator.id).order("id").range(start, end)),
@@ -539,7 +540,17 @@ export async function GET() {
       selectiveBatches: selectiveBatches.data, selectiveAllocations: selectiveAllocations.data,
       presets: presets.data,
       orders: (orders.data ?? []).filter((order) => currentRunIdSet.has(order.run_id)) });
-  } catch { return json({ error: "COINOPS_ADJUSTMENT_ADMIN_UNAVAILABLE" }, 403); }
+  } catch (cause) {
+    // A failed ledger GET is not an authorization denial. Never return raw
+    // provider messages, and never return a partial financial inventory.
+    const code = cause instanceof Error ? cause.message : "";
+    if (code === "COINOPS_ADJUSTMENT_AUTH_REQUIRED") return json({ error: code }, 401);
+    if (["COINOPS_ADJUSTMENT_ADMIN_DENIED", "COINOPS_ADJUSTMENT_SCHEMA_DENIED"].includes(code))
+      return json({ error: code }, 403);
+    const error = code === "COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY" ? code : "COINOPS_ADJUSTMENT_STATUS_UNAVAILABLE";
+    console.warn("COINOPS_ADJUSTMENT_STATUS_READ_FAILED", { code: error });
+    return json({ error }, 503);
+  }
 }
 
 export async function POST(request: NextRequest) {

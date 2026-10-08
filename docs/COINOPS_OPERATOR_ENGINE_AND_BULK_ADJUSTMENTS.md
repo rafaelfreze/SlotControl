@@ -22,6 +22,26 @@ O plano mensal (por exemplo, R$ 1.000 divididos 50/50 durante 24 meses) é **som
 
 ## Segurança e isolamento
 
+### Correção de carregamento de Ajustes — 08/10/2026
+
+`robot_v1_live_slot_accounts` não possui coluna `id`: a chave física vigente é
+`trading_engine_id + slot_number`. O GET de Ajustes pagina pela mesma chave
+composta, sob `operator_id`, usando `inventoryRows`/`completeLedgerRead` já
+existentes. Números de slots iguais em motores diferentes não colidem. Falha em
+qualquer página ou chave duplicada impede retornar inventário parcial.
+
+Antes, a seleção/ordenação por `id` inexistente recebia HTTP 400 do PostgREST,
+mas o catch devolvia `COINOPS_ADJUSTMENT_ADMIN_UNAVAILABLE`/403, ocultando a
+causa e mantendo “Carregando” após o erro. Sessão ausente agora retorna 401;
+negativa ADMIN/schema permanece 403; ledger incompleto/indisponível retorna
+503 com código sanitizado, sem mensagem bruta do provider. A tela encerra o
+carregamento e oferece nova tentativa manual exclusivamente GET.
+
+Não há mudança de schema/RLS, autorização, preview, confirmação, RPC financeiro,
+cap, gain, TP, NEXT BUY ou runtime dos executores. Regressão executável:
+`lib/slotgain/live-adjustment-status.test.ts` (mesmo símbolo/cross-shard,
+1.025 saldos, página posterior com erro, duplicação, autorização e retry da UI).
+
 As rotas aceitam apenas sessão do operador atual, origem canônica e intent administrativa; resolvem conta/motor no servidor. Os RPCs são `service_role`-only e aplicam lock, comparação de saldo/cap/seqüência, identidade física, unicidade e RLS. `VIEWER` não recebe ações administrativas. O executor usa HMAC, credencial server-side e allowlist do registry; nenhuma das novas rotas de preview ou de ajuste envia create/cancel/replace à Binance. Rafael e Thyely permanecem isolados por account ID, engine ID e moeda de cotação.
 
 Migrations aditivas em `coinops`: `20260925024845_add_operator_engine_provisioning`, `20260925024857_add_live_operator_adjustments`, `20260925024909_add_live_operator_adjustment_reversal` e `20260925024922_add_live_contribution_plans`. Antes de aplicá-las em outro ambiente, confirmar ref, schema e histórico; nunca reaplicar sem checar o estado remoto. O contrato de relatórios correspondente é `report_version=11`.

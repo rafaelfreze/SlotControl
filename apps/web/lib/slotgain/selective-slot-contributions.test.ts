@@ -54,7 +54,10 @@ test("admin UI exposes explicit selection, filters, custom split and preview", (
   for (const label of ["Selecionar manualmente", "Igual entre selecionados", "Personalizar valores",
     "Com aporte pendente", "APORTE PENDENTE", "Pré-visualizar · sem ordens"])
     assert.ok(ui.includes(label), `missing UI contract: ${label}`);
-  assert.match(ui, /Array\.from\(\{ length: 25 \}/);
+  // Select existing physical slots in the canonical engine order, not a
+  // fabricated slot-number array (which would lose current OPEN/NEXT BUY rank).
+  assert.match(ui, /orderOperationalSlots/);
+  assert.match(ui, /engineSlots\.map\(\(slot\)/);
 });
 
 test("configurable presets are operator-scoped and never become a second financial service", () => {

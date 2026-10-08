@@ -68,6 +68,9 @@ function routeHarness() {
       operatorExecutorAdmin: () => deny("EXECUTOR_CALL") },
     "@/lib/execution/operator-context": { isIdentity },
     "@/lib/execution/live-adjustment-validation": validation,
+    "@/lib/slotgain/live-slot-read-model": { projectCurrentLiveSlotRanks: () => deny("RANK_PROJECTION") },
+    "@/lib/execution/complete-ledger-read": { completeLedgerRead: () => deny("LEDGER_READ") },
+    "@/lib/execution/adjustment-engine-inventory": { adjustmentEngineInventory: () => deny("LEDGER_READ") },
     "@/lib/supabase/env": { getCoinOpsServiceTenantId: () => "tenant-fixture", getSupabaseDataSchema: () => "coinops" },
     "@/lib/supabase/service-role": { createServiceRoleClient: () => ({
       from: () => deny("LEDGER_READ"), rpc: () => deny("LEDGER_WRITE") }) },
