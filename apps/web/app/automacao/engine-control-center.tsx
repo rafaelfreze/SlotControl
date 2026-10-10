@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { activationAdmissionView, type ActivationAdmission } from "@/lib/coinops-capacity/activation-admission-view";
 import { engineDisplayName } from "@/lib/execution/engine-display";
+import { newEngineStrategyPercentDefaults } from "@/lib/execution/strategy-defaults";
 import { EngineAppendBuilder } from "./engine-append-builder";
 
 type Account = { id: string; display_name: string; status: string; kill_switch: boolean;
@@ -33,8 +34,8 @@ type Rules = Record<MarketAsset, { gainPercent: string; spacingPercent: string;
   postAthPercent: string; capital: string }>;
 
 const defaultRules: Rules = {
-  BTC: { gainPercent: "1.2", spacingPercent: "2", postAthPercent: "5", capital: "" },
-  SOL: { gainPercent: "5.5", spacingPercent: "3", postAthPercent: "8", capital: "" },
+  BTC: { ...newEngineStrategyPercentDefaults("BTC"), capital: "" },
+  SOL: { ...newEngineStrategyPercentDefaults("SOL"), capital: "" },
 };
 const api = "/api/coinops-engine-control";
 const decimal = (value: string) => value.trim().replace(",", ".");

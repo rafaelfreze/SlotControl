@@ -27,7 +27,7 @@ type ActiveBatch = { id: string; status: string; created_at: string; admission_c
 export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPresentation }) {
   const engines = useMemo(() => operator.engines.filter((engine) => engine.environment === "REAL"), [operator.engines]);
   const options = useMemo(() => accountOptions(operator.accounts, engines), [operator.accounts, engines]);
-  const shards = useMemo(() => [...new Set(operator.accounts.map((account) => account.shardId).filter((id): id is string => !!id))].sort(), [operator.accounts]);
+  const shards = useMemo(() => [...new Set(engines.map((engine) => engine.executorShardId).filter((id): id is string => !!id))].sort(), [engines]);
   const [selected, setSelected] = useState<string[]>([]);
   const [parameterKey, setParameterKey] = useState<StrategyParameterKey>("gain_rate");
   const [value, setValue] = useState("");
@@ -214,7 +214,7 @@ export function BulkStrategyEditor({ operator }: { operator: PremiumOperatorPres
       <div className="px-bulk-engine-list">{filtered.slice(0, limit).map((engine) => <label key={engine.engineId}>
         <input type="checkbox" checked={selectedSet.has(engine.engineId)} onChange={(event) => setScope(event.target.checked
           ? [...selected, engine.engineId] : selected.filter((id) => id !== engine.engineId))} />
-        <span>{engine.accountDisplayName} · {engine.symbol}<small>{engine.health.label}</small></span>
+        <span>{engine.accountDisplayName} · {engine.symbol}<small>{engine.health.label} · {engine.executorShardId ?? "Executor não confirmado"}</small></span>
       </label>)}</div>
       {filtered.length > limit ? <button type="button" onClick={() => setLimit((current) => current + 40)}>Mostrar mais ({filtered.length - limit})</button> : null}
       <p>{selected.length} motor(es) selecionado(s) · {new Set(engines.filter((engine) => selectedSet.has(engine.engineId))

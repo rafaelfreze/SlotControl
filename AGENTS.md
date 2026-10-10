@@ -135,6 +135,13 @@ no ambiente de destino antes de operação remota.
 - O CoinOps REAL atual envia ordens Spot pela Strategy Engine, ledger e executor de IP fixo. Nenhum smoke ou teste cria ordem real; toda alteração nesse caminho exige reconciliação, proteção de TP, escopo e idempotência. Dados públicos de mercado e backtests não autorizam execução.
 - Notificações e PWA devem preservar escopo por usuário/tenant, action URL, sessão, safe-area e ausência de dados financeiros sensíveis em cache/log.
 
+### Padrões de spacing BTC/SOL
+
+- Decisão autorizada em 09/10/2026: os padrões de novos motores são BTC 2% normal e pós-ATH; SOL 3% normal e pós-ATH, tanto em BRL quanto em USDT. Os dois parâmetros existentes permanecem independentes e editáveis por motor; não impor os defaults sobre configurações persistidas ao ler, reconciliar ou reiniciar.
+- Esclarecimento do proprietário em 09/10/2026: o spacing normal individual de Rafael é intencional e deve permanecer BTC 1% / SOL 1,5%. O alvo pós-ATH é BTC 2% / SOL 3%; essa aplicação não autoriza padronizar o normal desses motores. Exceções individuais confirmadas vencem o default de cadastro e nunca devem ser tratadas como divergência a corrigir automaticamente.
+- ATH continua organizando os grupos/ranks oficiais: até 15 elegíveis Primary em ordem crescente e demais Reserve em ordem decrescente, sem renumerar os 25 slots físicos. Igualar spacing não remove o regime, a prioridade mensal nem a seleção de slots.
+- Padronizar motores existentes exige prévia e confirmação pelo Bulk Strategy Editor oficial, alterando somente `normal_spacing_rate` e `post_ath_spacing_rate`; nunca UPDATE manual de perfil/ledger. OPEN/TP e snapshots históricos permanecem intactos, e NEXT BUY do regime ativo passa pelo reconciliador com ownership, lease, CAS e confirmação de zero fill. Ver `docs/COINOPS_SPACING_STANDARDIZATION_20261009.md`.
+
 ## Backtests e Local
 
 - tools/backtests e datasets físicos são simulação isolada; não são fonte normativa para produção.

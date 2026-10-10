@@ -1,19 +1,23 @@
 "use client";
 import { useState } from "react";
 import type { EngineAdmissionOption } from "@/lib/execution/engine-admission-options";
+import { newEngineStrategyPercentDefaults } from "@/lib/execution/strategy-defaults";
 type Preview = { previewHash: string; status: string; executorIp: string; quote: string;
   free: number; allocatedCapital: number; availableCapital: number; capital: number;
   engines: Array<{ symbol: string; validSlots: number; minimumCapital: number; monthlyTarget: number;
     firstEntry: number; firstTp: number; nextBuy: number; currentPrice: number; minNotional: number }> };
 const decimal = (value: string) => value.trim().replace(",", ".");
-const defaults = { BTC: ["1.2", "2", "5", "7"], SOL: ["5.5", "3", "8", "2"] };
+const defaultRates = (asset: "BTC" | "SOL") => {
+  const defaults = newEngineStrategyPercentDefaults(asset);
+  return [defaults.gainPercent, defaults.spacingPercent, defaults.postAthPercent, defaults.monthlyTarget];
+};
 const money = (value: number, quote: string) => `${value.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} ${quote}`;
 export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged }: {
   accountId: string; name: string; hostingShards: string[]; onChanged: () => Promise<void> }) {
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [options, setOptions] = useState<EngineAdmissionOption[]>([]), [shardId, setShardId] = useState("");
   const [asset, setAsset] = useState<"BTC" | "SOL">("SOL"), [quote, setQuote] = useState<"BRL" | "USDT">("BRL");
-  const [capital, setCapital] = useState(""), [rates, setRates] = useState(defaults.SOL);
+  const [capital, setCapital] = useState(""), [rates, setRates] = useState(() => defaultRates("SOL"));
   const [requestId, setRequestId] = useState(() => crypto.randomUUID()), [preview, setPreview] = useState<Preview | null>(null);
   const [apiKey, setApiKey] = useState(""), [apiSecret, setApiSecret] = useState("");
   const selected = options.find((option) => option.shardId === shardId);
@@ -83,7 +87,7 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
           })}>Validar e salvar credencial neste IP</button></fieldset> : null}</> :
         <p role="status">Sem executor certificado com capacidade comprovada, o novo motor não será admitido.</p>}
       <div className="px-engine-form-grid"><label>Ativo<select value={asset} disabled={busy}
-        onChange={(event) => { const next = event.target.value as "BTC" | "SOL"; setAsset(next); setRates(defaults[next]); invalidate(); }}>
+        onChange={(event) => { const next = event.target.value as "BTC" | "SOL"; setAsset(next); setRates(defaultRates(next)); invalidate(); }}>
         <option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
         <label>Moeda<select value={quote} disabled={busy} onChange={(event) => { setQuote(event.target.value as "BRL" | "USDT"); invalidate(); }}>
           <option value="BRL">BRL</option><option value="USDT">USDT</option></select></label>

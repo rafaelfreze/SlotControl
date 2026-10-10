@@ -48,3 +48,45 @@ test("ATH audit fails a mutated group without claiming historical market proof",
       robot_v1_testnet_slots: slots }, [], at);
   assert.equal(result.checks.find((row) => row.code === "POST_ATH_PRIMARY_SELECTS_TOP_15")?.status, "FAIL");
 });
+
+test("REAL reports export equal BTC/SOL spacing without rewriting gain or certifying unseen ATH", () => {
+  const profiles = [
+    { id: "btc-real", environment: "REAL", asset: "BTC", config_version: 8,
+      gain_rate: .007, normal_spacing_rate: .02, post_ath_spacing_rate: .02, regime: "NORMAL" },
+    { id: "sol-real", environment: "REAL", asset: "SOL", config_version: 13,
+      gain_rate: .063, normal_spacing_rate: .03, post_ath_spacing_rate: .03, regime: "POST_ATH" },
+  ];
+  const before = structuredClone(profiles);
+  const result = buildAthAudit({ monthly_goals: [], checks: [] } as unknown as AuditDatasets,
+    { robot_v1_ath_profiles: profiles, robot_v1_ath_events: [], exchange_order_intents: [] }, [], at);
+  const rows = result.rows.filter((row) => row.row_type === "PROFILE");
+  assert.deepEqual(rows.map((row) => [row.asset, row.normal_spacing_pct, row.post_ath_spacing_pct]),
+    [["BTC", 2, 2], ["SOL", 3, 3]]);
+  assert.ok(Math.abs(Number(rows[0]!.gain_pct) - .7) < 1e-8);
+  assert.ok(Math.abs(Number(rows[1]!.gain_pct) - 6.3) < 1e-8);
+  assert.deepEqual(profiles, before);
+  assert.equal(result.checks.some((row) => row.code === "POST_ATH_PRIMARY_SELECTS_TOP_15"
+    && row.environment === "REAL" && row.status === "PASS"), false);
+  assert.ok(result.checks.filter((row) => row.code === "NORMAL_SPACING_MATCHES_CONFIG"
+    || row.code === "POST_ATH_SPACING_MATCHES_CONFIG").every((row) => row.status === "WARNING"));
+});
+
+test("REAL reports preserve intentional individual normal spacing instead of substituting defaults", () => {
+  const source = {
+    robot_v1_ath_profiles: [
+      { id: "btc-individual", environment: "REAL", asset: "BTC", config_version: 9,
+        gain_rate: .012, normal_spacing_rate: .01, post_ath_spacing_rate: .02, regime: "NORMAL" },
+      { id: "sol-individual", environment: "REAL", asset: "SOL", config_version: 14,
+        gain_rate: .055, normal_spacing_rate: .015, post_ath_spacing_rate: .03, regime: "NORMAL" },
+    ],
+    robot_v1_ath_events: [],
+    exchange_order_intents: [],
+  };
+  const before = structuredClone(source);
+  const result = buildAthAudit({ monthly_goals: [], checks: [] } as unknown as AuditDatasets,
+    source, [], at);
+  const rows = result.rows.filter((row) => row.row_type === "PROFILE");
+  assert.deepEqual(rows.map((row) => [row.asset, row.normal_spacing_pct, row.post_ath_spacing_pct]),
+    [["BTC", 1, 2], ["SOL", 1.5, 3]]);
+  assert.deepEqual(source, before);
+});

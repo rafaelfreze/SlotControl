@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { AthSimulationStep } from "@/lib/execution/ath-simulator";
 import { buildAthDescentPrices } from "@/lib/execution/ath-simulation-scenarios";
+import { newEngineStrategyPercentDefaults, NEW_ENGINE_STRATEGY_DEFAULTS } from "@/lib/execution/strategy-defaults";
 
 type Asset = "BTC" | "SOL";
 type Result = { simulationId: string; state: { regime: string; athPrice: number | null }; cycleNumber: number;
@@ -21,16 +22,17 @@ export function AthSimulatorClient() {
   const [floor, setFloor] = useState("");
   const [gain, setGain] = useState("1,2");
   const [normal, setNormal] = useState("2");
-  const [post, setPost] = useState("5");
+  const [post, setPost] = useState(newEngineStrategyPercentDefaults("BTC").postAthPercent);
   const [lifetime, setLifetime] = useState(initialGains);
   const [monthly, setMonthly] = useState(Array(25).fill("0").join(","));
-  const [prices, setPrices] = useState(() => buildAthDescentPrices({ anchor: 105, spacing: .05 }).join("; "));
+  const [prices, setPrices] = useState(() => buildAthDescentPrices({ anchor: 105, spacing: NEW_ENGINE_STRATEGY_DEFAULTS.BTC.postAthSpacing }).join("; "));
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const setAssetDefaults = (next: Asset) => {
-    setAsset(next); setGain(next === "BTC" ? "1,2" : "5,5"); setNormal(next === "BTC" ? "2" : "3");
-    setPost(next === "BTC" ? "5" : "8"); setResult(null);
+    const defaults = newEngineStrategyPercentDefaults(next);
+    setAsset(next); setGain(defaults.gainPercent.replace(".", ",")); setNormal(defaults.spacingPercent);
+    setPost(defaults.postAthPercent); setResult(null);
   };
   const generatePrices = () => {
     try {

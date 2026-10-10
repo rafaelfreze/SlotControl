@@ -15,6 +15,18 @@ Ver `COINOPS_QUOTE_BALANCE_RECOVERY_20261007.md`. Retry read-only com checkpoint
 TRADING_FLOW_OWNER ficam nos eventos/alertas exportados. Ausência de atribuição
 é UNKNOWN, não 0%. Registry e SLO administrativos: `COINOPS_TRADING_RELIABILITY_20261005.md`.
 
+Os defaults BTC 2%/2% e SOL 3%/3% de 09/10/2026 não mudam o formato v22:
+`REGIME_ATH.csv` continua exportando `normal_spacing_pct` e `post_ath_spacing_pct`
+do perfil persistido, e `LIVE_EXECUTION.csv` conserva `entry_spacing`, gain,
+versão e evidência/snapshot das ordens. Não preencher esses campos com defaults
+quando a configuração real divergir, nem reinterpretar ordens históricas.
+Rafael possui exceção normal intencional confirmada em 09/10/2026: BTC 1% e
+SOL 1,5%, com pós-ATH 2%/3%. Exportar esses valores reais separadamente; a
+diferença entre regimes não representa por si só erro ou falha de padronização.
+Os checks ATH históricos de Top 15/Reserve não certificam uma transição LIVE
+não observada; preservar WARNING onde a evidência esteja ausente. Procedimento:
+`COINOPS_SPACING_STANDARDIZATION_20261009.md`.
+
 Contrato v17 preservado: recuperação de ENTRY não enviada exige prova síncrona
 pré-fetch ou fence durável + ausência de claims + GET exato, nunca timeout ou
 ausência na exchange isoladamente. Exporta a regra `unsent_entry_recovery` e

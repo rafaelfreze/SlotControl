@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { newEngineStrategyPercentDefaults } from "@/lib/execution/strategy-defaults";
 import type { PremiumOperatorPresentation } from "./premium-operator";
 import { latestOnboardingChecks, ONBOARDING_STEPS, type AccountDraft, type OnboardingCheck } from "./operator-onboarding";
 import { saveAccountOnboardingDraft, verifyAccountOnboardingReadOnly } from "./operator-onboarding-actions";
@@ -10,6 +11,9 @@ export function OperatorOnboardingPanel({ operator, checks }: { operator: Premiu
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [ids, setIds] = useState<{ accountId: string; engineId: string } | null>(null);
   const [selected, setSelected] = useState(operationalEngines[0]?.engineId ?? "");
+  const [draftSymbol, setDraftSymbol] = useState("BTCBRL");
+  const draftAsset = draftSymbol.startsWith("BTC") ? "BTC" : "SOL";
+  const draftDefaults = newEngineStrategyPercentDefaults(draftAsset);
   const current = operationalEngines.find((engine) => engine.engineId === selected);
   const steps = current ? latestOnboardingChecks(checks, current.accountId, current.engineId)
     : ONBOARDING_STEPS.map(([key, label]) => ({ key, label, evidence: null }));
@@ -35,8 +39,8 @@ export function OperatorOnboardingPanel({ operator, checks }: { operator: Premiu
       }}>
         <label>Nome da conta<input name="displayName" maxLength={80} required autoComplete="off" /></label>
         <label>Ambiente<select name="environment" defaultValue="REAL"><option value="REAL">Real · inativo</option><option value="SHADOW">Shadow</option></select></label>
-        <label>Mercado<select name="symbol" defaultValue="BTCBRL">{["BTCBRL", "SOLBRL", "BTCUSDT", "SOLUSDT", "BTCUSDC", "SOLUSDC"].map((symbol) => <option key={symbol}>{symbol}</option>)}</select></label>
-        {[["capital", "Capital lógico · moeda do par"], ["engineCap", "Hard cap do motor"], ["accountCap", "Hard cap conta/moeda"], ["gainPercent", "Gain %"], ["spacingPercent", "Queda normal %"], ["postAthPercent", "Queda pós-ATH %"]].map(([name, label]) => <label key={name}>{label}<input name={name} type="number" min="0.00000001" step="any" required /></label>)}
+        <label>Mercado<select name="symbol" value={draftSymbol} onChange={(event) => setDraftSymbol(event.target.value)}>{["BTCBRL", "SOLBRL", "BTCUSDT", "SOLUSDT", "BTCUSDC", "SOLUSDC"].map((symbol) => <option key={symbol}>{symbol}</option>)}</select></label>
+        {[["capital", "Capital lógico · moeda do par"], ["engineCap", "Hard cap do motor"], ["accountCap", "Hard cap conta/moeda"], ["gainPercent", "Gain %"], ["spacingPercent", "Queda normal %"], ["postAthPercent", "Queda pós-ATH %"]].map(([name, label]) => <label key={name === "spacingPercent" || name === "postAthPercent" ? `${name}:${draftAsset}` : name}>{label}<input name={name} type="number" min="0.00000001" step="any" required defaultValue={name === "spacingPercent" ? draftDefaults.spacingPercent : name === "postAthPercent" ? draftDefaults.postAthPercent : undefined} /></label>)}
         <button type="submit" className="px-button" disabled={busy}>Salvar rascunho inativo</button>
       </form>
     </details>

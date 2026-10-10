@@ -10,6 +10,7 @@ export type PremiumAccount = { id: string; displayName: string; status: string; 
 export type PremiumEngine = Omit<PremiumAsset, "currency"> & {
   engineId: string; accountId: string; accountDisplayName: string; currency: string;
   engineStatus: string; killSwitch: boolean;
+  executorShardId?: string | null;
 };
 export type PremiumSelection = { accountId: string; symbol: string };
 export type LiveQuoteBalance = { accountId: string; currency: string; free: number;
@@ -104,6 +105,7 @@ export function buildPremiumEngine(data: Props, context: EngineContext, now = Da
   return { ...model, slots: orderOperationalSlots(model.slots, (slot) => ({ physicalSlotNumber: slot.number,
     operationalRank: slot.rank, entryState: slot.state, eligible: slot.eligible })), symbol: context.symbol, currency: context.quote_asset,
     engineId: context.trading_engine_id, accountId: context.exchange_account_id,
+    executorShardId: context.executor_shard_id ?? null,
     accountDisplayName: context.account_display_name, engineStatus: context.status,
     cap: context.environment === "REAL" ? Number(context.hard_cap_quote) : model.cap,
     health: blocked && model.health.healthy ? { healthy: false, tone: "attention", label: "PROTEGIDO",
