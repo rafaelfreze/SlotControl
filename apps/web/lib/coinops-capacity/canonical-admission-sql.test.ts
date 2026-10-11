@@ -226,10 +226,10 @@ check("two concurrent reservations cannot spend the same remaining engine headro
 
 // v2 above is a historical regression baseline. These cases upgrade that same
 // disposable database and exercise the production v3 functions and triggers.
-const fresh = (average = 2400, current = 2200, peak = 5000, shard = "executor-02") => change(
+const fresh = (average = 2400, current = 2200, peak = 5000, shard = "executor-02", weightSamples = 15) => change(
   `observed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),weight_observed_at=clock_timestamp(),
    binance_weight_average=${average},binance_weight_current=${current},binance_weight_peak=${peak},
-   binance_weight_samples=15,cpu_percent=5,scheduler_backlog=0,reconciliation_p95_ms=10000,
+   binance_weight_samples=${weightSamples},cpu_percent=5,scheduler_backlog=0,reconciliation_p95_ms=10000,
    errors_last_5m=0,retries_last_5m=0,executor_version='${sha}'`, shard);
 // Time injection is restricted to this local fixture; Production must accrue
 // ten minutes through fresh collector samples and never receives fake history.
@@ -348,4 +348,66 @@ check("new persistence is service-only, bounded telemetry, invoker functions and
   assert.equal(psql("select bool_and(not prosecdef) from pg_proc where proname in ('advance_executor_admission_hysteresis','executor_capacity_sample_safety','preview_executor_admission')"),"t");
   assert.ok(Number(psql("select count(*) from coinops.executor_admission_transitions"))>0);
   assert.equal(psql("select count(*) from coinops.executor_admission_hysteresis where shard_id='executor-03' and environment='REAL'"),"25");
+});
+
+check("restart warmup requires 15 real samples then exactly 600 healthy seconds on every shard; reload never opens it", () => {
+  // Fixture-only elapsed time. This disposable loopback database has no
+  // Production URL or credentials; no historical samples are fabricated.
+  const recoveryBoundary = (shard: string, seconds: number) => psql(`
+    update coinops.executor_admission_hysteresis
+      set healthy_since=now()-make_interval(secs=>${seconds})
+      where shard_id='${shard}' and environment='REAL' and healthy_since is not null;
+    update coinops.executor_capacity_samples
+      set observed_at=now(),heartbeat_at=now(),weight_observed_at=now()
+      where shard_id='${shard}';`);
+  const persisted = (shard: string, sibling = false) => psql(`
+    select coalesce(jsonb_agg(to_jsonb(h) order by h.shard_id,h.planned_engines),'[]')
+    from coinops.executor_admission_hysteresis h
+    where h.environment='REAL' and h.shard_id${sibling ? "<>" : "="}'${shard}';`);
+  for (const shard of ["executor-01", "executor-02", "executor-03"]) {
+    // Keep the unrelated Watchdog fixture fresh while exercising elapsed
+    // admission time, including on slower developer machines.
+    psql(`update coinops.watchdog_checks set checked_at=now() where shard_id='${shard}'`);
+    const siblingsBefore = persisted(shard, true);
+    for (let samples = 1; samples < 15; samples++) {
+      fresh(672, 667, 720, shard, samples);
+      for (const count of [1, 2]) {
+        const warming = preview(shard, count);
+        assert.equal(warming.code, "CAPACITY_UNKNOWN");
+        assert.equal(warming.reason, samples < 2
+          ? "BINANCE_WEIGHT_TRACKING" : "CAPACITY_TELEMETRY_MISSING_OR_STALE");
+        assert.equal(warming.healthy_since, null);
+        assert.equal(warming.healthy_seconds, 0);
+        assert.equal(warming.ready.ready, samples >= 2,
+          "minimum tracking evidence is distinct from the 15-sample admission window");
+      }
+    }
+    fresh(672, 667, 720, shard, 15);
+    const beforeReload = persisted(shard);
+    for (let reload = 0; reload < 3; reload++) {
+      for (const count of [1, 2]) {
+        const stabilizing = preview(shard, count);
+        assert.equal(stabilizing.reason, "RECOVERY_STABILIZING");
+        assert.equal(stabilizing.code, "CAPACITY_REQUIRED");
+        assert.equal(stabilizing.healthy_seconds, 0);
+      }
+    }
+    assert.equal(persisted(shard), beforeReload);
+    recoveryBoundary(shard, 599);
+    for (const count of [1, 2]) {
+      const notYet = preview(shard, count);
+      assert.equal(notYet.healthy_seconds, 599);
+      assert.equal(notYet.reason, "RECOVERY_STABILIZING");
+      assert.equal(notYet.code, "CAPACITY_REQUIRED");
+    }
+    recoveryBoundary(shard, 600);
+    for (const count of [1, 2]) {
+      const open = preview(shard, count);
+      assert.equal(open.healthy_seconds, 600);
+      assert.equal(open.code, "CAPACITY_OK");
+      assert.equal(open.projected_weight, 672 + 900 * count);
+      assert.equal(open.recovery_headroom_weight, 2100);
+    }
+    assert.equal(persisted(shard, true), siblingsBefore, "restart and recovery are shard-local");
+  }
 });

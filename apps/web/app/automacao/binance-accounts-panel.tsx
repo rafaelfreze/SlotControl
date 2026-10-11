@@ -64,9 +64,9 @@ export function BinanceAccountsPanel() {
     } catch (error) {
       const code = error instanceof Error ? error.message : "Operação não concluída. Nenhuma ordem foi enviada.";
       setMessage(code === "COINOPS_CAPACITY_REQUIRED"
-        ? "Capacidade do executor atingida. Adicione/expanda um executor antes de ativar novas contas."
+        ? "Admissão bloqueada pelo gate de segurança. Consulte os detalhes dos executores para conferir o motivo atual e a estabilidade; bloqueio não significa necessariamente falta de espaço. Motores existentes continuam operando."
         : code === "COINOPS_CAPACITY_UNKNOWN"
-          ? "Telemetria indisponível ou desatualizada. Nova conta bloqueada por segurança; motores existentes continuam operando."
+          ? "Evidência de admissão ainda não confirmada. Consulte os detalhes dos executores para conferir amostras, validade da telemetria e certificação. Nova conta bloqueada por segurança; motores existentes continuam operando."
           : code === "EXECUTOR_CREDENTIAL_ALREADY_BOUND"
             ? "Esta API Key já está vinculada a outra conta neste executor. Crie uma API exclusiva na Binance da conta selecionada e configure a whitelist com o IP exibido. Nenhuma credencial ou motor novo foi ativado."
             : code === "EXECUTOR_BINANCE_CREDENTIALS_MISSING"

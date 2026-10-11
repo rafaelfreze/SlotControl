@@ -833,7 +833,11 @@ test("capacity admission exposes exact math and reserve without overflow or live
     projected_percent: 55, admission_limit_weight: 3900, recovery_headroom_weight: 2100,
     remaining_weight: 600, observed_weight: 2400, sustained_weight:2400, reserved_weight: 0, incremental_weight: 900,
     pressure_phase: "TRANSIENT_SPIKE", additional_engines: 1, healthy_seconds: 600,
+    telemetry: { weight_samples: 15, minimum_weight_samples: 15, observed_at: AUTOMATION_FIXTURE_NOW,
+      weight_observed_at: AUTOMATION_FIXTURE_NOW, heartbeat_at: AUTOMATION_FIXTURE_NOW,
+      timing: "FRESH", decision_matches_sample: true },
     policy: { version: "capacity-v3-20260930",reopen_ratio:.60,reopen_healthy_seconds:600,
+      minimum_weight_samples: 15, telemetry_max_age_seconds: 120,
       binance_limit: 6000, admission_ratio: .65, recovery_ratio: .35, incremental_weight: 900,
       incremental_source: "CONSERVATIVE_UNCALIBRATED", peak_hold_minutes: 15 } };
   const shard = { id: "executor-02", state: "OBSERVE", action: "NONE", binanceWeightCurrent: 2100,
@@ -856,6 +860,9 @@ test("capacity admission exposes exact math and reserve without overflow or live
   await expect(details).toContainText("OBSERVE é monitoramento");
   await expect(details).toContainText("2100 weight/min, descontada uma única vez");
   await expect(details).toContainText("ainda não é p95 medido");
+  await expect(details).toContainText("Amostras Binance 15/15");
+  await expect(details).toContainText("Admissão exige 15 amostras reais");
+  await expect(details).toContainText("600s de estabilidade");
   for (const width of [320, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await expect(details).toBeVisible();
@@ -910,6 +917,42 @@ test("executor tem texto legível e linha inteira clicável por mouse toque e te
     await expect(details).toBeHidden();
     expect((await geometry(page)).overflow).toBe(0);
     if (width === 1920 || width === 390) await screenshot(page, testInfo, `executor-readable-${width}`);
+  }
+  await noSideEffects(page, audit);
+});
+
+test("healthy executor with a forming admission window explains temporary denial without a full-capacity claim", async ({ page }) => {
+  const admission = { code: "CAPACITY_UNKNOWN", reason: "CAPACITY_TELEMETRY_MISSING_OR_STALE",
+    projected_weight: 1572, projected_percent: 26.2, admission_limit_weight: 3900,
+    recovery_headroom_weight: 2100, remaining_weight: 2328, observed_weight: 672,
+    sustained_weight: 672, reserved_weight: 0, incremental_weight: 900, pressure_phase: "UNKNOWN", additional_engines: 0,
+    telemetry: { weight_samples: 14, minimum_weight_samples: 15, observed_at: AUTOMATION_FIXTURE_NOW,
+      weight_observed_at: AUTOMATION_FIXTURE_NOW, heartbeat_at: AUTOMATION_FIXTURE_NOW,
+      timing: "FRESH", decision_matches_sample: true },
+    policy: { version: "capacity-v3-20260930", reopen_ratio: .60, reopen_healthy_seconds: 600,
+      minimum_weight_samples: 15, telemetry_max_age_seconds: 120, binance_limit: 6000,
+      admission_ratio: .65, recovery_ratio: .35, incremental_weight: 900,
+      incremental_source: "CONSERVATIVE_UNCALIBRATED", peak_hold_minutes: 15 } };
+  const shard = { id: "executor-03", state: "HEALTHY", action: "NONE", accountCount: 1, engineCount: 2,
+    observedAt: AUTOMATION_FIXTURE_NOW, heartbeatAt: AUTOMATION_FIXTURE_NOW, alerts: [],
+    canAddEngine: false, canAddTwoEngineAccount: false, binanceWeightCurrent: 667,
+    binanceWeightAverage: 672, binanceWeightPeak: 720, binanceLimit: 6000, binancePercent: 11.2,
+    cpuPercent: 1, ramUsedMb: 136, schedulerBacklog: 0, reconciliationAgeMs: 24000,
+    reservedWeight: 0, egressIp: "192.0.2.3", warningsMuted: false, admission, dualEngineAdmission: admission };
+  const audit = await mount(page, "live", 390, 844, automationOperatorFixture(), { shards: [shard] });
+  const badge = page.locator("#infra-executor-03 .px-capacity-availability");
+  await expect(badge).toHaveText("+1 NÃO");
+  await expect(badge).toHaveAttribute("title", /validação da telemetria\/janela pendente; 14\/15 amostras reais/);
+  await badge.click();
+  const details = page.locator("#infra-details-executor-03");
+  await expect(details).toContainText("Amostras Binance 14/15 · janela em formação");
+  await expect(details).toContainText("600s de estabilidade");
+  await expect(details).not.toContainText("Sem espaço");
+  await expect(details).not.toContainText("Capacidade atingida");
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect((await geometry(page)).overflow).toBe(0);
+    await expect(badge).toHaveText("+1 NÃO");
   }
   await noSideEffects(page, audit);
 });

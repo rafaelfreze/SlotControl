@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ExecutorObservation } from "./automation-executor-sync";
 import { executorNeedsAttention, selectOverviewExecutors } from "./capacity-card-presentation";
 import { PremiumDrawer } from "./premium-primitives";
-import { explainAdmission, pressureExplanation, type AdmissionExplanation } from "@/lib/coinops-capacity/admission-explanation";
+import { admissionTelemetryExplanation, explainAdmission, pressureExplanation, type AdmissionExplanation } from "@/lib/coinops-capacity/admission-explanation";
 
 type Shard = { id: string; state: string; action: string; binanceWeightCurrent: number | null;
   egressIp: string; executorVersion: string | null; binanceWeightAverage: number | null; binanceWeightPeak: number | null;
@@ -80,7 +80,7 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
             {!overview && executorNeedsAttention(shard, observedNow) && ["HEALTHY", "OBSERVE"].includes(shard.state) && !shard.alerts.length
               ? <small role="status">Telemetria sem confirmação recente.</small> : null}</span>
           {overview ? <span className="px-capacity-availability" data-available={!executorNeedsAttention(shard, observedNow) && shard.canAddEngine}
-            title={executorNeedsAttention(shard, observedNow) ? "Verificar saúde e telemetria do executor" : shard.canAddEngine ? "Admissão disponível para +1 motor" : "Sem espaço para nova admissão"}>
+            title={executorNeedsAttention(shard, observedNow) ? "Verificar saúde e telemetria do executor" : explainAdmission(shard.admission)}>
             {executorNeedsAttention(shard, observedNow) ? "Verificar" : shard.canAddEngine ? "+1 SIM" : "+1 NÃO"}</span> : null}
           <span className="px-capacity-toggle-label" aria-hidden="true">
             {overview ? expandedShard === shard.id ? "−" : "›" : expandedShard === shard.id ? "Ocultar detalhes" : "Ver detalhes"}</span>
@@ -103,6 +103,7 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
         <span>Fila: {shard.schedulerBacklog === null ? "—" : shard.schedulerBacklog === 0 ? "normal" : shard.schedulerBacklog}
           {` · Reconciliação: ${shard.reconciliationAgeMs === null ? "—" : Math.round(shard.reconciliationAgeMs / 1000) + "s"}`}</span>
         <small>Heartbeat: {shard.heartbeatAt ? new Date(shard.heartbeatAt).toLocaleString("pt-BR") : "sem amostra"}</small>
+        {admissionTelemetryExplanation(shard.admission) ? <small>{admissionTelemetryExplanation(shard.admission)}</small> : null}
         <strong>Nova conta +1 motor: {explainAdmission(shard.admission)}</strong>
         <span>Nova conta +2 motores: {explainAdmission(shard.dualEngineAdmission)}</span>
         {shard.admission ? <>
@@ -114,6 +115,10 @@ export function CapacityCard({ onExecutorObservation, overview = false, attentio
             Capacidade operacional total não certificada por quantidade de motores.</small>
           {shard.admission.policy.reopen_healthy_seconds ? <small>Histerese: bloqueia acima de 65% sustentado; reabre após 10 min até 60%.
             Consumo atual ≥75% bloqueia imediatamente. OBSERVE é monitoramento.</small> : null}
+          {shard.admission.policy.minimum_weight_samples && shard.admission.policy.reopen_healthy_seconds
+            ? <small>Admissão exige {shard.admission.policy.minimum_weight_samples} amostras reais. Após bloqueio ou reinício,
+              a janela válida deve ser seguida por {shard.admission.policy.reopen_healthy_seconds}s de estabilidade.
+              A coleta server-side libera automaticamente somente quando todos os gates passam; recarregar não acelera o prazo.</small> : null}
           {pressureExplanation(shard.admission.pressure_phase) ? <small>{pressureExplanation(shard.admission.pressure_phase)}</small> : null}
         </> : null}
         {shard.state === "WARNING" && !shard.warningsMuted ? <small>{shard.action === "SCALE_UP"

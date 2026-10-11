@@ -5,6 +5,7 @@ import { shardReservedWeight } from "@/lib/coinops-capacity/admission-reservatio
 import { assessShardCapacity,
   DEFAULT_CAPACITY_POLICY } from "@/lib/coinops-capacity/capacity-manager";
 import { capacityWarningMuted } from "@/lib/coinops-capacity/capacity-warning-mute";
+import { withAdmissionTelemetry } from "@/lib/coinops-capacity/admission-explanation";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
 
@@ -55,8 +56,8 @@ export async function GET() {
       const assessment = assessShardCapacity(metrics, policy);
       const reservedWeight = shardReservedWeight(shard.id, "REAL", reservations.data ?? []);
       const decision = decisions.data.find((item: { shard_id: string }) => item.shard_id === shard.id);
-      const admission = decision?.plus_one;
-      const dualEngineAdmission = decision?.plus_two;
+      const admission = withAdmissionTelemetry(decision?.plus_one, sample);
+      const dualEngineAdmission = withAdmissionTelemetry(decision?.plus_two, sample);
       const warningsMuted = mutedPairs.has(`${auth.operatorId}:${shard.id}`);
       // Infrastructure health is independent of onboarding certification,
       // the 15-sample admission window and its persisted recovery latch.
@@ -67,6 +68,8 @@ export async function GET() {
         binanceWeightCurrent: sample?.binance_weight_current ?? null,
         binanceWeightAverage: sample?.binance_weight_average ?? null,
         binanceWeightPeak: sample?.binance_weight_peak ?? null,
+        binanceWeightSamples: sample?.binance_weight_samples ?? null,
+        weightObservedAt: sample?.weight_observed_at ?? null,
         binanceLimit: Number(shard.binance_limit_per_min), binancePercent: assessment.binancePercent,
         cpuPercent: sample?.cpu_percent ?? null, ramUsedMb: sample?.ram_used_mb ?? null,
         ramLimitMb: sample?.ram_limit_mb ?? null,
