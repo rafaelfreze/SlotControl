@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mayRecoverReadOutage, verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
+import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);
@@ -116,4 +116,63 @@ test("bulk checkpoint legacy recovery qualifies only the exact GET stage, never 
   }
   assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a",
     [{ ...alert, last_seen_at: "2026-10-07T21:03:17Z" }], alert), /INCIDENT_CHANGED/);
+});
+
+test("legacy permission wrapper needs exact read-stage/root evidence; never generically allow ARM/CREDIT errors", () => {
+  for (const [code, stage] of [["COINOPS_LIVE_ARM_ENTRY_FAILED", "ARM_ENTRY"],
+    ["COINOPS_LIVE_CREDIT_SLOTS_FAILED", "CREDIT_SLOTS"]]) {
+    const details = { stage, root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" };
+    const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code, details,
+      first_seen_at: "2026-10-11T12:00:00Z", last_seen_at: "2026-10-11T12:00:00Z" };
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, details), true);
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+    for (const invalid of [undefined, { stage: "PROTECT_TP", root_code: details.root_code },
+      { stage, root_code: "EXECUTOR_BINANCE_RESULT_UNKNOWN" }]) {
+      assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, invalid), false);
+      assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details: invalid }]), /INCIDENT_CHANGED/);
+    }
+    for (const status of ["PAUSED", "PREPARING", "BLOCKED"])
+      assert.equal(mayRecoverReadOutage(status, "OK", code, details), false);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, details), false);
+  }
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "EXECUTOR_PRODUCTION_PERMISSION_DENIED"), false);
+});
+
+test("permission read recovery accepts only old settled orders and exact unfilled resident NEXT BUY/TP", () => {
+  const incident = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_ARM_ENTRY_FAILED",
+    details: { stage: "ARM_ENTRY", root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" },
+    first_seen_at: "2026-10-11T12:00:00Z", last_seen_at: "2026-10-11T12:00:00Z" };
+  const base = { status: "NEW", side: "BUY", client_order_id: "owned:buy", exchange_order_id: "buy-a",
+    created_at: "2026-10-09T12:00:00Z", price: 630, requested_quantity: 1,
+    executed_quantity: 0, cumulative_quote: 0, trades_reconciled: false };
+  const orders = [base, { ...base, side: "SELL", client_order_id: "owned:tp", exchange_order_id: "tp-a", price: 650 }];
+  const observed = orders.map(order => ({ id: order.exchange_order_id, clientOrderId: order.client_order_id,
+    side: order.side, status: "NEW", price: order.price, executedQuantity: 0, originalQuantity: 1 }));
+  assert.equal(assertPermissionReadRecoveryOrders(incident, orders, observed, "owned:"), "2026-10-11T11:58:30.000Z");
+  const skewed = { ...incident, first_seen_at: "2026-10-11 15:07:18.029158+00",
+    last_seen_at: "2026-10-11 15:07:18.019+00" };
+  assert.equal(assertPermissionReadRecoveryOrders(skewed, orders, observed, "owned:"), "2026-10-11T15:05:48.019Z");
+  assert.equal(verifiedReadRecoveryAlert("ACTIVE", "run-a", [skewed], skewed).first_seen_at, skewed.first_seen_at);
+  assert.equal(assertPermissionReadRecoveryOrders({ ...incident, last_seen_at: "2026-10-11T11:59:59Z" },
+    orders, observed, "owned:"), "2026-10-11T11:58:29.000Z");
+  for (const last_seen_at of ["2026-10-11T11:59:58.999Z", "invalid"])
+    assert.throws(() => assertPermissionReadRecoveryOrders({ ...incident, last_seen_at }, orders, observed, "owned:"), /RECOVERY_UNPROVEN/);
+  // A sibling's resident order must not be considered ours.
+  assert.equal(assertPermissionReadRecoveryOrders(incident, orders,
+    [...observed, { ...observed[0], id: "sibling", clientOrderId: "other:buy" }], "owned:"), "2026-10-11T11:58:30.000Z");
+  for (const change of [{ status: "PREPARED" }, { status: "PARTIALLY_FILLED" }, { status: "UNKNOWN" },
+    { status: "SUBMITTING" }, { status: "FAILED" }, { exchange_order_id: null },
+    { created_at: "2026-10-11T11:59:00Z" }, { created_at: "invalid" }, { executed_quantity: 0.1 },
+    { cumulative_quote: 1 }, { client_order_id: "other:buy" }, { requested_quantity: 0 }])
+    assert.throws(() => assertPermissionReadRecoveryOrders(incident, [{ ...base, ...change }, orders[1]], observed, "owned:"), /RECOVERY_UNPROVEN/);
+  for (const change of [{ status: "PARTIALLY_FILLED" }, { price: 631 }, { originalQuantity: 2 },
+    { originalQuantity: undefined }, { executedQuantity: 0.1 }, { id: "wrong" }])
+    assert.throws(() => assertPermissionReadRecoveryOrders(incident, orders, [{ ...observed[0], ...change }, observed[1]], "owned:"), /RECOVERY_UNPROVEN/);
+  assert.throws(() => assertPermissionReadRecoveryOrders(incident, [orders[1]], [observed[1]], "owned:"), /RECOVERY_UNPROVEN/);
+  assert.throws(() => assertPermissionReadRecoveryOrders({ ...incident, first_seen_at: undefined }, orders, observed, "owned:"), /RECOVERY_UNPROVEN/);
+  const terminal = { ...base, status: "FILLED", client_order_id: "owned:old", exchange_order_id: "old-a",
+    executed_quantity: 1, cumulative_quote: 630 };
+  assert.throws(() => assertPermissionReadRecoveryOrders(incident, [...orders, terminal], observed, "owned:"), /RECOVERY_UNPROVEN/);
+  assert.equal(assertPermissionReadRecoveryOrders(incident, [...orders, { ...terminal, trades_reconciled: true }], observed, "owned:"),
+    "2026-10-11T11:58:30.000Z");
 });

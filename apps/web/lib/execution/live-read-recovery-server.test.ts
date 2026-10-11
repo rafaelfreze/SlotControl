@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
-import { verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
+import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders } from "./live-read-recovery.ts";
 import { liveEngineExposure } from "./engine-exposure.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
@@ -14,7 +14,12 @@ const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITO
 function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
   ledgerDenied?: boolean; monthlyFailure?: boolean; configPending?: boolean; bulkStatus?: string;
-  lateBulk?: boolean; bulkDenied?: boolean; configCasLost?: boolean } = {}) {
+  lateBulk?: boolean; bulkDenied?: boolean; configCasLost?: boolean;
+  permissionRecovery?: boolean; permissionOrderStatus?: string; permissionRecentOrder?: boolean;
+  permissionResidentQuantity?: number; permissionResidentPrice?: number;
+  permissionRecentDecision?: boolean; permissionUnsettledDecision?: boolean;
+  permissionPendingDispatch?: boolean; permissionProofDenied?: boolean;
+  permissionSiblingOrder?: boolean; permissionExpectedCutoff?: string } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -30,7 +35,13 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   if (options.duplicateSlot) slots[24].slot_number = slots[0].slot_number;
   const orders = [{ ...scope, id: "order-tp", run_id: run.id, slot_id: "slot-0", side: "SELL", status: "NEW",
     client_order_id: "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
-    executed_quantity: 0, cumulative_quote: 0, reserved_notional_brl: 0 }];
+    executed_quantity: 0, cumulative_quote: 0, reserved_notional_brl: 0, trades_reconciled: false,
+    price: 650, requested_quantity: 1, created_at: "2026-09-25T00:00:00Z" }];
+  if (options.permissionRecovery) orders.push({ ...orders[0], id: "order-buy", side: "BUY", price: 630,
+    client_order_id: "owned:buy", exchange_order_id: "buy-a", slot_id: "slot-1",
+    status: options.permissionOrderStatus ?? "NEW",
+    trading_engine_id: options.permissionSiblingOrder ? "engine-b" : "engine-a",
+    created_at: options.permissionRecentOrder ? "2026-09-27T00:00:00Z" : orders[0].created_at });
   let alertReads = 0;
   let bulkReads = 0;
   const service = { from(table: string) {
@@ -73,6 +84,24 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
         filled_at: "2026-09-27T00:00:11.000Z", collected_at: "2026-09-27T00:00:30.000Z" }] : [];
       else if (table === "robot_v1_live_orders") data = filters.id ? [{ id: "filled-order",
         client_order_id: "owned:filled-tp", status: "FILLED", trades_reconciled: true }] : orders;
+      else if (table === "robot_v1_strategy_decisions" || table === "account_order_budget_reservations") {
+        calls.push(table === "robot_v1_strategy_decisions" ? "permission-intent-read" : "permission-dispatch-read");
+        assert.equal(filters.trading_engine_id, "engine-a");
+        assert.equal(filters.exchange_account_id, "account-a");
+        assert.equal(filters.operator_id, "operator");
+        assert.equal(filters.cycle_id, undefined, "another run's unsettled dispatch must not be hidden");
+        if (table === "robot_v1_strategy_decisions") {
+          assert.equal(filters.environment, "REAL");
+          assert.deepEqual(filters.action_type, ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"]);
+          const cutoff = options.permissionExpectedCutoff ?? "2026-09-26T23:58:42.000Z";
+          assert.equal(filters.or, `created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`);
+          data = options.permissionRecentDecision || options.permissionUnsettledDecision ? [{ id: "unsettled-decision" }] : [];
+        } else {
+          assert.equal(filters.acknowledged_at, null);
+          data = options.permissionPendingDispatch ? [{ client_order_id: "uncertain-dispatch" }] : [];
+        }
+        if (options.permissionProofDenied) return { data: null, error: { code: "42501" }, status: 403 };
+      }
       else if (table === "account_quote_caps") data = { hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") data = {};
       else assert.fail(`Unexpected table ${table}`);
@@ -87,7 +116,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       is: (key: string, value: unknown) => { filters[key] = value; return chain; },
       in: (key: string, value: unknown) => { filters[key] = value; return chain; },
       gte: () => chain, lte: () => chain, limit: () => chain,
-      or: () => chain, gt: () => chain, order: () => chain, abortSignal: () => chain,
+      or: (value: string) => { filters.or = value; return chain; }, gt: () => chain, order: () => chain, abortSignal: () => chain,
       range: (start: number, end: number) => { page = [start, end]; return chain; },
       update: (data: Record<string, unknown>) => { mutation = data; return chain; },
       upsert: (data: Record<string, unknown>) => { mutation = data; return chain; },
@@ -101,7 +130,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
     "node:crypto": { randomUUID: () => "lease" },
-    "./live-read-recovery": { verifiedReadRecoveryAlert },
+    "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
     "./operator-context-server": { resolveOperatorEngine: async () => {
@@ -123,7 +152,11 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       readLiveExecutorState: async () => {
       calls.push("exchange-state"); return { ...scope, filters: { quantityStep: 0.001 },
         price: { price: 630, observedAt: new Date().toISOString() }, observed_at: new Date().toISOString(),
-        open_orders: options.missingTp ? [] : [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp" }] };
+        open_orders: options.missingTp ? [] : options.permissionRecovery
+          ? [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp", status: "NEW", price: 650, executedQuantity: 0, originalQuantity: 1 },
+            { id: "buy-a", side: "BUY", clientOrderId: "owned:buy", status: "NEW", price: options.permissionResidentPrice ?? 630,
+              executedQuantity: 0, originalQuantity: options.permissionResidentQuantity ?? 1 }]
+          : [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp" }] };
     }, createLiveExecutorOrder: () => assert.fail("Resume must not send an order"),
     cancelLiveExecutorOrder: () => assert.fail("Resume must not cancel an order") },
     "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES: new Set(["NEW", "PREPARED", "PARTIALLY_FILLED"]),
@@ -146,6 +179,9 @@ test("verified recovery claims lease, proves fresh health/protection and conditi
   assert.equal(clear?.filters.code, known.code);
   assert.equal(clear?.filters.last_seen_at, known.last_seen_at);
   assert.equal(clear?.filters.trading_engine_id, "engine-a");
+  assert.equal(clear?.filters.first_seen_at, undefined);
+  assert.equal(clear?.filters["details->>stage"], undefined);
+  assert.equal(clear?.filters["details->>root_code"], undefined);
 });
 
 test("missing-order alert recovers only after a late trade-backed fill and current exchange agreement", async () => {
@@ -256,4 +292,52 @@ test("late incident CAS loss re-closes only this engine instead of reporting suc
     && write.data.event_type === "LIVE_RESUMED"), false);
   assert.ok(engineWrites.every((write) => write.filters.id === "engine-a"
     && write.filters.exchange_account_id === "account-a"));
+});
+
+test("legacy permission GET wrapper resumes only after settled pre-incident order and dispatch proof under lease/CAS", async () => {
+  for (const [code, stage] of [["COINOPS_LIVE_ARM_ENTRY_FAILED", "ARM_ENTRY"],
+    ["COINOPS_LIVE_CREDIT_SLOTS_FAILED", "CREDIT_SLOTS"]]) {
+    const incident = { ...known, code, details: { stage, root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" } };
+    const safe = fixture({ alerts: [[incident]], permissionRecovery: true });
+    assert.equal((await safe.run()).status, "RESUMED");
+    assert.deepEqual(safe.calls, ["lease-claimed", "alert-read", "health", "exchange-state",
+      "permission-intent-read", "permission-dispatch-read", "alert-read"]);
+    assert.ok(safe.writes.every(write => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(write.table)));
+    const cleared = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+    assert.equal(cleared.filters.code, code); assert.equal(cleared.filters.last_seen_at, incident.last_seen_at);
+    assert.equal(cleared.filters.first_seen_at, incident.first_seen_at);
+    assert.equal(cleared.filters["details->>stage"], stage);
+    assert.equal(cleared.filters["details->>root_code"], incident.details.root_code);
+    assert.equal(cleared.filters.trading_engine_id, "engine-a");
+    const event = safe.writes.find(write => write.table === "robot_v1_live_events")!;
+    assert.equal((event.data.details as Record<string, unknown>).source, "VERIFIED_READ_RECOVERY");
+    assert.equal((event.data.details as Record<string, unknown>).recovered_alert_code, code);
+    for (const options of [{ healthy: false }, { missingTp: true }, { missingSlot: true }, { ledgerDenied: true },
+      { configPending: true }, { permissionResidentPrice: 631 }, { permissionResidentQuantity: 2 },
+      { permissionRecentOrder: true }, { permissionRecentDecision: true }, { permissionUnsettledDecision: true }, { permissionPendingDispatch: true },
+      { permissionProofDenied: true }, { permissionSiblingOrder: true },
+      ...["PREPARED", "PARTIALLY_FILLED", "UNKNOWN", "SUBMITTING", "FAILED"].map(permissionOrderStatus => ({ permissionOrderStatus }))]) {
+      const denied = fixture({ alerts: [[incident]], permissionRecovery: true, ...options });
+      await assert.rejects(denied.run());
+      assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
+      assert.equal(denied.writes.some(write => write.table === "robot_v1_live_events" && write.data.event_type === "LIVE_RESUMED"), false);
+    }
+    const changed = fixture({ alerts: [[incident], [{ ...incident, last_seen_at: "2026-09-27T00:01:00Z" }]], permissionRecovery: true });
+    await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+    assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
+  }
+});
+
+test("legacy permission recovery tolerates bounded DB/caller skew without rounding incident CAS timestamps", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_ARM_ENTRY_FAILED",
+    details: { stage: "ARM_ENTRY", root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" },
+    first_seen_at: "2026-10-11 15:07:18.029158+00", last_seen_at: "2026-10-11 15:07:18.019+00" };
+  const safe = fixture({ alerts: [[incident]], permissionRecovery: true,
+    permissionExpectedCutoff: "2026-10-11T15:05:48.019Z" });
+  assert.equal((await safe.run()).status, "RESUMED");
+  const cleared = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  assert.equal(cleared.filters.first_seen_at, incident.first_seen_at);
+  assert.equal(cleared.filters.last_seen_at, incident.last_seen_at);
+  assert.equal(cleared.filters["details->>stage"], incident.details.stage);
+  assert.equal(cleared.filters["details->>root_code"], incident.details.root_code);
 });

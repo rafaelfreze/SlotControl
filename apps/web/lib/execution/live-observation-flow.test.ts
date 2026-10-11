@@ -53,6 +53,31 @@ test("exhausted observation resumes through normal cron checkpoint, never Watchd
   }
 });
 
+test("typed restriction read outage checkpoints the normal engine flow; prolonged outage blocks only that engine", async () => {
+  const error = new readErrors.LiveReadUnavailable("EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE", "/v1/state", 4, 503);
+  for (const engineId of ["engine-a", "engine-b"]) {
+    const transient = fixture(error, undefined, engineId);
+    assert.equal((await transient.execute()).status, "RETRY");
+    assert.ok(transient.writes.every(write => !write.data.kill_switch));
+    const alert = transient.writes.find(write => write.table === "robot_v1_live_alerts")!;
+    assert.equal(alert.data.trading_engine_id, engineId);
+    assert.equal(alert.data.code, "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ");
+    assert.equal((alert.data.details as Record<string, unknown>).root_code, error.code);
+    assert.equal((alert.data.details as Record<string, unknown>).read_attempts, 4);
+    const release = transient.writes.find(write => write.table === "robot_v1_live_runs")!;
+    assert.equal(release.filters.id, transient.run.id);
+    assert.equal(release.data.last_error, null);
+    assert.equal(release.data.last_reconciled_at, undefined);
+  }
+  const stale = fixture(error, new Date(Date.now() - 301000).toISOString(), "engine-b");
+  await assert.rejects(stale.execute(), /COINOPS_LIVE_EXECUTOR_READ_STALE/);
+  assert.ok(stale.writes.filter(write => write.table === "trading_engines")
+    .every(write => write.filters.id === "engine-b" && write.data.kill_switch === true));
+  const denied = fixture(new readErrors.ExecutorHttpError("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503));
+  await assert.rejects(denied.execute(), /COINOPS_LIVE_RECONCILE_ORDERS_FAILED/);
+  assert.ok(denied.writes.some(write => write.table === "trading_engines" && write.data.kill_switch === true));
+});
+
 test("registry timeout before any exchange access checkpoints RETRY and does not claim freshness", async () => {
   for (const engineId of ["engine-a", "engine-b"]) {
     const f = fixture(new readErrors.LiveReadUnavailable("COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT",

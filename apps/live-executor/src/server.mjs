@@ -49,6 +49,21 @@ function safeLog(event) {
   console.info(JSON.stringify(event));
 }
 
+/** Only the typed GET-observation failure may expose bounded provider evidence.
+ * Raw messages, payloads and signed URLs never leave the executor. */
+export function productionPermissionReadEvidence(error) {
+  if (!(error instanceof ExecutorRejection) || error.status !== 503
+    || error.code !== "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE") return null;
+  const evidence = error.readEvidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)
+    || !["/api/v3/time", "/api/v3/account", "/sapi/v1/account/apiRestrictions"].includes(evidence.path)
+    || evidence.http_status !== null && (!Number.isInteger(evidence.http_status)
+      || evidence.http_status < 200 || evidence.http_status > 599)
+    || evidence.provider_code !== null && (!Number.isSafeInteger(evidence.provider_code)
+      || Math.abs(evidence.provider_code) > 100_000)) return null;
+  return { path: evidence.path, http_status: evidence.http_status, provider_code: evidence.provider_code };
+}
+
 export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp,
   apiKey = null, apiSecret = null, fetcher: rawFetcher = fetch, now = Date.now,
   version = "unversioned", region = "UNSPECIFIED", logger = safeLog,
@@ -119,6 +134,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       : path === "/v1/prove-unsent-order" ? "UNSENT_ORDER_ATTESTATION"
       : path === "/v1/reconciliation" ? "READ_RECONCILIATION" : "DENIED";
     let outcome = "DENIED", status = 403, decisionId = null, symbol = null, keyHash = null, scope = null, legacyClient = false;
+    let readEvidence = null;
     try {
       // No write can reach Binance under the default deployed flags.
       if (path === "/v1/cancel-all-orders"
@@ -581,11 +597,14 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           ? "EXECUTOR_BINANCE_RATE_LIMITED"
           : error instanceof BinanceReadOnlyError && error.code === "BINANCE_NETWORK_UNAVAILABLE"
             ? "EXECUTOR_BINANCE_READ_UNAVAILABLE" : "EXECUTOR_UNAVAILABLE";
+      readEvidence = productionPermissionReadEvidence(error);
       writeJson(response, status, { error: outcome, request_id: requestId,
+        ...(readEvidence ? { read_evidence: readEvidence } : {}),
         ...(error instanceof ExecutorPreDispatchRejection && error.unsentProof ? { unsent_proof: error.unsentProof } : {}) });
     } finally {
       logger({ request_id: requestId, decision_id: decisionId, idempotency_key_hash: keyHash,
         ...scope, executor_shard_id: shardId, symbol, action, legacy_client: legacyClient, result: outcome, http_status: status, latency_ms: now() - started,
+        ...(readEvidence ? { read_evidence: readEvidence } : {}),
         trading_enabled: tradingEnabled, kill_switch: killSwitch, timestamp: new Date(now()).toISOString() });
     }
   };

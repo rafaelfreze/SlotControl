@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { ExecutorRejection, ExecutorPreDispatchRejection } from "./security.mjs";
 import { EXECUTOR_CAPS } from "./preparation.mjs";
-import { getProductionRestrictedSpotStatus } from "./binance-readonly.mjs";
+import { getProductionRestrictedSpotStatus, observeProductionRestrictedSpotStatus } from "./binance-readonly.mjs";
 import { assertEngineOrder, engineOrderPrefix } from "./account-registry.mjs";
 
 const BASE = "https://api.binance.com";
@@ -104,16 +104,21 @@ export class BinanceLiveTransport {
       try {
         const accountRead = this.reads.getAccount();
         const [permission, account, filters, price, openOrders, bnbBrlPrice] = await Promise.all([
-          accountRead.then((account) => getProductionRestrictedSpotStatus({ apiKey: this.apiKey,
+          accountRead.then((account) => observeProductionRestrictedSpotStatus({ apiKey: this.apiKey,
             apiSecret: this.apiSecret, fetcher: this.fetcher, account })),
           accountRead, this.reads.getSymbolInfo(symbol), this.reads.getMarketPrice(symbol),
           this.reads.getOpenOrders(symbol),
           this.reads.getMarketPrice(`BNB${this.engine?.quote_asset ?? "BRL"}`).catch(() => null),
         ]);
-        if (permission === "RATE_LIMITED")
+        if (permission.status === "RATE_LIMITED")
           throw new ExecutorRejection("EXECUTOR_BINANCE_RATE_LIMITED", 503);
-        if (permission === "UNVERIFIED" && attempt === 0) continue;
-        if (permission !== "SPOT_RESTRICTED" || !account.canTrade)
+        if (permission.status === "READ_UNAVAILABLE") {
+          if (attempt === 0) continue;
+          const error = new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE", 503);
+          error.readEvidence = permission.readEvidence;
+          throw error;
+        }
+        if (permission.status !== "SPOT_RESTRICTED" || !account.canTrade)
           throw new ExecutorRejection("EXECUTOR_PRODUCTION_PERMISSION_DENIED", 503);
         if (this.engine && (filters.baseAsset !== this.engine.base_asset || filters.quoteAsset !== this.engine.quote_asset))
           throw new ExecutorRejection("EXECUTOR_MARKET_IDENTITY_MISMATCH", 503);

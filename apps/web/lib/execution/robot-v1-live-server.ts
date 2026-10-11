@@ -9,7 +9,8 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
   createLiveExecutorOrder, cancelLiveExecutorOrder, proveLiveExecutorUnsentOrder, type LiveOrder,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
-import { verifiedReadRecoveryAlert, type ReadRecoveryAlert } from "./live-read-recovery";
+import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
+  type ReadRecoveryAlert } from "./live-read-recovery";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
@@ -1710,6 +1711,28 @@ async function assertLateReconciledFill(service: Service, run: Run, incident: Re
     throw new Error("COINOPS_LIVE_RECOVERY_FILL_EVIDENCE_MISSING");
 }
 
+/** Never infer that a legacy permission denial was transient. Fresh exchange
+ * protection and settled pre-incident orders prove only that resuming is safe
+ * now. Reject any recent financial intent or unacknowledged dispatch. */
+async function assertSettledPermissionReadRecovery(service: Service, run: Run, incident: ReadRecoveryAlert,
+  ledger: Ledger, state: LiveExecutorState) {
+  const cutoff = assertPermissionReadRecoveryOrders(incident, ledger.orders, state.open_orders,
+    liveEngineOrderPrefix(run.engine!));
+  const decisions = await service.from("robot_v1_strategy_decisions").select("id")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
+    .in("action_type", ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
+    .or(`created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`)
+    .limit(1).abortSignal(AbortSignal.timeout(5_000));
+  const dispatch = await service.from("account_order_budget_reservations").select("client_order_id")
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).is("acknowledged_at", null).limit(1).abortSignal(AbortSignal.timeout(5_000));
+  if (decisions.error || dispatch.error) throw new Error("COINOPS_LIVE_PERMISSION_RECOVERY_PROOF_UNAVAILABLE");
+  if (!Array.isArray(decisions.data) || !Array.isArray(dispatch.data)
+    || decisions.data.length || dispatch.data.length) throw new Error("COINOPS_LIVE_PERMISSION_RECOVERY_UNPROVEN");
+}
+
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
   source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
@@ -1743,6 +1766,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
+    if (recoveryIncident && isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details))
+      await assertSettledPermissionReadRecovery(service, run, recoveryIncident, ledger, state);
     if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
       && !order.trades_reconciled)
       || ledger.orders.filter((order) => order.side === "BUY"
@@ -1789,6 +1814,10 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       .is("resolved_at", null);
     if (recoveryIncident) alertUpdate = alertUpdate.eq("code", recoveryIncident.code)
       .eq("last_seen_at", recoveryIncident.last_seen_at);
+    if (recoveryIncident && isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details))
+      alertUpdate = alertUpdate.eq("first_seen_at", recoveryIncident.first_seen_at)
+        .eq("details->>stage", recoveryIncident.details!.stage)
+        .eq("details->>root_code", recoveryIncident.details!.root_code);
     const alert = await alertUpdate.select("id");
     if (alert.error) throw new Error("COINOPS_LIVE_RESUME_ALERT_UPDATE_FAILED");
     if (recoveryIncident && alert.data?.length !== 1)

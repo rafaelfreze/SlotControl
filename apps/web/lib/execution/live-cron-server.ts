@@ -54,13 +54,13 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
         if (runCounts.get(run.trading_engine_id) !== 1) throw new Error("COINOPS_LIVE_DUPLICATE_ENGINE_RUN");
         const reconciled = mode === "EXECUTION" ? await advanceLiveRun(run.id) : await auditLiveRun(run.id);
         if (mode === "EXECUTION" && reconciled.status === "OK" && run.status === "ACTIVE") {
-          const alert = await service.from("robot_v1_live_alerts").select("code")
+          const alert = await service.from("robot_v1_live_alerts").select("code,details")
             .eq("trading_engine_id", run.trading_engine_id)
             .eq("exchange_account_id", run.exchange_account_id)
             .eq("alert_key", `LIVE_RUN:${run.id}:CRITICAL`)
             .is("resolved_at", null).maybeSingle();
           if (alert.error) throw new Error("COINOPS_LIVE_RECOVERY_ALERT_LOOKUP_FAILED");
-          if (mayRecoverReadOutage(run.status, reconciled.status, alert.data?.code ?? null)) {
+          if (mayRecoverReadOutage(run.status, reconciled.status, alert.data?.code ?? null, alert.data?.details)) {
             const resumed = await resumeLiveRun(run.id, run.user_id, run.asset,
               "VERIFIED_READ_RECOVERY");
             const recoveryAudit = resumed.recovered_alert_code && resumed.recovered_alert_last_seen_at

@@ -6,6 +6,7 @@ import { resolveExecutorShard } from "./executor-shards-server.ts";
 import { accountBudgetPermitHeaders } from "./account-order-budget-permit.ts";
 import { signAccountOrderUnsentProof, AccountOrderNotSubmitted } from "./account-order-unsent-proof.ts";
 import { createHash } from "node:crypto";
+import { ExecutorHttpError, LiveReadUnavailable } from "./live-read-error.ts";
 
 const resolver = async () => resolveExecutorShard("executor-01");
 const readLiveExecutorHealth = (engine: transport.ExecutorEngineScope, fetcher: typeof fetch) =>
@@ -28,6 +29,66 @@ const state = { ...engine, environment: "REAL",
   price: { symbol: "BTCBRL", price: 430000, observedAt: "2026-09-24T10:00:00Z" },
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
+
+test("restriction GET outage retries only scoped state observations on independent shards", async () => {
+  for (const shardId of ["executor-02", "executor-03"]) {
+    const scoped = { ...engine, trading_engine_id: shardId === "executor-02" ? engine.trading_engine_id
+      : "00000000-0000-4000-8000-000000000004" };
+    const target = { shardId, ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };
+    const requests: Record<string, unknown>[] = [];
+    const expected = { ...state, ...scoped, executor_shard_id: shardId };
+    const fetcher = (async (url: unknown, init?: RequestInit) => {
+      assert.equal(new URL(String(url)).pathname, "/v1/state");
+      const body = JSON.parse(String(init?.body)); requests.push(body);
+      assert.equal(body.trading_engine_id, scoped.trading_engine_id);
+      assert.equal(body.executor_shard_id, shardId);
+      return requests.length === 1
+        ? Response.json({ error: "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE" }, { status: 503 })
+        : Response.json(expected);
+    }) as typeof fetch;
+    assert.deepEqual(await transport.readLiveExecutorState(scoped, fetcher, async () => target), expected);
+    assert.equal(requests.length, 2);
+    assert.notEqual(requests[0].idempotency_key, requests[1].idempotency_key);
+  }
+});
+
+test("exhausted restriction observation preserves its typed checkpoint; genuine denial is not retried", async () => {
+  const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };
+  let attempts = 0;
+  const fetcher = (async () => {
+    attempts++;
+    return Response.json({ error: "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE" }, { status: 503 });
+  }) as typeof fetch;
+  await assert.rejects(transport.readLiveExecutorState(engine, fetcher, async () => target), (error: unknown) => {
+    assert.ok(error instanceof LiveReadUnavailable);
+    assert.equal(error.code, "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE");
+    assert.equal(error.path, "/v1/state"); assert.equal(error.attempts, 4); assert.equal(error.httpStatus, 503);
+    return true;
+  });
+  assert.equal(attempts, 4);
+  attempts = 0;
+  await assert.rejects(transport.readLiveExecutorState(engine, (async () => {
+    attempts++; return Response.json({ error: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" }, { status: 503 });
+  }) as typeof fetch, async () => target), /EXECUTOR_PRODUCTION_PERMISSION_DENIED/);
+  assert.equal(attempts, 1);
+});
+
+test("a restriction observation code on create/cancel never retries or claims an undispatched order", async () => {
+  const target = { shardId: "executor-03", ip: "203.0.113.3", base: "https://203.0.113.3", secret: "x".repeat(32) };
+  const paths: string[] = [];
+  const fetcher = (async (url: unknown) => {
+    paths.push(new URL(String(url)).pathname);
+    return Response.json({ error: "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE" }, { status: 503 });
+  }) as typeof fetch;
+  const rejected = (error: unknown) => error instanceof ExecutorHttpError
+    && !(error instanceof LiveReadUnavailable) && !(error instanceof AccountOrderNotSubmitted);
+  await assert.rejects(transport.createLiveExecutorOrder({ clientOrderId: "owned-buy", side: "BUY" }, engine,
+    "fixture-decision", fetcher, async () => target), rejected);
+  assert.deepEqual(paths, ["/v1/create-order"]);
+  await assert.rejects(transport.cancelLiveExecutorOrder({ symbol: engine.symbol, clientOrderId: "owned-buy", orderId: "100" },
+    engine, fetcher, async () => target), rejected);
+  assert.deepEqual(paths, ["/v1/create-order", "/v1/cancel-order"]);
+});
 
 test("named query 503 reproduces Production: retry exact engine/order, preserve cross-shard isolation", async () => {
   for (const shardId of ["executor-02", "executor-03"]) {

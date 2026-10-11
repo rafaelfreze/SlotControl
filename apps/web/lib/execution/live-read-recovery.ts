@@ -1,9 +1,21 @@
+export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown };
+
+/** Eligibility only: an old wrapper can represent a GET before any write.
+ * Fresh permission/financial proof under lease is still mandatory; the legacy
+ * root code itself never becomes retryable or proves a transient provider. */
+export function isPermissionStateReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return details?.root_code === "EXECUTOR_PRODUCTION_PERMISSION_DENIED"
+    && (code === "COINOPS_LIVE_ARM_ENTRY_FAILED" && details.stage === "ARM_ENTRY"
+      || code === "COINOPS_LIVE_CREDIT_SLOTS_FAILED" && details.stage === "CREDIT_SLOTS");
+}
+
 /** Only a previously blocked ACTIVE run that has just passed its full
  * reconciliation may use the existing guarded resume path automatically. */
 export function mayRecoverReadOutage(status: string, reconciledStatus: string,
-  alertCode: string | null): boolean {
+  alertCode: string | null, details?: ReadRecoveryDetails | null): boolean {
   return status === "ACTIVE" && reconciledStatus === "OK"
-    && ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
+    && (isPermissionStateReadRecovery(alertCode, details)
+      || ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
       "COINOPS_LIVE_EXECUTOR_READ_STALE",
       "COINOPS_LIVE_LEDGER_READ_STALE",
       // Only after the guarded reconciler has proved an undispatched TP,
@@ -28,11 +40,11 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
       "COINOPS_BULK_CHECKPOINT_UNAVAILABLE",
       // Eligibility only. resumeLiveRun also requires a trade-backed fill at
       // incident time plus current exchange/ledger/protection agreement.
-      "COINOPS_LIVE_EXCHANGE_ORDER_MISSING"].includes(alertCode ?? "");
+      "COINOPS_LIVE_EXCHANGE_ORDER_MISSING"].includes(alertCode ?? ""));
 }
 
 export type ReadRecoveryAlert = { alert_key: string; code: string; first_seen_at?: string;
-  last_seen_at: string; details?: { stage?: unknown; root_code?: unknown; read_path?: unknown } | null };
+  last_seen_at: string; details?: ReadRecoveryDetails | null };
 
 /** The caller must load all unresolved CRITICAL alerts in the exact engine /
  * account scope while holding the run lease. Never clear a changed cause. */
@@ -40,7 +52,7 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
   alerts: ReadRecoveryAlert[], expected?: ReadRecoveryAlert): ReadRecoveryAlert {
   const alert = alerts.length === 1 ? alerts[0] : null;
   if (!alert || alert.alert_key !== `LIVE_RUN:${runId}:CRITICAL`
-    || !mayRecoverReadOutage(status, "OK", alert.code)
+    || !mayRecoverReadOutage(status, "OK", alert.code, alert.details)
     || alert.code === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE"
       && (alert.details?.stage !== "LOAD_LEDGER" || alert.details?.root_code !== alert.code)
     || alert.code === "COINOPS_LIVE_LEDGER_INCOMPLETE"
@@ -58,7 +70,55 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
         "ATH_TRANSITION", "ARM_ENTRY"].includes(String(alert.details?.stage)))
     || !Number.isFinite(Date.parse(alert.last_seen_at))
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
-      || alert.first_seen_at !== expected.first_seen_at))
+      || alert.first_seen_at !== expected.first_seen_at
+      || isPermissionStateReadRecovery(expected.code, expected.details)
+        && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)))
     throw new Error("COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED");
   return alert;
+}
+
+type PermissionRecoveryOrder = { status: string; side: string; client_order_id: string;
+  exchange_order_id: string | null; created_at: string; price: number | string | null;
+  requested_quantity: number | string | null; executed_quantity: number | string;
+  cumulative_quote: number | string; trades_reconciled: boolean };
+type PermissionRecoveryResident = { id: string; clientOrderId: string | null; side: string;
+  status: string; price: number | null; executedQuantity: number; originalQuantity?: number };
+
+/** Deliberately narrow: keep all resident orders exactly as they existed well
+ * before the incident. No prepared intent, partial fill, unknown status, recent
+ * dispatch or empty NEXT BUY can inherit this permission-read recovery. */
+export function assertPermissionReadRecoveryOrders(incident: ReadRecoveryAlert,
+  orders: PermissionRecoveryOrder[], observed: PermissionRecoveryResident[], prefix: string) {
+  const first = Date.parse(incident.first_seen_at ?? "");
+  const last = Date.parse(incident.last_seen_at);
+  // DB default NOW() and the caller's timestamp may invert by milliseconds.
+  // Bound the skew, then use the earlier instant for the conservative cutoff.
+  const cutoff = Math.min(first, last) - 90_000;
+  const fail = () => { throw new Error("COINOPS_LIVE_PERMISSION_RECOVERY_UNPROVEN"); };
+  if (!isPermissionStateReadRecovery(incident.code, incident.details) || !Number.isFinite(first)
+    || !Number.isFinite(last) || first - last > 1_000 || !prefix || !orders.length) return fail();
+  const settled = new Set(["FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"]);
+  const residents = orders.filter(order => order.status === "NEW");
+  if (residents.filter(order => order.side === "BUY").length !== 1) return fail();
+  for (const order of orders) {
+    if (!order.client_order_id.startsWith(prefix) || !order.exchange_order_id
+      || !Number.isFinite(Date.parse(order.created_at)) || Date.parse(order.created_at) >= cutoff
+      || !["BUY", "SELL"].includes(order.side)
+      || !Number.isFinite(Number(order.executed_quantity)) || Number(order.executed_quantity) < 0
+      || !Number.isFinite(Number(order.cumulative_quote)) || Number(order.cumulative_quote) < 0
+      || order.status !== "NEW" && (!settled.has(order.status) || !order.trades_reconciled)
+      || Number(order.executed_quantity) > 0 && !order.trades_reconciled) return fail();
+    if (order.status === "NEW" && (Number(order.executed_quantity) !== 0 || Number(order.cumulative_quote) !== 0
+      || !(Number(order.price) > 0) || !(Number(order.requested_quantity) > 0))) return fail();
+  }
+  const owned = observed.filter(order => order.clientOrderId?.startsWith(prefix));
+  if (owned.length !== residents.length || new Set(owned.map(order => order.clientOrderId)).size !== owned.length) return fail();
+  for (const order of residents) {
+    const current = owned.find(item => item.clientOrderId === order.client_order_id);
+    if (!current || current.id !== order.exchange_order_id || current.side !== order.side
+      || current.status !== "NEW" || current.executedQuantity !== 0
+      || current.price !== Number(order.price)
+      || current.originalQuantity !== Number(order.requested_quantity)) return fail();
+  }
+  return new Date(cutoff).toISOString();
 }

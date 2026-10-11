@@ -5,6 +5,10 @@ e SLO v18: `COINOPS_TRADING_RELIABILITY_20261005.md`. Watchdog é fallback, nunc
 uma etapa obrigatória de gain/fill. Não contar recovery do cron normal como ação
 do Watchdog.
 
+Observação transitória de permissões Spot, evidência sanitizada e recuperação
+restrita dos wrappers legados: `COINOPS_PERMISSION_READ_RECOVERY_20261011.md`.
+Permissão negada real e mutação ambígua continuam fail-closed no engine afetado.
+
 O navegador, o PC e o Codex não participam do laço operacional. A Vercel executa
 `/api/cron/live-execution` a cada minuto; esse worker é a autoridade para
 reconciliar Binance ↔ ledger e, quando provado seguro, proteger TP, armar a

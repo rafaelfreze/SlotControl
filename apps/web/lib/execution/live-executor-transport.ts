@@ -30,7 +30,7 @@ export type LiveExecutorState = ExecutorEngineScope & { symbol: string;
   supports_unfilled_buy_cancel?: boolean;
   execution_caps?: { engine: number; account: number; max_order: number };
   open_orders: Array<{ id: string; symbol: string; side: string; status: string;
-    executedQuantity: number; price: number | null; clientOrderId: string | null }>;
+    executedQuantity: number; originalQuantity?: number; price: number | null; clientOrderId: string | null }>;
   observed_at: string };
 
 function validState(value: LiveExecutorState, engine: ExecutorEngineScope) {
@@ -76,7 +76,7 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
   const response = await fetcher(`${base}${path}`, { method: "POST", cache: "no-store",
     headers, body,
     signal: AbortSignal.timeout(path === "/v1/state" ? 25_000 : 35_000) });
-  const payload = await response.json().catch(() => ({})) as T & { error?: string; unsent_proof?: unknown };
+  const payload = await response.json().catch(() => ({})) as T & { error?: string; unsent_proof?: unknown; read_evidence?: unknown };
   if (!response.ok) {
     if (path === "/v1/create-order" && ["EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT"].includes(payload.error ?? "")
       && response.status === 403 && payload.unsent_proof) {
@@ -87,7 +87,8 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
     }
     const code = payload.error && /^EXECUTOR_[A-Z0-9_]+$/.test(payload.error)
       ? payload.error : `EXECUTOR_HTTP_${response.status}`;
-    throw new ExecutorHttpError(code, response.status);
+    throw new ExecutorHttpError(code, response.status,
+      code === "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE" ? payload.read_evidence : undefined);
   }
   for (const field of ["operator_id", "exchange_account_id", "trading_engine_id", "environment", "symbol", "quote_asset"])
     if ((payload as Record<string, unknown>)[field] !== input[field]) throw new Error("EXECUTOR_RESPONSE_SCOPE_MISMATCH");

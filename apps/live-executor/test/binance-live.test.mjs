@@ -8,10 +8,11 @@ const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
 
 function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false,
   restrictionsStatus = 200, deleteOutcome = null, loseDeleteAck = false,
-  stpModes, requireSelfTradePrevention = false } = {}) {
+  stpModes, requireSelfTradePrevention = false, restrictionResponses } = {}) {
   const calls = [];
   let order = existingOrder;
   let openOrderFailures = 0;
+  let restrictionReads = 0;
   const filters = { symbol: "BTCBRL", status: "TRADING", baseAsset: "BTC", quoteAsset: "BRL",
     ...(stpModes === undefined ? {} : { allowedSelfTradePreventionModes: stpModes }),
     filters: [
@@ -31,6 +32,12 @@ function fixture({ openOrders = [], existingOrder = null, trades = [], failFirst
     if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [
       { asset: "BRL", free: "730", locked: "0" }, { asset: "BTC", free: "0", locked: "0" },
       { asset: "BNB", free: "0.005", locked: "0" }] });
+    if (parsed.pathname === "/sapi/v1/account/apiRestrictions" && restrictionResponses) {
+      const observed = restrictionResponses[Math.min(restrictionReads++, restrictionResponses.length - 1)];
+      if (observed instanceof Error) throw observed;
+      return Response.json(observed.body === undefined ? restrictions : observed.body,
+        { status: observed.status ?? 200 });
+    }
     if (parsed.pathname === "/sapi/v1/account/apiRestrictions")
       return Response.json(restrictionsStatus === 200 ? restrictions : { code: -1003 },
         { status: restrictionsStatus });
@@ -136,6 +143,54 @@ test("Production transport refuses stale own-open-order snapshot before POST", a
     { allowCreate: true, tradingEnabled: true, killSwitch: false }),
   /UNRECONCILED_OWNED_ORDER/);
   assert.equal(calls.filter((call) => call.method === "POST").length, 0);
+});
+
+test("permission gateway outage retries a complete snapshot and converges without any POST", async () => {
+  for (const first of [{ status: 503, body: { code: -1000 } }, new TypeError("private network detail"),
+    new DOMException("private timeout detail", "TimeoutError")]) {
+    const { transport, calls } = fixture({ restrictionResponses: [first, { status: 200 }] });
+    assert.equal((await transport.safetySnapshot("BTCBRL")).account.canTrade, true);
+    assert.equal(calls.filter(c => c.path === "/sapi/v1/account/apiRestrictions").length, 2);
+    assert.equal(calls.filter(c => c.path === "/api/v3/account").length, 2);
+    assert.ok(calls.every(c => c.method === "GET"));
+  }
+});
+
+test("persistent permission observation is typed and sanitized, never genuine permission denial", async () => {
+  for (const status of [502, 503, 504]) {
+    const { transport, calls } = fixture({ restrictionResponses: [{ status, body: { code: -1000,
+      msg: "private exchange detail" } }] });
+    await assert.rejects(transport.safetySnapshot("BTCBRL"), error => {
+      assert.equal(error.code, "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE");
+      assert.deepEqual(error.readEvidence, { path: "/sapi/v1/account/apiRestrictions",
+        http_status: status, provider_code: -1000 });
+      assert.ok(!JSON.stringify(error).includes("private"));
+      return true;
+    });
+    assert.equal(calls.filter(c => c.path === "/sapi/v1/account/apiRestrictions").length, 2);
+    assert.ok(calls.every(c => c.method === "GET"));
+  }
+});
+
+test("auth denial, malformed flags and unsafe grants never inherit observation retry", async () => {
+  for (const response of [{ status: 401, body: { code: -2015 } }, { status: 403, body: { code: -2015 } },
+    { status: 503, body: { code: -2015 } }, { status: 200, body: null },
+    { status: 503, body: { code: -1100 } }, { status: 503, body: { code: -9876 } },
+    { status: 200, body: [] }, { status: 200, body: { enableWithdrawals: true } }]) {
+    const { transport, calls } = fixture({ restrictionResponses: [response] });
+    await assert.rejects(transport.createOwnedOrder(marketIntent(),
+      { allowCreate: true, tradingEnabled: true, killSwitch: false }), /EXECUTOR_PRODUCTION_PERMISSION_DENIED/);
+    assert.equal(calls.filter(c => c.path === "/sapi/v1/account/apiRestrictions").length, 1);
+    assert.ok(calls.every(c => c.method === "GET"));
+  }
+});
+
+test("permission observation outage before create does not submit or claim a successful order", async () => {
+  const { transport, calls } = fixture({ restrictionResponses: [{ status: 504, body: { code: -1000 } }] });
+  await assert.rejects(transport.createOwnedOrder(marketIntent(),
+    { allowCreate: true, tradingEnabled: true, killSwitch: false }), /EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE/);
+  assert.equal(transport.orderPostAttempted, false);
+  assert.ok(calls.every(c => c.method === "GET"));
 });
 
 test("supported STP always preserves resident makers and cannot be overridden by caller", async () => {

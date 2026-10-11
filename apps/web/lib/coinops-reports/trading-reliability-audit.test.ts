@@ -11,6 +11,11 @@ test("v22 publishes the observation and recurrence contract without claiming mis
   const rule = report.datasets.rules.find(row => row.parameter === "normal_trading_observation_retry");
   assert.equal(rule?.value, "READ_ONLY_BOUNDED_RETRY_WITH_PERSISTENT_CHECKPOINT");
   assert.equal(rule?.evidence_scope, "CURRENT_CODE_CONTRACT");
+  const permission = report.datasets.rules.find(row => row.parameter === "production_permission_observation");
+  assert.equal(permission?.value, "TYPED_GET_OUTAGE_NO_PERMISSION_OR_WRITE_RETRY");
+  assert.equal(permission?.version, 1);
+  assert.match(String(permission?.notes), /create\/cancel não recebem retry/);
+  assert.match(String(permission?.notes), /segurança atual, não a causa upstream histórica/);
   assert.match(String(rule?.notes), /UNKNOWN, não 0%/);
   assert.match(String(rule?.notes), /RECURRENCE_REGRESSION/);
   assert.equal(rule?.version, 4);
@@ -42,4 +47,21 @@ test("v22 exports persisted ledger read diagnostics without inventing provider e
   const row = report.datasets.live_execution.find(row => row.row_type === "ALERT");
   assert.deepEqual(row?.details, details);
   assert.equal(row?.resolved_at, null); assert.equal(row?.trading_engine_id, "engine-a");
+});
+
+test("v22 exports typed restriction read evidence without claiming permission or financial recovery", () => {
+  const details = { stage: "READ_STATE", source: "ENGINE", root_code: "EXECUTOR_PRODUCTION_PERMISSION_READ_UNAVAILABLE",
+    read_path: "/v1/state", read_attempts: 4, http_status: 503,
+    provider_read_path: "/sapi/v1/account/apiRestrictions", provider_http_status: 503, provider_code: -1000 };
+  const report = buildAuditReport({ sources: { robot_v1_live_alerts: [{ id: "alert", asset: "SOL",
+    trading_engine_id: "engine-b", exchange_account_id: "account-a", code: "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ",
+    details, first_seen_at: "2026-10-11T12:00:00Z", last_seen_at: "2026-10-11T12:00:00Z", resolved_at: null }] },
+    incompleteSources: [], warnings: [], generatedAt: "2026-10-11T12:01:00Z",
+    scope: { tenantId: "fixture", userId: "fixture" } },
+    { start: "2026-10-11T00:00:00Z", end: "2026-10-12T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });
+  const row = report.datasets.live_execution.find(row => row.row_type === "ALERT");
+  assert.deepEqual(row?.details, details);
+  assert.equal(row?.resolved_at, null);
+  assert.equal(row?.trading_engine_id, "engine-b");
+  assert.equal(row?.exchange_account_id, "account-a");
 });
