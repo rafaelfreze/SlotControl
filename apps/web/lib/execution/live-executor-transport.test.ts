@@ -191,6 +191,77 @@ test("create dispatch carries a separate permit on01/03; byte identity, no write
   }
 });
 
+test("BNB 503 is proven not submitted only with an exact HMAC receipt; each engine/shard has independent ownership", async () => {
+  for (const shardId of ["executor-01", "executor-02", "executor-03"]) {
+    const scoped = { ...engine, trading_engine_id: shardId === "executor-03"
+      ? "00000000-0000-4000-8000-000000000004" : engine.trading_engine_id };
+    const target = { shardId, ip: "203.0.113.33", base: "https://203.0.113.33", secret: `fixture-bnb-${shardId}-secret-123456789` };
+    const input = { clientOrderId: "C2-fixture-2-B-0123456789abcd", side: "BUY", type: "LIMIT", quantity: ".001", price: "400000" };
+    const decisionId = "b".repeat(64);
+    let calls = 0;
+    const fetcher = (async (_url: unknown, init?: RequestInit) => {
+      calls++;
+      const raw = String(init!.body), body = JSON.parse(raw), headers = new Headers(init!.headers);
+      const proof = signAccountOrderUnsentProof(target.secret, { ...scoped, executor_shard_id: shardId,
+        environment: "REAL", clientOrderId: body.clientOrderId, decision_id: body.decision_id,
+        request_nonce: headers.get("x-coinops-nonce")! }, createHash("sha256").update(raw).digest("hex"));
+      return Response.json({ error: "EXECUTOR_BNB_FEE_RESERVE_MISSING", unsent_proof: proof }, { status: 503 });
+    }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder(input, scoped, decisionId, fetcher, async () => target), (error: unknown) => {
+      assert.ok(error instanceof AccountOrderNotSubmitted);
+      assert.equal(error.receipt.trading_engine_id, scoped.trading_engine_id);
+      assert.equal(error.receipt.executor_shard_id, shardId);
+      assert.equal(error.receipt.clientOrderId, input.clientOrderId);
+      assert.equal(error.receipt.decision_id, decisionId);
+      return true;
+    });
+    assert.equal(calls, 1, "financial dispatch is never retried by transport");
+  }
+});
+
+test("BNB proof rejects forged scope, nonce, body and timestamp; timeout or any arbitrary 503 stays ambiguous", async () => {
+  const target = { shardId: "executor-03", ip: "203.0.113.3", base: "https://203.0.113.3", secret: "fixture-bnb-secret-12345678901234567890" };
+  const input = { clientOrderId: "C2-fixture-2-B-0123456789abcd", side: "BUY", type: "LIMIT", quantity: ".001", price: "400000" };
+  const decisionId = "c".repeat(64);
+  const changes = [
+    { trading_engine_id: "00000000-0000-4000-8000-000000000004" },
+    { exchange_account_id: "00000000-0000-4000-8000-000000000005" },
+    { executor_shard_id: "executor-02" }, { clientOrderId: "other-owned-client" },
+    { decision_id: "d".repeat(64) }, { request_nonce: "different-request-nonce-123456" },
+  ];
+  for (const change of changes) {
+    let calls = 0;
+    const fetcher = (async (_url: unknown, init?: RequestInit) => {
+      calls++; const raw = String(init!.body), body = JSON.parse(raw), headers = new Headers(init!.headers);
+      const proof = signAccountOrderUnsentProof(target.secret, { ...engine, executor_shard_id: target.shardId,
+        environment: "REAL", clientOrderId: body.clientOrderId, decision_id: body.decision_id,
+        request_nonce: headers.get("x-coinops-nonce")!, ...change }, createHash("sha256").update(raw).digest("hex"));
+      return Response.json({ error: "EXECUTOR_BNB_FEE_RESERVE_MISSING", unsent_proof: proof }, { status: 503 });
+    }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder(input, engine, decisionId, fetcher, async () => target), /UNSENT_PROOF_INVALID/);
+    assert.equal(calls, 1);
+  }
+  for (const variant of ["bad-body", "expired", "forged", "arbitrary-code", "wrong-status", "sell", "missing-proof", "timeout"]) {
+    let calls = 0;
+    const fetcher = (async (_url: unknown, init?: RequestInit) => {
+      calls++;
+      if (variant === "timeout") throw new DOMException("fixture timeout", "TimeoutError");
+      const raw = String(init!.body), body = JSON.parse(raw), headers = new Headers(init!.headers);
+      const proof = signAccountOrderUnsentProof(target.secret, { ...engine, executor_shard_id: target.shardId,
+        environment: "REAL", clientOrderId: body.clientOrderId, decision_id: body.decision_id,
+        request_nonce: headers.get("x-coinops-nonce")! },
+      createHash("sha256").update(variant === "bad-body" ? `${raw} ` : raw).digest("hex"),
+      variant === "expired" ? Date.now() - 60_000 : Date.now());
+      return Response.json({ error: variant === "arbitrary-code" ? "EXECUTOR_UNAVAILABLE" : "EXECUTOR_BNB_FEE_RESERVE_MISSING",
+        ...(variant === "missing-proof" ? {} : { unsent_proof: variant === "forged" ? { ...proof, signature: "0".repeat(64) } : proof }) },
+      { status: variant === "wrong-status" ? 403 : 503 });
+    }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder(variant === "sell" ? { ...input, side: "SELL" } : input,
+      engine, decisionId, fetcher, async () => target), (error: unknown) => !(error instanceof AccountOrderNotSubmitted));
+    assert.equal(calls, 1, `${variant} must not authorize a financial retry`);
+  }
+});
+
 test("LIVE monitor health retries transient scoped 503 without retrying writes or crossing engines", async () => {
   const previous = { ip: process.env.LIVE_EXECUTOR_EGRESS_IP,
     base: process.env.LIVE_EXECUTOR_BASE_URL, secret: process.env.COINOPS_EXECUTOR_HMAC_SECRET };

@@ -167,6 +167,13 @@ no ambiente de destino antes de operação remota.
   Recuperação de rejeição pré-POST exige prova assinada e lease; compatibilidade
   histórica restrita: `docs/COINOPS_QUOTE_BALANCE_RECOVERY_20261007.md`.
 
+- Reserva BNB Spot conhecida insuficiente (>0.00001 exigido) aguarda reposição
+  pelo proprietário antes de preparar/cancelar NEXT BUY própria/despachar BUY.
+  Não comprar/converter BNB automaticamente nem afetar TP/fills. Somente erro
+  pré-POST tipado e receipt HMAC exata comprova não envio; 503 genérico não.
+  Claim legado exige runtime/fingerprint/PID/journal fixados, fence e GET,
+  sem remoção manual: `docs/COINOPS_BNB_FEE_RECOVERY_20261011.md`.
+
 - Watchdog operacional é server-side: crons Vercel, telemetria dos executores e reconciliação LIVE. Navegador, PC e Codex não são componentes do laço 24/7. A checagem rápida usa dados internos; Binance REST e qualquer correção de ordem passam somente pelo reconciliador com lease/idempotência por motor. Condição ambígua permanece `BLOCKED_SAFE` no menor escopo, com incidente persistido e push. Consulte `docs/COINOPS_SERVER_WATCHDOG.md`; não aumente o polling Binance para satisfazer um indicador visual.
 - Leitura do ledger não confunde erro de provider com slots faltantes. GET-only: 2 conjuntos completos de até 5s/250ms, ordens paginadas e slots físicos únicos 1..25. Falha transitória usa checkpoint persistido; permissão/schema/dado incompleto permanece fail-closed. Retomada de erro legado exige reconciliação integral, TP/ownership/caps e CAS do mesmo incidente sob lease; nunca limpar gate/alerta manualmente. Ver `docs/COINOPS_LEDGER_READ_RECOVERY_20261007.md`.
 
@@ -239,7 +246,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 22`, com roteamento e metadados de isolamento por engine/shard e evidência de atribuição/retry do trading. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 23`, com roteamento e metadados de isolamento por engine/shard e evidência de atribuição/retry do trading. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

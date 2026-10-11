@@ -65,6 +65,9 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
           "ledger/preparation", "ledger/operator"].includes(String(alert.details?.read_path)))
     || alert.code === "COINOPS_BULK_CHECKPOINT_UNAVAILABLE"
       && (alert.details?.stage !== "CONFIG_UPDATE" || alert.details?.root_code !== alert.code)
+    || alert.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"
+      && (alert.code !== "COINOPS_LIVE_EXECUTOR_READ_STALE"
+        || alert.details.stage !== "OBSERVE_BNB_FEE" || alert.details.read_path !== "snapshot/bnb_fee")
     || alert.code === "COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE"
       && (alert.details?.root_code !== alert.code || !["CREDIT_SLOTS", "RECYCLE_SLOTS", "RESTART_CYCLE",
         "ATH_TRANSITION", "ARM_ENTRY"].includes(String(alert.details?.stage)))
@@ -72,7 +75,10 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
       || alert.first_seen_at !== expected.first_seen_at
       || isPermissionStateReadRecovery(expected.code, expected.details)
-        && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)))
+        && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)
+      || expected.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"
+        && (alert.details?.stage !== expected.details.stage || alert.details?.root_code !== expected.details.root_code
+          || alert.details?.read_path !== expected.details.read_path)))
     throw new Error("COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED");
   return alert;
 }

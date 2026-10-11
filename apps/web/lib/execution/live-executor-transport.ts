@@ -78,8 +78,10 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
     signal: AbortSignal.timeout(path === "/v1/state" ? 25_000 : 35_000) });
   const payload = await response.json().catch(() => ({})) as T & { error?: string; unsent_proof?: unknown; read_evidence?: unknown };
   if (!response.ok) {
-    if (path === "/v1/create-order" && ["EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT"].includes(payload.error ?? "")
-      && response.status === 403 && payload.unsent_proof) {
+    const rejectedBeforePost = response.status === 403
+      && ["EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT"].includes(payload.error ?? "")
+      || response.status === 503 && payload.error === "EXECUTOR_BNB_FEE_RESERVE_MISSING" && input.side === "BUY";
+    if (path === "/v1/create-order" && rejectedBeforePost && payload.unsent_proof) {
       const { side, ...proofScope } = permitScope;
       void side;
       throw new AccountOrderNotSubmitted(verifyAccountOrderUnsentProof(secret, payload.unsent_proof,

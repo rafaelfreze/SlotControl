@@ -6,7 +6,7 @@ import { readFileSync, statSync, writeFileSync, renameSync, chownSync, existsSyn
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { loadExecutorRegistry, loadCombinedRegistry, assertEngineOrder, durableIntent } from "../src/account-registry.mjs";
-import { historicalPreDispatchProof, HISTORICAL_REJECTION_RUNTIME, HISTORICAL_REJECTION_FINGERPRINT } from "../src/pre-dispatch-evidence.mjs";
+import { historicalPreDispatchProof, historicalPreDispatchRuntimePin } from "../src/pre-dispatch-evidence.mjs";
 import { discoverRuntimeFiles } from "./fleet-parity.mjs";
 
 const [shard, ip, engineId, clientOrderId, decisionId, dispatchedAt, expectedPid] = process.argv.slice(2);
@@ -19,17 +19,16 @@ if (system(["show", "coinops-live-executor", "--property=MainPID", "--value"]) !
   throw new Error("PRE_DISPATCH_IMPORT_PROCESS_CHANGED");
 const source = realpathSync(shard === "executor-01" ? "/opt/coinops/source" : "/opt/coinops/current");
 const graph = discoverRuntimeFiles(path => readFileSync(join(source, path)));
-if (graph.runtime_sha256 !== HISTORICAL_REJECTION_FINGERPRINT)
-  throw new Error("PRE_DISPATCH_IMPORT_RUNTIME_NOT_PINNED");
 if (graph.files.some(file => statSync(join(source, file.path)).mtimeMs >= Date.parse(dispatchedAt)))
   throw new Error("PRE_DISPATCH_IMPORT_RUNTIME_CHANGED");
 const env = Object.fromEntries(readFileSync("/etc/coinops/live-executor.env", "utf8").split(/\r?\n/)
   .filter(line => /^[A-Z][A-Z0-9_]*=/.test(line)).map(line => {
     const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1).replace(/^(["'])(.*)\1$/, "$2")];
   }));
-if (env.COINOPS_EXECUTOR_SHARD_ID !== shard || env.LIVE_EXECUTOR_EGRESS_IP !== ip
-  || env.COINOPS_EXECUTOR_VERSION !== HISTORICAL_REJECTION_RUNTIME)
+if (env.COINOPS_EXECUTOR_SHARD_ID !== shard || env.LIVE_EXECUTOR_EGRESS_IP !== ip)
   throw new Error("PRE_DISPATCH_IMPORT_HOST_MISMATCH");
+if (!historicalPreDispatchRuntimePin(env.COINOPS_EXECUTOR_VERSION, graph.runtime_sha256))
+  throw new Error("PRE_DISPATCH_IMPORT_RUNTIME_NOT_PINNED");
 const registry = await loadCombinedRegistry(await loadExecutorRegistry(env.COINOPS_EXECUTOR_REGISTRY_PATH),
   env.COINOPS_EXECUTOR_STATE_DIR, () => { throw new Error("PRE_DISPATCH_IMPORT_REGISTRY_FAILED"); });
 const engine = registry.engines.find(row => row.trading_engine_id === engineId);
@@ -54,6 +53,10 @@ const value = historicalPreDispatchProof({ secret: env.COINOPS_EXECUTOR_HMAC_SEC
   pendingHash: readFileSync(`${base}.pending`, "utf8"), pendingMtime: pending.mtimeMs, records,
   runtimeSha: env.COINOPS_EXECUTOR_VERSION, runtimeFingerprint: graph.runtime_sha256 });
 if (system(["show", "coinops-live-executor", "--property=MainPID", "--value"]) !== expectedPid
+  || realpathSync(shard === "executor-01" ? "/opt/coinops/source" : "/opt/coinops/current") !== source
+  || discoverRuntimeFiles(path => readFileSync(join(source, path))).runtime_sha256 !== graph.runtime_sha256
+  || graph.files.some(file => statSync(join(source, file.path)).mtimeMs >= Date.parse(dispatchedAt))
+  || existsSync(`${base}.json`) || readFileSync(`${base}.pending`, "utf8") !== value.proof.pendingHash
   || statSync(`${base}.pending`).mtimeMs !== pending.mtimeMs)
   throw new Error("PRE_DISPATCH_IMPORT_EVIDENCE_CHANGED");
 const target = `${base}.pre-post-evidence`;

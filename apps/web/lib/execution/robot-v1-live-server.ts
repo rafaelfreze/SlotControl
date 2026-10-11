@@ -43,6 +43,7 @@ import { accountExecutionPolicyRequired, reserveAccountOrderDispatch, acknowledg
 import { AccountOrderNotSubmitted } from "./account-order-unsent-proof";
 import { mayAttestUnsentEntry } from "./live-unsent-entry-recovery";
 import { liveQuoteBalanceCheck } from "./live-quote-balance";
+import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Symbol = string;
@@ -293,7 +294,8 @@ const TRANSIENT_EXECUTOR_READ_CODES = new Set([
  * this engine. Neither path changes a sibling engine or an existing TP. */
 async function holdTransientExecutorRead(service: Service, run: Run, evidence: Record<string, unknown> = {}) {
   const ledgerRead = evidence.root_code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE";
-  const alertKey = `LIVE_RUN:${run.id}:TRANSIENT_EXECUTOR_READ`;
+  const feeRead = evidence.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
+  const alertKey = `LIVE_RUN:${run.id}:${feeRead ? "BNB_FEE_READ" : "TRANSIENT_EXECUTOR_READ"}`;
   const previous = await service.from("robot_v1_live_alerts").select("first_seen_at")
     .eq("trading_engine_id", run.trading_engine_id).eq("alert_key", alertKey)
     .is("resolved_at", null).maybeSingle();
@@ -303,8 +305,12 @@ async function holdTransientExecutorRead(service: Service, run: Run, evidence: R
       : "COINOPS_LIVE_EXECUTOR_READ_STALE", evidence);
     return false;
   }
+  // A fee-only checkpoint must survive successful TP/fill reconciliation. It
+  // is resolved only by a valid fresh fee observation, not by a healthy tick.
+  if (feeRead && previous.data) return true;
   const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
-    alert_key: alertKey, severity: "WARNING", code: ledgerRead ? "COINOPS_LIVE_TRANSIENT_LEDGER_READ"
+    alert_key: alertKey, severity: "WARNING", code: feeRead ? "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"
+      : ledgerRead ? "COINOPS_LIVE_TRANSIENT_LEDGER_READ"
       : "COINOPS_LIVE_TRANSIENT_EXECUTOR_READ",
     details: { ...evidence, run_id: run.id }, first_seen_at: previous.data?.first_seen_at ?? new Date().toISOString(),
     last_seen_at: new Date().toISOString(), resolved_at: null },
@@ -519,6 +525,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
     if (order.side === "BUY") {
       const slot = rows.slots.find(item => item.id === order.slot_id);
       if (!slot) throw new Error("COINOPS_LIVE_ORDER_SLOT_MISSING");
+      if (await holdEntryForBnbFeeBalance(service, run, slot, state)) return order;
       if (await holdEntryForQuoteBalance(service, run, slot, state,
         order.purpose === "INITIAL" ? amount(order.requested_quote)
           : amount(order.requested_quantity) * amount(order.price))) return order;
@@ -584,6 +591,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
         const fresh = await readLiveExecutorState(run);
         const slot = rows.slots.find(item => item.id === order.slot_id);
         if (!slot) throw new Error("COINOPS_LIVE_ORDER_SLOT_MISSING");
+        if (await holdEntryForBnbFeeBalance(service, run, slot, fresh)) return order;
         if (await holdEntryForQuoteBalance(service, run, slot, fresh,
           order.purpose === "INITIAL" ? amount(order.requested_quote)
             : amount(order.requested_quantity) * amount(order.price))) return order;
@@ -1186,6 +1194,66 @@ async function confirmCapitalRefreshes(service: Service, run: Run, ledger: Ledge
   }
 }
 
+async function holdEntryForBnbFeeBalance(service: Service, run: Run, slot: Slot, state: LiveExecutorState) {
+  let evidence: ReturnType<typeof liveBnbFeeBalanceCheck>;
+  try { evidence = liveBnbFeeBalanceCheck(state, run.quote_asset); }
+  catch (error) {
+    if (!(error instanceof LiveReadUnavailable) || error.code !== "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE") throw error;
+    await holdTransientExecutorRead(service, run, liveFailureEvidence(error, "OBSERVE_BNB_FEE", run.execution_source ?? "LIVE_CRON"));
+    // Fail closed for this BUY, but keep reconciling resident TP and fills.
+    return "BNB_FEE_READ_HOLD" as const;
+  }
+  const readKey = `LIVE_RUN:${run.id}:BNB_FEE_READ`;
+  const readCheckpoint = await service.from("robot_v1_live_alerts").select("code,resolved_at")
+    .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("alert_key", readKey).is("resolved_at", null).maybeSingle();
+  if (readCheckpoint.error) throw new Error("COINOPS_LIVE_BNB_FEE_BALANCE_ALERT_UNAVAILABLE");
+  if (readCheckpoint.data?.resolved_at === null) {
+    const resolved = await service.from("robot_v1_live_alerts").update({ resolved_at: new Date().toISOString() })
+      .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
+      .eq("alert_key", readKey).eq("code", "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE").is("resolved_at", null);
+    if (resolved.error) throw new Error("COINOPS_LIVE_BNB_FEE_BALANCE_ALERT_RESOLVE_FAILED");
+  }
+  const alertKey = `LIVE_RUN:${run.id}:BNB_FEE_BALANCE`;
+  const prior = await service.from("robot_v1_live_alerts").select("code,resolved_at")
+    .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("alert_key", alertKey).maybeSingle();
+  if (prior.error) throw new Error("COINOPS_LIVE_BNB_FEE_BALANCE_ALERT_UNAVAILABLE");
+  if (!evidence.sufficient) {
+    if (!prior.data || prior.data.resolved_at !== null) {
+      await event(service, run, `BNB_FEE_BALANCE_HOLD:${slot.id}:${slot.operation_sequence}:${state.observed_at}`,
+        "ENTRY_BNB_FEE_BALANCE_HOLD", slot.slot_number, evidence);
+      const saved = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
+        alert_key: alertKey, severity: "WARNING", code: "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING",
+        details: { run_id: run.id, slot_number: slot.slot_number, ...evidence },
+        last_seen_at: new Date().toISOString(), resolved_at: null }, { onConflict: "trading_engine_id,alert_key" });
+      if (saved.error) throw new Error("COINOPS_LIVE_BNB_FEE_BALANCE_ALERT_PERSIST_FAILED");
+    }
+    return "BNB_FEE_BALANCE_HOLD" as const;
+  }
+  if (prior.data?.resolved_at === null) {
+    const resolved = await service.from("robot_v1_live_alerts").update({ resolved_at: new Date().toISOString() })
+      .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
+      .eq("alert_key", alertKey).eq("code", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING").is("resolved_at", null);
+    if (resolved.error) throw new Error("COINOPS_LIVE_BNB_FEE_BALANCE_ALERT_RESOLVE_FAILED");
+    await event(service, run, `BNB_FEE_BALANCE_AVAILABLE:${slot.id}:${slot.operation_sequence}:${state.observed_at}`,
+      "ENTRY_BNB_FEE_BALANCE_AVAILABLE", slot.slot_number, evidence);
+  }
+  return null;
+}
+
+async function preparedEntryHasReleasedReceipt(service: Service, run: Run, order: Order) {
+  if (!order.account_order_unsent_receipt?.request_nonce || !order.strategy_decision_id) return false;
+  const decision = await service.from("robot_v1_strategy_decisions")
+    .select("result,dispatched_at,exchange_ack_at,completed_at")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
+    .eq("decision_id", order.strategy_decision_id).maybeSingle();
+  return !decision.error && decision.data?.result === "PENDING" && decision.data.dispatched_at === null
+    && decision.data.exchange_ack_at === null && decision.data.completed_at === null;
+}
+
 async function holdEntryForQuoteBalance(service: Service, run: Run, slot: Slot,
   state: LiveExecutorState, requiredQuote: number, reclaimedQuote = 0) {
   const evidence = liveQuoteBalanceCheck(state, run.quote_asset, requiredQuote, reclaimedQuote);
@@ -1248,6 +1316,8 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const account = ledger.accounts.find((item) => item.slot_number === selected.slot_number)!;
     const quote = Number(spendable(amount(account.balance_brl)).toFixed(8));
     if (quote < state.filters.minNotional) return "CAPACITY_HOLD";
+    const feeHold = await holdEntryForBnbFeeBalance(service, run, selected, state);
+    if (feeHold) return feeHold;
     if (await holdEntryForQuoteBalance(service, run, selected, state, quote)) return "QUOTE_BALANCE_HOLD";
     const selectedStatus = ranks.get(selected.slot_number)!;
     const decision = planStrategyInitialEntry(context(run),
@@ -1268,10 +1338,13 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   if (active?.status === "PREPARED") {
     // The reconciler verified/released the exact unsent receipt under lease.
     // Keep its identity and continue TP/fill reconciliation while cash is absent.
-    if (active.account_order_unsent_receipt?.request_nonce && activeSlot
-      && await holdEntryForQuoteBalance(service, run, activeSlot, state,
+    if (activeSlot && await preparedEntryHasReleasedReceipt(service, run, active)) {
+      const feeHold = await holdEntryForBnbFeeBalance(service, run, activeSlot, state);
+      if (feeHold) return feeHold;
+      if (await holdEntryForQuoteBalance(service, run, activeSlot, state,
         active.purpose === "INITIAL" ? amount(active.requested_quote)
           : amount(active.requested_quantity) * amount(active.price))) return "QUOTE_BALANCE_HOLD";
+    }
     throw new Error("COINOPS_LIVE_PREPARED_BUY_UNRESOLVED");
   }
   const observedActive = state.open_orders.find((o) => o.clientOrderId === active?.client_order_id
@@ -1336,6 +1409,8 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   // Locked quote is not cash; reclaim only the exact verified own unfilled BUY.
   const verifiedReclaim = active?.status === "NEW" && observedActive && amount(active.executed_quantity) === 0
     ? reclaimed : 0;
+  const feeHold = await holdEntryForBnbFeeBalance(service, run, selected, state);
+  if (feeHold) return feeHold;
   if (await holdEntryForQuoteBalance(service, run, selected, state,
     quantity * amount(selected.target_buy_price), verifiedReclaim)) return "QUOTE_BALANCE_HOLD";
   await persistStrategyDecision(service, owned(run), "REAL", planned.decision,
@@ -1766,6 +1841,11 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
+    const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
+    // Protection agreement does not prove that the BUY-only fee observation
+    // recovered. Unknown fees cannot reopen a gate and immediately flap it.
+    // A known shortage may resume safely into the normal fee-balance HOLD.
+    if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     if (recoveryIncident && isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details))
       await assertSettledPermissionReadRecovery(service, run, recoveryIncident, ledger, state);
     if (ledger.orders.some((order) => LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
@@ -1783,6 +1863,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     // never inherit approval from the earlier cron observation.
     if (recoveryIncident) await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     await assertNoPendingStrategyUpdate(service, run);
+    if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
       .update({ kill_switch: false })
@@ -1814,10 +1895,12 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       .is("resolved_at", null);
     if (recoveryIncident) alertUpdate = alertUpdate.eq("code", recoveryIncident.code)
       .eq("last_seen_at", recoveryIncident.last_seen_at);
-    if (recoveryIncident && isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details))
+    if (recoveryIncident && (bnbFeeReadRecovery || isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details)))
       alertUpdate = alertUpdate.eq("first_seen_at", recoveryIncident.first_seen_at)
         .eq("details->>stage", recoveryIncident.details!.stage)
         .eq("details->>root_code", recoveryIncident.details!.root_code);
+    if (recoveryIncident && bnbFeeReadRecovery)
+      alertUpdate = alertUpdate.eq("details->>read_path", recoveryIncident.details!.read_path);
     const alert = await alertUpdate.select("id");
     if (alert.error) throw new Error("COINOPS_LIVE_RESUME_ALERT_UPDATE_FAILED");
     if (recoveryIncident && alert.data?.length !== 1)

@@ -1,6 +1,10 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v22: checkpoint/gate/configuração e cap compartilham a política
+Contrato atual v23: reserva física BNB Spot antes de BUY, HOLD/AVAILABLE por
+engine, TP/fills preservados e receipt HMAC somente para rejeição pré-POST
+comprovada. Exporta `physical_spot_bnb_fee_reserve`; insuficiência, reposição e
+prova de não envio não equivalem a fill/gain. Ver
+`COINOPS_BNB_FEE_RECOVERY_20261011.md`. Preserva v22: checkpoint/gate/configuração e cap compartilham a política
 GET-only do ledger. Exporta `strategy_config_observation_retry`, diagnósticos
 sanitizados e a proibição de retomar edição pendente/ambígua. Ver
 `COINOPS_CONFIG_READ_RECOVERY_20261007.md`. Preserva v21: inclui target e totais mensais REAL no snapshot GET-only
@@ -34,7 +38,7 @@ os eventos `ACCOUNT_ORDER_NOT_SUBMITTED` sem tratar não envio como fill.
 Procedimento: `COINOPS_UNSENT_ENTRY_RECOVERY.md`.
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 22`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 23`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento

@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BinanceLiveTransport } from "../src/binance-live.mjs";
+import { ExecutorPreDispatchRejection } from "../src/security.mjs";
 
 const NOW = Date.parse("2026-09-24T03:00:00.000Z");
 const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
 
 function fixture({ openOrders = [], existingOrder = null, trades = [], failFirstOpenOrders = false,
   restrictionsStatus = 200, deleteOutcome = null, loseDeleteAck = false,
-  stpModes, requireSelfTradePrevention = false, restrictionResponses } = {}) {
+  stpModes, requireSelfTradePrevention = false, restrictionResponses,
+  freeBnb = "0.005", bnbPriceAvailable = true } = {}) {
   const calls = [];
   let order = existingOrder;
   let openOrderFailures = 0;
@@ -31,7 +33,7 @@ function fixture({ openOrders = [], existingOrder = null, trades = [], failFirst
     if (parsed.pathname === "/api/v3/time") return Response.json({ serverTime: NOW });
     if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [
       { asset: "BRL", free: "730", locked: "0" }, { asset: "BTC", free: "0", locked: "0" },
-      { asset: "BNB", free: "0.005", locked: "0" }] });
+      { asset: "BNB", free: freeBnb, locked: "0" }] });
     if (parsed.pathname === "/sapi/v1/account/apiRestrictions" && restrictionResponses) {
       const observed = restrictionResponses[Math.min(restrictionReads++, restrictionResponses.length - 1)];
       if (observed instanceof Error) throw observed;
@@ -49,6 +51,7 @@ function fixture({ openOrders = [], existingOrder = null, trades = [], failFirst
     }
     if (parsed.pathname === "/api/v3/ticker/price") {
       const symbol = parsed.searchParams.get("symbol") ?? "BTCBRL";
+      if (symbol === "BNBBRL" && !bnbPriceAvailable) return Response.json({ code: -1000 }, { status: 503 });
       return Response.json({ symbol, price: symbol === "BNBBRL" ? "5000" : "437724" });
     }
     if (parsed.pathname === "/api/v3/openOrders") {
@@ -143,6 +146,25 @@ test("Production transport refuses stale own-open-order snapshot before POST", a
     { allowCreate: true, tradingEnabled: true, killSwitch: false }),
   /UNRECONCILED_OWNED_ORDER/);
   assert.equal(calls.filter((call) => call.method === "POST").length, 0);
+});
+
+test("BNB reserve guard preserves the strict threshold and requires a price; denial is typed before any POST", async () => {
+  for (const config of [{ freeBnb: "0" }, { freeBnb: "0.00001" }, { bnbPriceAvailable: false }]) {
+    const { transport, calls } = fixture(config);
+    await assert.rejects(transport.createOwnedOrder(marketIntent(),
+      { allowCreate: true, tradingEnabled: true, killSwitch: false }), error => {
+      assert.ok(error instanceof ExecutorPreDispatchRejection);
+      assert.equal(error.code, "EXECUTOR_BNB_FEE_RESERVE_MISSING");
+      assert.equal(error.status, 503);
+      return true;
+    });
+    assert.equal(transport.orderPostAttempted, false);
+    assert.ok(calls.every(call => call.method === "GET"));
+  }
+  const enough = fixture({ freeBnb: "0.00001001" });
+  await enough.transport.createOwnedOrder(marketIntent(),
+    { allowCreate: true, tradingEnabled: true, killSwitch: false });
+  assert.equal(enough.calls.filter(call => call.method === "POST").length, 1);
 });
 
 test("permission gateway outage retries a complete snapshot and converges without any POST", async () => {

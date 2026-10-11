@@ -7,6 +7,7 @@ import { liveEngineExposure } from "./engine-exposure.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
+import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
@@ -19,7 +20,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   permissionResidentQuantity?: number; permissionResidentPrice?: number;
   permissionRecentDecision?: boolean; permissionUnsettledDecision?: boolean;
   permissionPendingDispatch?: boolean; permissionProofDenied?: boolean;
-  permissionSiblingOrder?: boolean; permissionExpectedCutoff?: string } = {}) {
+  permissionSiblingOrder?: boolean; permissionExpectedCutoff?: string;
+  bnbFree?: number; staleBnb?: boolean; unknownBnb?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -129,6 +131,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     "./engine-exposure": { liveEngineExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
+    "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
@@ -152,6 +155,9 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       readLiveExecutorState: async () => {
       calls.push("exchange-state"); return { ...scope, filters: { quantityStep: 0.001 },
         price: { price: 630, observedAt: new Date().toISOString() }, observed_at: new Date().toISOString(),
+        balances: options.unknownBnb ? [] : [{ asset: "BNB", free: options.bnbFree ?? .001 }],
+        bnb_quote_price: { symbol: "BNBBRL", price: 6000,
+          observedAt: new Date(Date.now() - (options.staleBnb ? 30_001 : 0)).toISOString() },
         open_orders: options.missingTp ? [] : options.permissionRecovery
           ? [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp", status: "NEW", price: 650, executedQuantity: 0, originalQuantity: 1 },
             { id: "buy-a", side: "BUY", clientOrderId: "owned:buy", status: "NEW", price: options.permissionResidentPrice ?? 630,
@@ -340,4 +346,34 @@ test("legacy permission recovery tolerates bounded DB/caller skew without roundi
   assert.equal(cleared.filters.last_seen_at, incident.last_seen_at);
   assert.equal(cleared.filters["details->>stage"], incident.details.stage);
   assert.equal(cleared.filters["details->>root_code"], incident.details.root_code);
+});
+
+test("fee observation outage cannot resume on TP proof alone; fresh known BNB resumes through the existing scoped lease/CAS", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_EXECUTOR_READ_STALE", details: {
+    root_code: "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE", stage: "OBSERVE_BNB_FEE", read_path: "snapshot/bnb_fee" } };
+  for (const options of [{ staleBnb: true }, { unknownBnb: true }]) {
+    const blocked = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(blocked.run(), /BNB_FEE_BALANCE_UNAVAILABLE/);
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+    assert.equal(blocked.writes.some(write => write.data.resolved_at), false);
+    assert.ok(blocked.calls.includes("lease-claimed"));
+  }
+  for (const bnbFree of [0, .00001, .001]) {
+    const safe = fixture({ alerts: [[incident]], bnbFree });
+    assert.equal((await safe.run()).status, "RESUMED", "known shortage safely resumes to the normal BUY-only HOLD");
+    const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+    assert.equal(clear.filters.trading_engine_id, "engine-a");
+    assert.equal(clear.filters.exchange_account_id, "account-a");
+    assert.equal(clear.filters.first_seen_at, incident.first_seen_at);
+    assert.equal(clear.filters.last_seen_at, incident.last_seen_at);
+    assert.equal(clear.filters["details->>root_code"], incident.details.root_code);
+    assert.equal(clear.filters["details->>read_path"], incident.details.read_path);
+    assert.ok(safe.writes.every(write => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(write.table)));
+  }
+  for (const changed of [{ ...incident, details: { ...incident.details, root_code: "EXECUTOR_ORDER_QUERY_FAILED" } },
+    { ...incident, details: { ...incident.details, read_path: "/v1/state" } }]) {
+    const blocked = fixture({ alerts: [[incident], [changed]] });
+    await assert.rejects(blocked.run(), /INCIDENT_CHANGED/);
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+  }
 });

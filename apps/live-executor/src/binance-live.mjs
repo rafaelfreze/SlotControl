@@ -231,7 +231,7 @@ export class BinanceLiveTransport {
     const snapshot = await this.safetySnapshot(symbol);
     if (side === "BUY" && (!snapshot.bnbBrlPrice
       || !snapshot.account.balances.some((balance) => balance.asset === "BNB" && balance.free > 0.00001)))
-      throw new ExecutorRejection("EXECUTOR_BNB_FEE_RESERVE_MISSING", 503);
+      throw new ExecutorPreDispatchRejection("EXECUTOR_BNB_FEE_RESERVE_MISSING", 503);
     const observedOwn = snapshot.openOrders.filter((order) => order.clientOrderId?.startsWith(this.engine ? engineOrderPrefix(this.engine) : `COR1-${match[1]}-`))
       .map((order) => order.clientOrderId).sort();
     const expectedOwn = Array.isArray(input.expectedOwnedOpenIds)

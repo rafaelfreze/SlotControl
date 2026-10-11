@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createExecutorHandler } from "../src/server.mjs";
-import { requestSignature, sha256 } from "../src/security.mjs";
+import { requestSignature, sha256, ExecutorRejection, ExecutorPreDispatchRejection } from "../src/security.mjs";
 import { engineOrderPrefix, validateExecutorRegistry, durableIntent } from "../src/account-registry.mjs";
 import { ACCOUNT_B, engineFixture, registryFixture, credentialEnvironment, intentContext } from "./registry-fixture.mjs";
 import { enableAccountOrderPolicy } from "../src/account-order-policy.mjs";
@@ -19,7 +19,8 @@ const CLIENT = "COR1-BTC-2-1-BUY-0123456789abcd";
 const ORDER = { symbol: "BTCBRL", clientOrderId: CLIENT, orderId: 123, side: "BUY",
   status: "NEW", executedQty: "0", cummulativeQuoteQty: "0", price: "437000" };
 
-async function fixture({ native = false, missingOrder = false, freeQuote = "730" } = {}) {
+async function fixture({ native = false, missingOrder = false, freeQuote = "730",
+  freeBnb = "0.005", bnbPriceAvailable = true, postError = null } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "coinops-unfilled-cancel-"));
   const shardId = native ? "executor-03" : "executor-01";
   const rawRegistry = native ? { ...registryFixture([
@@ -42,7 +43,7 @@ async function fixture({ native = false, missingOrder = false, freeQuote = "730"
     if (parsed.pathname === "/api/v3/time") return Response.json({ serverTime: NOW });
     if (parsed.pathname === "/api/v3/account") return Response.json({ canTrade: true, balances: [
       { asset: engine.quote_asset, free: freeQuote, locked: "0" }, { asset: engine.base_asset, free: "0", locked: "0" },
-      { asset: "BNB", free: "0.005", locked: "0" }] });
+      { asset: "BNB", free: freeBnb, locked: "0" }] });
     if (parsed.pathname === "/sapi/v1/account/apiRestrictions") return Response.json({
       ipRestrict: true, enableReading: true, enableSpotAndMarginTrading: true,
       enableWithdrawals: false, enableInternalTransfer: false, permitsUniversalTransfer: false,
@@ -53,8 +54,11 @@ async function fixture({ native = false, missingOrder = false, freeQuote = "730"
         { filterType: "LOT_SIZE", minQty: native ? "0.001" : "0.00001", maxQty: "100", stepSize: native ? "0.001" : "0.00001" },
         { filterType: "PRICE_FILTER", minPrice: "0.01", maxPrice: "10000000", tickSize: native ? "0.01" : "1" },
         { filterType: "NOTIONAL", minNotional: native ? "5" : "10" }] }] });
-    if (parsed.pathname === "/api/v3/ticker/price") return Response.json({
-      symbol: parsed.searchParams.get("symbol"), price });
+    if (parsed.pathname === "/api/v3/ticker/price") {
+      if (parsed.searchParams.get("symbol").startsWith("BNB") && !bnbPriceAvailable)
+        return Response.json({ code: -1000 }, { status: 503 });
+      return Response.json({ symbol: parsed.searchParams.get("symbol"), price });
+    }
     if (parsed.pathname === "/api/v3/openOrders") return Response.json([]);
     if (parsed.pathname === "/api/v3/order" && method === "GET") return missingOrder
       ? Response.json({ code: -2013, msg: "Order does not exist." }, { status: 400 }) : Response.json(order);
@@ -67,6 +71,7 @@ async function fixture({ native = false, missingOrder = false, freeQuote = "730"
       order = { ...order, status: "CANCELED" };
       return Response.json({ ...order, origClientOrderId: clientId });
     }
+    if (parsed.pathname === "/api/v3/order" && method === "POST" && postError) throw postError;
     throw new Error(`Unexpected ${method} ${parsed.pathname}`);
   };
   const server = createServer(createExecutorHandler({ secret: SECRET, stateDirectory: directory,
@@ -160,6 +165,47 @@ test("quote shortage returns signed NOT_SUBMITTED and no pending claim or exchan
     await assert.rejects(readFile(join(f.directory, "orders", `${sha256(claim.key)}.pending`)), { code: "ENOENT" });
     assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
   } finally { await f.close(); }
+});
+
+test("BNB shortage or unobserved price signs exact NOT_SUBMITTED without POST or pending claim", async () => {
+  for (const config of [{ freeBnb: "0" }, { freeBnb: "0.00001" }, { bnbPriceAvailable: false }]) {
+    const f = await fixture({ native: true, missingOrder: true, ...config });
+    try {
+      const patch = { clientOrderId: f.clientId, side: "BUY", purpose: "ENTRY", type: "LIMIT", quantity: "0.05", price: "119.79",
+        expectedOwnedOpenIds: [], assetCapBrl: 275, globalCapBrl: 725, assetExposureBeforeBrl: 0, globalExposureBeforeBrl: 0 };
+      for (let retry = 0; retry < 2; retry++) {
+        const result = await f.send("/v1/create-order", patch, f.clientId);
+        assert.equal(result.status, 503);
+        assert.equal(result.body.error, "EXECUTOR_BNB_FEE_RESERVE_MISSING");
+        const proof = JSON.parse(Buffer.from(result.body.unsent_proof.receipt, "base64url").toString());
+        const raw = JSON.stringify({ ...intentContext(f.engine, f.clientId), executor_shard_id: f.shardId, ...patch });
+        assert.equal(verifyAccountOrderUnsentProof(SECRET, result.body.unsent_proof, proof, raw, NOW).outcome, "NOT_SUBMITTED");
+        assert.throws(() => verifyAccountOrderUnsentProof(SECRET, result.body.unsent_proof,
+          { ...proof, trading_engine_id: randomUUID() }, raw, NOW));
+        const claim = durableIntent(f.engine, {}, f.clientId, "", "CREATE_ORDER");
+        await assert.rejects(readFile(join(f.directory, "orders", `${sha256(claim.key)}.pending`)), { code: "ENOENT" });
+      }
+      assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+    } finally { await f.close(); }
+  }
+});
+
+test("an identical BNB error after POST began never signs non-submission or releases the pending claim", async () => {
+  for (const postError of [new ExecutorRejection("EXECUTOR_BNB_FEE_RESERVE_MISSING", 503),
+    new ExecutorPreDispatchRejection("EXECUTOR_BNB_FEE_RESERVE_MISSING", 503)]) {
+    const f = await fixture({ native: true, missingOrder: true, postError });
+    try {
+      const patch = { clientOrderId: f.clientId, side: "BUY", purpose: "ENTRY", type: "LIMIT", quantity: "0.05", price: "119.79",
+        expectedOwnedOpenIds: [], assetCapBrl: 275, globalCapBrl: 725, assetExposureBeforeBrl: 0, globalExposureBeforeBrl: 0 };
+      const result = await f.send("/v1/create-order", patch, f.clientId);
+      assert.equal(result.status, 503);
+      assert.equal(result.body.unsent_proof, undefined);
+      const claim = durableIntent(f.engine, {}, f.clientId, "", "CREATE_ORDER");
+      assert.ok(await readFile(join(f.directory, "orders", `${sha256(claim.key)}.pending`)));
+      assert.equal((await f.send("/v1/create-order", patch, f.clientId)).body.error, "EXECUTOR_WRITE_OUTCOME_UNKNOWN");
+      assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+    } finally { await f.close(); }
+  }
 });
 
 test("native SOLUSDT on executor-03 advertises own caps and cancels an empty BUY exactly once", async () => {
