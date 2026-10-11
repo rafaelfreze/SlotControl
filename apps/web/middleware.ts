@@ -4,7 +4,7 @@ import { getAuthDestination } from "@/lib/auth/navigation";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
 
 const legacyOperatorRoutes = ["/dashboard", "/slots", "/plano-crescimento", "/historico", "/ciclos", "/alertas", "/config", "/mais"];
-const protectedRoutes = [...legacyOperatorRoutes, "/meu-coinops"];
+const protectedRoutes = [...legacyOperatorRoutes, "/meu-coinops", "/assinatura"];
 const authRoutes = ["/login", "/cadastro"];
 
 type CookieToSet = {
@@ -74,14 +74,15 @@ export async function middleware(request: NextRequest) {
   if (user?.app_metadata?.coinops_role === "VIEWER") {
     const { data: viewer, error } = await supabase.from("viewer_access")
       .select("status").eq("user_id", user.id).maybeSingle();
-    const allowed = pathname === "/meu-coinops" || pathname === "/redefinir-senha"
+    const allowed = pathname === "/meu-coinops" || pathname === "/assinatura" || pathname === "/redefinir-senha"
       || pathname === "/recuperar-senha" || pathname === "/auth/callback";
     const viewerRead = pathname === "/api/coinops-viewer-state" && request.method === "GET";
+    const viewerBilling = pathname === "/api/assinatura" && request.method === "POST";
     if (error || !viewer || viewer.status !== "ACTIVE") {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_ACCESS_DISABLED" }, { status: 403 });
       if (pathname !== "/acesso-suspenso" && pathname !== "/redefinir-senha")
         return NextResponse.redirect(new URL("/acesso-suspenso", request.url));
-    } else if (!allowed && !viewerRead) {
+    } else if (!allowed && !viewerRead && !viewerBilling) {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_READ_ONLY" }, { status: 403 });
       return NextResponse.redirect(new URL("/meu-coinops", request.url));
     }
