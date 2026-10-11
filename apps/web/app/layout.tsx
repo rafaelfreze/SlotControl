@@ -12,6 +12,7 @@ import "./automation-redesign.css";
 import "./automation-center.css";
 import "./automation-cockpit.css";
 import "./reports-center.css";
+import "./mobile-accessibility.css";
 
 const appName = "CoinOps";
 const description = "Operacoes inteligentes em criptomoedas";
