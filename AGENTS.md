@@ -174,6 +174,13 @@ no ambiente de destino antes de operação remota.
   Claim legado exige runtime/fingerprint/PID/journal fixados, fence e GET,
   sem remoção manual: `docs/COINOPS_BNB_FEE_RECOVERY_20261011.md`.
 
+- Diagnóstico de saldo completo é informativo, autenticado e por conta/moeda:
+  todos os motores operacionais/shards, 25 slots, posição pelo custo, BUY própria
+  residente comprovada e Spot livre contado uma vez. PENDING separado; cap não é
+  alocação; Earn/locked externo/lucro futuro não são caixa. BNB guard não garante
+  taxas futuras. Dado incompleto/obsoleto não certifica suficiência. Sem novo gate,
+  cron ou mutação financeira: `docs/COINOPS_ACCOUNT_FUNDING_DIAGNOSTIC_20261013.md`.
+
 - Coleta de orçamento account-global pode alinhar retry somente após amostra
   integral validada, usando intervalos/offset Binance originais, cooldown de
   5,5s, até 3 leituras/35s e margem de dispatch de 4s. Não estender validade nem

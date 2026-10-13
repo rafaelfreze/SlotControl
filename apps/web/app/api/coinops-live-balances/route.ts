@@ -6,6 +6,7 @@ import { resolveExecutorForEngine } from "@/lib/execution/executor-shards-server
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createClient } from "@/lib/supabase/server";
+import { loadAccountFunding } from "@/lib/execution/account-funding-server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -31,12 +32,20 @@ export async function GET(request: Request) {
     const registry = await loadOperatorRegistry(db, {
       product_id: scope.data.product_id, tenant_id: tenantId, user_id: user.id,
     });
-    const accountId = new URL(request.url).searchParams.get("account");
+    const params = new URL(request.url).searchParams;
+    const accountId = params.get("account");
+    const fundingRequested = params.get("funding") === "1";
     if (!accountId || accountId !== "ALL" && !registry.accounts.some((account) => account.id === accountId))
       return json({ error: "COINOPS_BALANCE_ACCOUNT_SCOPE_DENIED" }, 403);
+    // A funding diagnostic is always one explicitly owned account, never an
+    // unbounded all-account exchange audit triggered by Home rendering.
+    if (fundingRequested && accountId === "ALL")
+      return json({ error: "COINOPS_ACCOUNT_FUNDING_SINGLE_ACCOUNT_REQUIRED" }, 400);
     const groups = new Map<string, { accountId: string; currency: string; engineId: string }>();
-    for (const engine of registry.engines.filter((item) => item.environment === "REAL" && item.status === "ACTIVE" && (accountId === "ALL" || item.exchange_account_id === accountId))) {
-      const key = `${engine.exchange_account_id}:${engine.quote_asset}`;
+    for (const engine of registry.engines.filter((item) => item.environment === "REAL"
+      && (fundingRequested ? ["ACTIVE", "PAUSED"].includes(item.status) : item.status === "ACTIVE")
+      && (accountId === "ALL" || item.exchange_account_id === accountId))) {
+      const key = `${engine.exchange_account_id}:${fundingRequested ? engine.symbol : engine.quote_asset}`;
       if (!groups.has(key)) groups.set(key, { accountId: engine.exchange_account_id,
         currency: engine.quote_asset, engineId: engine.id });
     }
@@ -48,19 +57,46 @@ export async function GET(request: Request) {
       if (!targets.has(key)) targets.set(key, resolveExecutorForEngine(operatorId, exchangeAccountId, engineId));
       return targets.get(key)!;
     };
-    const fetchState: typeof fetch = (url, init) => fetch(url, { ...init,
-      signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : [])]) });
+    const fundingDeadline = fundingRequested ? AbortSignal.timeout(5_000) : null;
     const observed = await Promise.allSettled([...groups.values()].map(async (group) => {
       const context = resolveEngineContext(registry, { environment: "REAL",
         exchange_account_id: group.accountId, trading_engine_id: group.engineId });
+      let requests = 0;
+      const fetchState: typeof fetch = (url, init) => {
+        // The diagnostic observes each distinct market once. Transport retry
+        // must not multiply Binance reads; absence stays explicitly partial.
+        if (fundingRequested && requests++ > 0)
+          throw new Error("COINOPS_ACCOUNT_FUNDING_OBSERVATION_UNAVAILABLE");
+        return fetch(url, { ...init, signal: AbortSignal.any([
+          fundingDeadline ?? AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : []),
+        ]) });
+      };
       const state = await readLiveExecutorState(context, fetchState, resolve);
       const quote = state.balances.find((item) => item.asset === group.currency);
       if (!quote || !Number.isFinite(quote.free) || quote.free < 0) throw new Error("COINOPS_BALANCE_UNAVAILABLE");
       return { accountId: group.accountId, currency: group.currency,
-        free: quote.free, locked: quote.locked, observedAt: state.observed_at };
+        free: quote.free, locked: quote.locked, observedAt: state.observed_at, state };
     }));
-    return json({ balances: observed.flatMap((item) => item.status === "fulfilled" ? [item.value] : []),
-      unavailable: observed.filter((item) => item.status === "rejected").length });
+    const successful = observed.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+    const balances = new Map<string, Omit<typeof successful[number], "state">>();
+    for (const { state: _state, ...balance } of successful) {
+      void _state;
+      const key = `${balance.accountId}:${balance.currency}`;
+      const previous = balances.get(key);
+      if (!previous || balance.observedAt > previous.observedAt) balances.set(key, balance);
+    }
+    let funding: Awaited<ReturnType<typeof loadAccountFunding>> | undefined;
+    let fundingUnavailable = false;
+    if (fundingRequested) {
+      try {
+        funding = await loadAccountFunding(db, { scope: { product_id: scope.data.product_id,
+          tenant_id: tenantId, user_id: user.id }, registry, accountId,
+        states: successful.map((item) => item.state) });
+      } catch { funding = []; fundingUnavailable = true; }
+    }
+    return json({ balances: [...balances.values()],
+      unavailable: observed.filter((item) => item.status === "rejected").length,
+      ...(fundingRequested ? { funding, fundingUnavailable } : {}) });
   } catch {
     return json({ error: "COINOPS_BALANCE_UNAVAILABLE" }, 503);
   }

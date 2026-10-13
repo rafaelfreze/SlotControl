@@ -8,6 +8,7 @@ import { ACCOUNT_A, ACCOUNT_B, automationOperatorFixture } from "./fixtures/auto
 import type { Presentation } from "../../app/automacao/premium-automation";
 import { projectLiveSlotRanks } from "../../lib/slotgain/live-slot-read-model";
 import { buildPremiumEngine } from "../../app/automacao/premium-operator";
+import type { FundingSummary } from "../../lib/execution/account-funding";
 
 type View = "overview" | "live" | "shadow" | "testnet";
 const views: View[] = ["overview", "live", "shadow", "testnet"];
@@ -62,7 +63,7 @@ const styles = ["app/globals.css", "app/compact-redesign.css", "app/official-mon
   "app/desktop-modules.css", "app/automation-redesign.css", "app/automation-center.css",
   "app/automation-cockpit.css", "app/reports-center.css", "app/automacao/live-preparation.css",
   "app/automacao/manual-adjustments.css", "app/automacao/ath-profiles.css",
-  "app/automacao/premium-automation.css", "app/automacao/asset-health.css"];
+  "app/automacao/premium-automation.css", "app/automacao/asset-health.css", "app/automacao/account-funding-card.css"];
 
 /** Bundle real client code, never server actions, credentials, or server loaders.
  * This follows the existing open-slot-growth-goal component test harness. */
@@ -102,7 +103,7 @@ function clientModules() {
 
 async function mount(page: Page, view: View, width: number, height = 960,
   data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null,
-  watchdogData: unknown = null, engineControlData: unknown = null) {
+  watchdogData: unknown = null, engineControlData: unknown = null, fundingData: unknown = null) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
@@ -129,6 +130,7 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const assetHealthFixture = ${JSON.stringify(assetHealthData)};
     const watchdogFixture = ${JSON.stringify(watchdogData)};
     const engineFixture = ${JSON.stringify(engineControlData)};
+    const fundingFixture = ${JSON.stringify(fundingData)};
     window.__fixtureEngineCommands = [];
     window.__fixtureReads = [];
     window.fetch = async (url, settings) => {
@@ -140,7 +142,8 @@ async function mount(page: Page, view: View, width: number, height = 960,
           : command.action === 'APPEND_PREVIEW' ? engineFixture.preview : null;
         return { ok: Boolean(response), json: async () => response || { error: 'WRITE_DISABLED_IN_UI_FIXTURE' } };
       }
-      const data = String(url).startsWith('/api/coinops-asset-health?') ? assetHealthFixture
+      const data = String(url).startsWith('/api/coinops-live-balances?') ? fundingFixture
+        : String(url).startsWith('/api/coinops-asset-health?') ? assetHealthFixture
         : String(url) === '/api/coinops-capacity' ? capacityFixture
         : String(url) === '/api/coinops-watchdog' ? watchdogFixture : null;
       return { ok: Boolean(data), json: async () => data ?? {} };
@@ -1109,7 +1112,7 @@ for (const width of [390, 1440]) test(`indicadores financeiros somente dentro da
   await expect(metrics.locator(":scope > span")).toHaveText([
     "Saldo livre · Binance", "Capital em posições", "P&L realizado · acumulado", "Exposição total", "Limites por conta / moeda",
   ]);
-  expect(await balanceReads()).toEqual([`/api/coinops-live-balances?account=${ACCOUNT_A}`]);
+  expect(await balanceReads()).toEqual([`/api/coinops-live-balances?account=${ACCOUNT_A}&funding=1`]);
   await page.getByLabel("Mercado", { exact: true }).selectOption("BTCUSDT");
   await expect(page.locator(".px-kpis")).toContainText("USDT");
   await expect(page.locator(".px-kpis")).not.toContainText("R$");
@@ -1119,6 +1122,89 @@ for (const width of [390, 1440]) test(`indicadores financeiros somente dentro da
   expect((await balanceReads()).some((url) => url.includes("account=ALL"))).toBe(false);
   expect((await geometry(page)).overflow).toBe(0);
   await screenshot(page, testInfo, `home-account-only-metrics-${width}`);
+  await noSideEffects(page, audit);
+});
+
+for (const width of [390, 1440]) test(`saldo da operação completa e mensagem sem ordens em ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  const affected = data.operator!.engines.find((engine) => engine.accountId === ACCOUNT_A && engine.symbol === "SOLBRL")!;
+  affected.alerts = [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", at: AUTOMATION_FIXTURE_NOW }];
+  affected.health = { healthy: false, tone: "attention", label: "AGUARDANDO SALDO", reason: "Saldo Spot insuficiente." };
+  const summary: FundingSummary = { accountId: ACCOUNT_A, accountName: "Rafael Demo", currency: "BRL", engineCount: 2,
+    slotCount: 50, status: "SHORTFALL", observedAt: AUTOMATION_FIXTURE_NOW, ledgerTarget: 725, pending: 20,
+    configuredCap: 725, positionCost: 50, buyReserved: 25, spotFree: 170, spotLocked: 25,
+    cashRequired: 670, deficit: 500, coverage: 245, bnbFree: 0.00000988, bnbStatus: "LOW", issues: [] };
+  const funding = { balances: [{ accountId: ACCOUNT_A, currency: "BRL", free: 170, locked: 25, observedAt: AUTOMATION_FIXTURE_NOW }],
+    unavailable: 0, funding: [summary] };
+  const audit = await mount(page, "live", width, 900, data, null, null, null, null, funding);
+  await expect(page.getByTestId("account-funding-card")).toHaveCount(0);
+  await page.getByRole("button", { name: "Verificar saldo completo · Rafael Demo", exact: true }).click();
+  const card = page.getByTestId("account-funding-card");
+  await expect(card).toContainText("FALTA SALDO SPOT");
+  await expect(card).toContainText("R$ 670,00");
+  await expect(card).toContainText("R$ 500,00");
+  await expect(card).toContainText("2 motor(es) · 50 slots");
+  await expect(card).toContainText("Reserva BNB Spot abaixo");
+  const reads = () => page.evaluate(() => (window as unknown as { __fixtureReads: string[] }).__fixtureReads
+    .filter((url) => url.startsWith("/api/coinops-live-balances")));
+  expect(await reads()).toEqual([`/api/coinops-live-balances?account=${ACCOUNT_A}&funding=1`]);
+  await page.getByLabel("Mercado", { exact: true }).selectOption("BTCBRL");
+  await expect(card).toContainText("2 motor(es) · 50 slots");
+  expect(await reads()).toHaveLength(1);
+  await page.getByRole("button", { name: "Ver detalhes e mensagem para o cliente" }).click();
+  const dialog = page.getByRole("dialog", { name: "Rafael Demo · saldo da operação completa" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Aportes pendentes · ainda não aplicados");
+  await expect(dialog).toContainText("Posições já financiadas · custo de entrada");
+  await expect(dialog).toContainText("Leitura pontual e não atômica");
+  await expect(dialog.getByLabel("Mensagem para o cliente BRL")).toHaveValue(/Faltam 500,00 BRL/);
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true,
+    value: { writeText: async (value: string) => { (window as unknown as { __copiedFunding: string }).__copiedFunding = value; } } }));
+  await dialog.getByRole("button", { name: "Copiar mensagem para o cliente" }).click();
+  await expect(dialog).toContainText("Mensagem copiada. Nenhuma mensagem foi enviada.");
+  const touchHeights = await dialog.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
+  expect(Math.min(...touchHeights)).toBeGreaterThanOrEqual(44);
+  expect((await geometry(page)).overflow).toBe(0);
+  await screenshot(page, testInfo, `full-account-funding-${width}`);
+  await dialog.getByRole("button", { name: "Fechar", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await noSideEffects(page, audit);
+});
+
+test("saldo completo incompleto nunca apresenta zero nem afirma cobertura", async ({ page }) => {
+  const data = automationOperatorFixture();
+  data.operator!.selection = { accountId: ACCOUNT_A, symbol: "ALL" };
+  const incomplete: FundingSummary = { accountId: ACCOUNT_A, accountName: "Rafael Demo", currency: "USDT", engineCount: 2,
+    slotCount: 50, status: "INCOMPLETE", observedAt: AUTOMATION_FIXTURE_NOW, ledgerTarget: null, pending: null,
+    configuredCap: null, positionCost: null, buyReserved: null, spotFree: null, spotLocked: null,
+    cashRequired: null, deficit: null, coverage: null, bnbFree: null, bnbStatus: "UNKNOWN", issues: ["SPOT_STALE_OR_UNAVAILABLE"] };
+  const audit = await mount(page, "live", 390, 900, data, null, null, null, null, { balances: [], unavailable: 1, funding: [incomplete] });
+  await expect(page.getByTestId("account-funding-card")).toContainText("VERIFICAÇÃO INCOMPLETA");
+  await expect(page.getByTestId("account-funding-card")).not.toContainText("0,00 USDT");
+  await page.getByRole("button", { name: "Ver detalhes e mensagem para o cliente" }).click();
+  const dialog = page.getByRole("dialog", { name: "Rafael Demo · saldo da operação completa" });
+  await expect(dialog).toContainText("não é possível afirmar cobertura nem déficit total");
+  await expect(dialog.getByLabel("Mensagem para o cliente USDT")).toHaveValue(/incompleta/);
+  expect((await geometry(page)).overflow).toBe(0);
+  await noSideEffects(page, audit);
+});
+
+test("saldo completo expirado não copia um valor como confirmação atual", async ({ page }) => {
+  const data = automationOperatorFixture();
+  data.operator!.selection = { accountId: ACCOUNT_A, symbol: "ALL" };
+  const covered: FundingSummary = { accountId: ACCOUNT_A, accountName: "Rafael Demo", currency: "BRL", engineCount: 2,
+    slotCount: 50, status: "COVERED", observedAt: AUTOMATION_FIXTURE_NOW, ledgerTarget: 725, pending: 0,
+    configuredCap: 725, positionCost: 50, buyReserved: 25, spotFree: 650, spotLocked: 25,
+    cashRequired: 650, deficit: 0, coverage: 725, bnbFree: 0.001, bnbStatus: "AVAILABLE", issues: [] };
+  const audit = await mount(page, "live", 390, 900, data, null, null, null, null, { balances: [], unavailable: 0, funding: [covered] });
+  await page.getByRole("button", { name: "Ver detalhes e mensagem para o cliente" }).click();
+  const dialog = page.getByRole("dialog", { name: "Rafael Demo · saldo da operação completa" });
+  await page.clock.setFixedTime(new Date(Date.parse(AUTOMATION_FIXTURE_NOW) + 31_000));
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true,
+    value: { writeText: async () => { (window as unknown as { __fundingCopyAttempts: number }).__fundingCopyAttempts = 1; } } }));
+  await dialog.getByRole("button", { name: "Copiar mensagem para o cliente" }).click();
+  await expect(dialog).toContainText("A leitura expirou. Atualize antes de copiar um valor de reposição.");
+  expect(await page.evaluate(() => (window as unknown as { __fundingCopyAttempts?: number }).__fundingCopyAttempts ?? 0)).toBe(0);
   await noSideEffects(page, audit);
 });
 

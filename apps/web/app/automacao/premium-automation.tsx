@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useAutomationMarketPrices } from "./use-automation-market-prices";
@@ -15,6 +15,8 @@ import { CapacityCard } from "./capacity-card";
 import { WatchdogCard } from "./watchdog-card";
 import { AssetHealthBadge, AssetHealthProvider, BinanceHealthCard } from "./asset-health";
 import { AccountSelector } from "./account-selector";
+import { AccountFundingCard } from "./account-funding-card";
+import type { FundingSummary } from "@/lib/execution/account-funding";
 import { accountOptions } from "./account-selector-model";
 import type { AthProfilesPanel as AthPanel } from "./ath-profiles-panel";
 import type { ManualAdjustmentsPanel as AdjustmentsPanel } from "./manual-adjustments-panel";
@@ -51,6 +53,8 @@ const labels = { overview: "Visão Geral", shadow: "Shadow", testnet: "Testnet",
 const visibleEnvironments = ["live"] as const;
 const tones = (value: number | null) => value == null ? "" : value < 0 ? "px-negative" : "px-positive";
 const protectedSlot = (slot: PremiumSlot, model: PremiumAsset) => slot.orders.some((order) => order.side === "SELL" && (order.resident || model.environment === "SHADOW" && order.status === "VIRTUAL_TP"));
+const fundingAlert = (code: string) => code === "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT"
+  || code === "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING" || code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
 
 function Trend({ candles, asset, symbol, large = false }: { candles: Candle[]; asset: string; symbol: string; large?: boolean }) {
   const gradientId = useId().replaceAll(":", "");
@@ -193,6 +197,19 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   const [historyLimit, setHistoryLimit] = useState(8);
   const [accountLimit, setAccountLimit] = useState(30);
   const [quoteBalances, setQuoteBalances] = useState<LiveQuoteBalance[] | null>(null);
+  const [funding, setFunding] = useState<{ accountId: string; summaries: FundingSummary[] } | null>(null);
+  const [fundingLoading, setFundingLoading] = useState(false);
+  const [fundingError, setFundingError] = useState(false);
+  const [fundingRefresh, setFundingRefresh] = useState(0);
+  const [fundingRefreshAvailableAt, setFundingRefreshAvailableAt] = useState(0);
+  const fundingAttempts = useRef(new Map<string, number>());
+  const fundingResults = useRef(new Map<string, FundingSummary[]>());
+  const fundingAlertSignatures = useRef(new Map<string, string>());
+  const lastFundingRefresh = useRef(0);
+  const fundingAccount = useRef<string | null>(null);
+  const fundingAlertSignature = (data.operator?.engines ?? []).filter((engine) => engine.environment === "REAL"
+    && engine.accountId === selection.accountId).flatMap((engine) => engine.alerts
+    .filter((alert) => fundingAlert(alert.code)).map((alert) => `${engine.engineId}:${alert.code}:${alert.at ?? ""}`)).sort().join("|");
   const [dailyCandles, setDailyCandles] = useState(data.dailyCandles);
   useEffect(() => {
     const abort = new AbortController();
@@ -207,18 +224,46 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   useEffect(() => {
     setQuoteBalances(null);
     // Free balances belong to account details, never the all-accounts home.
-    if (selection.accountId === "ALL") return;
-    if (view !== "live" && view !== "overview") return;
+    if (selection.accountId === "ALL" || view !== "live" && view !== "overview") {
+      fundingAccount.current = null; setFundingLoading(false); return;
+    }
+    const now = Date.now(), previous = fundingAttempts.current.get(selection.accountId) ?? 0;
+    const changedAccount = fundingAccount.current !== selection.accountId;
+    const explicitRefresh = fundingRefresh !== lastFundingRefresh.current;
+    lastFundingRefresh.current = fundingRefresh;
+    const newFundingAlert = Boolean(fundingAlertSignature && fundingAlertSignatures.current.get(selection.accountId) !== fundingAlertSignature);
+    const includeFunding = now - previous >= 60_000 && (changedAccount || explicitRefresh || newFundingAlert);
+    fundingAccount.current = selection.accountId;
+    setFundingRefreshAvailableAt(previous + 60_000);
+    if (changedAccount) {
+      const cached = fundingResults.current.get(selection.accountId);
+      setFunding(cached ? { accountId: selection.accountId, summaries: cached } : null); setFundingError(false);
+    }
+    if (includeFunding) {
+      fundingAttempts.current.set(selection.accountId, now);
+      fundingAlertSignatures.current.set(selection.accountId, fundingAlertSignature);
+      setFundingRefreshAvailableAt(now + 60_000); setFundingLoading(true); setFundingError(false);
+    } else setFundingLoading(false);
     const abort = new AbortController();
-    fetch(`/api/coinops-live-balances?account=${encodeURIComponent(selection.accountId)}`, {
+    // Full diagnostics happen on account entry, a new funding warning or explicit
+    // request, never healthy snapshot polling. Keep the existing lightweight read.
+    fetch(`/api/coinops-live-balances?account=${encodeURIComponent(selection.accountId)}${includeFunding ? "&funding=1" : ""}`, {
       cache: "no-store", credentials: "same-origin",
       signal: AbortSignal.any([abort.signal, AbortSignal.timeout(12_000)]),
     })
       .then((response) => response.ok ? response.json() : null)
-      .then((result) => { if (!abort.signal.aborted) setQuoteBalances(Array.isArray(result?.balances) ? result.balances : []); })
-      .catch(() => { if (!abort.signal.aborted) setQuoteBalances([]); });
+      .then((result) => { if (!abort.signal.aborted) {
+        setQuoteBalances(Array.isArray(result?.balances) ? result.balances : []);
+        if (includeFunding) {
+          const summaries = Array.isArray(result?.funding) ? result.funding.filter((row: FundingSummary) => row.accountId === selection.accountId) : [];
+          fundingResults.current.set(selection.accountId, summaries);
+          setFunding({ accountId: selection.accountId, summaries }); setFundingError(!summaries.length);
+        }
+      } })
+      .catch(() => { if (!abort.signal.aborted) { setQuoteBalances([]); if (includeFunding) setFundingError(true); } })
+      .finally(() => { if (!abort.signal.aborted && includeFunding) setFundingLoading(false); });
     return () => abort.abort();
-  }, [view, selection.accountId, data.snapshotAt]);
+  }, [view, selection.accountId, data.snapshotAt, fundingRefresh, fundingAlertSignature]);
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
   const engines = useMemo(() => data.operator?.engines ?? legacyPremiumEngines(data), [data]);
   const market = useAutomationMarketPrices(engines.filter((engine) => view === "overview"
@@ -330,7 +375,11 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard attentionOnly={!allAccounts} /> : null}
       </aside>
       </div>
-      {!initialHealthLoading && !healthy && !paused ? <div className="px-alert-banner" role="status">{globalOverCap ? <p><strong>LIMITE GLOBAL EXCEDIDO</strong>Verifique a reconciliação e os limites autorizados.</p> : null}{assets.filter((item) => !item.health.healthy).map((item) => <p key={item.engineId}><strong>{item.accountDisplayName} · {item.symbol} · {item.health.label}</strong> {item.health.reason}</p>)}</div> : null}
+      {!initialHealthLoading && !healthy && !paused ? <div className="px-alert-banner" role="status">{globalOverCap ? <p><strong>LIMITE GLOBAL EXCEDIDO</strong>Verifique a reconciliação e os limites autorizados.</p> : null}{assets.filter((item) => !item.health.healthy).map((item) => <p key={item.engineId}><strong>{item.accountDisplayName} · {item.symbol} · {item.health.label}</strong> {item.health.reason}{item.alerts.some((alert) => fundingAlert(alert.code)) ? <button type="button" className="px-button" onClick={() => {
+        if (selection.accountId !== item.accountId) changeSelection({ accountId: item.accountId, symbol: "ALL" });
+        else if (Date.now() >= fundingRefreshAvailableAt && !fundingLoading) setFundingRefresh((current) => current + 1);
+        requestAnimationFrame(() => document.querySelector('[data-testid="account-funding-card"]')?.scrollIntoView({ block: "center" }));
+      }}>Verificar saldo completo · {item.accountDisplayName}</button> : null}</p>)}</div> : null}
       {data.operator && allAccounts ? <section className="px-account-list-section" aria-label="Contas do operador"><div className="px-section-heading"><h2>Contas</h2><small>{rankedAccounts.length} cadastradas · maiores exposições primeiro</small></div><div className="px-account-grid px-account-grid--list">{rankedAccounts.slice(0, accountLimit).map(({ account, accountEngines }) => {
         const native = premiumNativeGroups(accountEngines);
         const operational = accountEngines.length > 0 && !account.killSwitch && accountEngines.every((item) => item.health.healthy && !item.killSwitch);
@@ -349,6 +398,13 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
         <Metric label="Exposição total" value={nativeValues("exposure")} note="Posições + reservas de BUY" icon="shield" />
         <Metric label={environment === "REAL" ? "Limites por conta / moeda" : "Capital lógico total"} value={groups.length > 1 ? nativeValues(environment === "REAL" ? "cap" : "capital") : money(cap, currency)} note={percent !== null ? `${number(percent, 1)}% comprometido` : groups.length > 1 ? "Sem soma entre contas/moedas" : "Sem evidência disponível"} icon="wallet" percent={percent} />
       </section> : null}
+      {data.operator && !allAccounts && environment === "REAL" ? <AccountFundingCard key={selection.accountId}
+        accountName={accounts.find((account) => account.id === selection.accountId)?.displayName ?? "Conta"}
+        summaries={funding?.accountId === selection.accountId ? funding.summaries : null}
+        loading={fundingLoading} error={fundingError} refreshAvailableAt={fundingRefreshAvailableAt}
+        now={healthClock || Date.now()} onRefresh={() => {
+          if (!fundingLoading && Date.now() >= fundingRefreshAvailableAt) setFundingRefresh((current) => current + 1);
+        }} /> : null}
       {!allAccounts ? <section className="px-assets" aria-label={`Ativos ${labels[view]}`}>{assets.map((model) => <div key={model.engineId} data-engine-id={model.engineId}><small className="px-engine-owner">{model.accountDisplayName} · {model.symbol}</small><AssetCard compact={view === "overview"} model={model} candles={candlesFor(model)} regime={data.operator ? model.regime ?? undefined : data.athProfiles?.find((profile) => profile.asset === model.asset && profile.environment === environment)?.regime} onOpen={() => openAsset(model.engineId)} /></div>)}</section> : null}
       {view !== "overview" ? <>{!allAccounts ? <section className="px-operations px-panel" id="premium-operations"><div className="px-operations-nav" data-testid="premium-operations-tabs" role="tablist" aria-label="Operações" onKeyDown={(event) => { const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')); const index = tabs.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null; if (next !== null) { event.preventDefault(); tabs[next]?.focus(); tabs[next]?.click(); } }}>{[["positions", `Posições abertas (${positions.length})`], ["next", `Próximas BUYs (${assets.reduce((sum, item) => sum + item.nextCount, 0)})`], ["history", "Histórico de operações"], ["alerts", `Alertas (${Math.max(alerts.length, assets.reduce((sum, item) => sum + item.activeIssueCount, 0))})`]].map(([key, label]) => <button type="button" role="tab" id={`px-tab-${key}`} aria-controls="px-operations-content" tabIndex={operationTab === key ? 0 : -1} aria-selected={operationTab === key} key={key} onClick={() => setOperationTab(key)}>{label}</button>)}<button type="button" className="px-button px-all-operations" onClick={() => setPanel("asset")}>Todos os slots <PremiumIcon name="arrow" /></button></div>
         <div role="tabpanel" id="px-operations-content" aria-labelledby={`px-tab-${operationTab}`}>
