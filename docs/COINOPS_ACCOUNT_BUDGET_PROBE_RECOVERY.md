@@ -1,5 +1,10 @@
 # Coleta account-global — recuperação de janela e lock
 
+Retry pós-amostra válida sem margem, preservando cooldown e deadline:
+`COINOPS_ACCOUNT_BUDGET_WINDOW_20261013.md`. O WARNING pode convergir pelo
+cron LIVE normal sem intervenção do Watchdog; não confundir falta de uma
+amostra utilizável com falta de saldo ou saturação por quantidade de motores.
+
 ## Incidente de 04/10/2026
 
 Dete tentou preparar BTCBRL no Executor 02. O preview passou às 18:57:56 UTC;

@@ -174,6 +174,12 @@ no ambiente de destino antes de operação remota.
   Claim legado exige runtime/fingerprint/PID/journal fixados, fence e GET,
   sem remoção manual: `docs/COINOPS_BNB_FEE_RECOVERY_20261011.md`.
 
+- Coleta de orçamento account-global pode alinhar retry somente após amostra
+  integral validada, usando intervalos/offset Binance originais, cooldown de
+  5,5s, até 3 leituras/35s e margem de dispatch de 4s. Não estender validade nem
+  repetir ordem. Sem prova, causa histórica permanece desconhecida; preservar
+  razão tipada futura: `docs/COINOPS_ACCOUNT_BUDGET_WINDOW_20261013.md`.
+
 - Watchdog operacional é server-side: crons Vercel, telemetria dos executores e reconciliação LIVE. Navegador, PC e Codex não são componentes do laço 24/7. A checagem rápida usa dados internos; Binance REST e qualquer correção de ordem passam somente pelo reconciliador com lease/idempotência por motor. Condição ambígua permanece `BLOCKED_SAFE` no menor escopo, com incidente persistido e push. Consulte `docs/COINOPS_SERVER_WATCHDOG.md`; não aumente o polling Binance para satisfazer um indicador visual.
 - Leitura do ledger não confunde erro de provider com slots faltantes. GET-only: 2 conjuntos completos de até 5s/250ms, ordens paginadas e slots físicos únicos 1..25. Falha transitória usa checkpoint persistido; permissão/schema/dado incompleto permanece fail-closed. Retomada de erro legado exige reconciliação integral, TP/ownership/caps e CAS do mesmo incidente sob lease; nunca limpar gate/alerta manualmente. Ver `docs/COINOPS_LEDGER_READ_RECOVERY_20261007.md`.
 

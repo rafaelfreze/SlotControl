@@ -7,15 +7,55 @@ import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { createServiceRoleClient } from "../supabase/service-role";
 import type { ExecutorEngineScope } from "./live-executor-transport.ts";
 import type { AccountBudgetReservation } from "./account-order-budget-permit.ts";
+import type { AccountOrderBudget } from "./account-order-budget.ts";
 import { resolveExecutorForEngine } from "./executor-shards-server.ts";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 const code = "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN";
+const PROBE_COOLDOWN_MS = 5500;
+export type AccountOrderBudgetObservationFailure = {
+  reason: "WINDOW_MARGIN" | "WINDOW_EXPIRED";
+  phase: "BEFORE_RECORD" | "AFTER_RECORD";
+  attempts: 1 | 2 | 3;
+  minimumValidityMs: number;
+  remainingValidityMs: number;
+};
+
+class AccountOrderBudgetWindowUnavailable extends Error {
+  readonly observationFailure: AccountOrderBudgetObservationFailure;
+  constructor(failure: AccountOrderBudgetObservationFailure) {
+    super(code); this.observationFailure = failure;
+  }
+}
+
+function windowUnavailable(validUntil: number, now: number, minimumValidityMs: number,
+  attempt: number, phase: AccountOrderBudgetObservationFailure["phase"]) {
+  const remainingValidityMs = Math.floor(validUntil - now);
+  return new AccountOrderBudgetWindowUnavailable({
+    reason: remainingValidityMs <= 0 ? "WINDOW_EXPIRED" : "WINDOW_MARGIN",
+    phase, attempts: (attempt + 1) as 1 | 2 | 3, minimumValidityMs, remainingValidityMs,
+  });
+}
+
+/** Only an ownership-validated observation may schedule against Binance's
+ * counter clock. Start a fresh probe early in the next eligible short window,
+ * not at the same late phase after each fixed cooldown. This never extends an
+ * observation, assumes a counter reset, or retries an exchange mutation. */
+function nextValidatedBudgetProbeDelay(sample: AccountOrderBudget, now: number) {
+  const offset = sample.serverTime - sample.observedAt;
+  const shortestInterval = Math.min(...sample.intervals.map(row => row.intervalMs));
+  const earliestServerTime = now + offset + PROBE_COOLDOWN_MS;
+  const nextBoundary = Math.ceil(earliestServerTime / shortestInterval) * shortestInterval;
+  return Math.max(PROBE_COOLDOWN_MS, nextBoundary - offset - now);
+}
 export class AccountOrderBudgetHold extends Error {
   readonly clientOrderId: string;
   readonly side: string;
-  constructor(reason: string, clientOrderId: string, side: string) {
+  readonly observationFailure: AccountOrderBudgetObservationFailure | null;
+  constructor(reason: string, clientOrderId: string, side: string,
+    observationFailure: AccountOrderBudgetObservationFailure | null = null) {
     super(reason); this.clientOrderId = clientOrderId; this.side = side;
+    this.observationFailure = observationFailure;
   }
 }
 export async function accountExecutionPolicyRequired(service: Service, engine: ExecutorEngineScope) {
@@ -41,7 +81,8 @@ export async function reserveAccountOrderDispatch(service: Service, engine: Exec
     const target = await resolveExecutorForEngine(engine.operator_id, engine.exchange_account_id, engine.trading_engine_id);
     try { await collectAccountOrderBudget(service, engine.operator_id, engine.exchange_account_id, target.shardId, [engine.symbol],
       undefined, { minimumValidityMs: 4000 }); }
-    catch { throw new AccountOrderBudgetHold(code, clientOrderId, side); }
+    catch (error) { throw new AccountOrderBudgetHold(code, clientOrderId, side,
+      error instanceof AccountOrderBudgetWindowUnavailable ? error.observationFailure : null); }
     result = await reserve();
   }
   if (result.error) throw new Error("COINOPS_ACCOUNT_ORDER_RESERVE_FAILED");
@@ -106,6 +147,8 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
       throw new Error("COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY");
     }
     let recorded = false, retryable = false;
+    let retryObservation: AccountOrderBudget | null = null;
+    let retryFailure: unknown;
     try {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error(code);
@@ -129,7 +172,9 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
         (Math.floor(inspected.serverTime / row.intervalMs) + 1) * row.intervalMs
           - (inspected.serverTime - inspected.observedAt)));
       if (Date.now() >= windowEnd && Date.now() - inspected.observedAt <= 30_000) {
-        retryable = true; throw new Error(code);
+        retryable = true;
+        retryObservation = inspected;
+        throw windowUnavailable(windowEnd, Date.now(), minimumValidity, attempt, "BEFORE_RECORD");
       }
       const sample = projectAccountBudgetObservation(observed, identity);
       // Retain the original Binance window and clock offset. This is a
@@ -137,7 +182,11 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
       const validUntil = Math.min(sample.observedAt + 30_000, ...sample.intervals.map(row =>
         (Math.floor(sample.serverTime / row.intervalMs) + 1) * row.intervalMs
           - (sample.serverTime - sample.observedAt)));
-      if (validUntil - Date.now() < minimumValidity) { retryable = true; throw new Error(code); }
+      if (validUntil - Date.now() < minimumValidity) {
+        retryable = true;
+        retryObservation = sample;
+        throw windowUnavailable(validUntil, Date.now(), minimumValidity, attempt, "BEFORE_RECORD");
+      }
       const saved = await service.rpc("record_account_order_budget_sample", { p_operator_id: operatorId,
         p_account_id: accountId, p_lease_owner: leaseOwner, p_shard_id: shardId,
         p_observed_at: new Date(sample.observedAt).toISOString(), p_server_time_ms: sample.serverTime,
@@ -145,10 +194,20 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
         p_exchange_limits: sample.exchangeOrders ?? null });
       if (saved.error || saved.data !== true) throw new Error(code);
       recorded = true; // The record RPC atomically releases this probe lease.
-      if (validUntil - Date.now() < minimumValidity) { retryable = true; throw new Error(code); }
+      // A successful write does not extend the collector's total budget. The
+      // persisted sample remains auditable, but this call cannot return late.
+      if (Date.now() >= deadline) throw new Error(code);
+      if (validUntil - Date.now() < minimumValidity) {
+        retryable = true;
+        retryObservation = sample;
+        throw windowUnavailable(validUntil, Date.now(), minimumValidity, attempt, "AFTER_RECORD");
+      }
       return { observedAt: new Date(sample.observedAt).toISOString(), shardId };
     } catch (error) {
-      if (!retryable || attempt === 2 || Date.now() + 5500 >= deadline) throw error;
+      retryFailure = error;
+      const retryDelayMs = retryObservation
+        ? nextValidatedBudgetProbeDelay(retryObservation, Date.now()) : PROBE_COOLDOWN_MS;
+      if (!retryable || attempt === 2 || Date.now() + retryDelayMs >= deadline) throw error;
     } finally {
       if (!recorded) {
         // Compare-and-set only OUR probe lease. Never release another worker,
@@ -159,7 +218,12 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
         if (released.error) throw new Error(code);
       }
     }
-    await wait(5500);
+    // Lease release can itself take time. Align after it completes rather than
+    // carrying a pre-release delay into another late-phase observation.
+    const retryDelayMs = retryObservation
+      ? nextValidatedBudgetProbeDelay(retryObservation, Date.now()) : PROBE_COOLDOWN_MS;
+    if (Date.now() + retryDelayMs >= deadline) throw retryFailure;
+    await wait(retryDelayMs);
   }
   throw new Error(code);
 }

@@ -1557,11 +1557,14 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     if (error instanceof Error && error.message === "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING")
       return { status: "RETRY", code: error.message };
     if (error instanceof AccountOrderBudgetHold) {
+      const observationDetails = error.observationFailure ? { observation_failure: error.observationFailure } : {};
       await event(service, run, `ACCOUNT_ORDER_HOLD:${error.clientOrderId}:${monthlyPeriodKey(new Date())}`,
-        "ACCOUNT_ORDER_BUDGET_HOLD", null, { code: error.message, side: error.side, client_order_id: error.clientOrderId });
+        "ACCOUNT_ORDER_BUDGET_HOLD", null, { code: error.message, side: error.side, client_order_id: error.clientOrderId,
+          ...observationDetails });
       const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
         alert_key: `LIVE_RUN:${run.id}:ACCOUNT_ORDER_BUDGET`, severity: error.side === "SELL" ? "CRITICAL" : "WARNING",
-        code: error.message, details: { run_id: run.id, side: error.side, client_order_id: error.clientOrderId },
+        code: error.message, details: { run_id: run.id, side: error.side, client_order_id: error.clientOrderId,
+          ...observationDetails },
         last_seen_at: new Date().toISOString(), resolved_at: null }, { onConflict: "trading_engine_id,alert_key" });
       if (alert.error) throw new Error("COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_PERSIST_FAILED");
       // No transport dispatch happened, or an authenticated no-POST receipt

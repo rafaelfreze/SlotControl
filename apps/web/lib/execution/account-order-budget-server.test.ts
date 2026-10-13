@@ -9,8 +9,11 @@ import { projectAccountBudgetObservation } from "./account-order-budget-observat
 // Supabase connection, key, Binance request, order or real engine is created.
 function fixture(options: { busy?: number; acquireError?: boolean; recordError?: boolean;
   releaseError?: boolean; responses?: string[]; successor?: boolean; latency?: number;
-  minimumValidityMs?: number; recordLatency?: number; observationLag?: number; reservationShortAfterRefresh?: boolean } = {}) {
-  let now = Date.parse("2026-10-04T18:58:18Z"), owner: string | null = null;
+  minimumValidityMs?: number; recordLatency?: number; observationLag?: number; reservationShortAfterRefresh?: boolean;
+  startsAt?: number; latencies?: number[]; observationOffset?: number; releaseLatency?: number; deadlineMs?: number;
+  intervalMs?: number } = {}) {
+  let now = options.startsAt ?? Date.parse("2026-10-04T18:58:18Z"), owner: string | null = null;
+  const deadline = options.deadlineMs === undefined ? undefined : now + options.deadlineMs;
   let acquired = 0, reads = 0, records = 0, reserves = 0, busy = options.busy ?? 0;
   const events: string[] = [], releases: Record<string, unknown>[] = [];
   const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://executor.invalid",
@@ -32,6 +35,7 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
       assert.equal(typeof this.filters.lease_owner, "string");
       assert.deepEqual(Object.keys(this.patch), ["expires_at"]);
       releases.push(this.filters); events.push("RELEASE");
+      now += options.releaseLatency ?? 0;
       if (!options.releaseError && owner === this.filters.lease_owner) owner = null;
       return Promise.resolve(resolve({ error: options.releaseError ? { message: "db" } : null }));
     }
@@ -77,7 +81,7 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
     assert.equal(init.method, "POST"); // Signed administrative GET-only probe, not an order route.
     const body = JSON.parse(String(init.body)); assert.equal(body.exchange_account_id, "account");
     assert.deepEqual(body.symbols, ["BTCBRL", "SOLBRL"]); reads++; events.push("READ");
-    now += options.latency ?? 0;
+    now += options.latencies?.[reads - 1] ?? options.latency ?? 0;
     const state = options.responses?.[reads - 1] ?? "OK";
     if (options.successor) owner = "successor-owner";
     if (state === "NETWORK") throw new Error("transport failed");
@@ -85,13 +89,13 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
     return new Response(JSON.stringify({ operator_id: "op", exchange_account_id: state === "INVALID" ? "foreign" : "account",
       environment: "REAL", executor_shard_id: "executor-02", executor_ip: target.ip,
       credential_ref: target.credentialRef, executor_version: "release", observedAt: now - (reads === 1 ? options.observationLag ?? 0 : 0),
-      serverTime: now - (reads === 1 ? options.observationLag ?? 0 : 0),
-      intervals: [{ intervalMs: 10000, limit: 100, count: 0 }], restrictions: [],
+      serverTime: now - (reads === 1 ? options.observationLag ?? 0 : 0) + (options.observationOffset ?? 0),
+      intervals: [{ intervalMs: options.intervalMs ?? 10000, limit: 100, count: 0 }], restrictions: [],
       symbols: body.symbols.map((symbol: string) => ({ symbol, maxOrders: 200, selfTradePrevention: "EXPIRE_TAKER", openOrders: [] })),
       exchangeOrders: null }));
   };
   return { collect: () => loaded.collectAccountOrderBudget(service, "op", "account", "executor-02", ["BTCBRL"], fetcher,
-    { minimumValidityMs: options.minimumValidityMs }),
+    { minimumValidityMs: options.minimumValidityMs, deadline }),
     reserve: () => loaded.reserveAccountOrderDispatch(service, { operator_id: "op", exchange_account_id: "account",
       trading_engine_id: "engine", symbol: "BTCBRL", quote_asset: "BRL" }, "C2-fixture-2-B-0123456789abcd", "BUY", "lease", true),
     events, releases, get owner() { return owner; }, get reads() { return reads; }, get records() { return records; }, get acquired() { return acquired; } };
@@ -151,4 +155,107 @@ test("confirmation margin recollects near-end sample, including database latency
   assert.equal(expired.reads, 2); assert.equal(expired.records, 1);
   const invalid = fixture({ minimumValidityMs: 4000, responses: ["INVALID"] });
   await assert.rejects(invalid.collect(), /OBSERVATION_INVALID/); assert.equal(invalid.reads, 1);
+});
+
+test("live late-window phase sequence converges by the third read without extending a signed interval", async () => {
+  // Synthetic zero-offset reconstruction consistent with Production HTTP end
+  // times 11:04:50.598 UNKNOWN, 11:04:59.116 OK and 11:05:07.661 OK. These
+  // HTTP timestamps alone do NOT prove each historical signed window/margin:
+  // its server offset and observation timing were not preserved in the alert.
+  // Here fixed 5.5s delays exhaust all three reads; an aligned third read
+  // starts at 11:05:10 rather than the old late-phase 11:05:05.327.
+  // Effective latencies include the measured HTTP RTT and inter-probe RPC
+  // overhead (second:2322+696ms; third:2334+711ms), all simulated locally.
+  const f = fixture({ startsAt: Date.parse("2026-10-13T11:04:49.064Z"),
+    responses: ["EXECUTOR_ACCOUNT_ORDER_BUDGET_UNKNOWN", "OK", "OK"],
+    latencies: [1534, 3018, 3045], minimumValidityMs: 4000 });
+  const sample = await f.collect();
+  assert.equal(sample.observedAt, "2026-10-13T11:05:13.045Z");
+  assert.equal(f.reads, 3); assert.equal(f.records, 1); assert.equal(f.owner, null);
+  assert.deepEqual(f.events.filter(event => event.startsWith("WAIT:")), ["WAIT:5500", "WAIT:10884"]);
+  assert.ok(f.events.every(event => !/DISPATCH|CREATE|GUARD/.test(event)));
+});
+
+test("validated retry uses the signed clock offset and aligns only after lease release", async () => {
+  const f = fixture({ startsAt: Date.parse("2026-10-13T11:04:57Z"),
+    minimumValidityMs: 4000, observationOffset: 1500, releaseLatency: 2500 });
+  const sample = await f.collect();
+  assert.equal(sample.observedAt, "2026-10-13T11:05:08.500Z");
+  assert.equal(f.reads, 2); assert.equal(f.records, 1); assert.equal(f.owner, null);
+  assert.deepEqual(f.events.filter(event => event.startsWith("WAIT:")), ["WAIT:9000"]);
+});
+
+test("aligned late-window retry cannot exceed the original deadline", async () => {
+  const f = fixture({ startsAt: Date.parse("2026-10-13T11:04:57Z"),
+    minimumValidityMs: 4000, deadlineMs: 10000 });
+  await assert.rejects(f.collect(), /BUDGET_UNKNOWN/);
+  assert.equal(f.reads, 1); assert.equal(f.records, 0); assert.equal(f.owner, null);
+  assert.ok(f.events.every(event => !event.startsWith("WAIT:")));
+  const delayedRelease = fixture({ startsAt: Date.parse("2026-10-13T11:04:57Z"),
+    minimumValidityMs: 4000, deadlineMs: 14000, releaseLatency: 8000 });
+  await assert.rejects(delayedRelease.collect(), /BUDGET_UNKNOWN/);
+  assert.equal(delayedRelease.reads, 1); assert.equal(delayedRelease.records, 0);
+  assert.equal(delayedRelease.owner, null);
+  assert.ok(delayedRelease.events.every(event => !event.startsWith("WAIT:")));
+});
+
+test("only ownership-validated window failures retain coarse typed exhaustion evidence", async () => {
+  const nearEnd = fixture({ startsAt: Date.parse("2026-10-13T11:04:57Z"),
+    minimumValidityMs: 4000, deadlineMs: 10000 });
+  await assert.rejects(nearEnd.collect(), (error: Error & { observationFailure?: unknown }) => {
+    assert.deepEqual(error.observationFailure, { reason: "WINDOW_MARGIN", phase: "BEFORE_RECORD",
+      attempts: 1, minimumValidityMs: 4000, remainingValidityMs: 3000 });
+    return true;
+  });
+  const expired = fixture({ startsAt: Date.parse("2026-10-13T11:04:34Z"),
+    minimumValidityMs: 4000, observationLag: 9000, deadlineMs: 6000 });
+  await assert.rejects(expired.collect(), (error: Error & { observationFailure?: unknown }) => {
+    assert.deepEqual(error.observationFailure, { reason: "WINDOW_EXPIRED", phase: "BEFORE_RECORD",
+      attempts: 1, minimumValidityMs: 4000, remainingValidityMs: -4000 });
+    return true;
+  });
+  const persistedLate = fixture({ startsAt: Date.parse("2026-10-13T11:04:01Z"),
+    minimumValidityMs: 4000, recordLatency: 7500, deadlineMs: 10000 });
+  await assert.rejects(persistedLate.collect(), (error: Error & { observationFailure?: unknown }) => {
+    assert.deepEqual(error.observationFailure, { reason: "WINDOW_MARGIN", phase: "AFTER_RECORD",
+      attempts: 1, minimumValidityMs: 4000, remainingValidityMs: 1500 });
+    return true;
+  });
+  for (const f of [nearEnd, expired, persistedLate]) {
+    assert.equal(f.owner, null);
+    assert.ok(f.events.every(event => !/DISPATCH|CREATE|GUARD/.test(event)));
+  }
+});
+
+test("dispatch Hold preserves only proved window evidence, never fabricates a reason for other failures", async () => {
+  const window = fixture({ startsAt: Date.parse("2026-10-13T11:04:57Z"), latencies: [0, 7000, 7000] });
+  await assert.rejects(window.reserve(), (error: Error & { observationFailure?: any }) => {
+    assert.equal(error.message, "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN");
+    assert.deepEqual(error.observationFailure, { reason: "WINDOW_MARGIN", phase: "BEFORE_RECORD",
+      attempts: 3, minimumValidityMs: 4000, remainingValidityMs: 3000 });
+    return true;
+  });
+  for (const options of [{ responses: ["NETWORK"] }, { responses: ["INVALID"] },
+    { responses: ["DENIED"] }, { recordError: true },
+    { startsAt: Date.parse("2026-10-13T11:04:01Z"), recordLatency: 35000, intervalMs: 60000 }]) {
+    const f = fixture(options);
+    await assert.rejects(f.reserve(), (error: Error & { observationFailure?: unknown }) => {
+      assert.equal(error.message, "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN");
+      assert.equal(error.observationFailure, null);
+      return true;
+    });
+    assert.ok(f.events.every(event => !/DISPATCH|CREATE|GUARD/.test(event)));
+  }
+});
+
+test("post-record database latency cannot return success beyond 35s even with a valid long counter window", async () => {
+  const f = fixture({ startsAt: Date.parse("2026-10-13T11:04:01Z"),
+    minimumValidityMs: 4000, recordLatency: 35000, intervalMs: 60000 });
+  await assert.rejects(f.collect(), (error: Error & { observationFailure?: unknown }) => {
+    assert.equal(error.message, "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN");
+    assert.equal(error.observationFailure, undefined, "deadline alone cannot invent a window failure");
+    return true;
+  });
+  assert.equal(f.reads, 1); assert.equal(f.records, 1); assert.equal(f.owner, null);
+  assert.ok(f.events.every(event => !/WAIT|DISPATCH|CREATE|GUARD/.test(event)));
 });
