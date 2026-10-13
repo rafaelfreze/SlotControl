@@ -51,6 +51,9 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
   for (const row of [...input.runs, ...input.slotAccounts, ...input.slots, ...input.orders])
     if (row.operator_id !== input.operatorId || row.exchange_account_id !== input.accountId || !ids.has(row.trading_engine_id))
       throw new Error("COINOPS_FUNDING_SCOPE_MISMATCH");
+  for (const row of [...input.slots, ...input.orders])
+    if (!input.runs.some((run) => run.id === row.run_id && run.trading_engine_id === row.trading_engine_id))
+      throw new Error("COINOPS_FUNDING_RUN_SCOPE_MISMATCH");
   if (input.pending.some((row) => !ids.has(row.trading_engine_id))) throw new Error("COINOPS_FUNDING_SCOPE_MISMATCH");
   return [...new Set(engines.map((engine) => engine.quote_asset))].sort().map((currency) => {
     const group = engines.filter((engine) => engine.quote_asset === currency), issues: string[] = [];

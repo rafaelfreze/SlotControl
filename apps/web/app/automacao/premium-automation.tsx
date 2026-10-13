@@ -17,6 +17,10 @@ import { AssetHealthBadge, AssetHealthProvider, BinanceHealthCard } from "./asse
 import { AccountSelector } from "./account-selector";
 import { AccountFundingCard } from "./account-funding-card";
 import type { FundingSummary } from "@/lib/execution/account-funding";
+import { clearAutomationReadRecovery } from "./automation-read-recovery";
+import { FUNDING_WARNING_AWARENESS_KEY, fundingOnlyBannerAcknowledged, fundingWarningFingerprint,
+  readFundingWarningAwareness, updateFundingWarningAwareness } from "./funding-warning-awareness";
+import "./funding-warning-awareness.css";
 import { accountOptions } from "./account-selector-model";
 import type { AthProfilesPanel as AthPanel } from "./ath-profiles-panel";
 import type { ManualAdjustmentsPanel as AdjustmentsPanel } from "./manual-adjustments-panel";
@@ -108,6 +112,10 @@ function AccountSlotOverview({ models, onOpen }: { models: PremiumEngine[]; onOp
 
 export function PremiumAutomation({ view, data: initialData, userLabel, strategyPanel, adjustmentsPanel, initialAdjustments = false, strategyPanels, adjustmentPanels }: { view: AutomationView; data: Presentation; userLabel: string; strategyPanel: ReactNode; adjustmentsPanel: ReactNode; initialAdjustments?: boolean; strategyPanels?: Record<string, StrategyPanelData>; adjustmentPanels?: Record<string, AdjustmentPanelData> }) {
   useUiPerformance();
+  useEffect(() => {
+    // Only a successful server-page render ends the bounded read-recovery episode.
+    try { clearAutomationReadRecovery(window.sessionStorage, window.location.pathname); } catch { /* optional browser storage */ }
+  }, []);
   const [healthObservations, setHealthObservations] = useState<Array<{ engineId: string; status: LiveExecutorStatus }>>([]);
   const [symbolRules, setSymbolRules] = useState<Array<{ symbol: string; quantityStep: number; observedAt: string }>>([]);
   const [healthPending, setHealthPending] = useState(Boolean(initialData.deferredHealth));
@@ -174,6 +182,18 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   const [operationTab, setOperationTab] = useState("positions");
   const [linkedAlert, setLinkedAlert] = useState<{ account: string; symbol: string; severity: string;
     reason: string; openedAt: string; resolvedAt: string | null } | null>(null);
+  const [fundingAwareness, setFundingAwareness] = useState<string[]>([]);
+  const [fundingAwarenessError, setFundingAwarenessError] = useState(false);
+  useEffect(() => {
+    const read = () => {
+      try { setFundingAwareness(readFundingWarningAwareness(window.localStorage)); }
+      catch { setFundingAwareness([]); }
+    };
+    read();
+    const onStorage = (event: StorageEvent) => { if (event.key === FUNDING_WARNING_AWARENESS_KEY) read(); };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requestedEngine = params.get("engine");
@@ -342,6 +362,22 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   const positions = assets.flatMap((item) => item.slots.filter((slot) => slot.state === "OPEN").map((slot) => ({ model: item, slot })));
   const orders = assets.flatMap((item) => item.orders.map((order) => ({ ...order, asset: item.asset, engineId: item.engineId, account: item.accountDisplayName, symbol: item.symbol, currency: item.currency })));
   const alerts = assets.flatMap((item) => item.alerts.map((alert) => ({ asset: item.asset, engineId: item.engineId, account: item.accountDisplayName, symbol: item.symbol, alert })));
+  const acknowledgedFunding = new Set(fundingAwareness);
+  const fundingFingerprints = (item: PremiumEngine) => item.alerts.map((alert) => fundingWarningFingerprint(item.engineId, alert))
+    .filter((value): value is string => value !== null);
+  const acknowledgedFundingAccounts = [...new Set(assets.map((item) => item.accountId))].map((accountId) => {
+    const accountEngines = assets.filter((item) => item.accountId === accountId);
+    const fingerprints = accountEngines.flatMap(fundingFingerprints).filter((value) => acknowledgedFunding.has(value));
+    return { accountId, accountName: accountEngines[0].accountDisplayName, fingerprints };
+  }).filter((account) => account.fingerprints.length > 0);
+  const visibleAttentionAssets = assets.filter((item) => !item.health.healthy
+    && !fundingOnlyBannerAcknowledged(item, acknowledgedFunding));
+  const changeFundingAwareness = (fingerprints: string[], acknowledge: boolean) => {
+    try {
+      setFundingAwareness(updateFundingWarningAwareness(window.localStorage, fingerprints, acknowledge));
+      setFundingAwarenessError(false);
+    } catch { setFundingAwarenessError(true); }
+  };
   const openAsset = (next: string) => { setEngineId(next); setPanel("asset"); };
   const openSlot = (slot: PremiumSlot, next = active?.engineId) => { setEngineId(next ?? null); setSelectedSlot(slot); setPanel("slot"); };
   const candlesFor = (item: PremiumAsset) => dailyCandles.filter((row) => row.symbol === item.symbol).sort((a, b) => a.candle_open_at.localeCompare(b.candle_open_at));
@@ -375,11 +411,23 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard attentionOnly={!allAccounts} /> : null}
       </aside>
       </div>
-      {!initialHealthLoading && !healthy && !paused ? <div className="px-alert-banner" role="status">{globalOverCap ? <p><strong>LIMITE GLOBAL EXCEDIDO</strong>Verifique a reconciliação e os limites autorizados.</p> : null}{assets.filter((item) => !item.health.healthy).map((item) => <p key={item.engineId}><strong>{item.accountDisplayName} · {item.symbol} · {item.health.label}</strong> {item.health.reason}{item.alerts.some((alert) => fundingAlert(alert.code)) ? <button type="button" className="px-button" onClick={() => {
+      {!initialHealthLoading && !healthy && !paused && (globalOverCap || visibleAttentionAssets.length > 0) ? <div className="px-alert-banner" role="status">{globalOverCap ? <p><strong>LIMITE GLOBAL EXCEDIDO</strong>Verifique a reconciliação e os limites autorizados.</p> : null}{visibleAttentionAssets.map((item) => <p key={item.engineId}><strong>{item.accountDisplayName} · {item.symbol} · {item.health.label}</strong> {item.health.reason}{item.alerts.some((alert) => fundingAlert(alert.code)) ? <button type="button" className="px-button" onClick={() => {
         if (selection.accountId !== item.accountId) changeSelection({ accountId: item.accountId, symbol: "ALL" });
         else if (Date.now() >= fundingRefreshAvailableAt && !fundingLoading) setFundingRefresh((current) => current + 1);
         requestAnimationFrame(() => document.querySelector('[data-testid="account-funding-card"]')?.scrollIntoView({ block: "center" }));
-      }}>Verificar saldo completo · {item.accountDisplayName}</button> : null}</p>)}</div> : null}
+      }}>Verificar saldo completo · {item.accountDisplayName}</button> : null}{fundingFingerprints(item).some((value) => !acknowledgedFunding.has(value))
+        ? <span className="px-funding-warning-actions"><button type="button" className="px-button"
+          aria-label={`Já avisei a pessoa · ocultar aviso · ${item.accountDisplayName} · ${item.symbol}`}
+          onClick={() => changeFundingAwareness(fundingFingerprints(item), true)}>Já avisei a pessoa · ocultar aviso</button>
+          <small>Preferência somente deste navegador/dispositivo. Alerta, saúde real e proteções continuam ativos.</small></span> : null}</p>)}</div> : null}
+      {acknowledgedFundingAccounts.length ? <section className="px-funding-awareness" aria-label="Avisos de saldo conhecidos" role="status">
+        {acknowledgedFundingAccounts.map((account) => <div className="px-funding-awareness-row" key={account.accountId}>
+          <span><strong>{account.accountName} · Aguardando saldo · ciente</strong><small>{account.fingerprints.length} aviso(s) de saldo oculto(s)</small></span>
+          <button type="button" className="px-button" onClick={() => changeFundingAwareness(account.fingerprints, false)}
+            aria-label={`Reexibir avisos de saldo · ${account.accountName}`}>Reexibir avisos de saldo</button></div>)}
+        <small>Somente neste navegador. O ledger, notificações e operação continuam sem alterações.</small>
+      </section> : null}
+      {fundingAwarenessError ? <p className="px-funding-awareness-error" role="alert">Não foi possível alterar a preferência. A exibição anterior foi preservada.</p> : null}
       {data.operator && allAccounts ? <section className="px-account-list-section" aria-label="Contas do operador"><div className="px-section-heading"><h2>Contas</h2><small>{rankedAccounts.length} cadastradas · maiores exposições primeiro</small></div><div className="px-account-grid px-account-grid--list">{rankedAccounts.slice(0, accountLimit).map(({ account, accountEngines }) => {
         const native = premiumNativeGroups(accountEngines);
         const operational = accountEngines.length > 0 && !account.killSwitch && accountEngines.every((item) => item.health.healthy && !item.killSwitch);
@@ -402,7 +450,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
         accountName={accounts.find((account) => account.id === selection.accountId)?.displayName ?? "Conta"}
         summaries={funding?.accountId === selection.accountId ? funding.summaries : null}
         loading={fundingLoading} error={fundingError} refreshAvailableAt={fundingRefreshAvailableAt}
-        now={healthClock || Date.now()} onRefresh={() => {
+        now={Date.now()} onRefresh={() => {
           if (!fundingLoading && Date.now() >= fundingRefreshAvailableAt) setFundingRefresh((current) => current + 1);
         }} /> : null}
       {!allAccounts ? <section className="px-assets" aria-label={`Ativos ${labels[view]}`}>{assets.map((model) => <div key={model.engineId} data-engine-id={model.engineId}><small className="px-engine-owner">{model.accountDisplayName} · {model.symbol}</small><AssetCard compact={view === "overview"} model={model} candles={candlesFor(model)} regime={data.operator ? model.regime ?? undefined : data.athProfiles?.find((profile) => profile.asset === model.asset && profile.environment === environment)?.regime} onOpen={() => openAsset(model.engineId)} /></div>)}</section> : null}
@@ -417,7 +465,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
 {!allAccounts ? <div className="px-lower-grid"><section className="px-panel px-capital"><h2>Distribuição do capital</h2><div className="px-capital-body">{groups.length < 2 ? <div className="px-donut" style={{ background: `conic-gradient(#ffac26 0 ${cap ? (assets[0]?.committed ?? 0) / cap * 100 : 0}%, #6588ff 0 ${cap ? (nativeTotal("committed") ?? 0) / cap * 100 : 0}%, #23374b 0 100%)` }}><div><strong>{nativeMoney("committed")}</strong><small>em posições · moeda nativa</small></div></div> : null}<dl>{assets.map((item) => <div key={item.engineId}><dt><i className={`px-dot-${item.asset.toLowerCase()}`} />{item.accountDisplayName} · {item.symbol}</dt><dd>{money(item.committed, item.currency)}</dd></div>)}<div><dt><i />Fora de posições</dt><dd>{money(cap !== null && nativeTotal("committed") !== null ? cap - nativeTotal("committed")! : null, currency)}</dd></div></dl></div><small className="px-caption">Capital lógico CoinOps. Fora de posições inclui reservas de BUY; não inclui saldo externo.</small></section>
         <AccountSlotOverview models={assets} onOpen={openAsset} />
         <section className="px-panel px-limits"><h2>Limites e segurança</h2>{assets.map((item) => <div className={`px-limit px-${item.asset.toLowerCase()}`} key={item.engineId}><span>{item.accountDisplayName} · {item.symbol} <small>({money(item.cap ?? item.capital, item.currency)})</small><strong>{item.exposure !== null && (item.cap ?? item.capital) ? number(item.exposure / (item.cap ?? item.capital)! * 100, 1) + "%" : "—"}</strong></span><div className="px-meter"><i style={{ width: `${Math.min(100, item.exposure !== null && (item.cap ?? item.capital) ? item.exposure / (item.cap ?? item.capital)! * 100 : 0)}%` }} /></div></div>)}<div className="px-limit"><span>Global<strong>{number(percent, 1)}%</strong></span><div className="px-meter"><i style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></div></div><ul><li>✓ {environment === "REAL" ? `Kill switch: ${liveStatus.killSwitch === null ? "não verificado" : liveStatus.killSwitch || assets.some((item) => item.killSwitch) ? "ON · protegido" : "OFF · operação autorizada"}` : "Ambiente sem dinheiro real"}</li><li>✓ {assets.map((item) => item.symbol).join(" · ") || "Nenhum motor neste filtro"}</li><li>✓ Saques, transferências, margem e Futures bloqueados no CoinOps</li></ul></section>
-<section className="px-panel px-activity"><div className="px-section-heading"><h2>Últimas atividades</h2><button type="button" className="px-button" onClick={() => setPanel("audit")}>Ver todas ›</button></div>{events.slice(0, 5).map((event, index) => <div className="px-event" key={`${event.id}-${index}`}><time>{time(event.at).split(", ")[1] ?? time(event.at)}</time><span>{event.type.replaceAll("_", " ")}<small>{event.account} · {event.symbol}{event.slotNumber ? ` · Slot #${event.slotNumber}` : ""}</small></span><b>Ledger</b></div>)}{!events.length ? <p className="px-empty">Sem eventos recentes disponíveis.</p> : null}</section></div> : null}
+<section className="px-panel px-activity"><div className="px-section-heading"><h2>Últimas atividades</h2><button type="button" className="px-button" onClick={() => setPanel("audit")}>Ver todas ›</button></div>{assets.some((engine) => data.unavailableModules?.includes(`live-history:${engine.engineId}`)) ? <p className="px-warning" role="status">Histórico de atividades temporariamente indisponível nesta leitura. Posições e ordens são consultadas separadamente; nenhum evento ausente foi tratado como inexistente.</p> : null}{events.slice(0, 5).map((event, index) => <div className="px-event" key={`${event.id}-${index}`}><time>{time(event.at).split(", ")[1] ?? time(event.at)}</time><span>{event.type.replaceAll("_", " ")}<small>{event.account} · {event.symbol}{event.slotNumber ? ` · Slot #${event.slotNumber}` : ""}</small></span><b>Ledger</b></div>)}{!events.length && !assets.some((engine) => data.unavailableModules?.includes(`live-history:${engine.engineId}`)) ? <p className="px-empty">Sem eventos recentes disponíveis.</p> : null}</section></div> : null}
       </> : <div className="px-overview-bottom"><section className="px-panel px-activity"><div className="px-section-heading"><h2>Atividade dos ambientes</h2><a className="px-button" href={reportHref}>Relatórios ›</a></div>{overviewEvents.slice(0, 5).map((event, index) => <div className="px-event" key={`${event.environment}-${event.id}-${index}`}><time>{time(event.at).split(", ")[1] ?? time(event.at)}</time><span>{event.type.replaceAll("_", " ")}<small>{event.account} · {event.symbol}{event.slotNumber ? ` · Slot #${event.slotNumber}` : ""}</small></span><b>{event.environment === "REAL" ? "Real" : event.environment === "SHADOW" ? "Shadow" : "Testnet"}</b></div>)}{!overviewEvents.length ? <p className="px-empty">Sem eventos recentes disponíveis.</p> : null}</section><section className="px-panel px-overview-health"><h2>Acompanhamento por ambiente</h2>{overview.map(({ env, assets: group }) => <a key={env} href={viewHref(env === "REAL" ? "live" : env === "SHADOW" ? "shadow" : "testnet")}><strong>{env === "REAL" ? "Real" : env === "SHADOW" ? "Shadow" : "Testnet"}<PremiumIcon name="arrow" /></strong><span>{group.filter((item) => !item.health.healthy).map((item) => `${item.accountDisplayName} · ${item.symbol}: ${item.health.reason}`).join(" · ") || (group.length ? "Motores selecionados sem alerta operacional ativo." : "Nenhum motor neste filtro.")}</span><small>{group.reduce((sum, item) => sum + item.historicalCount, 0)} ocorrências históricas preservadas</small></a>)}</section></div>}
       <section className="px-panel px-system"><h2>Status do sistema</h2><div>{[
         ["server", "Executor", liveStatus.online ? "ONLINE" : "VERIFICAR", liveStatus.ip ?? "Não consultado"],
@@ -449,7 +497,8 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {panel === "simulator" ? <div className="px-simulator-links"><a href="/automacao/simulador-ath"><PremiumIcon name="strategy" /><strong>Simulador ATH</strong><p>Regime, Top 15 / Reserve, floor e prioridade de reentrada.</p><span>Explorar cenários →</span></a><a href="/automacao/simulador-ajustes"><PremiumIcon name="adjust" /><strong>Simulador de ajustes A–J</strong><p>Provas contábeis de gains, aportes e posições abertas.</p><span>Ver cenários determinísticos →</span></a><p>Simulações isoladas. Não criam ordens nem movimentam saldo.</p></div> : null}
       {panel === "onboarding" && data.operator ? data.unavailableModules?.includes("onboarding") ? <p role="status">Verificações de onboarding indisponíveis nesta consulta. Nenhum gate de admissão foi presumido.</p> : <OperatorOnboardingPanel operator={data.operator} checks={data.onboardingChecks ?? []} /> : null}
       {panel === "config" && data.operator ? <><BinanceAccountsPanel /><PushNotificationsPanel /><ViewerUsersPanel /></> : null}
-      {panel === "config" || panel === "audit" ? allowedControls && active ? <>{panel === "config" ? <PremiumControls key={active.engineId} data={scopedData} view={view} asset={asset} /> : scopedData.engineContext && !scopedData.engineContext.legacy_compatible ? <NativeEngineAudit model={active} /> : <AutomationDetails key={active.engineId} view={view === "overview" ? "live" : view} data={scopedData} section="all" asset={asset} />}</> : <p role="status">Selecione uma conta e um mercado específicos para acessar seus controles e a análise detalhada.</p> : null}
+      {panel === "config" || panel === "audit" ? allowedControls && active ? <>{panel === "audit" && data.unavailableModules?.includes(`live-history:${active.engineId}`)
+        ? <p className="px-warning" role="status">Histórico de eventos deste motor temporariamente indisponível nesta consulta. Não é confirmação de ausência de eventos; posições e ordens permanecem leituras separadas.</p> : null}{panel === "config" ? <PremiumControls key={active.engineId} data={scopedData} view={view} asset={asset} /> : scopedData.engineContext && !scopedData.engineContext.legacy_compatible ? <NativeEngineAudit model={active} /> : <AutomationDetails key={active.engineId} view={view === "overview" ? "live" : view} data={scopedData} section="all" asset={asset} />}</> : <p role="status">Selecione uma conta e um mercado específicos para acessar seus controles e a análise detalhada.</p> : null}
       {panel === "asset" && active ? <><div className="px-asset-switch">{assets.map((item) => <button type="button" key={item.engineId} aria-pressed={active.engineId === item.engineId} onClick={() => setEngineId(item.engineId)}><AssetIcon asset={item.asset} />{item.accountDisplayName} · {item.symbol}</button>)}</div><SlotList key={active.engineId} model={active} onSelect={(slot) => openSlot(slot)} /><section className="px-detail-market"><h3>Mercado {asset}/{currency} · 30 dias</h3><Trend candles={candlesFor(active)} asset={asset} symbol={`${asset}${currency}`} large /><p className="px-caption">Velas diárias públicas Binance Production. {environment === "TESTNET" ? "Referência visual; não representa os fills fictícios." : "Somente leitura."}</p></section><button type="button" className="px-button" onClick={() => setPanel("audit")}>Análise completa, histórico e detalhes técnicos →</button></> : null}
       {panel === "slot" && selectedSlot && active ? <><button type="button" className="px-text-button" onClick={() => setPanel("asset")}>← Voltar à lista de slots</button><div className="px-slot-detail"><span className="px-badge">{selectedSlot.label}</span><h3>{selectedSlot.nextAction}</h3><dl>{[
         ["Slot físico", `#${selectedSlot.number}${selectedSlot.physicalId ? ` · ${selectedSlot.physicalId}` : ""}`], ["Rank operacional", selectedSlot.rank], ["Grupo / rank", `${selectedSlot.group ?? "—"} / ${selectedSlot.groupRank ?? "—"}`], ["Operação", selectedSlot.operationSequence], ["Ciclo", active.cycleId], ["Valor atual do slot", money(selectedSlot.balance, currency)], ["Aportes aplicados", money(selectedSlot.contributed, currency)], ["Aporte pendente", money(selectedSlot.pendingContribution, currency)], ["Valor após aplicar pendência", money(selectedSlot.valueAfterPending, currency)], ["Capital em posição", money(selectedSlot.committed, currency)], ["Quantidade", `${number(selectedSlot.quantity, 8)} ${asset}`], ["Entrada", money(selectedSlot.entryPrice, currency)], ["Preço atual", money(selectedSlot.currentPrice, currency)], ["TP", money(selectedSlot.tpPrice, currency)], ["Gains totais", selectedSlot.gains], ["Gains mês / meta", `${selectedSlot.monthlyGains ?? "?"}/${selectedSlot.goal}`], ["Elegibilidade", selectedSlot.targetReached && selectedSlot.eligible ? "META GLOBAL CONCLUÍDA · ELEGÍVEL" : selectedSlot.targetReached ? "META INDIVIDUAL BATIDA" : selectedSlot.eligible === null ? "Sem evidência" : selectedSlot.eligible ? "Elegível" : "Não elegível"], ["P&L realizado", money(selectedSlot.realizedPnl, currency)], ["P&L aberto", money(selectedSlot.openPnl, currency)], ["Taxas", money(selectedSlot.fees, currency)],

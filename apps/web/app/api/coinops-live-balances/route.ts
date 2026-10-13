@@ -96,7 +96,8 @@ export async function GET(request: Request) {
     }
     return json({ balances: [...balances.values()],
       unavailable: observed.filter((item) => item.status === "rejected").length,
-      ...(fundingRequested ? { funding, fundingUnavailable } : {}) });
+      ...(fundingRequested ? { funding, fundingUnavailable,
+        ...(fundingUnavailable ? { fundingUnavailableCode: "COINOPS_ACCOUNT_FUNDING_READ_UNAVAILABLE" } : {}) } : {}) });
   } catch {
     return json({ error: "COINOPS_BALANCE_UNAVAILABLE" }, 503);
   }

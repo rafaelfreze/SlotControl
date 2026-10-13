@@ -77,7 +77,7 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
     if (!run.data) return result;
     const [slots, orders, accounts, allocations, events, alerts, preparation] = await Promise.all([
       query("robot_v1_live_slots", "slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,position_committed_quote,missed_at").eq("run_id", run.data.id).order("slot_number"),
-      query("robot_v1_live_orders", "side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl,reserved_notional_quote").eq("run_id", run.data.id).order("created_at"),
+      query("robot_v1_live_orders", "side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl,reserved_notional_quote,trades_reconciled").eq("run_id", run.data.id).order("created_at"),
       query("robot_v1_live_slot_accounts", "slot_number,balance_brl,balance_quote,contribution_brl,contribution_quote,market_pnl_brl,market_pnl_quote,manual_gain_brl,manual_gain_quote,fees_brl,fees_quote,gain_count,dust_quantity,dust_cost_brl,dust_cost_quote").order("slot_number"),
       query("robot_v1_live_selective_contribution_allocations", "slot_number,amount_quote,status,created_at,applied_at")
         .in("status", ["PENDING", "APPLIED"]).order("created_at"),
@@ -144,7 +144,8 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
 export async function buildOperatorPresentation(client: Client, data: Props, registry: DomainRegistry,
   selection: PremiumSelection, prefetchedHealth?: Map<string, LiveExecutorStatus>,
   visibleEnvironment?: EngineContext["environment"], deferHealth = false,
-  prefetchedLive?: Promise<Awaited<ReturnType<typeof readLiveDashboardBatch>> | null>): Promise<PremiumOperatorPresentation> {
+  prefetchedLive?: Promise<Awaited<ReturnType<typeof readLiveDashboardBatch>> | null>,
+  unavailableLegacyAssets: readonly string[] = []): Promise<PremiumOperatorPresentation> {
   if (selection.accountId !== "ALL" && !registry.accounts.some((account) => account.id === selection.accountId))
     throw new Error("COINOPS_ACCOUNT_SCOPE_DENIED");
   if (selection.symbol !== "ALL" && !registry.engines.some((engine) => engine.symbol === selection.symbol
@@ -169,7 +170,8 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
       if (visibleEnvironment && context.environment !== visibleEnvironment)
         return { context, scoped: emptyScoped(data, context), readUnavailable: false };
       if (context.legacy_compatible)
-        return { context, scoped: legacyEnginePresentation(data, context), readUnavailable: false };
+        return { context, scoped: legacyEnginePresentation(data, context), readUnavailable: context.environment === "REAL"
+          && unavailableLegacyAssets.includes(context.base_asset) };
       const projected = liveBatch?.get(context.trading_engine_id);
       if (projected) {
         const scoped = emptyScoped(data, context);

@@ -52,7 +52,8 @@ export type LiveAssetData = {
     requested_quantity: number | string | null; requested_quote: number | string | null;
     executed_quantity: number | string; cumulative_quote: number | string;
     created_at?: string; updated_at?: string; fee_base?: number | string;
-    fee_quote?: number | string; fee_other?: unknown[]; reserved_notional_brl?: number | string }>;
+    fee_quote?: number | string; fee_other?: unknown[]; reserved_notional_brl?: number | string;
+    trades_reconciled?: boolean }>;
   accounts: Array<{ slot_number: number; balance_brl: number | string;
     balance_quote?: number | string; contribution_brl?: number | string;
     contribution_quote?: number | string;

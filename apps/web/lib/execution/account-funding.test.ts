@@ -112,6 +112,12 @@ test("reverse ownership detects new or older-run engine resident missing from le
   input.states[0].open_orders[1].clientOrderId = "external-manual-order";
   assert.equal(buildAccountFunding(input)[0].status, "COVERED");
 });
+test("a same-account sibling run is not identity for another engine's slots or orders", () => {
+  const input = fixture(2); input.orders[0].run_id = input.runs[1].id;
+  assert.throws(() => buildAccountFunding(input), /RUN_SCOPE_MISMATCH/);
+  const slots = fixture(2); slots.slots[0].run_id = slots.runs[1].id;
+  assert.throws(() => buildAccountFunding(slots), /RUN_SCOPE_MISMATCH/);
+});
 test("owner-ready text distinguishes complete principal from indefinite fees and no writes", () => {
   const [row] = buildAccountFunding(fixture(2));
   assert.match(fundingClientMessage(row), /50 slots/); assert.match(fundingClientMessage(row), /254,00 BRL/);

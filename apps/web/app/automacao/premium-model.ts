@@ -164,13 +164,19 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     : rawField(config, "kill_switch") === true || config?.live_enabled === false;
   const healthy = !activeIssue && !paused && executorActive && live.run.status === "ACTIVE"
     && fresh(live.run.last_reconciled_at, now) && missedCount === 0;
+  const fundingHold = live.alerts.length > 0 && live.alerts.every((row) => row.severity === "WARNING"
+    && ["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING"].includes(row.code))
+    && !orders.some((order) => ["PREPARED", "UNKNOWN", "SUBMITTING", "PENDING_CANCEL"].includes(order.status)
+      || (order.executedQuantity ?? 0) > 0 && rawField(order.raw, "trades_reconciled") !== true)
+    && !live.run.last_error && unprotected === 0 && nextCount <= 1 && !invariantFailed && !capExceeded
+    && !paused && executorActive && live.run.status === "ACTIVE" && fresh(live.run.last_reconciled_at, now);
   return { ...base, price, capital, committed, reserved, exposure: add(committed, reserved),
     freeCapital: difference(capital, add(committed, reserved)), realizedPnl: live.accounts.length ? sum(slots.map((slot) => slot.realizedPnl)) : null,
     fees: live.accounts.length ? sum(slots.map((slot) => slot.fees)) : null, openPnl: sum(slots.map((slot) => slot.openPnl)),
     gains: slots.length ? sum(slots.map((slot) => slot.gains)) : null, monthlyGains: slots.length ? sum(slots.map((slot) => slot.monthlyGains)) : null,
     regime: live.run.entry_regime, gainRate: number(live.run.gain_rate), spacingRate: number(live.run.entry_spacing),
-    health: { healthy, tone: activeIssue ? "error" : healthy ? "ok" : "attention", label: activeIssue ? "REVISAR LIVE" : healthy ? "OPERACIONAL" : "EM ACOMPANHAMENTO",
-      reason: live.run.last_error || (unprotected ? `${unprotected} posição com cobertura de TP a verificar.`
+    health: { healthy, tone: fundingHold ? "attention" : activeIssue ? "error" : healthy ? "ok" : "attention", label: fundingHold ? "AGUARDANDO SALDO" : activeIssue ? "REVISAR LIVE" : healthy ? "OPERACIONAL" : "EM ACOMPANHAMENTO",
+      reason: fundingHold ? "Novas compras aguardam reposição Spot; posições e TPs continuam sob reconciliação." : live.run.last_error || (unprotected ? `${unprotected} posição com cobertura de TP a verificar.`
         : live.alerts.length ? "Alertas ativos no ledger." : invariantFailed ? "Evidência dos 25 slots e contas incompleta."
           : capExceeded ? "Exposição acima do hard cap configurado." : nextCount > 1 ? "Mais de uma BUY residente."
             : paused ? "Novas entradas protegidas pelo controle do ativo." : !executorActive ? "Executor LIVE sem confirmação operacional atual."

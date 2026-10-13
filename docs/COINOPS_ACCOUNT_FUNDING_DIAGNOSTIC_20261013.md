@@ -30,6 +30,8 @@ Roster operacional completo por conta, um ciclo atual por motor, 25 slots/contas
 
 O resultado inclui horário e motivos de incompletude. A UI não apresenta dado antigo como atual, nem copia valor de reposição sem evidência fresca. Dados e valores aparecem somente no painel autenticado e em texto copiado por ação humana, nunca em push de lockscreen, logs, URL financeira ou serviço externo.
 
+Schema confirmado: `robot_v1_live_orders` não possui coluna `symbol`. O diagnóstico resolve o mercado pelo `trading_engine_id` e pelo run vigente exatos, validando também a moeda persistida; nunca inventar coluna nem resolver por conta+símbolo. A regressão de projeção deve conferir os campos reais do schema, além de fixtures.
+
 Essa verificação é informativa: falhar não muda trading, Watchdog, Capacity Manager, capital, estratégia, TPs ou NEXT BUY. Sem migration ou restart de VPS. O relatório v23 já exporta regras técnicas extensíveis; a regra `account_full_operation_funding` documenta o contrato sem alterar layout/semântica dos datasets financeiros existentes.
 
 ## Regressões

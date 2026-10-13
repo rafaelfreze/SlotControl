@@ -159,6 +159,14 @@ no ambiente de destino antes de operação remota.
 - Nenhum clique em Gain, Open, confirmação de redistribuição ou outra ação financeira serve como smoke.
 - Logs devem ser estruturados, sanitizados e sem token, secret, PII ou payload financeiro desnecessário. Não adicione plataforma paga sem lacuna comprovada.
 
+- Feed histórico do painel é leitura opcional e não derruba posições/ordens
+  verificadas. Eventos usam operator/account/engine/run exatos no índice atual;
+  core GET-only limitado e falha isolada por motor. Error boundary exige RSC
+  refresh + reset, com retry apenas transitório tipado e orçamento por episódio.
+  Reconhecer WARNING de saldo é preferência visual por fingerprint/aparelho,
+  nunca resolver ledger, liberar BUY ou apresentar espera como HEALTHY. Ver
+  `docs/COINOPS_DASHBOARD_READ_RECOVERY_20261013.md`.
+
 ## Multi-account, isolamento e capacidade
 
 - Saldo Spot físico fresco deve financiar novas BUY; capital lógico/Earn não

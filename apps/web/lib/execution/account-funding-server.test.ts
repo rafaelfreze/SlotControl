@@ -14,6 +14,11 @@ const source = readFileSync(new URL("./account-funding-server.ts", import.meta.u
 const route = readFileSync(new URL("../../app/api/coinops-live-balances/route.ts", import.meta.url), "utf8");
 
 type RecordRow = Record<string, unknown>;
+// Projection audited against Production information_schema on 2026-10-13.
+// In particular the operational orders table has quote_asset, not symbol.
+const orderColumns = new Set(["id", "run_id", "operator_id", "exchange_account_id", "trading_engine_id",
+  "quote_asset", "side", "status", "client_order_id", "exchange_order_id", "requested_quantity",
+  "executed_quantity", "reserved_notional_quote", "cumulative_quote", "price", "trades_reconciled"]);
 function fixture(options: { engines?: number; missingPage?: boolean; duplicatePage?: boolean;
   truncated?: boolean; changedCount?: boolean; mixedCurrency?: boolean; archive?: boolean;
   preparing?: boolean; failedTable?: string } = {}) {
@@ -58,6 +63,7 @@ function fixture(options: { engines?: number; missingPage?: boolean; duplicatePa
   };
   const calls: Array<{ table: string; filters: Record<string, unknown>; columns: string; page: number[]; signal?: AbortSignal }> = [];
   const captured: AccountFundingInput[] = [];
+  const warnings: unknown[][] = [];
   const db = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let columns = "", page = [0, 499], signal: AbortSignal | undefined;
@@ -75,11 +81,16 @@ function fixture(options: { engines?: number; missingPage?: boolean; duplicatePa
         values[0] = { ...values[0], id: rows[table][0].id };
       if (options.failedTable === table || options.missingPage && table === "robot_v1_live_slots" && page[0] > 0)
         return { data: null, error: { code: "42501", message: "private provider message" }, count: null };
-      return { data: values, error: null,
+      return { data: values.map((row) => Object.fromEntries(columns.split(",").map((key) => [key, row[key]]))), error: null,
         count: options.changedCount && table === "robot_v1_live_slots" && page[0] > 0 ? total - 1 : total };
     };
     const chain = {
-      select(value: string, settings: { count: string }) { columns = value; assert.equal(settings.count, "exact"); return chain; },
+      select(value: string, settings: { count: string }) {
+        columns = value; assert.equal(settings.count, "exact");
+        if (table === "robot_v1_live_orders")
+          for (const field of columns.split(",")) assert.ok(orderColumns.has(field), `Unknown Production order column: ${field}`);
+        return chain;
+      },
       eq(field: string, value: unknown) { filters[field] = value; return chain; },
       neq(field: string, value: unknown) { filters[`!${field}`] = value; return chain; },
       in(field: string, value: unknown[]) { filters[field] = value; return chain; },
@@ -102,10 +113,10 @@ function fixture(options: { engines?: number; missingPage?: boolean; duplicatePa
   };
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const compiledModule = { exports: {} as { loadAccountFunding: (db: unknown, options: unknown) => Promise<unknown> } };
-  new Function("require", "module", "exports", compiled)((name: string) => {
+  new Function("require", "module", "exports", "console", compiled)((name: string) => {
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
-  }, compiledModule, compiledModule.exports);
-  return { db, registry, rows, calls, captured, load: compiledModule.exports.loadAccountFunding,
+  }, compiledModule, compiledModule.exports, { warn: (...args: unknown[]) => warnings.push(args) });
+  return { db, registry, rows, calls, captured, warnings, load: compiledModule.exports.loadAccountFunding,
     options: { scope, registry, accountId, states: [], now: Date.parse(at) } };
 }
 
@@ -161,6 +172,42 @@ test("permissions/schema failures are sanitized and have no retry or service fal
   const f = fixture({ failedTable: "robot_v1_live_slots" });
   await assert.rejects(f.load(f.db, f.options), { message: "COINOPS_ACCOUNT_FUNDING_READ_UNAVAILABLE" });
   assert.equal(f.calls.filter((call) => call.table === "robot_v1_live_slots").length, 1);
+  assert.equal(f.captured.length, 0);
+  assert.deepEqual(f.warnings, [["COINOPS_ACCOUNT_FUNDING_READ_FAILED", { stage: "slots", provider_code: "42501" }]]);
+  assert.doesNotMatch(JSON.stringify(f.warnings), /private provider message|Renato|balance|00000000-/);
+});
+
+function storedOrder(f: ReturnType<typeof fixture>, engineIndex: number) {
+  const engine = f.registry.engines[engineIndex];
+  return { ...scope, id: uuid(30_000 + engineIndex), run_id: uuid(1_000 + engineIndex),
+    operator_id: operatorId, exchange_account_id: accountId, trading_engine_id: engine.id,
+    quote_asset: engine.quote_asset, side: "BUY", status: "NEW", client_order_id: "fixture-order",
+    exchange_order_id: "123456", requested_quantity: "1", executed_quantity: "0",
+    reserved_notional_quote: "10", cumulative_quote: "0", price: "10", trades_reconciled: false };
+}
+
+test("Production orders projection has no guessed symbol column and derives market from its exact engine/run", async () => {
+  const f = fixture({ mixedCurrency: true });
+  f.rows.robot_v1_live_orders = [storedOrder(f, 1)];
+  await f.load(f.db, f.options);
+  assert.equal(f.captured[0].orders[0].symbol, "BTCUSDT");
+  const projected = f.calls.find((call) => call.table === "robot_v1_live_orders")!.columns.split(",");
+  assert.ok(projected.includes("quote_asset")); assert.ok(!projected.includes("symbol"));
+  assert.ok(projected.every((field) => orderColumns.has(field)));
+});
+
+test("same-account same-symbol order cannot borrow another engine's current run", async () => {
+  const f = fixture();
+  f.rows.robot_v1_live_orders = [{ ...storedOrder(f, 0), run_id: uuid(1_001) }];
+  await assert.rejects(f.load(f.db, f.options), /FUNDING_READ_UNAVAILABLE/);
+  assert.equal(f.captured.length, 0);
+  assert.deepEqual(f.warnings, [["COINOPS_ACCOUNT_FUNDING_READ_FAILED", { stage: "order_scope", provider_code: null }]]);
+});
+
+test("stored order currency must agree with the exact owned engine, with no account/symbol fallback", async () => {
+  const f = fixture({ mixedCurrency: true });
+  f.rows.robot_v1_live_orders = [{ ...storedOrder(f, 1), quote_asset: "BRL" }];
+  await assert.rejects(f.load(f.db, f.options), /FUNDING_READ_UNAVAILABLE/);
   assert.equal(f.captured.length, 0);
 });
 

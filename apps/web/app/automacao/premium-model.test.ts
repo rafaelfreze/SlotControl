@@ -12,9 +12,44 @@ function fixture(extra: Record<string, unknown> = {}): Props {
 }
 const order = (extra: Record<string, unknown> = {}) => ({
   client_order_id: "coinops-order", exchange_order_id: "exchange-order", slot_number: 1,
-  side: "BUY", purpose: "ENTRY", status: "NEW", price: 90, requested_quantity: 1,
+  side: "BUY", purpose: "ENTRY", status: "NEW", price: 90, requested_quantity: 1, requested_quote: null,
   executed_quantity: 0, cumulative_quote: 0, revision: 0, operation_sequence: 1,
   created_at: AT, updated_at: AT, ...extra,
+});
+
+function fundingHoldFixture(): Props {
+  const slots = Array.from({ length: 25 }, (_, index) => ({ slot_number: index + 1,
+    entry_state: "PLANNED", target_buy_price: 100, operational_rank: index + 1,
+    post_ath_group: null, post_ath_group_rank: null, operation_sequence: 1,
+    position_quantity: 0, position_committed_brl: 0, missed_at: null }));
+  return fixture({ livePreparation: { executor: { gate: "LIVE_EXECUTOR_ACTIVE" },
+    configs: [{ asset: "BTC", max_total_exposure_brl: 450, live_enabled: true, kill_switch: false }],
+    sizing: [{ asset: "BTC", priceBrl: 100 }] }, liveAssetData: { BTC: {
+    run: { id: "run", status: "ACTIVE", symbol: "BTCBRL", entry_regime: "NORMAL", last_reconciled_at: AT,
+      last_error: null, gain_rate: .012, entry_spacing: .02 }, slots,
+    accounts: slots.map((slot) => ({ slot_number: slot.slot_number, balance_brl: 18, market_pnl_brl: 0,
+      manual_gain_brl: 0, contribution_brl: 18, fees_brl: 0, gain_count: 0 })), monthlyGains: [], orders: [], events: [],
+    alerts: [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", last_seen_at: AT }],
+  } } });
+}
+test("known funding hold is waiting for cash, never healthy or a financial pause", () => {
+  const model = buildPremiumAssets(fundingHoldFixture(), "REAL", NOW)[0];
+  assert.equal(model.health.label, "AGUARDANDO SALDO"); assert.equal(model.health.tone, "attention");
+  assert.equal(model.health.healthy, false); assert.equal(model.status, "ACTIVE");
+});
+test("critical errors, stale reads and missing TP cannot hide behind a funding warning", () => {
+  for (const mutate of [
+    (data: Props) => { data.liveAssetData!.BTC!.run.last_error = "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN"; },
+    (data: Props) => { data.liveAssetData!.BTC!.alerts.push({ code: "FAULT", severity: "CRITICAL", last_seen_at: AT }); },
+    (data: Props) => { data.liveAssetData!.BTC!.run.last_reconciled_at = new Date(NOW - 200_000).toISOString(); },
+    (data: Props) => { data.liveAssetData!.BTC!.slots[0].entry_state = "OPEN"; data.liveAssetData!.BTC!.slots[0].position_quantity = 1; },
+    (data: Props) => { data.liveAssetData!.BTC!.slots.pop(); },
+    (data: Props) => { data.liveAssetData!.BTC!.orders.push(order({ status: "PREPARED" })); },
+    (data: Props) => { data.liveAssetData!.BTC!.orders.push(order({ status: "FILLED", executed_quantity: 1, trades_reconciled: false })); },
+  ]) {
+    const data = fundingHoldFixture(); mutate(data);
+    assert.notEqual(buildPremiumAssets(data, "REAL", NOW)[0].health.label, "AGUARDANDO SALDO");
+  }
 });
 
 test("empty evidence stays unavailable and never inherits another environment's capital", () => {

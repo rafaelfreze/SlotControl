@@ -63,7 +63,7 @@ const styles = ["app/globals.css", "app/compact-redesign.css", "app/official-mon
   "app/desktop-modules.css", "app/automation-redesign.css", "app/automation-center.css",
   "app/automation-cockpit.css", "app/reports-center.css", "app/automacao/live-preparation.css",
   "app/automacao/manual-adjustments.css", "app/automacao/ath-profiles.css",
-  "app/automacao/premium-automation.css", "app/automacao/asset-health.css", "app/automacao/account-funding-card.css"];
+  "app/automacao/premium-automation.css", "app/automacao/asset-health.css", "app/automacao/account-funding-card.css", "app/automacao/funding-warning-awareness.css"];
 
 /** Bundle real client code, never server actions, credentials, or server loaders.
  * This follows the existing open-slot-growth-goal component test harness. */
@@ -108,7 +108,7 @@ async function mount(page: Page, view: View, width: number, height = 960,
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
   await page.route("**/*", async (route) => { requests.push(route.request().url()); await route.abort(); });
-  if (engineControlData) {
+  if (engineControlData || fundingData) {
     // The real control center constructs same-origin URLs. Give this fixture
     // a loopback origin via interception, without starting/contacting a server.
     await page.route("http://127.0.0.1:39999/", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
@@ -1206,6 +1206,58 @@ test("saldo completo expirado não copia um valor como confirmação atual", asy
   await expect(dialog).toContainText("A leitura expirou. Atualize antes de copiar um valor de reposição.");
   expect(await page.evaluate(() => (window as unknown as { __fundingCopyAttempts?: number }).__fundingCopyAttempts ?? 0)).toBe(0);
   await noSideEffects(page, audit);
+});
+
+for (const width of [390, 1440]) test(`aviso de saldo ciente fica compacto sem liberar operação em ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  const affected = data.operator!.engines.find((engine) => engine.accountId === ACCOUNT_A && engine.symbol === "SOLBRL")!;
+  affected.alerts = [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", at: AUTOMATION_FIXTURE_NOW }];
+  affected.health = { healthy: false, tone: "attention", label: "AGUARDANDO SALDO", reason: "Novas compras aguardam reposição Spot." };
+  affected.activeIssueCount = 1;
+  data.operator!.engines = [affected]; data.operator!.accounts = data.operator!.accounts.filter((account) => account.id === ACCOUNT_A);
+  const audit = await mount(page, "live", width, 900, data, null, null, null, null, { balances: [], funding: [], unavailable: 1 });
+  const ack = page.getByRole("button", { name: "Já avisei a pessoa · ocultar aviso · Rafael Demo · SOLBRL", exact: true });
+  await expect(ack).toBeVisible();
+  await ack.click();
+  await expect(page.locator(".px-alert-banner")).toHaveCount(0);
+  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toContainText("Aguardando saldo · ciente");
+  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toContainText("1 aviso(s) de saldo oculto(s)");
+  await expect(page.locator(".px-live")).toContainText("ATENÇÃO");
+  await expect(page.locator(".px-account-card .px-badge")).toHaveText("ACOMPANHAR");
+  await page.getByRole("button", { name: "Reexibir avisos de saldo · Rafael Demo", exact: true }).click();
+  await expect(ack).toBeVisible();
+  await ack.click();
+  await screenshot(page, testInfo, `funding-awareness-${width}`);
+  expect((await geometry(page)).overflow).toBe(0);
+  await noSideEffects(page, audit);
+  // Same browser reload preserves only this incarnation. A new timestamp must reappear.
+  const same = await mount(page, "live", width, 900, data, null, null, null, null, { balances: [], funding: [], unavailable: 1 });
+  await expect(page.locator(".px-alert-banner")).toHaveCount(0);
+  affected.alerts[0].at = "2026-09-24T12:01:00.000Z";
+  const next = await mount(page, "live", width, 900, data, null, null, null, null, { balances: [], funding: [], unavailable: 1 });
+  await expect(ack).toBeVisible();
+  await noSideEffects(page, same); await noSideEffects(page, next);
+});
+
+test("ciente do saldo nunca oculta incidente crítico ou leitura desconhecida", async ({ page }) => {
+  const data = automationOperatorFixture();
+  const affected = data.operator!.engines.find((engine) => engine.accountId === ACCOUNT_A && engine.symbol === "SOLBRL")!;
+  affected.alerts = [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", at: AUTOMATION_FIXTURE_NOW },
+    { code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN", severity: "CRITICAL", at: AUTOMATION_FIXTURE_NOW }];
+  affected.health = { healthy: false, tone: "error", label: "REVISAR LIVE", reason: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" };
+  affected.activeIssueCount = 2;
+  data.operator!.engines = [affected];
+  const audit = await mount(page, "live", 390, 900, data, null, null, null, null, { balances: [], funding: [], unavailable: 1 });
+  await page.getByRole("button", { name: "Já avisei a pessoa · ocultar aviso · Rafael Demo · SOLBRL", exact: true }).click();
+  await expect(page.locator(".px-alert-banner")).toContainText("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
+  await expect(page.locator(".px-live")).toContainText("ATENÇÃO");
+  await noSideEffects(page, audit);
+  affected.alerts = [{ code: "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE", severity: "WARNING", at: AUTOMATION_FIXTURE_NOW }];
+  affected.health.reason = "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"; affected.activeIssueCount = 1;
+  const read = await mount(page, "live", 390, 900, data, null, null, null, null, { balances: [], funding: [], unavailable: 1 });
+  await expect(page.getByRole("button", { name: /Já avisei a pessoa/ })).toHaveCount(0);
+  await expect(page.locator(".px-alert-banner")).toContainText("COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE");
+  await noSideEffects(page, read);
 });
 
 test("conta saudável oculta infraestrutura mas falha continua visível", async ({ page }) => {

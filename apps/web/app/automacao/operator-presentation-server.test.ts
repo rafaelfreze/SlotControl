@@ -50,7 +50,7 @@ function data(): Props {
 }
 
 async function run(patch: (engine: EngineContext) => Record<string, unknown> = () => ({}),
-  options: { timeout?: boolean; requireParallel?: boolean } = {}) {
+  options: { timeout?: boolean; requireParallel?: boolean; unavailableLegacyAssets?: string[] } = {}) {
   const names = ["LIVE_EXECUTOR_BASE_URL", "LIVE_EXECUTOR_EGRESS_IP", "COINOPS_EXECUTOR_HMAC_SECRET", "LIVE_EXECUTOR_VALIDATED_VERSION"] as const;
   const previous = names.map((name) => process.env[name]);
   process.env.LIVE_EXECUTOR_BASE_URL = `https://${ip}`;
@@ -112,7 +112,8 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
       return { select: () => ({ eq: () => ({ error: null, data: [{ exchange_account_id: id(5), quote_asset: "BRL", hard_cap_quote: 725 }] }) }) };
     } } as unknown as Parameters<typeof BuildPresentation>[0];
     const input = data();
-    const result = await build(client, input, registry, { accountId: "ALL", symbol: "ALL" });
+    const result = await build(client, input, registry, { accountId: "ALL", symbol: "ALL" },
+      undefined, undefined, false, undefined, options.unavailableLegacyAssets);
     assert.ok(deadlines.every((ms) => ms === 5_000), "UI budget is exactly 5s, not the 35s transport budget");
     return { input, result, requests, deadlines, maximumInflight };
   } finally {
@@ -140,6 +141,13 @@ test("one engine kill switch never makes the other engine unhealthy or falsely a
   assert.equal(result.engineData[id(7)].livePreparation?.executor.gate, "LIVE_EXECUTOR_PROTECTED");
   assert.equal(result.engines.find((engine) => engine.symbol === "BTCBRL")?.health.healthy, true);
   assert.equal(result.engines.find((engine) => engine.symbol === "SOLBRL")?.health.healthy, false);
+});
+test("legacy core read failure stays explicit on only that asset while its sibling remains visible", async () => {
+  const { result } = await run(() => ({}), { unavailableLegacyAssets: ["BTC"] });
+  const btc = result.engines.find((engine) => engine.symbol === "BTCBRL")!;
+  const sol = result.engines.find((engine) => engine.symbol === "SOLBRL")!;
+  assert.equal(btc.health.label, "DADOS INDISPONÍVEIS"); assert.equal(btc.health.healthy, false);
+  assert.equal(sol.health.healthy, true);
 });
 
 test("a database kill switch cannot be presented as healthy when executor health is green", () => {

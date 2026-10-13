@@ -19,10 +19,13 @@ import { loadOperatorRegistry } from "@/lib/execution/operator-context-server";
 import { resolveEngineContext } from "@/lib/execution/operator-context";
 import { buildOperatorPresentation, presentationEnvironment } from "./operator-presentation-server";
 import { readLiveDashboardBatch } from "./live-dashboard-batch";
+import { loadLegacyLiveDashboard } from "./legacy-live-dashboard-read";
+import { AUTOMATION_READ_TRANSIENT_DIGEST } from "./automation-read-recovery";
+import { LiveReadUnavailable } from "@/lib/execution/live-read-error";
 import { uiReadTimer } from "@/lib/coinops-monitoring/ui-read-timing";
 import type { Presentation, StrategyPanelData, AdjustmentPanelData } from "./premium-automation";
 import { PremiumAutomation } from "./premium-automation";
-import type { LiveAssetData, TestnetAssetData } from "./automation-mobile";
+import type { TestnetAssetData } from "./automation-mobile";
 import type { RecentManualAdjustment } from "./manual-adjustments-panel";
 import "./ath-profiles.css";
 
@@ -87,56 +90,6 @@ async function loadLegacyTestnetData(supabase: ReturnType<typeof createClient>, 
     Partial<Record<"BTC" | "SOL", TestnetAssetData>>;
 }
 
-async function loadLegacyLiveData(supabase: ReturnType<typeof createClient>, accountId: string,
-  engineIds: string[], productId: string, tenantId: string, userId: string) {
-  const service = createServiceRoleClient();
-  const entries = await Promise.all((["BTC", "SOL"] as const).map(async (asset) => {
-    const current = await supabase.from("robot_v1_live_runs")
-      .select("id,status,symbol,entry_regime,last_reconciled_at,last_error,config_version,gain_rate,entry_spacing")
-      .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-      .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
-      .eq("asset", asset).in("status", ["PREPARING", "ACTIVE", "PAUSED"]).maybeSingle();
-    if (current.error) throw new Error("COINOPS_LIVE_RUN_READ_FAILED");
-    if (!current.data) return { asset, data: null };
-    const run = current.data;
-    const [slots, orders, accounts, allocations, events, alerts] = await Promise.all([
-      supabase.from("robot_v1_live_slots")
-        .select("slot_number,entry_state,target_buy_price,operational_rank,post_ath_group,post_ath_group_rank,operation_sequence,position_quantity,position_committed_brl,missed_at")
-        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-        .eq("run_id", run.id).eq("tenant_id", tenantId).order("slot_number"),
-      supabase.from("robot_v1_live_orders")
-        .select("side,purpose,status,slot_number,client_order_id,exchange_order_id,price,requested_quantity,requested_quote,executed_quantity,cumulative_quote,created_at,updated_at,fee_base,fee_quote,fee_other,reserved_notional_brl")
-        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-        .eq("run_id", run.id).eq("tenant_id", tenantId).order("created_at"),
-      supabase.from("robot_v1_live_slot_accounts")
-        .select("slot_number,balance_brl,contribution_brl,market_pnl_brl,manual_gain_brl,fees_brl,gain_count,dust_quantity,dust_cost_brl")
-        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
-        .eq("asset", asset).order("slot_number"),
-      service.from("robot_v1_live_selective_contribution_allocations")
-        .select("slot_number,amount_quote,status,created_at,applied_at")
-        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
-        .eq("symbol", `${asset}BRL`).in("status", ["PENDING", "APPLIED"]).order("created_at"),
-      supabase.from("robot_v1_live_events").select("event_type,slot_number,observed_at,details")
-        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-        .eq("run_id", run.id).eq("tenant_id", tenantId)
-        .order("observed_at", { ascending: false }).limit(20),
-      supabase.from("robot_v1_live_alerts").select("severity,code,last_seen_at")
-        .eq("exchange_account_id", accountId).in("trading_engine_id", engineIds)
-        .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", userId)
-        .eq("asset", asset).is("resolved_at", null)
-        .order("last_seen_at", { ascending: false }).limit(10),
-    ]);
-    if (slots.error || orders.error || accounts.error || allocations.error || events.error || alerts.error)
-      throw new Error("COINOPS_LIVE_LEDGER_READ_FAILED");
-    return { asset, data: { run, slots: slots.data || [], orders: orders.data || [],
-      accounts: accounts.data || [], selectiveAllocations: allocations.data || [], events: events.data || [], alerts: alerts.data || [], monthlyGains: [] } };
-  }));
-  return Object.fromEntries(entries.filter((item) => item.data).map((item) => [item.asset, item.data])) as
-    Partial<Record<"BTC" | "SOL", LiveAssetData>>;
-}
-
 export default async function AutomationPage({ searchParams }: { searchParams?: { view?: string; testnet?: string; testnetError?: string; adjust?: string; account?: string; market?: string; engine?: string; preparation?: string } }) {
   // Retired URLs must not load a ledger, diagnose an exchange or select a REAL
   // engine using an old Testnet account/engine query parameter.
@@ -152,7 +105,16 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   if (!tenantId) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
   const registryScope = await supabase.from("strategies").select("product_id").eq("tenant_id", tenantId).eq("user_id", user.id).limit(1).maybeSingle();
   if (registryScope.error || !registryScope.data) throw new Error("COINOPS_OPERATOR_SCOPE_UNAVAILABLE");
-  const registry = await loadOperatorRegistry(supabase, { product_id: registryScope.data.product_id, tenant_id: tenantId, user_id: user.id });
+  const registry = await loadOperatorRegistry(supabase, { product_id: registryScope.data.product_id, tenant_id: tenantId, user_id: user.id }).catch((error: unknown) => {
+    // Production redacts server messages. Only a proven transient registry GET
+    // may instruct the error boundary to re-observe; permissions remain manual.
+    if (error instanceof LiveReadUnavailable && error.code === "COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT") {
+      const transient = new Error("COINOPS_AUTOMATION_READ_UNAVAILABLE") as Error & { digest: string };
+      transient.digest = AUTOMATION_READ_TRANSIENT_DIGEST;
+      throw transient;
+    }
+    throw error;
+  });
   timing.stage("registry");
   const view: AutomationView = searchParams?.view === "shadow" || searchParams?.view === "testnet" || searchParams?.view === "live" || searchParams?.view === "overview" ? searchParams.view : searchParams?.testnet === "check" ? "testnet" : "live";
   const loadHistoricalEnvironments = view !== "live";
@@ -180,7 +142,10 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const testnetDataPromise = loadHistoricalEnvironments
     ? loadLegacyTestnetData(supabase, legacyAccount.id, legacyEngineIds, tenantId, user.id)
     : Promise.resolve({} as Awaited<ReturnType<typeof loadLegacyTestnetData>>);
-  const liveDataPromise = loadLegacyLiveData(supabase, legacyAccount.id, legacyEngineIds, productId, tenantId, user.id);
+  const liveDataPromise = loadLegacyLiveDashboard(supabase, createServiceRoleClient(), {
+    operatorId: registry.operator.id, accountId: legacyAccount.id, engineIds: legacyEngineIds,
+    productId, tenantId, userId: user.id,
+  });
 
   let testnet: Awaited<ReturnType<typeof diagnoseBinanceSpotTestnet>> & { ok: true } | { ok: false; error: string } | null = null;
   if (searchParams?.testnet === "check") {
@@ -288,7 +253,11 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const latestRun = runsResponse.data as ReconciliationRunRow | null;
   const mismatches = (latestRun?.summary?.EXPECTED_ONLY || 0) + (latestRun?.summary?.EXCHANGE_ONLY || 0) + (latestRun?.summary?.QUANTITY_MISMATCH || 0) + (latestRun?.summary?.PRICE_MISMATCH || 0) + (latestRun?.summary?.STATUS_MISMATCH || 0);
   let livePreparation: import("./automation-mobile").Props["livePreparation"] = null;
-  const liveAssetData = await liveDataPromise;
+  const legacySnapshot = await liveDataPromise;
+  const liveAssetData = legacySnapshot.data;
+  unavailableModules.push(...legacySnapshot.unavailableAssets.map((asset) => `legacy-live:${asset}`),
+    ...legacyRealContexts.filter((context) => legacySnapshot.historyUnavailableAssets.includes(context.base_asset as "BTC" | "SOL"))
+      .map((context) => `live-history:${context.trading_engine_id}`));
   // The shared dashboard needs the same read-only LIVE snapshot in every view.
   // This does not dispatch or reconcile an order; the executor remains server-side.
   {
@@ -391,7 +360,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   timing.stage("legacy_snapshot");
   presentation.operator = await buildOperatorPresentation(supabase, presentation, registry, {
     accountId: searchParams?.account || "ALL", symbol: searchParams?.market || "ALL",
-  }, undefined, presentationEnvironment(view), true, nativeLiveReadPromise);
+  }, undefined, presentationEnvironment(view), true, nativeLiveReadPromise, legacySnapshot.unavailableAssets);
   timing.stage("engine_projection");
   const onboarding = await supabase.from("account_onboarding_checks")
     .select("exchange_account_id,trading_engine_id,check_key,status,checked_at")
