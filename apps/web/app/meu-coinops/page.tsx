@@ -8,6 +8,8 @@ import { monthlyPeriodKey } from "@/lib/execution/monthly-slot-policy";
 import { projectCurrentLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
 import { orderOperationalSlots, ledgerSlotKey } from "@/lib/slotgain/operational-slot-order";
 import { rankViewerMarkets } from "@/lib/coinops-viewer/gain-ranking";
+import { readBillingRenewal } from "@/lib/saas-billing/renewal-server";
+import { BillingRenewalNotice } from "@/components/saas-billing/renewal-notice";
 import { ViewerSignOut } from "./sign-out";
 import { ViewerLiveBalances } from "./live-balances";
 import { ViewerGainSimulator } from "./gain-simulator";
@@ -53,6 +55,8 @@ export default async function MeuCoinOps() {
     .select("operator_id,exchange_account_id,display_name,status")
     .eq("user_id", user.id).maybeSingle();
   if (binding.error || !binding.data || binding.data.status !== "ACTIVE") redirect("/acesso-suspenso");
+  const renewal = await readBillingRenewal(user.id);
+  if (renewal.blocked) redirect("/assinatura?aviso=renovacao-vencida");
   const { operator_id: operatorId, exchange_account_id: accountId, display_name: name } = binding.data;
   const [account, engines, credential] = await Promise.all([
     service.from("exchange_accounts").select("display_name,status")
@@ -157,6 +161,7 @@ export default async function MeuCoinOps() {
   });
   return <main className="viewer-app">
     <div className="viewer-shell"><header className="viewer-header"><div className="viewer-brand"><span className="viewer-mark" aria-hidden="true"><i /></span><span><strong>CoinOps</strong><small>Meu CoinOps · {account.data.display_name}</small></span></div><div className="viewer-account"><span className="viewer-initial" aria-hidden="true">{firstName.charAt(0).toUpperCase()}</span><span>{account.data.display_name}</span><Link href="/assinatura">Assinatura</Link><ViewerSignOut /></div></header>
+    <BillingRenewalNotice notice={renewal.notice}/>
     <section className="viewer-hero"><div><h1>Bom dia, {firstName}!</h1><p>{allHealthy ? "Seu robô está operando normalmente." : "Confira o estado da sua operação abaixo."}</p></div>
       <div className="viewer-health-group"><span className={allHealthy ? "viewer-health is-ok" : "viewer-health"}>{allHealthy ? "● OPERANDO" : "● ATENÇÃO"}</span><small>Atualizado {latest ? new Date(latest).toLocaleString("pt-BR") : "sem reconciliação confirmada"}</small></div></section>
     <ViewerLiveBalances fallback={{ balances: observedBalances.map((row) => ({ ...row, total: row.free + row.locked })),

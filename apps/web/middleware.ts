@@ -2,6 +2,8 @@ import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { getAuthDestination } from "@/lib/auth/navigation";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
+import { parseProjection } from "@/lib/saas-billing/contract";
+import { billingViewerAccessAllowed } from "@/lib/saas-billing/renewal";
 
 const legacyOperatorRoutes = ["/dashboard", "/slots", "/plano-crescimento", "/historico", "/ciclos", "/alertas", "/config", "/mais"];
 const protectedRoutes = [...legacyOperatorRoutes, "/meu-coinops", "/assinatura"];
@@ -82,6 +84,19 @@ export async function middleware(request: NextRequest) {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_ACCESS_DISABLED" }, { status: 403 });
       if (pathname !== "/acesso-suspenso" && pathname !== "/redefinir-senha")
         return NextResponse.redirect(new URL("/acesso-suspenso", request.url));
+    } else if ((pathname === "/meu-coinops" || viewerRead) && getSupabaseDataSchema() === "coinops") {
+      let expired = false;
+      try {
+        const billing = await supabase.from("saas_billing_projections").select("projection").eq("user_id", user.id).maybeSingle();
+        if (!billing.error && billing.data) {
+          const projection = parseProjection(billing.data.projection);
+          expired = projection.external_tenant_id === user.id && !billingViewerAccessAllowed(projection);
+        }
+      } catch { /* Invalid or unavailable commercial evidence does not suspend an operational account. */ }
+      if (expired) {
+        if (viewerRead) return NextResponse.json({ error: "VIEWER_RENEWAL_EXPIRED" }, { status: 403 });
+        return NextResponse.redirect(new URL("/assinatura?aviso=renovacao-vencida", request.url));
+      }
     } else if (!allowed && !viewerRead && !viewerBilling) {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_READ_ONLY" }, { status: 403 });
       return NextResponse.redirect(new URL("/meu-coinops", request.url));

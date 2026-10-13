@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import type { RenewalNotice } from "@/lib/saas-billing/renewal";
+import { BillingRenewalNotice } from "@/components/saas-billing/renewal-notice";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useAutomationMarketPrices } from "./use-automation-market-prices";
@@ -112,7 +114,7 @@ function AccountSlotOverview({ models, onOpen }: { models: PremiumEngine[]; onOp
   })}</div></section>;
 }
 
-export function PremiumAutomation({ view, data: initialData, userLabel, strategyPanel, adjustmentsPanel, initialAdjustments = false, strategyPanels, adjustmentPanels }: { view: AutomationView; data: Presentation; userLabel: string; strategyPanel: ReactNode; adjustmentsPanel: ReactNode; initialAdjustments?: boolean; strategyPanels?: Record<string, StrategyPanelData>; adjustmentPanels?: Record<string, AdjustmentPanelData> }) {
+export function PremiumAutomation({ view, data: initialData, userLabel, strategyPanel, adjustmentsPanel, initialAdjustments = false, strategyPanels, adjustmentPanels, renewalNotice }: { renewalNotice?: RenewalNotice | null; view: AutomationView; data: Presentation; userLabel: string; strategyPanel: ReactNode; adjustmentsPanel: ReactNode; initialAdjustments?: boolean; strategyPanels?: Record<string, StrategyPanelData>; adjustmentPanels?: Record<string, AdjustmentPanelData> }) {
   useUiPerformance();
   useEffect(() => {
     // Only a successful server-page render ends the bounded read-recovery episode.
@@ -415,6 +417,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
      </div>
     {view === "live" && showOperationalSummary ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={initialHealthLoading ? "is-loading" : liveStatus.online ? "is-ok" : "is-warning"}>● Executor {initialHealthLoading ? "ATUALIZANDO" : liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={initialHealthLoading ? "is-loading" : liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {initialHealthLoading ? "ATUALIZANDO" : liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={initialHealthLoading ? "is-loading" : healthy || paused ? "is-ok" : "is-warning"}>● Estratégia {initialHealthLoading ? "ATUALIZANDO" : paused ? "PAUSADA" : healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
+      <BillingRenewalNotice notice={renewalNotice ?? null}/>
       <div className={`px-overview-top${allAccounts ? " px-overview-top--markets" : ""}`}>
       <div className="px-overview-executors">
         {data.operator && (view === "live" || view === "overview") ? <CapacityCard onExecutorObservation={sync.observeExecutors} overview={allAccounts} attentionOnly={!allAccounts} /> : null}

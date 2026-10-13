@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { parseProjection } from "../saas-billing/contract.ts";
+import { billingViewerAccessAllowed } from "../saas-billing/renewal.ts";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
@@ -113,6 +115,8 @@ async function runMiddleware(path: string, authenticated: boolean) {
     const { middleware } = compile("../../middleware.ts", {
       "next/server": nextServer,
       "@/lib/auth/navigation": navigation,
+      "@/lib/saas-billing/contract": { parseProjection },
+      "@/lib/saas-billing/renewal": { billingViewerAccessAllowed },
       "@/lib/supabase/env": { getSupabaseDataSchema: () => "coinops" },
       "@supabase/ssr": { createServerClient: () => ({ auth: { getUser: async () => {
         userChecks += 1;

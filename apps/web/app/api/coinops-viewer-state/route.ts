@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
+import { readBillingRenewal } from "@/lib/saas-billing/renewal-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -19,6 +20,8 @@ export async function GET() {
     const binding = await service.from("viewer_access").select("operator_id,exchange_account_id,status")
       .eq("user_id", user.id).maybeSingle();
     if (binding.error || !binding.data || binding.data.status !== "ACTIVE") return json({ error: "VIEWER_DENIED" }, 403);
+    const renewal = await readBillingRenewal(user.id);
+    if (renewal.blocked) return json({ error: "VIEWER_RENEWAL_EXPIRED" }, 403);
     const { operator_id: operatorId, exchange_account_id: accountId } = binding.data;
     const account = await service.from("exchange_accounts").select("status")
       .eq("operator_id", operatorId).eq("id", accountId).single();

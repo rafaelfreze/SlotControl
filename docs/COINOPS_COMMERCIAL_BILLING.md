@@ -36,3 +36,11 @@ Sem vínculo: exibe Nenhuma assinatura vinculada. Sem backend/configuração: In
 Offboarding comercial cancela/revoga na Central e preserva histórico. Revogação de acesso CoinOps usa os fluxos administrativos existentes; ela não é substituída por uma alteração de contrato.
 
 Migration efetiva: `20261011223915_coinops_commercial_billing.sql`, aplicada e conferida em 11/10/2026 no projeto `otdfpmsegjxpqrzisfmi`, schema `coinops`. Não reaplicar nem editar o SQL aplicado. Testes SQL usam banco efêmero; nunca criam financeiro ou ordens em produção.
+
+## Renovação e painel do cliente — 13/10/2026
+
+Os painéis Automação (ADMIN), Meu CoinOps (VIEWER) e Minha assinatura exibem a renovação pendente com o prazo real recebido da Central. O aviso informa até sete dias apenas quando o intervalo persistido entre vencimento e limite é exatamente sete dias, informa a data de bloqueio seguinte ao limite e oferece acesso ao pagamento. Não é criado prazo a partir da abertura do painel.
+
+Após o limite de uma cobrança com saldo positivo e vencimento passado, navegação, página Meu CoinOps e sua API de leitura recusam o painel VIEWER e encaminham para Minha assinatura. Esta proteção também considera uma projeção que ainda esteja marcada ativa. Ausência de vínculo ou de prazo confirmado preserva o comportamento anterior; nenhuma visita cria cobrança ou suspensão de conta. O portal de assinatura e pagamento continua acessível conforme a identidade ativa já validada.
+
+ADMIN conserva supervisão operacional. Não há pausa, ativação ou modificação de motor, executor, ordem, capital, saldo ou credencial de corretora. A política atua somente no acesso web comercial do VIEWER. Uma consulta financeira indisponível não interfere em trading. A readback da projeção após pagamento libera o painel quando o saldo/prazo deixam de indicar vencimento; atualização manual da assinatura continua disponível.

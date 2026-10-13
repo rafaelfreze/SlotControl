@@ -10,6 +10,7 @@ import { loadLiveProductionSnapshot } from "@/lib/execution/live-preparation-ser
 import { getCoinOpsServiceTenantId } from "@/lib/supabase/env";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { readBillingRenewal } from "@/lib/saas-billing/renewal-server";
 import { recordRuntimeObservation } from "@/lib/coinops-reports/runtime-observation-server";
 import { TESTNET_MISSED_EVENT_TYPES } from "@/lib/coinops-reports/missed-level-evidence";
 import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
@@ -100,6 +101,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
+  const renewalPromise = readBillingRenewal(user.id);
   timing.stage("auth");
   const tenantId = getCoinOpsServiceTenantId();
   if (!tenantId) throw new Error("COINOPS_V1_SCOPE_UNAVAILABLE");
@@ -391,7 +393,8 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   }
   timing.stage("panels");
   timing.finish();
-  return <PremiumAutomation view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
+  const renewal = await renewalPromise;
+  return <PremiumAutomation renewalNotice={renewal.notice} view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
     data={{ ...presentation, snapshotAt: new Date().toISOString(), deferredHealth: true, unavailableModules }} strategyPanel={null} adjustmentsPanel={null}
     strategyPanels={strategyPanels} adjustmentPanels={adjustmentPanels}
     initialAdjustments={Boolean(initialManualTarget && searchParams?.engine)} />;
