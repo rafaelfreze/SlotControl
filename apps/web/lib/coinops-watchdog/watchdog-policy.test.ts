@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateFastRun, type FastRun, type FastSlot, type FastOrder, type FastAlert } from "./watchdog-policy.ts";
+import { liveEngineOrderPrefix } from "../execution/robot-v1-live-cycle.ts";
 
 const now = Date.parse("2026-09-26T23:00:00Z");
 const run: FastRun = { id: "run-a", trading_engine_id: "engine-a",
@@ -140,4 +141,136 @@ test("a failed credential/account blocks only engines owned by that account", ()
   orders: orders.map((order) => ({ ...order, run_id: "run-b" })) });
   assert.equal(own.state, "BLOCKED");
   assert.equal(sibling.state, "HEALTHY");
+});
+
+function pausedInput(): Parameters<typeof evaluateFastRun>[0] {
+  const operatorId = "operator-a";
+  const pausedRun = { ...run, operator_id: operatorId, status: "PAUSED" };
+  const pausedEngine = { ...engine, operator_id: operatorId, kill_switch: true,
+    environment: "REAL", base_asset: "SOL", legacy_compatible: false };
+  const owned = { operator_id: operatorId, trading_engine_id: pausedRun.trading_engine_id,
+    exchange_account_id: pausedRun.exchange_account_id };
+  const prefix = liveEngineOrderPrefix({ ...pausedEngine, trading_engine_id: pausedEngine.id });
+  return { run: pausedRun, engine: pausedEngine, account: { ...account, operator_id: operatorId },
+    shardId: "executor-02", now,
+    preparation: { ...owned, symbol: pausedRun.symbol, live_enabled: true, kill_switch: true },
+    slots: slots.map((slot, index) => ({ ...slot, ...owned, slot_number: index + 1 })),
+    orders: [{ ...orders[0], ...owned, id: "order-a", client_order_id: `${prefix}1-S-test`,
+      executed_quantity: 0, trades_reconciled: true }] };
+}
+
+test("intentional pause is healthy protection, counted separately from operating engines", () => {
+  assert.deepEqual(evaluateFastRun(pausedInput()), {
+    state: "HEALTHY", code: null, recoverable: false, intentionalPause: true });
+  assert.equal(check().intentionalPause, undefined);
+});
+
+test("active gate failures cannot masquerade as intentional pause", () => {
+  const input = pausedInput();
+  assert.equal(evaluateFastRun({ ...input, run: { ...input.run, status: "ACTIVE" } }).state, "BLOCKED");
+  for (const changed of [
+    { ...input, engine: { ...input.engine!, kill_switch: false } },
+    { ...input, engine: { ...input.engine!, status: "PAUSED" } },
+    { ...input, account: { ...input.account!, kill_switch: true } },
+    { ...input, account: { ...input.account!, status: "INACTIVE" } },
+    { ...input, preparation: null },
+    { ...input, preparation: { ...input.preparation!, live_enabled: false } },
+    { ...input, preparation: { ...input.preparation!, kill_switch: false } },
+  ]) assert.deepEqual(evaluateFastRun(changed), {
+    state: "BLOCKED", code: "WATCHDOG_LOCAL_GATE_CLOSED", recoverable: false });
+});
+
+test("intentional pause must retain exact operator/account/engine/shard and REAL ownership", () => {
+  const input = pausedInput();
+  for (const changed of [
+    { ...input, preparation: { ...input.preparation!, trading_engine_id: "engine-b" } },
+    { ...input, preparation: { ...input.preparation!, exchange_account_id: "account-b" } },
+    { ...input, preparation: { ...input.preparation!, operator_id: "operator-b" } },
+    { ...input, preparation: { ...input.preparation!, symbol: "SOLUSDT" } },
+    { ...input, engine: { ...input.engine!, operator_id: "operator-b" } },
+    { ...input, account: { ...input.account!, operator_id: "operator-b" } },
+    { ...input, engine: { ...input.engine!, environment: "TESTNET" } },
+    { ...input, shardId: "executor-03" },
+    { ...input, slots: input.slots.map((slot, index) => index ? slot : { ...slot, trading_engine_id: "engine-b" }) },
+    { ...input, orders: [{ ...input.orders[0], exchange_account_id: "account-b" }] },
+    { ...input, orders: [{ ...input.orders[0], client_order_id: "C2-sibling-engine-TP" }] },
+  ]) assert.equal(evaluateFastRun(changed).code, "WATCHDOG_OWNERSHIP_MISMATCH");
+});
+
+test("intentional pause cannot conceal duplicate, missing, invalid physical slots or order IDs", () => {
+  const input = pausedInput();
+  for (const changed of [
+    { ...input, slots: input.slots.slice(1) },
+    { ...input, slots: input.slots.map((slot, index) => index ? slot : { ...slot, slot_number: 2 }) },
+    { ...input, slots: input.slots.map((slot, index) => index ? slot : { ...slot, slot_number: 26 }) },
+    { ...input, slots: input.slots.map((slot, index) => index ? slot : { ...slot, id: input.slots[1].id }) },
+    { ...input, slots: input.slots.map((slot, index) => index ? slot : { ...slot, position_quantity: "NaN" }) },
+  ]) assert.equal(evaluateFastRun(changed).code, "WATCHDOG_SLOT_COUNT_INVALID");
+  assert.equal(evaluateFastRun({ ...input, orders: [...input.orders, input.orders[0]] }).code,
+    "WATCHDOG_OWNERSHIP_MISMATCH");
+});
+
+test("PAUSED with a resident, prepared or ambiguous BUY is BLOCKED and never hidden healthy", () => {
+  const input = pausedInput();
+  for (const status of ["NEW", "PARTIALLY_FILLED", "PREPARED", "UNKNOWN", "SUBMITTING", "PENDING_CANCEL"]) {
+    const finding = evaluateFastRun({ ...input, orders: [input.orders[0], { ...input.orders[0],
+      id: "buy-a", side: "BUY", status, slot_id: input.slots[1].id }] });
+    assert.deepEqual(finding, { state: "BLOCKED", code: "WATCHDOG_PAUSE_BUY_UNRESOLVED", recoverable: false });
+  }
+});
+
+test("PAUSED permits a proven terminal reconciled BUY but rejects pending fills", () => {
+  const input = pausedInput();
+  const terminal = { ...input.orders[0], id: "buy-a", side: "BUY", status: "FILLED", executed_quantity: "0.017" };
+  assert.equal(evaluateFastRun({ ...input, orders: [...input.orders, terminal] }).intentionalPause, true);
+  for (const trades_reconciled of [false, undefined]) {
+    assert.deepEqual(evaluateFastRun({ ...input, orders: [...input.orders, { ...terminal, trades_reconciled }] }),
+      { state: "BLOCKED", code: "WATCHDOG_FILL_UNRECONCILED", recoverable: false });
+  }
+  assert.equal(evaluateFastRun({ ...input, orders: [{ ...input.orders[0], status: "UNKNOWN" }] }).code,
+    "WATCHDOG_ORDER_OUTCOME_UNKNOWN");
+});
+
+test("critical alerts and last_error always override protected pause", () => {
+  const input = pausedInput();
+  assert.equal(evaluateFastRun({ ...input, alerts: [monitorAlert] }).code, monitorAlert.code);
+  assert.equal(evaluateFastRun({ ...input, run: { ...input.run, last_error: "COINOPS_LIVE_ENGINE_FAILED" } }).code,
+    "COINOPS_LIVE_ENGINE_FAILED");
+  const warning = { ...monitorAlert, severity: "WARNING", code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT" };
+  assert.equal(evaluateFastRun({ ...input, alerts: [warning] }).intentionalPause, true);
+});
+
+test("paused protection still exposes stale reconciliation, missing TP and duplicate TP", () => {
+  const input = pausedInput();
+  const stale = evaluateFastRun({ ...input, run: { ...input.run,
+    last_reconciled_at: new Date(now - 6 * 60_000).toISOString() } });
+  assert.deepEqual(stale, { state: "STALE", code: "WATCHDOG_RECONCILIATION_STALE", recoverable: true });
+  assert.equal(evaluateFastRun({ ...input, run: { ...input.run,
+    last_reconciled_at: new Date(now + 60_000).toISOString() } }).state, "STALE");
+  assert.deepEqual(evaluateFastRun({ ...input, orders: [] }), {
+    state: "DEGRADED", code: "WATCHDOG_TP_MISSING", recoverable: true });
+  assert.deepEqual(evaluateFastRun({ ...input, orders: [...input.orders, { ...input.orders[0],
+    id: "order-b", client_order_id: `${input.orders[0].client_order_id}-b`, exchange_order_id: "tp-b" }] }), {
+    state: "DEGRADED", code: "WATCHDOG_DUPLICATE_TP", recoverable: false });
+});
+
+test("pause reconciliation lease is left to its owner and an empty pause receives no activation grace", () => {
+  const input = pausedInput();
+  assert.deepEqual(evaluateFastRun({ ...input, run: { ...input.run,
+    lease_until: new Date(now + 60_000).toISOString() } }), {
+    state: "RECONCILING", code: null, recoverable: false });
+  assert.equal(evaluateFastRun({ ...input, run: { ...input.run, last_reconciled_at: null,
+    created_at: new Date(now - 30_000).toISOString() },
+  slots: input.slots.map((slot) => ({ ...slot, position_quantity: 0 })), orders: [] }).state, "STALE");
+});
+
+test("same-account same-symbol active sibling on another shard remains unaffected by pause", () => {
+  const a = pausedInput();
+  const b = { ...a, run: { ...a.run, id: "run-b", trading_engine_id: "engine-b", status: "ACTIVE" },
+    engine: { ...a.engine!, id: "engine-b", executor_shard_id: "executor-03", kill_switch: false },
+    shardId: "executor-03", preparation: null,
+    slots: a.slots.map((slot) => ({ ...slot, id: `b-${slot.id}`, run_id: "run-b", trading_engine_id: "engine-b" })),
+    orders: a.orders.map((order) => ({ ...order, run_id: "run-b", slot_id: `b-${order.slot_id}`, trading_engine_id: "engine-b" })) };
+  assert.equal(evaluateFastRun(a).intentionalPause, true);
+  assert.deepEqual(evaluateFastRun(b), { state: "HEALTHY", code: null, recoverable: false });
 });

@@ -17,6 +17,7 @@ export type LiveQuoteBalance = { accountId: string; currency: string; free: numb
   locked: number; observedAt: string };
 export type PremiumOperatorPresentation = {
   accounts: PremiumAccount[];
+  accountHomePreferences?: Array<{ accountId: string; hidden: boolean; updatedAt: string }>;
   accountCaps?: Array<{ accountId: string; currency: string; cap: number }>;
   engines: PremiumEngine[];
   /** Existing forms consume only one engine's scoped sources. */
@@ -137,7 +138,8 @@ export function selectedLiveExecutorStatus(engines: PremiumEngine[], engineData:
     const data = engineData[engine.engineId];
     return data?.nativeLiveControl?.executor ?? data?.livePreparation?.executor ?? null;
   });
-  const verified = statuses.length > 0 && statuses.every((status) => status?.gate === "LIVE_EXECUTOR_ACTIVE");
+  const verified = statuses.length > 0 && statuses.every((status, index) => status?.gate === "LIVE_EXECUTOR_ACTIVE"
+    || engines[index]?.entryPauseProtected === true && status?.gate === "LIVE_EXECUTOR_PROTECTED" && status.health?.healthy === true);
   const binanceConnected = statuses.length > 0 && statuses.every((status) => status?.gate === "LIVE_EXECUTOR_ACTIVE"
     || status?.health?.binance_connectivity === "OK");
   const ips = [...new Set(statuses.map((status) => status?.ip).filter((ip): ip is string => !!ip))];

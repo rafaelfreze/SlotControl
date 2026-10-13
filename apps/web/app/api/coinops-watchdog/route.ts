@@ -20,7 +20,7 @@ export async function GET() {
     return NextResponse.json({ error: "ADMIN_REQUIRED" }, { status: 403, headers });
   const [shards, checks, incidents, reliability, criticalAlerts] = await Promise.all([
     service.from("executor_shards").select("id").eq("enabled", true),
-    service.from("watchdog_checks").select("shard_id,checked_at,shard_state,healthy_engines,recovering_engines,reconciling_engines,blocked_engines,stale_engines"),
+    service.from("watchdog_checks").select("shard_id,checked_at,shard_state,healthy_engines,paused_engines,recovering_engines,reconciling_engines,blocked_engines,stale_engines"),
     service.from("watchdog_incidents")
       .select("incident_id,shard_id,market,detected_condition,result,opened_at,resolved_at")
       .order("opened_at", { ascending: false }).limit(1),

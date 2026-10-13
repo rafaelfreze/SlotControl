@@ -1154,6 +1154,26 @@ async function assertAllPositionsProtected(run: Run, ledger: Ledger,
   await assertExchangeMatchesLedger(run, ledger.orders, state);
 }
 
+/** A deliberate pause is a BUY gate, not a stop of the protection worker.
+ * Certification is engine-scoped and requires fresh exchange agreement; a
+ * pending/ambiguous BUY or stale gate must never become a hidden healthy pause. */
+async function assertPausedProtection(service: Service, run: Run, ledger: Ledger,
+  state: LiveExecutorState) {
+  if (!Number.isFinite(state.filters.quantityStep) || state.filters.quantityStep <= 0)
+    throw new Error("COINOPS_LIVE_QUANTITY_STEP_INVALID");
+  await validateRunEngine(service, run);
+  const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
+  if (!prep.live_enabled || !prep.kill_switch || !run.engine!.engine_kill_switch)
+    throw new Error("COINOPS_LIVE_PAUSE_FLAGS_INVALID");
+  if (ledger.orders.some((order) => order.side === "BUY"
+    && !LIVE_TERMINAL_ORDER_STATUSES.has(order.status)))
+    throw new Error("COINOPS_LIVE_PAUSE_BUY_UNRESOLVED");
+  if (ledger.orders.some((order) => amount(order.executed_quantity) > 0 && !order.trades_reconciled))
+    throw new Error("COINOPS_LIVE_PAUSE_FILL_UNRECONCILED");
+  await assertAllPositionsProtected(run, ledger, state);
+  await exposure(service, run);
+}
+
 async function appliedCapitalSources(service: Service, run: Run, order: Order) {
   const scopeQuery = (table: string) => service.from(table).select("id")
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
@@ -1483,6 +1503,22 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     state = await readLiveExecutorState(run);
     await creditClosedSlots(service, run, ledger, state);
     const refreshed = await runRows(service, run);
+    if (run.status === "PAUSED") {
+      // Existing TP/fills/gains continue through the authoritative reconciler.
+      // CLOSED remains CLOSED: no reentry decision, ATH edit or successor is
+      // planned until the owner explicitly resumes this same engine.
+      stage = "ASSERT_PAUSED_PROTECTION";
+      state = await readLiveExecutorState(run);
+      await assertPausedProtection(service, run, refreshed, state);
+      stage = "AUDIT_EVENT";
+      await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
+        "RECONCILED", null, { source, next: "ENTRIES_PAUSED", strategy_version: STRATEGY_VERSION,
+          protection_verified: true, quantity_step: state.filters.quantityStep,
+          open_positions: refreshed.slots.filter(slot => amount(slot.position_quantity) >= state.filters.quantityStep).length,
+          resident_buy_count: 0 });
+      reconciliationComplete = true;
+      return { status: "PAUSED", next: "ENTRIES_PAUSED" };
+    }
     stage = "RECYCLE_SLOTS";
     await recycleClosedSlots(service, run, refreshed);
     const current = await runRows(service, run);
@@ -1689,7 +1725,6 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
   if (lookup.error || !lookup.data || lookup.data.asset !== asset
     || !["ACTIVE", "PAUSED"].includes(lookup.data.status))
     throw new Error("COINOPS_LIVE_PAUSE_RUN_DENIED");
-  if (lookup.data.status === "PAUSED") return { status: "PAUSED", asset, cycle_id: runId };
   // First close the SQL BUY gate. A concurrent cron may finish its current
   // protected operation, but no new entry may start after this update.
   const gate = await service.from("robot_v1_live_preparations")
@@ -1709,9 +1744,11 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
     let ledger = await runRows(service, run);
     for (const order of ledger.orders) await reconcileOrder(service, run, order);
     ledger = await runRows(service, run);
+    const cancelState = await readLiveExecutorState(run);
     for (const order of ledger.orders.filter((item) => item.side === "BUY"
       && ["NEW", "PARTIALLY_FILLED"].includes(item.status))) {
-      await cancelOwnedEntry(service, run, order);
+      await cancelOwnedEntry(service, run, order,
+        order.status === "NEW" && cancelState.supports_unfilled_buy_cancel === true);
       const slot = ledger.slots.find((item) => item.id === order.slot_id);
       if (slot && Number(order.executed_quantity) === 0)
         await updateSlot(service, run, slot, { entry_state: "PLANNED" });
@@ -1721,15 +1758,20 @@ export async function pauseLiveRun(runId: string, userId: string, asset: V1Asset
     await ensureTakeProfits(service, run, ledger, state);
     ledger = await runRows(service, run);
     state = await readLiveExecutorState(run);
-    await assertAllPositionsProtected(run, ledger, state);
-    const paused = await service.from("robot_v1_live_runs").update({ status: "PAUSED" })
-      .eq("id", run.id).eq("lease_owner", run.lease_owner).eq("status", "ACTIVE")
-      .select("id,status").single();
-    if (paused.error || paused.data?.status !== "PAUSED")
-      throw new Error("COINOPS_LIVE_PAUSE_STATE_FAILED");
+    await assertPausedProtection(service, run, ledger, state);
+    if (run.status !== "PAUSED") {
+      const paused = await service.from("robot_v1_live_runs").update({ status: "PAUSED" })
+        .eq("id", run.id).eq("lease_owner", run.lease_owner).eq("status", "ACTIVE")
+        .select("id,status").single();
+      if (paused.error || paused.data?.status !== "PAUSED")
+        throw new Error("COINOPS_LIVE_PAUSE_STATE_FAILED");
+    }
     await event(service, run, `PAUSED:${new Date().toISOString()}`, "LIVE_PAUSED", null,
       { source: "OPERATOR_CONTROL", canceled_buy_count: ledger.orders.filter((item) =>
-        item.side === "BUY" && item.status === "CANCELED").length });
+        item.side === "BUY" && item.status === "CANCELED").length,
+        protection_verified: true, quantity_step: state.filters.quantityStep,
+        open_positions: ledger.slots.filter(slot => amount(slot.position_quantity) >= state.filters.quantityStep).length,
+        resident_buy_count: 0 });
     return { status: "PAUSED", asset, cycle_id: run.id };
   } catch (error) {
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)

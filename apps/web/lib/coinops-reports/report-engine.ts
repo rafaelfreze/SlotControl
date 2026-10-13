@@ -16,6 +16,7 @@ import { buildScopedEngineReports } from "./engine-report-scope.ts";
 import { buildLivePerformanceEvidence } from "./live-performance-audit.ts";
 import { buildSlotPresentationAudit } from "./slot-presentation-audit.ts";
 import { buildEngineIsolationAudit } from "./engine-isolation-audit.ts";
+import { auditPausedEntryEvidence, pausedProtectionDetails } from "./paused-entry-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
@@ -371,6 +372,14 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   }
   const rules: AuditRow[] = [];
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "intentional_entry_pause_protection", value: "NEW_BUY_OFF_EXISTING_TP_FILLS_GAINS_CONTINUE", unit: "enum", version: 1,
+    source: "robot_v1_live_runs:PAUSED + robot_v1_live_events:LIVE_PAUSED/RECONCILED", evidence_scope: "CURRENT_CODE_CONTRACT",
+    notes: "PAUSED bloqueia novas BUY pelo fluxo oficial e reconcilia a NEXT BUY própria antes de confirmar. Posições OPEN, TPs, fills, crédito de gain exatamente uma vez, 25 slots, metas, estratégias e histórico permanecem. Não reseta ciclo, não libera entradas no successor, não retoma automaticamente. Fills concorrentes e respostas ambíguas continuam sob ownership/lease/idempotência e fail-closed somente no engine. RECONCILED com protection_verified, quantity_step, open_positions e resident_buy_count conserva a prova persistida, não certifica Binance atual por si só." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "paused_account_home_visibility", value: "PERSISTED_PRESENTATION_PREFERENCE_NOT_OPERATIONAL_HEALTH", unit: "enum", version: 1,
+    source: "account_home_preferences + account_home_preference_events + canonical paused protection read model", evidence_scope: "CURRENT_CODE_CONTRACT",
+    notes: "Ocultar da Home é preferência administrativa persistente, não resolve alerta/ledger, não desativa Watchdog/push nem muda saúde. Conta permanece no seletor e no relatório. Home só omite pausa intencional com proteção completa e fresca de todos os engines; TP ausente, ownership/ordem ambígua, fill pendente, leitura stale ou incidente crítico reaparecem. Reexibir não retoma compras; retomar exige fluxo oficial separado. Eventos de preferência ficam na auditoria administrativa, não são fonte financeira nem integram este pacote automaticamente." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "account_order_budget_window_retry", value: "VALIDATED_WINDOW_ALIGNED_READ_ONLY_RETRY", unit: "enum", version: 1,
     source: "account_order_budget_samples + robot_v1_live_events:ACCOUNT_ORDER_BUDGET_HOLD + robot_v1_live_alerts", evidence_scope: "CURRENT_CODE_CONTRACT",
     notes: "Após validação integral de identidade, ownership e payload, uma janela expirada ou sem margem agenda apenas nova leitura no início de uma janela original Binance, usando serverTime-observedAt. Mantém cooldown mínimo de 5,5s, até 3 leituras/35s e margem de dispatch de 4s. Não prolonga amostra, presume contador zerado, reduz headroom, rouba lease ou repete POST/RPC financeiro. 503 exato sem amostra válida conserva o cooldown anterior; dado inválido, permissão, rate limit, falha de banco e resultado financeiro ambíguo permanecem fail-closed. Exaustão com prova de janela preserva observation_failure: WINDOW_MARGIN/WINDOW_EXPIRED, fase, tentativas e margem, sem payload privado. Falhas genéricas sem prova não recebem causa inventada. WARNING resolvido pelo fluxo normal não comprova recovery do Watchdog; ausência de evento não comprova execução histórica." });
@@ -609,7 +618,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       liveExecution.push({ environment: "REAL", row_type: rowType, asset,
         symbol: asset ? `${asset}BRL` : null, source: `coinops.${table}`,
         evidence_basis: "PERSISTED_COINOPS_LIVE_LEDGER", snapshot_at: input.generatedAt,
-        ...own(row), ...(rowType === "SLOT" ? slotPresentation.get(str(row.id)) ?? {} : {}) });
+        ...own(row), ...(rowType === "EVENT" && (row.event_type === "LIVE_PAUSED"
+          || row.event_type === "RECONCILED" && object(row.details).protection_verified !== undefined)
+          ? { details: pausedProtectionDetails(row.details) } : {}),
+        ...(rowType === "SLOT" ? slotPresentation.get(str(row.id)) ?? {} : {}) });
     }
   };
   const runAsset = (row: AuditRow) => str(liveRunById.get(str(row.run_id))?.asset) as ReportAsset || null;
@@ -832,6 +844,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     datasets.live_preparation = preparation.rows.filter((row) => filters.assets.includes(row.asset as ReportAsset));
   }
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
+  datasets.checks.push(...auditPausedEntryEvidence(liveExecution, incompleteSources));
   if (preparation) {
     datasets.checks.push({ code: "LIVE_PREPARATION_NATIVE_GATE",
       status: preparation.gate === "LIVE_PREPARATION_READY" ? "PASS" : "WARNING",

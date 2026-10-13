@@ -1,6 +1,13 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v23: reserva física BNB Spot antes de BUY, HOLD/AVAILABLE por
+Contrato atual v24: pausa intencional de novas BUY, sem interromper TP/fills/gains
+das posições antigas. Exporta `intentional_entry_pause_protection` e
+`paused_account_home_visibility`. `LIVE_PAUSED` e `RECONCILED` continuam em
+`LIVE_EXECUTION.csv`/JSON com allowlist de proteção. Pausa não é reset, não
+retoma automaticamente nem equivale a HEALTHY; preferência Home não altera
+ledger ou Watchdog. O check `PAUSED_ENTRY_PROTECTION_EVIDENCE` confronta somente
+atestação persistida e ledger, nunca certifica Binance atual/admission/retomada.
+Preserva v23: reserva física BNB Spot antes de BUY, HOLD/AVAILABLE por
 engine, TP/fills preservados e receipt HMAC somente para rejeição pré-POST
 comprovada. Exporta `physical_spot_bnb_fee_reserve`; insuficiência, reposição e
 prova de não envio não equivalem a fill/gain. Ver
@@ -38,7 +45,7 @@ os eventos `ACCOUNT_ORDER_NOT_SUBMITTED` sem tratar não envio como fill.
 Procedimento: `COINOPS_UNSENT_ENTRY_RECOVERY.md`.
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 23`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 24`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento
@@ -122,6 +129,42 @@ O detector compara candles com janelas em que um gatilho Shadow estava armado, n
 O pacote padrão inclui candles próximos a eventos/gatilhos para controlar tamanho. Os candles completos têm download separado em páginas/stream, em partes de até 7 dias para respeitar o tempo máximo da função Vercel; a interface oferece todas as partes contíguas do período, sem truncar silenciosamente. Limites de fontes no pacote são declarados. Reduza a janela se uma fonte atingir o limite; não interprete pacote truncado como auditoria integral.
 
 ## Contrato obrigatório de evolução
+
+### Pausa intencional de novas compras — contrato v24
+
+O estado REAL `PAUSED` fecha entradas, não encerra a supervisão de posições:
+TPs residentes antigos, fills e crédito idempotente de gain continuam sob o
+reconciliador canônico. Slots, ciclo, estratégias, metas e histórico não são
+reinicializados; successor/reentrada não podem liberar BUY até retomada
+explícita. Nenhum export executa pausa, cancelamento, recovery ou retomada.
+
+`LIVE_EXECUTION.csv`/JSON conservam `LIVE_PAUSED` e a observação `RECONCILED`
+de proteção com `protection_verified`, `quantity_step`, `open_positions`,
+`resident_buy_count`, `canceled_buy_count`, `source`, `next` e
+`strategy_version`, por allowlist de escalares. Campos ausentes ficam ausentes
+ou null, jamais zero inventado. Credenciais, headers e objetos livres não são
+exportados nesses detalhes. Datas/identidade run/engine/shard continuam nas
+colunas existentes. Não há novo CSV nem nova coleta financeira.
+
+`PAUSED_ENTRY_PROTECTION_EVIDENCE` usa somente run/ordens/eventos persistidos do
+mesmo escopo: BUY residente ou proteção explicitamente falsa é FAIL; ausência
+de atestação, fonte incompleta ou ordem/fill inconclusivo é WARNING. PASS é
+limitado à consistência dessa prova persistida, não comprova Binance atual,
+frescor, whitelist, saúde global ou capacidade, e não habilita ocultação nem
+retomada. Alertas críticos permanecem exportados e não mudam porque a conta
+foi ocultada da Home. Falhas TP/ownership/stale reais voltam à Home pelo read
+model canônico, não por alteração do relatório.
+
+As preferências administrativas `account_home_preferences` e o log imutável
+`account_home_preference_events` **não são coletados automaticamente neste
+pacote**. Seu histórico é UI/ADMIN, não ledger financeiro. Se uma exportação
+administrativa específica for necessária, ela deve autorizar o operador/conta
+sob RLS e preservar apenas id, operator/account, request_id, hidden,
+engine_ids, changed_by e observed_at; não deve usar o leitor financeiro genérico
+(essas tabelas não possuem product/tenant/user de cada row). Não incluir
+secrets ou credenciais, deduzir saúde de `hidden=true`, filtrar motores dos
+relatórios por ocultação ou acoplar coleta a Watchdog/trading. Reexibir é
+preferência visual; não autoriza RESUME.
 
 ### Atualização da NEXT BUY por aporte — contrato v13
 

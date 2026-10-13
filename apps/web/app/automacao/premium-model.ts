@@ -4,6 +4,7 @@ import { summarizeTestnetLedgerTotals, summarizeTestnetResults, testnetDiagnosti
 import { selectTestnetAssetData } from "../../lib/slotgain/testnet-asset-view.ts";
 import type { Props } from "./automation-mobile";
 import { isOperationalOpen } from "../../lib/slotgain/operational-slot-order.ts";
+import { pausedPositionCovered } from "../../lib/execution/paused-position-protection.ts";
 
 /** Read-only view models. They never produce strategy decisions or dispatch actions. */
 export type PremiumEnvironment = "REAL" | "SHADOW" | "TESTNET";
@@ -34,6 +35,8 @@ export type PremiumAsset = {
   orders: PremiumOrder[]; events: PremiumEvent[]; alerts: Array<{ code: string; severity: string; at: string | null }>;
   openCount: number; nextCount: number; plannedCount: number; tpCount: number;
   historicalCount: number; activeIssueCount: number; raw: unknown;
+  /** Intentional entry pause with fresh protective reconciliation, not trading health. */
+  entryPauseProtected?: boolean;
 };
 
 const ACTIVE_ORDERS = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
@@ -164,6 +167,39 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     : rawField(config, "kill_switch") === true || config?.live_enabled === false;
   const healthy = !activeIssue && !paused && executorActive && live.run.status === "ACTIVE"
     && fresh(live.run.last_reconciled_at, now) && missedCount === 0;
+  const executor = native ? data.nativeLiveControl?.executor : data.livePreparation?.executor;
+  const context = data.engineContext;
+  const entryPauseProtected = live.run.status === "PAUSED" && paused
+    && context?.status === "ACTIVE" && context.engine_kill_switch === true
+    && !context.global_kill_switch && !context.account_kill_switch && !context.strategy_config_pending
+    && (native ? data.nativeLiveControl?.liveEnabled === true : config?.live_enabled === true)
+    && executor?.health?.healthy === true && ["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(executor.gate)
+    && !live.run.last_error && fresh(live.run.last_reconciled_at, now)
+    && live.displayProtectionComplete === true
+    && now - Date.parse(live.run.last_reconciled_at!) >= -1_000
+    && typeof live.displayOrderNamespace === "string"
+    && /^(?:COR1-(?:BTC|SOL)-|C2-[0-9a-f]{10}-)$/.test(live.displayOrderNamespace)
+    && orders.every((order) => order.id.startsWith(live.displayOrderNamespace!))
+    && !invariantFailed && new Set(live.accounts.map((row) => row.slot_number)).size === 25
+    && live.accounts.every((row) => row.slot_number >= 1 && row.slot_number <= 25)
+    && capital !== null && committed !== null && reserved === 0
+    && slots.every((slot) => slot.quantity !== null && slot.quantity >= 0 && slot.committed !== null
+      && slot.committed >= 0 && slot.balance !== null && slot.balance >= 0
+      && (slot.quantity === 0 || slot.state === "OPEN"))
+    && unprotected === 0 && nextCount === 0 && !capExceeded
+    && slots.filter((slot) => slot.quantity !== null && slot.quantity > 0).every((slot) => {
+      const tps = slot.orders.filter((order) => order.side === "SELL" && order.resident);
+      return tps.length === 1 && tps[0].purpose === "TP" && slot.quantity !== null
+        && tps[0].quantity !== null && tps[0].executedQuantity !== null && quantityStep !== null
+        && pausedPositionCovered(slot.quantity, tps[0].quantity - tps[0].executedQuantity, quantityStep);
+    })
+    && orders.filter((order) => order.side === "SELL" && order.resident).every((order) => order.purpose === "TP"
+      && slots.some((slot) => slot.number === order.slotNumber && slot.state === "OPEN" && (slot.quantity ?? 0) > 0))
+    && live.alerts.every((row) => row.severity === "WARNING"
+      && ["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING"].includes(row.code))
+    && !orders.some((order) => ["PREPARED", "UNKNOWN", "SUBMITTING", "PENDING_CANCEL"].includes(order.status)
+      || order.side === "BUY" && order.resident
+      || (order.executedQuantity ?? 0) > 0 && rawField(order.raw, "trades_reconciled") !== true);
   const fundingHold = live.alerts.length > 0 && live.alerts.every((row) => row.severity === "WARNING"
     && ["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING"].includes(row.code))
     && !orders.some((order) => ["PREPARED", "UNKNOWN", "SUBMITTING", "PENDING_CANCEL"].includes(order.status)
@@ -175,8 +211,9 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     fees: live.accounts.length ? sum(slots.map((slot) => slot.fees)) : null, openPnl: sum(slots.map((slot) => slot.openPnl)),
     gains: slots.length ? sum(slots.map((slot) => slot.gains)) : null, monthlyGains: slots.length ? sum(slots.map((slot) => slot.monthlyGains)) : null,
     regime: live.run.entry_regime, gainRate: number(live.run.gain_rate), spacingRate: number(live.run.entry_spacing),
-    health: { healthy, tone: fundingHold ? "attention" : activeIssue ? "error" : healthy ? "ok" : "attention", label: fundingHold ? "AGUARDANDO SALDO" : activeIssue ? "REVISAR LIVE" : healthy ? "OPERACIONAL" : "EM ACOMPANHAMENTO",
-      reason: fundingHold ? "Novas compras aguardam reposição Spot; posições e TPs continuam sob reconciliação." : live.run.last_error || (unprotected ? `${unprotected} posição com cobertura de TP a verificar.`
+    entryPauseProtected,
+    health: { healthy, tone: entryPauseProtected ? "ok" : fundingHold ? "attention" : activeIssue ? "error" : healthy ? "ok" : "attention", label: entryPauseProtected ? "PAUSADO · POSIÇÕES PROTEGIDAS" : fundingHold ? "AGUARDANDO SALDO" : activeIssue ? "REVISAR LIVE" : healthy ? "OPERACIONAL" : "EM ACOMPANHAMENTO",
+      reason: entryPauseProtected ? "Novas compras pausadas por você; posições e TPs antigos continuam sob reconciliação." : fundingHold ? "Novas compras aguardam reposição Spot; posições e TPs continuam sob reconciliação." : live.run.last_error || (unprotected ? `${unprotected} posição com cobertura de TP a verificar.`
         : live.alerts.length ? "Alertas ativos no ledger." : invariantFailed ? "Evidência dos 25 slots e contas incompleta."
           : capExceeded ? "Exposição acima do hard cap configurado." : nextCount > 1 ? "Mais de uma BUY residente."
             : paused ? "Novas entradas protegidas pelo controle do ativo." : !executorActive ? "Executor LIVE sem confirmação operacional atual."

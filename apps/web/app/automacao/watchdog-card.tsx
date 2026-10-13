@@ -5,7 +5,7 @@ import { PremiumDrawer } from "./premium-primitives";
 
 type Watchdog = { status: string; checkedAt: string | null;
   activeCriticalAlerts: number;
-  engines: { healthy: number; reconciling: number; recovering: number; blocked: number; stale: number };
+  engines: { healthy: number; paused?: number; reconciling: number; recovering: number; blocked: number; stale: number };
   executors: { healthy: number; total: number };
   lastIncident: { detected_condition: string; opened_at: string; result: string } | null;
   autoRecoveries24h: number;
@@ -48,7 +48,7 @@ export function WatchdogCard({ attentionOnly = false }: { attentionOnly?: boolea
       <div className="px-watchdog-details">
         <span>Última checagem: {status?.checkedAt
           ? new Date(status.checkedAt).toLocaleTimeString("pt-BR") : "—"}</span>
-        {status ? <><span>Motores: {status.engines.healthy} saudáveis · {status.engines.reconciling ?? 0} reconciliando normalmente · {status.engines.recovering} recuperando · {status.engines.blocked} bloqueados · {status.engines.stale} stale</span>
+        {status ? <><span>Motores: {status.engines.healthy} saudáveis · {status.engines.paused ?? 0} pausados com TPs monitorados · {status.engines.reconciling ?? 0} reconciliando normalmente · {status.engines.recovering} recuperando · {status.engines.blocked} bloqueados · {status.engines.stale} stale</span>
           <span>Executores: {status.executors.healthy}/{status.executors.total} saudáveis</span>
           <span>Recuperações pelo Watchdog · 24h: {status.autoRecoveries24h}</span>
           {status.reliability && <>

@@ -21,6 +21,8 @@ import { clearAutomationReadRecovery } from "./automation-read-recovery";
 import { FUNDING_WARNING_AWARENESS_KEY, fundingOnlyBannerAcknowledged, fundingWarningFingerprint,
   readFundingWarningAwareness, updateFundingWarningAwareness } from "./funding-warning-awareness";
 import "./funding-warning-awareness.css";
+import { safeHiddenAccountIds, homeVisibleEngines } from "./account-home-visibility";
+import { AccountPauseHomePanel } from "./account-pause-home-panel";
 import { accountOptions } from "./account-selector-model";
 import type { AthProfilesPanel as AthPanel } from "./ath-profiles-panel";
 import type { ManualAdjustmentsPanel as AdjustmentsPanel } from "./manual-adjustments-panel";
@@ -79,7 +81,7 @@ function AssetCard({ model, candles, regime, onOpen, compact = false }: { model:
   const last = candles.at(-1), previous = candles.at(-2);
   const change = last && previous ? (Number(last.close_price) / Number(previous.close_price) - 1) * 100 : null;
   return <article className={`px-asset px-panel px-${model.asset.toLowerCase()}`}>
-    <header><AssetIcon asset={model.asset} /><div><h2>{model.symbol.replace(model.currency, `/${model.currency}`)}</h2><strong className="px-price">{number(model.price)}</strong></div><div className="px-asset-status"><span className={`px-badge ${model.engineStatus !== "PAUSED" && model.health.tone === "error" ? "px-badge--error" : ""}`}>{model.engineStatus === "PAUSED" ? "PAUSADO" : regime ?? model.regime ?? model.status}</span>{change !== null ? <small className={tones(change)}>{change >= 0 ? "↗ +" : "↘ "}{number(change)}% <span>vela diária</span></small> : null}</div></header>
+    <header><AssetIcon asset={model.asset} /><div><h2>{model.symbol.replace(model.currency, `/${model.currency}`)}</h2><strong className="px-price">{number(model.price)}</strong></div><div className="px-asset-status"><span className={`px-badge ${model.engineStatus !== "PAUSED" && model.health.tone === "error" ? "px-badge--error" : ""}`}>{model.entryPauseProtected || model.engineStatus === "PAUSED" ? "PAUSADO" : regime ?? model.regime ?? model.status}</span>{change !== null ? <small className={tones(change)}>{change >= 0 ? "↗ +" : "↘ "}{number(change)}% <span>vela diária</span></small> : null}</div></header>
     <Trend candles={candles} asset={model.asset} symbol={model.symbol} />
     {model.environment === "TESTNET" ? <small className="px-chart-source">Curva Production de referência · execução fictícia Testnet</small> : null}
     {!compact ? <div className="px-asset-facts"><div><span>Posição CoinOps</span><strong>{number(quantity, 8)}</strong><small>{money(model.committed, model.currency)}</small></div><div><span>Gains</span><strong>{model.gains ?? "—"}</strong><small>{model.goal}/slot/mês</small></div><div><span>{model.environment === "SHADOW" ? "TP virtual" : "TP residente"}</span><strong>{tp.length ? number(tp[0].price, model.asset === "BTC" ? 0 : 2) : "—"}</strong><small>{model.tpCount} proteção(ões)</small></div><div><span>Próx. BUY</span><strong>{number(next?.entryPrice, model.asset === "BTC" ? 0 : 2)}</strong><small>{next ? `Slot #${next.number}` : "Sem entrada armada"}</small></div></div> : <p className="px-chart-source">Mercado {model.currency} · leitura pública · detalhes no ambiente Real</p>}
@@ -296,10 +298,16 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
         version: executor?.health?.actual_executor_version ?? executor?.health?.version ?? null };
     }), [data, engines, selection, view]);
   const sync = useAutomationLiveSync(view, engines, selection, data.snapshotAt ?? new Date(0).toISOString(), executorSnapshots);
-  const assets = useMemo(() => selectPremiumEngines(engines, environment, selection).map((engine) =>
+  const hiddenHomeAccounts = useMemo(() => safeHiddenAccountIds(engines, data.operator?.accountHomePreferences),
+    [engines, data.operator?.accountHomePreferences]);
+  // Presentation hiding must never remove paused engines from synchronization,
+  // executor observations or the selector. Unsafe protection returns them here.
+  const renderedEngines = useMemo(() => homeVisibleEngines(engines, selection, hiddenHomeAccounts),
+    [engines, selection, hiddenHomeAccounts]);
+  const assets = useMemo(() => selectPremiumEngines(renderedEngines, environment, selection).map((engine) =>
     withLiveMarketPrice(engine, market.status !== "stale" ? market.prices[engine.symbol] ?? null : null)),
-    [engines, environment, selection, market.prices, market.status]);
-  const overview = useMemo(() => view === "overview" ? (["SHADOW", "TESTNET", "REAL"] as const).map((env) => ({ env, assets: selectPremiumEngines(engines, env, selection) })) : [], [engines, selection, view]);
+    [renderedEngines, environment, selection, market.prices, market.status]);
+  const overview = useMemo(() => view === "overview" ? (["SHADOW", "TESTNET", "REAL"] as const).map((env) => ({ env, assets: selectPremiumEngines(renderedEngines, env, selection) })) : [], [renderedEngines, selection, view]);
   const active = engineId ? assets.find((item) => item.engineId === engineId) : assets[0];
   const asset = active?.asset ?? "BTC";
   const currency = active?.currency ?? (environment === "REAL" ? "BRL" : "USDC");
@@ -327,7 +335,9 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     [data.operator?.accounts]);
   const accountChoices = useMemo(() => accountOptions(accounts, engines.filter((engine) => engine.environment === environment)),
     [accounts, engines, environment]);
-  const rankedAccounts = useMemo(() => rankPremiumAccountsByOperatedBalance(accounts, assets), [accounts, assets]);
+  const rankedAccounts = useMemo(() => rankPremiumAccountsByOperatedBalance(accounts.filter((account) =>
+    selection.accountId !== "ALL" || environment !== "REAL" || !hiddenHomeAccounts.has(account.id)), assets),
+    [accounts, assets, selection.accountId, environment, hiddenHomeAccounts]);
   const symbols = [...new Set(engines.filter((engine) => (view === "overview" || engine.environment === environment)
     && (selection.accountId === "ALL" || engine.accountId === selection.accountId)).map((engine) => engine.symbol))];
   const allAccounts = selection.accountId === "ALL";
@@ -338,22 +348,28 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     .sort((left, right) => usdtMarketOrder.indexOf(left.symbol) - usdtMarketOrder.indexOf(right.symbol));
   const healthChartItems = [...usdtMarketCharts.filter((item) => item.asset === "BTC"), "BINANCE" as const,
     ...usdtMarketCharts.filter((item) => item.asset !== "BTC")];
-  const liveStatus = selectedLiveExecutorStatus(assets, data.operator?.engineData
-    ?? Object.fromEntries(assets.map((item) => [item.engineId, data])));
-  const liveAssets = useMemo(() => selectPremiumEngines(engines, "REAL", selection), [engines, selection]);
-  const liveConfigured = liveAssets.some((entry) => entry.status === "ACTIVE");
+  const liveStatusAssets = allAccounts && environment === "REAL" && assets.length === 0 && hiddenHomeAccounts.size > 0
+    ? selectPremiumEngines(engines, "REAL", selection) : assets;
+  const liveStatus = selectedLiveExecutorStatus(liveStatusAssets, data.operator?.engineData
+    ?? Object.fromEntries(liveStatusAssets.map((item) => [item.engineId, data])));
+  const liveAssets = useMemo(() => selectPremiumEngines(renderedEngines, "REAL", selection), [renderedEngines, selection]);
+  const liveConfigured = liveAssets.some((entry) => ["ACTIVE", "PAUSED", "PREPARING"].includes(entry.status));
   // The server intentionally streams the ledger before the executor observations.
   // That short, initial gap is unknown/loading, not an operational incident.
   const initialHealthLoading = Boolean(initialData.deferredHealth && healthPending && healthClock === 0);
   const liveActive = liveConfigured && liveAssets.every((item) => item.engineStatus === "ACTIVE" && item.health.healthy && !item.killSwitch && item.cap !== null && item.exposure !== null && item.exposure <= item.cap);
+  const homePausedOnly = allAccounts && environment === "REAL" && assets.length === 0 && hiddenHomeAccounts.size > 0;
+  const selectedProtectedPause = environment === "REAL" && !allAccounts && assets.length > 0
+    && assets.every((item) => item.entryPauseProtected === true);
   const liveBadgeLabel = view === "live" || view === "overview"
-    ? initialHealthLoading ? "LIVE · ATUALIZANDO" : liveActive ? "LIVE" : liveConfigured ? "LIVE · ATENÇÃO" : "EM PREPARAÇÃO"
+    ? initialHealthLoading ? "LIVE · ATUALIZANDO" : homePausedOnly || selectedProtectedPause ? "COMPRAS PAUSADAS" : liveActive ? "LIVE" : liveConfigured ? "LIVE · ATENÇÃO" : "EM PREPARAÇÃO"
     : "REAL · VER NO PAINEL";
   const globalOverCap = environment === "REAL" && groups.some((group) => { const exposure = premiumNativeTotal(group.engines, "exposure"), cap = groupAmount(group, "cap"); return exposure !== null && cap !== null && exposure > cap; });
-  const healthy = assets.length > 0 && assets.every((item) => item.health.healthy) && !globalOverCap;
+  const healthy = homePausedOnly || assets.length > 0 && assets.every((item) => item.health.healthy) && !globalOverCap;
   const showOperationalSummary = allAccounts || !initialHealthLoading && (!healthy
     || environment === "REAL" && (!liveStatus.online || !liveStatus.binanceConnected));
-  const paused = environment !== "REAL" && assets.length > 0 && assets.every((item) => item.engineStatus === "PAUSED");
+  const paused = homePausedOnly || assets.length > 0 && (environment !== "REAL"
+    ? assets.every((item) => item.engineStatus === "PAUSED") : assets.every((item) => item.entryPauseProtected === true));
   const checked = assets.map((item) => item.lastCheck).filter((value): value is string => !!value).sort()[0];
   const cap = environment === "REAL" ? data.operator ? nativeTotal("cap") : data.livePreparation?.globalCapBrl ?? null : nativeTotal("capital");
   const exposure = nativeTotal("exposure");
@@ -397,7 +413,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       ] as Array<[IconName, string, () => void]>).map(([icon, label, action]) => <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button>)}{data.operator ? <Link href={finopsNavigation.costsHref}><PremiumIcon name="wallet" />Custos &amp; Operação</Link> : null}</nav>
        <div className="px-scope-filters" aria-label="Filtros da operação"><AccountSelector options={accountChoices} value={selection.accountId} onChange={(accountId) => changeSelection({ accountId, symbol: "ALL" })} /><label>Mercado<select aria-label="Mercado" value={selection.symbol} onChange={(event) => changeSelection({ ...selection, symbol: event.target.value })}><option value="ALL">Todos os mercados</option>{symbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}</select></label><small>Filtros de leitura · não alteram ordens</small></div>
      </div>
-    {view === "live" && showOperationalSummary ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={initialHealthLoading ? "is-loading" : liveStatus.online ? "is-ok" : "is-warning"}>● Executor {initialHealthLoading ? "ATUALIZANDO" : liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={initialHealthLoading ? "is-loading" : liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {initialHealthLoading ? "ATUALIZANDO" : liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={initialHealthLoading ? "is-loading" : healthy ? "is-ok" : "is-warning"}>● Estratégia {initialHealthLoading ? "ATUALIZANDO" : healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
+    {view === "live" && showOperationalSummary ? <div className="px-mobile-health-strip" aria-label="Saúde da operação Live"><span className={initialHealthLoading ? "is-loading" : liveStatus.online ? "is-ok" : "is-warning"}>● Executor {initialHealthLoading ? "ATUALIZANDO" : liveStatus.online ? "ONLINE" : "VERIFICAR"}</span><span className={initialHealthLoading ? "is-loading" : liveStatus.binanceConnected ? "is-ok" : "is-warning"}>● Binance {initialHealthLoading ? "ATUALIZANDO" : liveStatus.binanceConnected ? "CONECTADA" : "VERIFICAR"}</span><span className={initialHealthLoading ? "is-loading" : healthy || paused ? "is-ok" : "is-warning"}>● Estratégia {initialHealthLoading ? "ATUALIZANDO" : paused ? "PAUSADA" : healthy ? "ATIVA" : "VERIFICAR"}</span></div> : null}</div>
     <main className="px-dashboard">
       <div className={`px-overview-top${allAccounts ? " px-overview-top--markets" : ""}`}>
       <div className="px-overview-executors">
@@ -407,10 +423,14 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
         <div className="px-market-chart-grid">{healthChartItems.map((model) => model === "BINANCE" ? <BinanceHealthCard key="BINANCE" /> : <article className="px-panel px-market-chart" key={model.symbol}><header><AssetIcon asset={model.asset} /><div><h3>{model.asset}/{model.currency}</h3><strong>{number(model.price)}</strong></div></header><Trend candles={candlesFor(model)} asset={model.asset} symbol={model.symbol} /><AssetHealthBadge asset={model.asset} /></article>)}</div>
       </section> : null}
       <aside className="px-overview-status" aria-label="Monitoramento operacional">
-      {showOperationalSummary ? <section className="px-hero px-panel" aria-label="Sistema operacional"><div className={`px-health ${initialHealthLoading ? "px-health--loading" : healthy && (environment !== "REAL" || liveStatus.online && liveStatus.binanceConnected) || paused ? "" : "px-health--attention"}`}><div><h2>Sistema Operacional</h2><p><i>{initialHealthLoading ? "·" : paused ? "·" : environment === "REAL" ? liveStatus.online ? "✓" : "!" : healthy ? "✓" : "!"}</i>{environment === "REAL" ? "Executor" : "Motor"} <strong>{initialHealthLoading ? "ATUALIZANDO" : paused ? "PAUSADO" : environment === "REAL" ? liveStatus.online ? "ONLINE" : "VERIFICAR" : healthy ? "ATIVO" : "ATENÇÃO"}</strong></p><p><i>{initialHealthLoading ? "·" : environment === "REAL" ? liveStatus.binanceConnected ? "✓" : "!" : "·"}</i>{environment === "REAL" ? "Binance" : environment} <strong>{initialHealthLoading ? "ATUALIZANDO" : environment === "REAL" ? liveStatus.binanceConnected ? "CONNECTED" : "VERIFICAR" : "ISOLADO"}</strong></p><p><i>{initialHealthLoading ? "·" : paused ? "·" : healthy ? "✓" : "!"}</i>Estratégia <strong>{initialHealthLoading ? "ATUALIZANDO" : paused ? "PAUSADA" : healthy ? "ATIVA" : "VERIFICAR"}</strong></p></div><div className="px-health-check"><small>Última verificação<br /><time>{time(checked)}</time></small><button type="button" className="px-button" onClick={() => { setOperationTab("alerts"); goOperations(); }}>Ver logs <PremiumIcon name="arrow" /></button></div></div></section> : null}
+      {showOperationalSummary ? <section className="px-hero px-panel" aria-label="Sistema operacional"><div className={`px-health ${initialHealthLoading ? "px-health--loading" : healthy && (environment !== "REAL" || liveStatus.online && liveStatus.binanceConnected) || paused ? "" : "px-health--attention"}`}><div><h2>Sistema Operacional</h2><p><i>{initialHealthLoading ? "·" : environment === "REAL" ? liveStatus.online ? "✓" : "!" : paused ? "·" : healthy ? "✓" : "!"}</i>{environment === "REAL" ? "Executor" : "Motor"} <strong>{initialHealthLoading ? "ATUALIZANDO" : environment === "REAL" ? liveStatus.online ? "ONLINE" : "VERIFICAR" : paused ? "PAUSADO" : healthy ? "ATIVO" : "ATENÇÃO"}</strong></p><p><i>{initialHealthLoading ? "·" : environment === "REAL" ? liveStatus.binanceConnected ? "✓" : "!" : "·"}</i>{environment === "REAL" ? "Binance" : environment} <strong>{initialHealthLoading ? "ATUALIZANDO" : environment === "REAL" ? liveStatus.binanceConnected ? "CONNECTED" : "VERIFICAR" : "ISOLADO"}</strong></p><p><i>{initialHealthLoading ? "·" : paused ? "·" : healthy ? "✓" : "!"}</i>Estratégia <strong>{initialHealthLoading ? "ATUALIZANDO" : paused ? "PAUSADA" : healthy ? "ATIVA" : "VERIFICAR"}</strong></p></div><div className="px-health-check"><small>Última verificação<br /><time>{time(checked)}</time></small><button type="button" className="px-button" onClick={() => { setOperationTab("alerts"); goOperations(); }}>Ver logs <PremiumIcon name="arrow" /></button></div></div></section> : null}
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard attentionOnly={!allAccounts} /> : null}
       </aside>
       </div>
+      {data.operator && !allAccounts && view === "live" ? <AccountPauseHomePanel key={selection.accountId}
+        selectedAccountId={selection.accountId} accountName={accounts.find((account) => account.id === selection.accountId)?.displayName ?? "Conta"}
+        engines={engines.filter((engine) => engine.environment === "REAL" && engine.accountId === selection.accountId)}
+        preference={data.operator.accountHomePreferences?.find((preference) => preference.accountId === selection.accountId)} /> : null}
       {!initialHealthLoading && !healthy && !paused && (globalOverCap || visibleAttentionAssets.length > 0) ? <div className="px-alert-banner" role="status">{globalOverCap ? <p><strong>LIMITE GLOBAL EXCEDIDO</strong>Verifique a reconciliação e os limites autorizados.</p> : null}{visibleAttentionAssets.map((item) => <p key={item.engineId}><strong>{item.accountDisplayName} · {item.symbol} · {item.health.label}</strong> {item.health.reason}{item.alerts.some((alert) => fundingAlert(alert.code)) ? <button type="button" className="px-button" onClick={() => {
         if (selection.accountId !== item.accountId) changeSelection({ accountId: item.accountId, symbol: "ALL" });
         else if (Date.now() >= fundingRefreshAvailableAt && !fundingLoading) setFundingRefresh((current) => current + 1);

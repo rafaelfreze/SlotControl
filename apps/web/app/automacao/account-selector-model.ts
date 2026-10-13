@@ -1,15 +1,15 @@
 import type { PremiumAccount, PremiumEngine } from "./premium-operator";
 
-export type AccountOperationalState = "CRITICAL" | "ALERT" | "RECOVERING" | "OPERATIONAL" | "INACTIVE";
+export type AccountOperationalState = "CRITICAL" | "ALERT" | "RECOVERING" | "OPERATIONAL" | "PAUSED" | "INACTIVE";
 export type AccountOption = PremiumAccount & { state: AccountOperationalState; markets: string[] };
 
 const priority: Record<AccountOperationalState, number> = {
-  CRITICAL: 0, ALERT: 1, RECOVERING: 2, OPERATIONAL: 3, INACTIVE: 4,
+  CRITICAL: 0, ALERT: 1, RECOVERING: 2, OPERATIONAL: 3, PAUSED: 4, INACTIVE: 5,
 };
 
 export const accountStateLabel: Record<AccountOperationalState, string> = {
   CRITICAL: "Crítico ou bloqueado", ALERT: "Atenção", RECOVERING: "Em recuperação",
-  OPERATIONAL: "Operacional", INACTIVE: "Inativa",
+  OPERATIONAL: "Operacional", PAUSED: "Compras pausadas", INACTIVE: "Inativa",
 };
 
 /** Derive selector state from the same server-scoped registry and engine health used by the cards. */
@@ -23,14 +23,15 @@ export function accountOptions(accounts: PremiumAccount[], engines: PremiumEngin
   return accounts.map((account) => {
     const rows = byAccount.get(account.id) ?? [];
     const markets = [...new Set(rows.map((row) => row.symbol))];
-    const blocked = account.killSwitch || rows.some((row) => row.killSwitch
-      || /BLOCKED|CRITICAL|PROTECTED|PROTEGIDO/i.test(`${row.engineStatus} ${row.health.label}`));
+    const protectedPause = rows.length > 0 && rows.every((row) => row.entryPauseProtected === true);
+    const blocked = account.killSwitch || rows.some((row) => row.entryPauseProtected !== true && (row.killSwitch
+      || /BLOCKED|CRITICAL|PROTECTED|PROTEGIDO/i.test(`${row.engineStatus} ${row.health.label}`)));
     const recovering = rows.some((row) => /RECOVERING|RECUPER/i.test(`${row.engineStatus} ${row.health.label}`));
-    const alert = rows.some((row) => row.activeIssueCount > 0
-      || !row.health.healthy && !/RECOVERING|RECUPER/i.test(`${row.engineStatus} ${row.health.label}`));
+    const alert = rows.some((row) => row.entryPauseProtected !== true && (row.activeIssueCount > 0
+      || !row.health.healthy && !/RECOVERING|RECUPER/i.test(`${row.engineStatus} ${row.health.label}`)));
     const inactive = account.status !== "ACTIVE" || rows.length === 0 || rows.every((row) => row.engineStatus === "PAUSED");
     const state: AccountOperationalState = blocked ? "CRITICAL" : alert ? "ALERT"
-      : recovering ? "RECOVERING" : inactive ? "INACTIVE" : "OPERATIONAL";
+      : recovering ? "RECOVERING" : protectedPause ? "PAUSED" : inactive ? "INACTIVE" : "OPERATIONAL";
     return { ...account, state, markets };
   }).sort((a, b) => priority[a.state] - priority[b.state]
     || a.displayName.localeCompare(b.displayName, "pt-BR") || a.id.localeCompare(b.id));

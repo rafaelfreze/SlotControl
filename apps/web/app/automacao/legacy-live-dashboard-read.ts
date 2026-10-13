@@ -104,17 +104,16 @@ export async function loadLegacyLiveDashboard(supabase: ReturnType<typeof create
             owned(service, "robot_v1_live_selective_contribution_allocations", "id,operator_id,trading_engine_id,exchange_account_id,slot_number,amount_quote,status,created_at,applied_at", true)
               .eq("symbol", `${asset}BRL`).in("status", ["PENDING", "APPLIED"]).order("created_at").order("id"),
           (row) => row.id, deadline, attempt),
-          staged("alerts", () => observeLedgerRows<LiveAssetData["alerts"][number] & Owner>("monthly_target",
-            Promise.resolve(owned(supabase, "robot_v1_live_alerts", "operator_id,trading_engine_id,exchange_account_id,severity,code,last_seen_at")
-              .eq("asset", asset).is("resolved_at", null).order("last_seen_at", { ascending: false }).limit(10)
-              .abortSignal(deadline)).then((response) => ({ ...response,
-                data: response.data as unknown as Array<LiveAssetData["alerts"][number] & Owner> | null })), deadline, attempt)),
+          completeRows<LiveAssetData["alerts"][number] & Owner & { id: string }>("alerts", "monthly_target", () =>
+            owned(supabase, "robot_v1_live_alerts", "id,operator_id,trading_engine_id,exchange_account_id,severity,code,last_seen_at", true)
+              .eq("asset", asset).is("resolved_at", null).order("last_seen_at", { ascending: false }).order("id"),
+          (row) => row.id, deadline, attempt),
         ]);
         for (const row of [...slots, ...orders, ...accounts, ...allocations, ...alerts]) assertOwned(row);
         await staged("slots", async () => { assertPhysicalLedger(slots); });
         await staged("accounts", async () => { assertPhysicalLedger(accounts); });
         return { run, slots, orders, accounts, selectiveAllocations: allocations,
-          events: [] as LiveAssetData["events"], alerts, monthlyGains: [] } satisfies LiveAssetData;
+          events: [] as LiveAssetData["events"], alerts, monthlyGains: [], displayProtectionComplete: true } satisfies LiveAssetData;
       });
       let historyUnavailable = false;
       if (data) {

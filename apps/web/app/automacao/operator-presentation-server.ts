@@ -9,6 +9,7 @@ import { loadLiveExecutorStatus, type LiveExecutorStatus } from "@/lib/execution
 import type { AutomationView } from "./automation-center";
 import { readLiveDashboardBatch } from "./live-dashboard-batch";
 import { projectLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
+import { liveEngineOrderPrefix } from "@/lib/execution/robot-v1-live-cycle";
 
 type Client = ReturnType<typeof createServiceRoleClient>;
 
@@ -24,6 +25,26 @@ function assertEngineReads(rows: Array<{ name: string; error: unknown }>): void 
 /** UI observations must not borrow the longer financial dispatch timeout. */
 const fetchUiHealth: typeof fetch = (url, init) => fetch(url, { ...init,
   signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : [])]) });
+
+/** Display metadata is optional: bounded GET, no retry or privileged fallback.
+ * The resolved operator and authenticated RLS remain the ownership boundary.
+ * Any failed/incomplete observation leaves accounts visible. */
+async function readAccountHomePreferences(client: Client, registry: DomainRegistry) {
+  try {
+    const result = await client.from("account_home_preferences")
+      .select("exchange_account_id,hidden,updated_at").eq("operator_id", registry.operator.id)
+      .abortSignal(AbortSignal.timeout(5_000));
+    if (result.error) throw new Error("COINOPS_ACCOUNT_HOME_PREFERENCES_UNAVAILABLE");
+    if ((result.data ?? []).some((row) => typeof row.exchange_account_id !== "string"
+      || typeof row.hidden !== "boolean" || typeof row.updated_at !== "string" || !Number.isFinite(Date.parse(row.updated_at))))
+      throw new Error("COINOPS_ACCOUNT_HOME_PREFERENCES_INCOMPLETE");
+    const ownedAccounts = new Set(registry.accounts.map((account) => account.id));
+    return (result.data ?? []).filter((row) => ownedAccounts.has(row.exchange_account_id));
+  } catch {
+    console.warn("COINOPS_ACCOUNT_HOME_PREFERENCES_UNAVAILABLE");
+    return [];
+  }
+}
 
 function emptyScoped(data: Props, context: EngineContext): Props {
   return { ...data, engineContext: context, balances: [], configs: [], cycles: [], slots: [],
@@ -94,7 +115,7 @@ async function nativeEnginePresentation(client: Client, data: Props, context: En
     if (!preparation.data) throw new Error("COINOPS_ENGINE_LIVE_PREPARATION_UNAVAILABLE");
     result.nativeLiveControl = { liveEnabled: preparation.data.live_enabled,
       killSwitch: preparation.data.kill_switch, monthlyTarget: preparation.data.monthly_target, executor: null };
-    result.liveAssetData = { [asset]: { run: run.data, slots: slots.data ?? [], orders: orders.data ?? [],
+    result.liveAssetData = { [asset]: { displayProtectionComplete: false, run: run.data, slots: slots.data ?? [], orders: orders.data ?? [],
       accounts: accounts.data ?? [], selectiveAllocations: allocations.data ?? [], events: events.data ?? [], alerts: alerts.data ?? [],
       monthlyGains: (totals.data ?? []).filter((row) => row.period_key === monthlyPeriodKey(new Date())) } };
     return result;
@@ -154,6 +175,7 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
   const engineData: Record<string, Props> = {};
   const capsPromise = client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
     .eq("operator_id", registry.operator.id);
+  const homePreferencesPromise = readAccountHomePreferences(client, registry);
   const contexts = registry.engines.map((row) => resolveEngineContext(registry, {
     environment: row.environment, exchange_account_id: row.exchange_account_id, trading_engine_id: row.id,
   }));
@@ -221,14 +243,18 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
         ?? scoped.livePreparation?.configs.find((config) => config.asset === context.base_asset)?.monthly_target
         ?? (context.base_asset === "BTC" ? 7 : 2);
       scoped.liveAssetData = { ...scoped.liveAssetData,
-        [context.base_asset]: projectLiveSlotRanks(liveData, context.base_asset, Number(target), new Date().toISOString()) };
+        [context.base_asset]: projectLiveSlotRanks({ ...liveData, displayOrderNamespace: liveEngineOrderPrefix(context) },
+          context.base_asset, Number(target), new Date().toISOString()) };
     }
     engineData[context.trading_engine_id] = scoped;
     const engine = buildPremiumEngine(scoped, context);
-    return readUnavailable ? { ...engine, health: { healthy: false as const, tone: "attention" as const,
+    return readUnavailable ? { ...engine, entryPauseProtected: false, health: { healthy: false as const, tone: "attention" as const,
       label: "DADOS INDISPONÍVEIS", reason: "Leitura deste motor falhou; o estado operacional não está confirmado nesta tela." } } : engine;
   });
-  return { accounts: registry.accounts.map((account) => ({ id: account.id, displayName: account.display_name,
+  const homePreferences = await homePreferencesPromise;
+  return { accountHomePreferences: homePreferences.map((row) => ({
+    accountId: row.exchange_account_id, hidden: row.hidden === true, updatedAt: row.updated_at,
+  })), accounts: registry.accounts.map((account) => ({ id: account.id, displayName: account.display_name,
     status: account.status, killSwitch: registry.operator.kill_switch || account.kill_switch,
     shardId: account.executor_shard_id ?? null })),
     engines, engineData, selection, accountCaps: (caps.data ?? []).map((row) => ({

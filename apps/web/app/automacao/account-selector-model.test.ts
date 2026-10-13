@@ -46,3 +46,13 @@ test("search is case/accent insensitive and accepts safe identifiers", () => {
   assert.equal(searchAccountOptions(result, "JOAO").length, 1);
   assert.equal(searchAccountOptions(result, "PUBLIC-ID-1").length, 1);
 });
+
+test("intentional protected pause remains selectable without converting critical failures to paused", () => {
+  const account = { id: "paused-A", displayName: "Renato Demo", status: "ACTIVE", killSwitch: false };
+  const paused = engine(account.id, { entryPauseProtected: true, killSwitch: true,
+    health: { healthy: false, tone: "ok", label: "PAUSADO PROTEGIDO", reason: "TPs reconciliados." } });
+  assert.equal(accountOptions([account], [paused])[0].state, "PAUSED");
+  assert.equal(searchAccountOptions(accountOptions([account], [paused]), "Renato").length, 1);
+  assert.equal(accountOptions([account], [{ ...paused, entryPauseProtected: false,
+    health: { ...paused.health, label: "REVISAR LIVE" } }])[0].state, "CRITICAL");
+});

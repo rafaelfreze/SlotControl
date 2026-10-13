@@ -11,12 +11,14 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")
 const scope = { operatorId: id(1), accountId: id(2), productId: id(3), tenantId: id(4), userId: id(5), engineIds: [id(10), id(11)] };
 type Asset = "BTC" | "SOL";
 type Row = Record<string, unknown>;
-type Result = { data: Record<Asset, { slots: Row[]; orders: Row[]; accounts: Row[]; events: Row[] }>;
+type Result = { data: Record<Asset, { slots: Row[]; orders: Row[]; accounts: Row[]; events: Row[];
+  alerts: Row[]; displayProtectionComplete?: boolean }>;
   unavailableAssets: Asset[]; historyUnavailableAssets: Asset[] };
 
 function fixture(options: { transientOrders?: boolean; deniedOrders?: boolean; historyTimeout?: boolean;
   missingSlot?: boolean; duplicateSlot?: boolean; wrongEngine?: boolean; absentBtc?: boolean;
-  orderCount?: number; latePageDenied?: boolean; schemaError?: boolean } = {}) {
+  orderCount?: number; latePageDenied?: boolean; schemaError?: boolean; alertCount?: number;
+  unknownAlertCount?: boolean; duplicateAlertId?: boolean } = {}) {
   const attempts = { BTC: 0, SOL: 0 }, warnings: unknown[][] = [];
   const calls: Array<{ table: string; filters: Row; asset: Asset; range: number[] | null; attempt: number; signal?: AbortSignal }> = [];
   const rows: Record<string, Row[]> = Object.fromEntries(["robot_v1_live_runs", "robot_v1_live_slots", "robot_v1_live_orders",
@@ -46,10 +48,16 @@ function fixture(options: { transientOrders?: boolean; deniedOrders?: boolean; h
     })));
     rows.robot_v1_live_events.push({ ...owner, id: id(20_000 + assetIndex), run_id: run.id,
       event_type: "LIVE_MONITOR_PASS", slot_number: null, observed_at: "2026-10-13T13:00:00Z", details: {} });
+    rows.robot_v1_live_alerts.push(...Array.from({ length: options.alertCount ?? 0 }, (_, index) => ({
+      ...owner, asset, id: id(30_000 + assetIndex * 2_000 + (options.duplicateAlertId && asset === "BTC" ? 0 : index)),
+      resolved_at: null, severity: index === options.alertCount! - 1 ? "CRITICAL" : "WARNING",
+      code: index === options.alertCount! - 1 ? "COINOPS_LIVE_REAL_CRITICAL" : "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT",
+      last_seen_at: new Date(Date.parse("2026-10-13T13:00:00Z") - index * 1000).toISOString(),
+    })));
   }
   const db = { from(table: string) {
     const filters: Row = {};
-    let columns = "", range: number[] | null = null, limit: number | null = null, signal: AbortSignal | undefined;
+    let columns = "", range: number[] | null = null, limit: number | null = null, signal: AbortSignal | undefined, exactCount = false;
     const response = (single = false) => {
       const asset = filters.asset as Asset ?? (filters.trading_engine_id === scope.engineIds[0] ? "BTC" : "SOL");
       if (table === "robot_v1_live_runs") attempts[asset]++;
@@ -72,10 +80,12 @@ function fixture(options: { transientOrders?: boolean; deniedOrders?: boolean; h
         selected[0].position_quantity = attempt;
       if (options.wrongEngine && asset === "BTC" && table === "robot_v1_live_slots")
         selected[0].trading_engine_id = scope.engineIds[1];
-      return { data: single ? selected[0] ?? null : selected, count: total, status: 200, error: null };
+      return { data: single ? selected[0] ?? null : selected,
+        count: exactCount && !(options.unknownAlertCount && asset === "BTC" && table === "robot_v1_live_alerts") ? total : null,
+        status: 200, error: null };
     };
     const query = {
-      select(value: string) { columns = value; return query; },
+      select(value: string, options?: { count?: string }) { columns = value; exactCount = options?.count === "exact"; return query; },
       eq(key: string, value: unknown) { filters[key] = value; return query; },
       in(key: string, values: unknown[]) { filters[`$in:${key}`] = values; return query; },
       is(key: string, value: unknown) { filters[key] = value; return query; },
@@ -102,6 +112,7 @@ function fixture(options: { transientOrders?: boolean; deniedOrders?: boolean; h
 test("legacy core query scope is exact and never invokes a financial worker or write", async () => {
   const f = fixture(), result = await f.load();
   assert.deepEqual(result.unavailableAssets, []); assert.deepEqual(result.historyUnavailableAssets, []);
+  assert.equal(result.data.BTC.displayProtectionComplete, true); assert.equal(result.data.SOL.displayProtectionComplete, true);
   for (const call of f.calls) {
     for (const [key, value] of Object.entries({ operator_id: scope.operatorId, exchange_account_id: scope.accountId,
       product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId })) assert.equal(call.filters[key], value);
@@ -152,6 +163,28 @@ test("a later-page provider failure never publishes a partial order truth", asyn
   const f = fixture({ orderCount: 1005, latePageDenied: true }), result = await f.load();
   assert.equal(result.data.BTC, undefined); assert.equal(result.data.SOL.orders.length, 1005);
   assert.deepEqual(result.unavailableAssets, ["BTC"]); assert.equal(f.attempts.BTC, 2);
+});
+
+test("all unresolved alerts are complete and paginated; older CRITICAL after the first ten remains visible", async () => {
+  const f = fixture({ alertCount: 515 }), result = await f.load();
+  assert.deepEqual(result.unavailableAssets, []);
+  for (const asset of ["BTC", "SOL"] as const) {
+    assert.equal(result.data[asset].displayProtectionComplete, true);
+    assert.equal(result.data[asset].alerts.length, 515);
+    assert.equal(result.data[asset].alerts[514].severity, "CRITICAL");
+    assert.equal(result.data[asset].alerts[514].code, "COINOPS_LIVE_REAL_CRITICAL");
+    assert.deepEqual(f.calls.filter(call => call.table === "robot_v1_live_alerts" && call.asset === asset).map(call => call.range),
+      [[0, 499], [500, 999]]);
+  }
+});
+
+test("unknown alert count or duplicate alert identity invalidates only its affected asset, never certifies partial protection", async () => {
+  for (const options of [{ unknownAlertCount: true }, { duplicateAlertId: true, alertCount: 12 }]) {
+    const f = fixture(options), result = await f.load();
+    assert.equal(result.data.BTC, undefined); assert.equal(result.data.SOL.displayProtectionComplete, true);
+    assert.deepEqual(result.unavailableAssets, ["BTC"]); assert.equal(f.attempts.BTC, 1);
+    assert.equal(f.calls.filter(call => call.table === "robot_v1_live_events" && call.asset === "BTC").length, 0);
+  }
 });
 
 for (const [name, options] of [["missing physical slot", { missingSlot: true }], ["duplicate physical slot", { duplicateSlot: true }],

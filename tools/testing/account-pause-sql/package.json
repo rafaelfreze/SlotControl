@@ -1,0 +1,9 @@
+{
+  "name": "coinops-account-pause-sql-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated in-memory PostgreSQL RLS regression; no Supabase credentials or LIVE connection.",
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.9"
+  }
+}

@@ -39,3 +39,13 @@ test('an operational shard failure still makes watchdog attention', () => {
   assert.equal(result.status, 'ATTENTION');
   assert.deepEqual(result.executors, { healthy: 0, total: 1 });
 });
+
+test('protected deliberate pauses are counted separately and do not create fleet attention', () => {
+  const result = aggregateWatchdogStatus(['executor-01'], [{ ...check, healthy_engines: 6, paused_engines: 1 }], 0, now);
+  assert.equal(result.status, 'HEALTHY');
+  assert.equal(result.engines.healthy, 6);
+  assert.equal(result.engines.paused, 1);
+  assert.equal(result.engines.blocked, 0);
+  assert.equal(aggregateWatchdogStatus(['executor-01'], [check], 0, now).engines.paused, 0);
+  assert.equal(aggregateWatchdogStatus(['executor-01'], [{ ...check, paused_engines: 1 }], 1, now).status, 'ATTENTION');
+});

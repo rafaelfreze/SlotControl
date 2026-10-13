@@ -19,3 +19,18 @@ test("incident storage deduplicates open episodes and denies client writes", () 
   assert.match(migration, /revoke all on coinops\.watchdog_checks,coinops\.watchdog_incidents from public,anon,authenticated/i);
   assert.match(migration, /grant select,insert,update on coinops\.watchdog_checks,coinops\.watchdog_incidents to service_role/i);
 });
+
+test("watchdog discovers paused protection and cannot resume or clear a BUY gate", () => {
+  const server = readFileSync(new URL("watchdog-server.ts", import.meta.url), "utf8");
+  assert.match(server, /\.in\("status", \["ACTIVE", "PAUSED"\]\)/);
+  assert.match(server, /service\.from\("robot_v1_live_preparations"\)[\s\S]*live_enabled,kill_switch/);
+  assert.match(server, /trades_reconciled\.eq\.false/);
+  assert.match(server, /completeWatchdogRows<FastOrder>/);
+  assert.match(server, /finding\.intentionalPause\) paused\+\+; else healthy\+\+/);
+  assert.match(server, /paused_engines: paused/);
+  assert.match(server, /await advanceLiveRun\(item\.run\.id, "WATCHDOG_STALE_RECOVERY"\)/);
+  assert.doesNotMatch(server, /(?:await|import\s*\{[^}]*?)\s*resumeLiveRun/);
+  assert.doesNotMatch(server, /update\(\{[^}]*kill_switch:\s*false/);
+  const card = readFileSync(new URL("../../app/automacao/watchdog-card.tsx", import.meta.url), "utf8");
+  assert.match(card, /pausados com TPs monitorados/);
+});

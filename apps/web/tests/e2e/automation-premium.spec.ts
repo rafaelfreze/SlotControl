@@ -63,7 +63,7 @@ const styles = ["app/globals.css", "app/compact-redesign.css", "app/official-mon
   "app/desktop-modules.css", "app/automation-redesign.css", "app/automation-center.css",
   "app/automation-cockpit.css", "app/reports-center.css", "app/automacao/live-preparation.css",
   "app/automacao/manual-adjustments.css", "app/automacao/ath-profiles.css",
-  "app/automacao/premium-automation.css", "app/automacao/asset-health.css", "app/automacao/account-funding-card.css", "app/automacao/funding-warning-awareness.css"];
+  "app/automacao/premium-automation.css", "app/automacao/asset-health.css", "app/automacao/account-funding-card.css", "app/automacao/funding-warning-awareness.css", "app/automacao/account-pause-home-panel.css"];
 
 /** Bundle real client code, never server actions, credentials, or server loaders.
  * This follows the existing open-slot-growth-goal component test harness. */
@@ -103,12 +103,12 @@ function clientModules() {
 
 async function mount(page: Page, view: View, width: number, height = 960,
   data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null,
-  watchdogData: unknown = null, engineControlData: unknown = null, fundingData: unknown = null) {
+  watchdogData: unknown = null, engineControlData: unknown = null, fundingData: unknown = null, pauseData: unknown = null) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
   await page.route("**/*", async (route) => { requests.push(route.request().url()); await route.abort(); });
-  if (engineControlData || fundingData) {
+  if (engineControlData || fundingData || pauseData) {
     // The real control center constructs same-origin URLs. Give this fixture
     // a loopback origin via interception, without starting/contacting a server.
     await page.route("http://127.0.0.1:39999/", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
@@ -131,10 +131,26 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const watchdogFixture = ${JSON.stringify(watchdogData)};
     const engineFixture = ${JSON.stringify(engineControlData)};
     const fundingFixture = ${JSON.stringify(fundingData)};
+    const pauseFixture = ${JSON.stringify(pauseData)};
     window.__fixtureEngineCommands = [];
+    window.__fixturePauseCommands = [];
+    window.__fixturePauseInFlight = 0;
+    window.__fixturePauseMaxInFlight = 0;
     window.__fixtureReads = [];
     window.fetch = async (url, settings) => {
       window.__fixtureReads.push(String(url));
+      if (String(url).startsWith('/api/coinops-account-pause') && pauseFixture) {
+        if (!settings?.body) return { ok: true, json: async () => pauseFixture.snapshot };
+        const command = JSON.parse(settings.body); window.__fixturePauseCommands.push(command);
+        window.__fixturePauseInFlight++;
+        window.__fixturePauseMaxInFlight = Math.max(window.__fixturePauseMaxInFlight, window.__fixturePauseInFlight);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        window.__fixturePauseInFlight--;
+        if (command.action === 'PAUSE_ENGINE' && command.engineId === pauseFixture.failEngineId)
+          return { ok: false, json: async () => ({ error: 'COINOPS_PAUSE_UNCONFIRMED_SYNTHETIC' }) };
+        return { ok: true, json: async () => ({ ...pauseFixture.snapshot,
+          hidden: command.action === 'HIDE_PAUSED' ? true : command.action === 'SHOW' ? false : pauseFixture.snapshot.hidden }) };
+      }
       if (String(url).includes('/api/coinops-engine-control') && engineFixture) {
         if (!settings?.body) return { ok: true, json: async () => engineFixture.inventory };
         const command = JSON.parse(settings.body); window.__fixtureEngineCommands.push(command);
@@ -1258,6 +1274,138 @@ test("ciente do saldo nunca oculta incidente crítico ou leitura desconhecida", 
   await expect(page.getByRole("button", { name: /Já avisei a pessoa/ })).toHaveCount(0);
   await expect(page.locator(".px-alert-banner")).toContainText("COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE");
   await noSideEffects(page, read);
+});
+
+for (const width of [390, 1440]) test(`pausa protegida oculta conta na Home mas conserva seletor e posições ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  data.operator!.engines = data.operator!.engines.filter((engine) => engine.currency === "BRL");
+  const hidden = data.operator!.engines.filter((engine) => engine.accountId === ACCOUNT_A);
+  data.operator!.engines.filter((engine) => engine.accountId === ACCOUNT_B).forEach((engine) => {
+    engine.health = { healthy: true, tone: "ok", label: "OPERACIONAL", reason: "Fixture protegida." };
+    engine.exposure = 20; engine.cap = 275; engine.status = "ACTIVE"; engine.killSwitch = false;
+  });
+  hidden.forEach((engine) => { engine.status = "PAUSED"; engine.killSwitch = true; engine.entryPauseProtected = true;
+    engine.health = { healthy: false, tone: "ok", label: "PAUSADO · POSIÇÕES PROTEGIDAS", reason: "TPs reconciliados." };
+    engine.alerts = [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", at: AUTOMATION_FIXTURE_NOW }];
+    engine.activeIssueCount = 1;
+  });
+  data.operator!.accountHomePreferences = [{ accountId: ACCOUNT_A, hidden: true, updatedAt: AUTOMATION_FIXTURE_NOW }];
+  const snapshot = { accountId: ACCOUNT_A, hidden: true, canHide: true, engines: hidden.map((engine) => ({
+    engineId: engine.engineId, symbol: engine.symbol, executorShardId: engine.executorShardId ?? "executor-02",
+    runId: engine.cycleId, runStatus: "PAUSED" })) };
+  const audit = await mount(page, "live", width, 900, data, null, null, null, null,
+    { balances: [], funding: [], unavailable: 1 }, { snapshot });
+  await expect(page.locator(".px-account-card").filter({ hasText: "Rafael Demo" })).toHaveCount(0);
+  await expect(page.locator(".px-alert-banner")).toHaveCount(0);
+  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toHaveCount(0);
+  await expect(page.locator(".px-live")).toHaveText("LIVE");
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  const option = page.getByRole("option").filter({ hasText: "Rafael Demo" });
+  await expect(option).toContainText("Compras pausadas"); await option.click();
+  const panel = page.getByRole("region", { name: "Pausa e visibilidade · Rafael Demo" });
+  await expect(panel).toContainText("Novas compras pausadas");
+  await expect(page.locator(".px-asset").first()).toContainText("PAUSADO");
+  await expect(page.getByText("Capital em posições", { exact: true })).toBeVisible();
+  await expect(page.locator(".px-live")).toHaveText("COMPRAS PAUSADAS");
+  await panel.getByRole("button", { name: "Reexibir na tela inicial · sem retomar compras" }).click();
+  await expect(panel).toContainText("Isso não retoma novas compras");
+  const shown = await page.evaluate(() => (window as unknown as { __fixturePauseCommands: Array<Record<string, unknown>> }).__fixturePauseCommands);
+  expect(shown.map(({ requestId, ...command }) => {
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/i); return command;
+  })).toEqual([{ action: "SHOW", accountId: ACCOUNT_A }]);
+  expect((await geometry(page)).overflow).toBe(0); await screenshot(page, testInfo, `account-paused-hidden-${width}`);
+  await noSideEffects(page, audit);
+});
+
+test("pausa oculta nunca esconde TP sem proteção, ownership ambíguo ou leitura stale", async ({ page }) => {
+  for (const reason of ["TP ausente", "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN", "Reconciliação stale"]) {
+    const data = automationOperatorFixture();
+    data.operator!.engines = data.operator!.engines.filter((engine) => engine.accountId === ACCOUNT_A && engine.symbol === "SOLBRL");
+    const engine = data.operator!.engines[0]; engine.status = "PAUSED"; engine.killSwitch = true; engine.entryPauseProtected = false;
+    engine.health = { healthy: false, tone: "error", label: "REVISAR LIVE", reason }; engine.activeIssueCount = 1;
+    data.operator!.accountHomePreferences = [{ accountId: ACCOUNT_A, hidden: true, updatedAt: AUTOMATION_FIXTURE_NOW }];
+    const audit = await mount(page, "live", 390, 900, data);
+    await expect(page.locator(".px-account-card").filter({ hasText: "Rafael Demo" })).toBeVisible();
+    await expect(page.locator(".px-alert-banner")).toContainText(reason);
+    await expect(page.locator(".px-live")).toContainText("ATENÇÃO"); await noSideEffects(page, audit);
+  }
+});
+
+for (const width of [390, 1440]) test(`pausar conta confirma antes de chamadas sequenciais e só oculta ao final ${width}px`, async ({ page }) => {
+  const data = automationOperatorFixture();
+  data.operator!.engines = data.operator!.engines.filter((engine) => engine.accountId === ACCOUNT_A && engine.currency === "BRL");
+  const snapshot = { accountId: ACCOUNT_A, hidden: false, canHide: false, engines: data.operator!.engines.map((engine, index) => ({
+    engineId: engine.engineId, symbol: "SOLBRL", executorShardId: index ? "executor-03" : "executor-02",
+    runId: engine.cycleId, runStatus: "ACTIVE" })) };
+  const audit = await mount(page, "live", width, 900, data, null, null, null, null,
+    { balances: [], funding: [], unavailable: 1 }, { snapshot });
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  await page.getByRole("option").filter({ hasText: "Rafael Demo" }).click();
+  const button = page.getByRole("button", { name: "Pausar novas compras e ocultar da tela inicial", exact: true });
+  expect(await page.evaluate(() => (window as unknown as { __fixtureReads: string[] }).__fixtureReads
+    .filter((url) => url.startsWith("/api/coinops-account-pause")))).toEqual([]);
+  page.once("dialog", dialog => dialog.dismiss()); await button.click();
+  expect(await page.evaluate(() => (window as unknown as { __fixturePauseCommands: unknown[] }).__fixturePauseCommands)).toEqual([]);
+  page.once("dialog", dialog => dialog.accept());
+  // Same event turn double-click: the synchronous in-flight guard fences the
+  // second dispatch before React has rendered the disabled button.
+  await page.evaluate(() => { const target = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .find((item) => item.textContent === "Pausar novas compras e ocultar da tela inicial")!;
+    target.click(); target.click(); });
+  await expect(page.getByRole("region", { name: "Pausa e visibilidade · Rafael Demo" })).toContainText("Conta oculta da tela inicial");
+  const commands = await page.evaluate(() => (window as unknown as { __fixturePauseCommands: Array<Record<string, unknown>> }).__fixturePauseCommands);
+  expect(new Set(commands.map((command) => command.requestId)).size).toBe(commands.length);
+  expect(commands.map(({ requestId, ...command }) => {
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/i); return command;
+  })).toEqual([...snapshot.engines.map((engine) => ({ action: "PAUSE_ENGINE", accountId: ACCOUNT_A,
+    engineId: engine.engineId, runId: engine.runId })), { action: "HIDE_PAUSED", accountId: ACCOUNT_A,
+    expectedEngineIds: snapshot.engines.map((engine) => engine.engineId) }]);
+  expect(await page.evaluate(() => (window as unknown as { __fixturePauseMaxInFlight: number }).__fixturePauseMaxInFlight)).toBe(1);
+  await noSideEffects(page, audit);
+});
+
+test("pausa parcial ou motor sem run não oculta nem tenta repetir operação financeira", async ({ page }) => {
+  for (const missingRun of [false, true]) {
+    const data = automationOperatorFixture();
+    data.operator!.engines = data.operator!.engines.filter((engine) => engine.accountId === ACCOUNT_A && engine.currency === "BRL");
+    const snapshot = { accountId: ACCOUNT_A, hidden: false, canHide: false, engines: data.operator!.engines.map((engine, index) => ({
+      engineId: engine.engineId, symbol: engine.symbol, executorShardId: "executor-02",
+      runId: missingRun && index === 1 ? null : engine.cycleId, runStatus: missingRun && index === 1 ? null : "ACTIVE" })) };
+    const audit = await mount(page, "live", 390, 900, data, null, null, null, null,
+      { balances: [], funding: [], unavailable: 1 }, { snapshot, failEngineId: snapshot.engines[1].engineId });
+    await page.getByRole("button", { name: "Conta", exact: true }).click();
+    await page.getByRole("option").filter({ hasText: "Rafael Demo" }).click();
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Pausar novas compras e ocultar da tela inicial", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Pausa e ocultação não confirmadas");
+    const commands = await page.evaluate(() => (window as unknown as { __fixturePauseCommands: Array<{ action: string }> }).__fixturePauseCommands);
+    expect(commands).toHaveLength(missingRun ? 0 : 2);
+    expect(commands.some((command) => command.action === "HIDE_PAUSED")).toBe(false);
+    await noSideEffects(page, audit);
+  }
+});
+
+test("Home com todos os motores pausados não inventa operação ativa nem perde observação do executor", async ({ page }) => {
+  const data = automationOperatorFixture();
+  data.operator!.accounts = data.operator!.accounts.filter((account) => account.id === ACCOUNT_A);
+  data.operator!.engines = data.operator!.engines.filter((engine) => engine.accountId === ACCOUNT_A && engine.currency === "BRL");
+  data.operator!.engines.forEach((engine) => { engine.status = "PAUSED"; engine.killSwitch = true; engine.entryPauseProtected = true;
+    engine.health = { healthy: false, tone: "ok", label: "PAUSADO · POSIÇÕES PROTEGIDAS", reason: "TPs reconciliados." };
+    const scoped = data.operator!.engineData[engine.engineId];
+    if (scoped.livePreparation?.executor) scoped.livePreparation.executor = { ...scoped.livePreparation.executor,
+      gate: "LIVE_EXECUTOR_PROTECTED", health: { ...scoped.livePreparation.executor.health!, healthy: true,
+        binance_connectivity: "OK", kill_switch: true } };
+  });
+  data.operator!.accountHomePreferences = [{ accountId: ACCOUNT_A, hidden: true, updatedAt: AUTOMATION_FIXTURE_NOW }];
+  const audit = await mount(page, "live", 390, 900, data);
+  await expect(page.locator(".px-account-card")).toHaveCount(0);
+  await expect(page.locator(".px-alert-banner")).toHaveCount(0);
+  await expect(page.locator(".px-live")).toHaveText("COMPRAS PAUSADAS");
+  await expect(page.getByRole("region", { name: "Sistema operacional", exact: true })).toContainText("PAUSADA");
+  await expect(page.getByLabel("Saúde da operação Live")).toContainText("Executor ONLINE");
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  await expect(page.getByRole("option").filter({ hasText: "Rafael Demo" })).toBeVisible();
+  await noSideEffects(page, audit);
 });
 
 test("conta saudável oculta infraestrutura mas falha continua visível", async ({ page }) => {

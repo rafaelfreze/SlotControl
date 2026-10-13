@@ -1,0 +1,10 @@
+.px-account-pause { display: grid; gap: 12px; padding: 16px; margin: 14px 0; }
+.px-account-pause h2 { margin: 0; font-size: 15px; }
+.px-account-pause p { margin: 7px 0 0; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.px-account-pause small { display: block; margin-top: 6px; color: var(--px-muted, #93abc0); font-size: 12px; line-height: 1.45; }
+.px-account-pause-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.px-account-pause-actions .px-button { min-height: 44px; white-space: normal; text-align: center; }
+.px-account-pause-error { color: #ffba77; }
+.px-account-pause-message { color: #55dfc4; }
+.px-account-state-paused .px-account-dot { background: #79b8dc; }
+@media (max-width: 600px) { .px-account-pause-actions .px-button { width: 100%; } }

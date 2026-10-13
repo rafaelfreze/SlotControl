@@ -9,6 +9,7 @@ import { resolveExecutorShard } from "../../lib/execution/executor-shards-server
 import { monthlyPeriodKey, rankMonthlySlots } from "../../lib/execution/monthly-slot-policy.ts";
 import { buildPremiumEngine } from "./premium-operator.ts";
 import { projectLiveSlotRanks } from "../../lib/slotgain/live-slot-read-model.ts";
+import { liveEngineOrderPrefix } from "../../lib/execution/robot-v1-live-cycle.ts";
 import type { buildOperatorPresentation as BuildPresentation } from "./operator-presentation-server";
 import type { Props } from "./automation-mobile";
 
@@ -50,7 +51,8 @@ function data(): Props {
 }
 
 async function run(patch: (engine: EngineContext) => Record<string, unknown> = () => ({}),
-  options: { timeout?: boolean; requireParallel?: boolean; unavailableLegacyAssets?: string[] } = {}) {
+  options: { timeout?: boolean; requireParallel?: boolean; unavailableLegacyAssets?: string[];
+    preferenceRows?: unknown[]; preferenceFailure?: "provider" | "throw" } = {}) {
   const names = ["LIVE_EXECUTOR_BASE_URL", "LIVE_EXECUTOR_EGRESS_IP", "COINOPS_EXECUTOR_HMAC_SECRET", "LIVE_EXECUTOR_VALIDATED_VERSION"] as const;
   const previous = names.map((name) => process.env[name]);
   process.env.LIVE_EXECUTOR_BASE_URL = `https://${ip}`;
@@ -59,6 +61,7 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
   process.env.LIVE_EXECUTOR_VALIDATED_VERSION = "new-scoped-version";
   const requests: EngineContext[] = [];
   const deadlines: number[] = [], controllers: AbortController[] = [];
+  const metadataDeadlineIndexes = new Set<number>();
   const pending: Array<() => void> = [];
   let inflight = 0, maximumInflight = 0;
   try {
@@ -67,6 +70,7 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
       "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
       "./premium-operator": { buildPremiumEngine },
       "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
+      "@/lib/execution/robot-v1-live-cycle": { liveEngineOrderPrefix },
       "./live-dashboard-batch": { readLiveDashboardBatch },
       "@/lib/execution/live-executor-health": { loadLiveExecutorStatus }
     };
@@ -108,14 +112,27 @@ async function run(patch: (engine: EngineContext) => Record<string, unknown> = (
     }, evaluated, fetcher, uiAbortSignal);
     const build = evaluated.buildOperatorPresentation as typeof BuildPresentation;
     const client = { from(table: string) {
-      assert.equal(table, "account_quote_caps");
-      return { select: () => ({ eq: () => ({ error: null, data: [{ exchange_account_id: id(5), quote_asset: "BRL", hard_cap_quote: 725 }] }) }) };
+      assert.ok(["account_quote_caps", "account_home_preferences"].includes(table));
+      const value = { error: table === "account_home_preferences" && options.preferenceFailure === "provider" ? { code: "57014" } : null,
+        data: table === "account_home_preferences" ? options.preferenceRows ?? []
+          : [{ exchange_account_id: id(5), quote_asset: "BRL", hard_cap_quote: 725 }] };
+      const chain = { select: () => chain, eq: (column: string, value: unknown) => {
+        assert.equal(column, "operator_id"); assert.equal(value, registry.operator.id); return chain;
+      }, abortSignal: (signal: AbortSignal) => {
+        assert.equal(table, "account_home_preferences");
+        const index = controllers.findIndex((controller) => controller.signal === signal);
+        assert.ok(index >= 0); metadataDeadlineIndexes.add(index); return chain;
+      }, then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) =>
+        table === "account_home_preferences" && options.preferenceFailure === "throw"
+          ? Promise.reject(new Error("Preference transport failure")).then(resolve, reject) : Promise.resolve(value).then(resolve, reject) };
+      return chain;
     } } as unknown as Parameters<typeof BuildPresentation>[0];
     const input = data();
     const result = await build(client, input, registry, { accountId: "ALL", symbol: "ALL" },
       undefined, undefined, false, undefined, options.unavailableLegacyAssets);
     assert.ok(deadlines.every((ms) => ms === 5_000), "UI budget is exactly 5s, not the 35s transport budget");
-    return { input, result, requests, deadlines, maximumInflight };
+    return { input, result, requests, deadlines: deadlines.filter((_, index) => !metadataDeadlineIndexes.has(index)),
+      metadataDeadlines: deadlines.filter((_, index) => metadataDeadlineIndexes.has(index)), maximumInflight };
   } finally {
     names.forEach((name, index) => {
       if (previous[index] === undefined) delete process.env[name];
@@ -148,6 +165,45 @@ test("legacy core read failure stays explicit on only that asset while its sibli
   const sol = result.engines.find((engine) => engine.symbol === "SOLBRL")!;
   assert.equal(btc.health.label, "DADOS INDISPONÍVEIS"); assert.equal(btc.health.healthy, false);
   assert.equal(sol.health.healthy, true);
+});
+
+test("optional Home preference exposes owned metadata with a five-second deadline only", async () => {
+  const at = "2026-10-13T12:00:00.000Z";
+  const { result, requests, metadataDeadlines } = await run(() => ({}), { preferenceRows: [
+    { exchange_account_id: id(5), hidden: true, updated_at: at },
+    { exchange_account_id: id(90), hidden: true, updated_at: at },
+  ] });
+  assert.deepEqual(metadataDeadlines, [5_000]);
+  assert.deepEqual(result.accountHomePreferences, [{ accountId: id(5), hidden: true, updatedAt: at }]);
+  assert.equal(requests.length, 2, "preference metadata does not add executor/exchange observations");
+  assert.ok(result.engines.every((engine) => engine.health.healthy), "metadata cannot alter operational health");
+});
+
+test("preference provider timeout or transport throw never hides accounts or drops the panel", async () => {
+  const previous = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...values: unknown[]) => { warnings.push(values); };
+  try {
+    for (const preferenceFailure of ["provider", "throw"] as const) {
+      const { result, requests, metadataDeadlines } = await run(() => ({}), { preferenceFailure });
+      assert.deepEqual(result.accountHomePreferences, []);
+      assert.equal(result.accounts.length, registry.accounts.length);
+      assert.ok(result.engines.every((engine) => engine.health.healthy));
+      assert.deepEqual(metadataDeadlines, [5_000]); assert.equal(requests.length, 2);
+    }
+    assert.deepEqual(warnings, [["COINOPS_ACCOUNT_HOME_PREFERENCES_UNAVAILABLE"], ["COINOPS_ACCOUNT_HOME_PREFERENCES_UNAVAILABLE"]],
+      "optional metadata errors are sanitized and never leak payloads");
+  } finally { console.warn = previous; }
+});
+
+test("partial display metadata cannot certify a hidden preference", async () => {
+  const previous = console.warn; console.warn = () => {};
+  try {
+    const { result } = await run(() => ({}), { preferenceRows: [{ exchange_account_id: id(5), hidden: true }] });
+    assert.deepEqual(result.accountHomePreferences, []);
+    assert.equal(result.accounts.length, 1);
+    assert.ok(result.engines.every((engine) => engine.health.healthy));
+  } finally { console.warn = previous; }
 });
 
 test("a database kill switch cannot be presented as healthy when executor health is green", () => {
@@ -234,12 +290,13 @@ test("native LIVE reads its own preparation and scoped executor health without i
     robot_v1_live_events: [], robot_v1_live_alerts: [],
     robot_v1_live_preparations: { live_enabled: true, kill_switch: false },
     account_quote_caps: [{ exchange_account_id: nativeAccount.id, quote_asset: "USDT", hard_cap_quote: 838 }],
+    account_home_preferences: [],
   };
   const client = { from(table: string) {
     assert.ok(table in rows, `Unexpected native table ${table}`);
     const value = { data: rows[table], error: null };
     const chain: Record<string, unknown> = {};
-    for (const method of ["select", "eq", "in", "is", "order", "limit"])
+    for (const method of ["select", "eq", "in", "is", "order", "limit", "abortSignal"])
       chain[method] = () => chain;
     chain.maybeSingle = async () => value;
     chain.then = (resolve: (value: unknown) => void) => Promise.resolve(value).then(resolve);
@@ -253,6 +310,7 @@ test("native LIVE reads its own preparation and scoped executor health without i
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
     "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
+    "@/lib/execution/robot-v1-live-cycle": { liveEngineOrderPrefix },
       "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
@@ -278,8 +336,8 @@ test("native LIVE reads its own preparation and scoped executor health without i
     events: [], alerts: [], monthlyGains: [], preparation: { liveEnabled: true, killSwitch: false } };
   let capReads = 0;
   const fastClient = { from(table: string) {
-    assert.equal(table, "account_quote_caps", "projection must not repeat the nine engine reads");
-    capReads++;
+    assert.ok(["account_quote_caps", "account_home_preferences"].includes(table), "projection must not repeat the nine engine reads");
+    if (table === "account_quote_caps") capReads++;
     return client.from(table);
   } } as unknown as Parameters<typeof BuildPresentation>[0];
   const fast = await build(fastClient, data(), nativeRegistry, { accountId: "ALL", symbol: "ALL" },
@@ -296,7 +354,7 @@ test("native LIVE reads its own preparation and scoped executor health without i
     assert.ok(table in rows, `Unexpected native table ${table}`);
     const value = { data: rows[table], error: table === "robot_v1_live_events" ? { code: "57014" } : null };
     const chain: Record<string, unknown> = {};
-    for (const method of ["select", "eq", "in", "is", "order", "limit"])
+    for (const method of ["select", "eq", "in", "is", "order", "limit", "abortSignal"])
       chain[method] = () => chain;
     chain.maybeSingle = async () => value;
     chain.then = (resolve: (value: unknown) => void) => Promise.resolve(value).then(resolve);
@@ -324,6 +382,7 @@ test("Testnet and LIVE tabs read only their environment, including native engine
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
     "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
+    "@/lib/execution/robot-v1-live-cycle": { liveEngineOrderPrefix },
       "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
@@ -348,7 +407,7 @@ test("Testnet and LIVE tabs read only their environment, including native engine
     const value = { data: table === "account_quote_caps" || table === "robot_v1_slot_gain_totals" ? [] : null,
       error: null };
     const chain: Record<string, unknown> = {};
-    for (const method of ["select", "eq", "in", "is", "order", "limit"])
+    for (const method of ["select", "eq", "in", "is", "order", "limit", "abortSignal"])
       chain[method] = () => chain;
     chain.maybeSingle = async () => value;
     chain.then = (resolve: (value: unknown) => void) => Promise.resolve(value).then(resolve);
@@ -372,6 +431,7 @@ test("one native ledger timeout degrades only that engine and bounds concurrent 
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey, rankMonthlySlots },
     "./premium-operator": { buildPremiumEngine },
     "@/lib/slotgain/live-slot-read-model": { projectLiveSlotRanks },
+    "@/lib/execution/robot-v1-live-cycle": { liveEngineOrderPrefix },
       "./live-dashboard-batch": { readLiveDashboardBatch },
     "@/lib/execution/live-executor-health": { loadLiveExecutorStatus } };
   const evaluated: Record<string, unknown> = {};
@@ -387,7 +447,7 @@ test("one native ledger timeout degrades only that engine and bounds concurrent 
   const client = { from(table: string) {
     let engineId = "";
     const chain: Record<string, unknown> = {};
-    for (const method of ["select", "in", "is", "order", "limit"])
+    for (const method of ["select", "in", "is", "order", "limit", "abortSignal"])
       chain[method] = () => chain;
     chain.eq = (field: string, value: unknown) => {
       if (field === "trading_engine_id") engineId = String(value);

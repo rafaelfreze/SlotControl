@@ -167,6 +167,14 @@ no ambiente de destino antes de operação remota.
   nunca resolver ledger, liberar BUY ou apresentar espera como HEALTHY. Ver
   `docs/COINOPS_DASHBOARD_READ_RECOVERY_20261013.md`.
 
+- Pausa intencional por conta fecha somente novas BUY de cada engine, sequencialmente,
+  preservando OPEN/TP/fills/gain e o worker ACTIVE no registry com run PAUSED.
+  PAUSED não recicla/reentra/reset nem retoma automaticamente. Ocultar Home exige
+  prova integral e fresca de proteção e preferência persistente ADMIN; selector,
+  ledger, auditoria e Watchdog permanecem. Falha real/ownership/TP/stale/incomplete
+  reexibe a conta, nunca força verde. Reexibir não retoma BUY. Não executar pausa
+  LIVE como smoke. Ver `docs/COINOPS_ACCOUNT_PAUSE_HOME_20261013.md`.
+
 ## Multi-account, isolamento e capacidade
 
 - Saldo Spot físico fresco deve financiar novas BUY; capital lógico/Earn não
@@ -267,7 +275,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 23`, com roteamento e metadados de isolamento por engine/shard e evidência de atribuição/retry do trading. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 24`, com roteamento e metadados de isolamento por engine/shard, evidência de atribuição/retry do trading e proteção da pausa intencional. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

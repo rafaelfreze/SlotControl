@@ -27,7 +27,9 @@ export async function readLiveDashboardBatch(client: ReturnType<typeof createCli
       const value = row.payload;
       if (!value || ![value.slots, value.orders, value.accounts, value.events, value.alerts, value.monthlyGains].every(Array.isArray))
         throw new Error("COINOPS_ENGINE_BATCH_UNAVAILABLE");
-      reads.set(row.engine_id, value);
+      // The canonical RPC aggregates every current-run order and unresolved
+      // alert. Capped fallback reads never receive this pause certificate.
+      reads.set(row.engine_id, { ...value, displayProtectionComplete: true });
     }
     if (batch.some((item) => !reads.has(item.trading_engine_id)))
       throw new Error("COINOPS_ENGINE_BATCH_UNAVAILABLE");

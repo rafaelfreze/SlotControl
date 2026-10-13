@@ -96,3 +96,12 @@ test("selected LIVE health uses Thyely engine evidence, not Rafael's legacy snap
   assert.equal(selectedLiveExecutorStatus(selected, { [selected[0].engineId]: active }).online, false);
   assert.equal(selectedLiveExecutorStatus([], engineData).online, false);
 });
+
+test("protected executor is online only with canonical fresh entry-pause protection", () => {
+  const selected = [{ ...engines[2], entryPauseProtected: true }];
+  const protectedStatus = { nativeLiveControl: { executor: { gate: "LIVE_EXECUTOR_PROTECTED", ip: "203.0.113.3",
+    health: { healthy: true, binance_connectivity: "OK", kill_switch: true } } } } as unknown as Props;
+  assert.equal(selectedLiveExecutorStatus(selected, { [selected[0].engineId]: protectedStatus }).online, true);
+  assert.equal(selectedLiveExecutorStatus([{ ...selected[0], entryPauseProtected: false }],
+    { [selected[0].engineId]: protectedStatus }).online, false);
+});

@@ -3,7 +3,8 @@ import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase
 import { advanceLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { shardedEngineMap } from "@/lib/execution/sharded-engine-map";
 import { criticalAlertsForRun, evaluateFastRun, type FastAccount, type FastAlert, type FastEngine, type FastOrder,
-  type FastRun, type FastSlot } from "./watchdog-policy";
+  type FastRun, type FastSlot, type FastPreparation } from "./watchdog-policy";
+import { completeWatchdogRows } from "./watchdog-read";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type ScopedRun = FastRun & { product_id: string; tenant_id: string; user_id: string;
@@ -96,7 +97,7 @@ export async function runServerWatchdog() {
     service.from("executor_capacity_samples").select("shard_id,heartbeat_at,observed_at,scheduler_backlog"),
     service.from("robot_v1_live_runs")
       .select("id,product_id,tenant_id,user_id,operator_id,asset,trading_engine_id,exchange_account_id,status,symbol,last_reconciled_at,last_error,lease_until,created_at")
-      .eq("tenant_id", tenantId).eq("status", "ACTIVE"),
+      .eq("tenant_id", tenantId).in("status", ["ACTIVE", "PAUSED"]),
     service.from("watchdog_incidents")
       .select("incident_id,shard_id,engine_id,incident_key,opened_at,last_recovery_attempt_at")
       .is("resolved_at", null),
@@ -120,29 +121,40 @@ export async function runServerWatchdog() {
     if (activation.data) run.activated_at = activation.data.observed_at;
   }));
   const ids = <T,>(items: T[]) => [...new Set(items)];
-  const [accountsResult, enginesResult, slotsResult, ordersResult, configResult] = runs.length
+  const pausedRuns = runs.filter((run) => run.status === "PAUSED");
+  const [accountsResult, enginesResult, slots, orders, configResult, preparationsResult] = runs.length
     ? await Promise.all([
-      service.from("exchange_accounts").select("id,executor_shard_id,status,kill_switch")
+      service.from("exchange_accounts").select("id,operator_id,executor_shard_id,status,kill_switch")
         .in("id", ids(runs.map((run) => run.exchange_account_id))),
-      service.from("trading_engines").select("id,exchange_account_id,symbol,status,kill_switch,strategy_config_pending,executor_shard_id")
+      service.from("trading_engines").select("id,operator_id,exchange_account_id,environment,base_asset,legacy_compatible,symbol,status,kill_switch,strategy_config_pending,executor_shard_id")
         .in("id", ids(runs.map((run) => run.trading_engine_id))),
-      service.from("robot_v1_live_slots").select("run_id,id,entry_state,position_quantity,updated_at")
-        .in("run_id", runs.map((run) => run.id)),
-      service.from("robot_v1_live_orders").select("run_id,slot_id,side,status,exchange_order_id")
-        .in("run_id", runs.map((run) => run.id))
-        .in("status", ["PREPARED", "NEW", "PARTIALLY_FILLED"]),
+      completeWatchdogRows<FastSlot>((start, end, signal) => service.from("robot_v1_live_slots")
+        .select("run_id,id,slot_number,operator_id,trading_engine_id,exchange_account_id,entry_state,position_quantity,updated_at", { count: "exact" })
+        .eq("tenant_id", tenantId).in("run_id", runs.map((run) => run.id))
+        .order("id").range(start, end).abortSignal(signal)),
+      completeWatchdogRows<FastOrder>((start, end, signal) => service.from("robot_v1_live_orders")
+        .select("id,run_id,slot_id,operator_id,trading_engine_id,exchange_account_id,client_order_id,side,status,exchange_order_id,executed_quantity,trades_reconciled", { count: "exact" })
+        .eq("tenant_id", tenantId).in("run_id", runs.map((run) => run.id))
+        .or("status.in.(PREPARED,NEW,PARTIALLY_FILLED,UNKNOWN,SUBMITTING,PENDING_CANCEL),and(executed_quantity.gt.0,trades_reconciled.eq.false),and(executed_quantity.gt.0,trades_reconciled.is.null)")
+        .order("id").range(start, end).abortSignal(signal)),
       service.from("strategy_bulk_engine_updates").select("trading_engine_id,status,updated_at")
         .in("trading_engine_id", ids(runs.map((run) => run.trading_engine_id)))
         .in("status", ["PENDING", "APPLYING", "BLOCKED_SAFE"]),
-    ]) : [null, null, null, null, null];
-  if (accountsResult?.error || enginesResult?.error || slotsResult?.error || ordersResult?.error || configResult?.error)
+      pausedRuns.length ? service.from("robot_v1_live_preparations")
+        .select("trading_engine_id,exchange_account_id,operator_id,symbol,live_enabled,kill_switch")
+        .eq("tenant_id", tenantId).in("operator_id", ids(pausedRuns.map((run) => run.operator_id)))
+        .in("exchange_account_id", ids(pausedRuns.map((run) => run.exchange_account_id)))
+        .in("trading_engine_id", ids(pausedRuns.map((run) => run.trading_engine_id)))
+        .abortSignal(AbortSignal.timeout(5_000)) : Promise.resolve({ data: [], error: null }),
+    ]) : [null, null, [], [], null, null];
+  if (accountsResult?.error || enginesResult?.error || configResult?.error || preparationsResult?.error)
     throw new Error("COINOPS_WATCHDOG_LEDGER_READ_FAILED");
   const accounts = new Map(((accountsResult?.data ?? []) as FastAccount[]).map((row) => [row.id, row]));
   const engines = new Map(((enginesResult?.data ?? []) as FastEngine[]).map((row) => [row.id, row]));
   const updates = new Map(((configResult?.data ?? []) as Array<{ trading_engine_id: string; status: string;
     updated_at: string }>).map((row) => [row.trading_engine_id, row]));
-  const slots = (slotsResult?.data ?? []) as FastSlot[];
-  const orders = (ordersResult?.data ?? []) as FastOrder[];
+  const preparations = new Map(((preparationsResult?.data ?? []) as FastPreparation[])
+    .map((row) => [row.trading_engine_id, row]));
   const groupedSlots = new Map<string, FastSlot[]>();
   const groupedOrders = new Map<string, FastOrder[]>();
   for (const slot of slots) groupedSlots.set(slot.run_id, [...(groupedSlots.get(slot.run_id) ?? []), slot]);
@@ -161,7 +173,8 @@ export async function runServerWatchdog() {
     return { run, shardId, finding: evaluateFastRun({ run,
       engine: engines.get(run.trading_engine_id) ?? null, account, shardId,
       slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], alerts,
-      configUpdate: updates.get(run.trading_engine_id) ?? null, now }) };
+      configUpdate: updates.get(run.trading_engine_id) ?? null,
+      preparation: preparations.get(run.trading_engine_id) ?? null, now }) };
   });
   if (findings.some((item) => item.shardId === "unassigned"))
     throw new Error("COINOPS_WATCHDOG_OWNERSHIP_UNKNOWN");
@@ -177,11 +190,11 @@ export async function runServerWatchdog() {
       && item.incident_key === "SHARD:EXECUTOR_OFFLINE");
     if (offline) await openIncident(service, shard.id, null, "EXECUTOR_OFFLINE", "OFFLINE", now, open);
     const own = findings.filter((item) => item.shardId === shard.id);
-    let healthy = 0; let recovering = 0; let reconciling = 0; let blocked = 0; let stale = 0;
+    let healthy = 0; let paused = 0; let recovering = 0; let reconciling = 0; let blocked = 0; let stale = 0;
     const candidates: typeof own = [];
     for (const item of own) {
       const { run, finding } = item;
-      if (finding.state === "HEALTHY") healthy++;
+      if (finding.state === "HEALTHY") { if (finding.intentionalPause) paused++; else healthy++; }
       else if (finding.state === "RECONCILING") reconciling++;
       else if (finding.state === "RECOVERING") recovering++;
       else if (finding.state === "STALE") stale++;
@@ -204,7 +217,7 @@ export async function runServerWatchdog() {
       } else await updateEngineAlert(service, run, finding.code, now);
       if (!offline && finding.recoverable) candidates.push(item);
     }
-    if (offline) { healthy = 0; recovering = 0; reconciling = 0; blocked = 0; stale = own.length; }
+    if (offline) { healthy = 0; paused = 0; recovering = 0; reconciling = 0; blocked = 0; stale = own.length; }
     if (!offline && own.every((item) => item.finding.state === "HEALTHY"))
       for (const incident of shardOpen) await resolveIncident(service, incident, now);
     const capacityCodes = new Set((capacityAlertsResult.data ?? [])
@@ -215,16 +228,17 @@ export async function runServerWatchdog() {
         ? "CAPACITY_WARNING" : "HEALTHY";
     const saved = await service.from("watchdog_checks").upsert({ shard_id: shard.id,
       checked_at: new Date(now).toISOString(), shard_state: state, healthy_engines: healthy,
+      paused_engines: paused,
       recovering_engines: recovering, reconciling_engines: reconciling, blocked_engines: blocked, stale_engines: stale,
       check_duration_ms: Date.now() - started, updated_at: new Date().toISOString() },
     { onConflict: "shard_id" });
     if (saved.error) throw new Error("COINOPS_WATCHDOG_CHECK_WRITE_FAILED");
-    return { shardId: shard.id, state, healthy, recovering, blocked, stale, candidates };
+    return { shardId: shard.id, state, healthy, paused, recovering, blocked, stale, candidates };
     } catch (error) {
       const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
         ? error.message : "COINOPS_WATCHDOG_SHARD_FAILED";
       console.error(JSON.stringify({ event: "COINOPS_WATCHDOG_SHARD", shardId: shard.id, code }));
-      return { shardId: shard.id, state: "DEGRADED", healthy: 0, recovering: 0,
+      return { shardId: shard.id, state: "DEGRADED", healthy: 0, paused: 0, recovering: 0,
         blocked: 0, stale: 0, candidates: [] as typeof findings };
     }
   }));
@@ -244,7 +258,11 @@ export async function runServerWatchdog() {
       if (!incident || !await claimRecovery(service, incident, now)) return { status: "SKIPPED" };
       try {
         const result = await advanceLiveRun(item.run.id, "WATCHDOG_STALE_RECOVERY");
-        const stillRunning = ["OK", "RESTARTED", "BUSY_OR_INACTIVE", "RETRY"].includes(result.status);
+        // PAUSED means protection/fill reconciliation completed with BUY gates
+        // still closed. Recovery never calls resumeLiveRun or clears a gate.
+        const expected = item.run.status === "PAUSED"
+          ? ["PAUSED", "BUSY_OR_INACTIVE", "RETRY"] : ["OK", "RESTARTED", "BUSY_OR_INACTIVE", "RETRY"];
+        const stillRunning = expected.includes(result.status);
         const saved = await service.from("watchdog_incidents").update({
           actions_taken: [{ action: "EXISTING_ENGINE_RECONCILIATION", status: result.status }],
           state_after: stillRunning ? "RECOVERING" : "BLOCKED",
