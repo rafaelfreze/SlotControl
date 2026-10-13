@@ -44,7 +44,7 @@ test("a confirmed payment releases commercial web access without an engine actio
   assert.equal(buildRenewalNotice(paid, "2026-10-18"), null);
 });
 test("unlinked identity, missing date and legacy state do not create a local suspension or grace", () => {
-  for (const p of [null, projection({ registration_pending: true }), projection({ grace_until: null }), projection({ next_due_date: null }), projection({ balance_cents: null })])
+  for (const p of [null, projection({ registration_pending: true }), projection({ next_due_date: null }), projection({ balance_cents: null })])
     assert.equal(billingViewerAccessAllowed(p, "2026-10-18"), true);
   assert.doesNotMatch(buildRenewalNotice(projection({ grace_until: "2026-10-20" }), "2026-10-13")!.description, /até 7 dias/);
   assert.equal(buildRenewalNotice(projection({ status: "pending", last_paid_at: null }), "2026-10-13"), null);
@@ -109,4 +109,14 @@ test("direct read API checks commercial expiry before querying an engine or exec
     "@/lib/saas-billing/renewal-server": { readBillingRenewal: async (id: string) => { assert.equal(id, user); return { blocked: true }; } },
   }) as { GET: () => Promise<Response> };
   assert.equal((await handler.GET()).status, 403); assert.equal(executionReads, 0); assert.deepEqual(tables, ["viewer_access"]);
+});
+
+test("real due date supplies seven-day fallback and first payment alert only after trial instant", () => {
+ const now=Date.parse("2026-10-13T12:00:00Z");
+ assert.equal(billingViewerAccessAllowed(projection({grace_until:null,status:"active"}),"2026-10-18",now),false);
+ assert.match(buildRenewalNotice(projection({grace_until:null,last_paid_at:null,trial_ends_at:"2026-10-10T12:00:00Z"}),"2026-10-13",now)!.description,/17\/10\/2026/);
+ const future=projection({last_paid_at:null,trial_ends_at:"2026-10-13T18:00:00Z",grace_until:null});
+ assert.equal(buildRenewalNotice(future,"2026-10-13",now),null);
+ assert.equal(billingViewerAccessAllowed(future,"2026-10-13",now),true);
+ assert.equal(billingViewerAccessAllowed(projection({next_due_date:"invalid",grace_until:null}),"2026-10-13",now),true);
 });
