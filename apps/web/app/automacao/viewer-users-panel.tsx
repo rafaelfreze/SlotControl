@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 type Viewer = { user_id: string; exchange_account_id: string; display_name: string;
   email: string; status: string; created_at: string };
@@ -8,6 +8,9 @@ type Account = { id: string; display_name: string; status: string };
 const viewerErrorMessage: Record<string, string> = {
   COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED: "Este e-mail já possui cadastro. Use outro e-mail para o acesso exclusivo desta conta; nenhum vínculo novo foi criado.",
   COINOPS_VIEWER_ALREADY_EXISTS: "Este e-mail já tem acesso nesta operação. Confira a lista abaixo antes de criar outro convite.",
+  COINOPS_VIEWER_CREATE_UNCONFIRMED: "A criação não foi confirmada. Confira a lista e tente novamente com os mesmos dados antes de cadastrar outro acesso.",
+  COINOPS_VIEWER_PASSWORD_INVALID: "Informe uma senha com pelo menos 8 caracteres.",
+  COINOPS_VIEWER_BINDING_FAILED: "O cadastro foi criado, mas o vínculo não foi confirmado. O acesso continua bloqueado; confira o cadastro antes de repetir.",
   COINOPS_VIEWER_INVITE_FAILED: "Não foi possível enviar o convite. Nenhum acesso novo foi criado; tente novamente mais tarde.",
   COINOPS_VIEWER_RESET_REQUIRES_ACTIVE: "Este acesso está desativado. Confira e corrija a conta vinculada antes de reativá-lo; convites antigos não funcionam.",
   COINOPS_VIEWER_RESET_FAILED: "O envio de recuperação não foi confirmado. Nenhum vínculo foi alterado; tente novamente mais tarde.",
@@ -19,6 +22,8 @@ const viewerErrorMessage: Record<string, string> = {
 };
 
 export function ViewerUsersPanel() {
+  const requestId = useRef<string | null>(null);
+  const [creationMode, setCreationMode] = useState("password");
   const [users, setUsers] = useState<Viewer[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [busy, setBusy] = useState(false);
@@ -35,10 +40,10 @@ export function ViewerUsersPanel() {
     try {
       const response = await fetch("/api/coinops-viewers", { method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "content-type": "application/json", "x-coinops-admin-intent": "viewer-access" },
-        body: JSON.stringify({ operation, requestId: crypto.randomUUID(), ...extra }) });
+        body: JSON.stringify({ operation, requestId: operation === "CREATE_WITH_PASSWORD" ? (requestId.current ??= crypto.randomUUID()) : crypto.randomUUID(), ...extra }) });
       const body = await response.json();
       if (!response.ok) throw new Error(viewerErrorMessage[body.error] ?? body.error ?? "Ação não concluída");
-      setMessage(operation === "CREATE" ? body.reusedAccess
+      setMessage(operation === "CREATE_WITH_PASSWORD" ? "Cadastro criado. O cliente entra com o e-mail e a senha definidos, sem troca obrigatória. Acesso somente à conta selecionada." : operation === "CREATE" ? body.reusedAccess
         ? `Acesso recriado com a identidade original. Recuperação enviada para ${body.recipient}; use o e-mail mais recente. Nenhuma conta Binance ou motor foi recriado.`
         : "Convite enviado. O acesso é somente leitura e restrito à conta selecionada."
         : operation === "RESET" ? `Recuperação solicitada para ${body.recipient}. Confira a caixa de entrada e spam; use somente o e-mail mais recente. Isso não confirma recebimento na caixa postal.`
@@ -55,17 +60,19 @@ export function ViewerUsersPanel() {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    void perform("CREATE", { displayName: String(data.get("displayName") ?? ""),
+    void perform(creationMode === "password" ? "CREATE_WITH_PASSWORD" : "CREATE", { ...(creationMode === "password" ? { password: String(data.get("password") ?? "") } : {}), displayName: String(data.get("displayName") ?? ""),
       email: String(data.get("email") ?? ""), accountId: String(data.get("accountId") ?? "") })
-      .then((created) => { if (created) form.reset(); });
+      .then((created) => { if (created) { form.reset(); requestId.current = null; } });
   };
   return <section className="px-onboarding" aria-label="Usuários e acessos">
     <h2>Usuários / Acessos</h2>
-    <p>Convide um proprietário para ver somente sua própria conta em Meu CoinOps. O convite usa Supabase Auth; nenhuma senha é salva no painel.</p>
+    <p>Cadastre o cliente com e-mail e senha inicial para entrar diretamente em Meu CoinOps, somente na conta selecionada. Ele pode trocar a senha quando quiser.</p>
     <p>Para corrigir um cadastro, desative o acesso e corrija o vínculo ou exclua o acesso da lista. Você pode cadastrá-lo novamente com o mesmo e-mail; isso não exclui a conta Binance, motores ou histórico.</p>
     <form className="px-onboarding-form" onSubmit={create}>
       <label>Nome<input name="displayName" maxLength={80} required autoComplete="name" /></label>
       <label>E-mail<input name="email" type="email" maxLength={320} required autoComplete="email" /></label>
+      <label>Tipo de cadastro<select value={creationMode} onChange={(event) => setCreationMode(event.target.value)}><option value="password">Definir senha inicial</option><option value="invite">Enviar convite por e-mail</option></select></label>
+      {creationMode === "password" ? <label>Senha inicial<input name="password" type="password" minLength={8} required autoComplete="new-password" placeholder="Mínimo 8 caracteres" /></label> : null}
       <label>Conta Binance<select name="accountId" required defaultValue=""><option value="" disabled>Selecione uma conta</option>
         {accounts.map((account) => <option value={account.id} key={account.id}>{account.display_name} · {account.status}</option>)}</select></label>
       <p>Papel: VIEWER · somente leitura · uma conta</p>

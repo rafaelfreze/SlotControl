@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createPasswordViewerIdentity } from "./password-user";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
-import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
+import { getCoinOpsServiceTenantId, getSupabaseDataSchema, getSupabaseEnv } from "@/lib/supabase/env";
 import { assertViewerAccount, assertViewerIntent, assertViewerOrigin, assertViewerInactive, assertViewerResetActive, assertViewerRestoreIdentity, viewerInviteFailureCode, viewerResetFailureCode, type ViewerIntent } from "./policy";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,8 @@ const viewerPasswordRedirect = (origin: string) => `${origin}/redefinir-senha`;
 
 async function adminScope() {
   if (getSupabaseDataSchema() !== "coinops") throw new Error("COINOPS_VIEWER_SCHEMA_DENIED");
+  if (new URL(getSupabaseEnv().supabaseUrl).hostname !== "otdfpmsegjxpqrzisfmi.supabase.co")
+    throw new Error("COINOPS_VIEWER_SCHEMA_DENIED");
   const tenantId = getCoinOpsServiceTenantId();
   const client = createClient();
   const user = (await client.auth.getUser()).data.user;
@@ -44,10 +47,42 @@ export async function POST(request: NextRequest) {
       request.headers.get("sec-fetch-site"), request.headers.get("x-coinops-admin-intent"),
       request.headers.get("content-type"));
     const raw = await request.text();
-    if (Buffer.byteLength(raw) > 2048) throw new Error("COINOPS_VIEWER_BODY_TOO_LARGE");
+    if (Buffer.byteLength(raw) > 1_048_576) throw new Error("COINOPS_VIEWER_BODY_TOO_LARGE");
     const input = JSON.parse(raw) as ViewerIntent;
     assertViewerIntent(input);
     const { operator, service } = await adminScope();
+    if (input.operation === "CREATE_WITH_PASSWORD") {
+      const account = await service.from("exchange_accounts").select("operator_id,status")
+        .eq("id", input.accountId!).maybeSingle();
+      if (account.error) throw new Error("COINOPS_VIEWER_ACCOUNT_READ_FAILED");
+      assertViewerAccount(account.data, operator.id);
+      const email = input.email!.trim().toLowerCase();
+      const prior = await service.from("viewer_access").select("user_id,exchange_account_id,status,deleted_at")
+        .eq("operator_id", operator.id).eq("email", email).maybeSingle();
+      if (prior.error) throw new Error("COINOPS_VIEWER_READ_FAILED");
+      if (prior.data) {
+        const identity = await service.auth.admin.getUserById(prior.data.user_id);
+        const marker = identity.data.user?.app_metadata?.coinops_provision;
+        if (!identity.error && marker?.request_id === input.requestId && marker?.actor_id === operator.user_id && marker?.account_id === input.accountId
+          && prior.data.status === "ACTIVE" && !prior.data.deleted_at && prior.data.exchange_account_id === input.accountId)
+          return json({ userId: prior.data.user_id, status: "ACTIVE", passwordAccess: true });
+        throw new Error("COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED");
+      }
+      // Only Auth receives the password. Existing identities are never reset.
+      const identity = await createPasswordViewerIdentity(service, input, operator.user_id);
+      const userId = identity.id;
+      const stored = await service.from("viewer_access").insert({ user_id: userId,
+        operator_id: operator.id, exchange_account_id: input.accountId!, role: "VIEWER",
+        display_name: input.displayName!.trim(), email, status: "ACTIVE", created_by: operator.user_id });
+      // Missing binding fails closed in middleware/RLS, preserving shared Auth.
+      if (stored.error) {
+        const readback = await service.from("viewer_access").select("operator_id,exchange_account_id,status,deleted_at")
+          .eq("user_id", userId).maybeSingle();
+        if (readback.error || readback.data?.operator_id !== operator.id || readback.data?.exchange_account_id !== input.accountId
+          || readback.data?.status !== "ACTIVE" || readback.data?.deleted_at) throw new Error("COINOPS_VIEWER_BINDING_FAILED");
+      }
+      return json({ userId, status: "ACTIVE", passwordAccess: true }, 201);
+    }
     if (input.operation === "CREATE") {
       const account = await service.from("exchange_accounts").select("operator_id,status")
         .eq("id", input.accountId!).maybeSingle();

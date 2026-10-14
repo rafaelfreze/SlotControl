@@ -30,7 +30,7 @@ test("existing Auth identity is a safe conflict, never silently rebound to anoth
   const route = readFileSync(resolve(process.cwd(), "app/api/coinops-viewers/route.ts"), "utf8");
   const panel = readFileSync(resolve(process.cwd(), "app/automacao/viewer-users-panel.tsx"), "utf8");
   assert.match(route, /viewerInviteFailureCode\(invited\.error\)/);
-  assert.match(panel, /if \(created\) form\.reset\(\)/);
+  assert.match(panel, /if \(created\) \{ form\.reset\(\)/);
 });
 
 test("admin writes require same origin and explicit JSON intent", () => {
@@ -125,4 +125,24 @@ test("reset rejects disabled access before email delivery and identifies rate li
   const panel = readFileSync(resolve(process.cwd(), "app/automacao/viewer-users-panel.tsx"), "utf8");
   assert.match(panel, /disabled=\{busy \|\| user.status !== "ACTIVE"\}/);
   assert.match(panel, /body.recipient/);
+});
+
+
+test("direct password access enforces policy and never lets other operations carry a password", () => {
+  const base = { operation: "CREATE_WITH_PASSWORD", requestId: id(1), accountId: id(2), displayName: "Cliente", email: "cliente@example.com" };
+  for (const password of ["12345678", "abcdefgh", "a".repeat(1000)]) assert.doesNotThrow(() => assertViewerIntent({ ...base, password }));
+  for (const password of [undefined, "short"]) assert.throws(() => assertViewerIntent({ ...base, password }), /PASSWORD_INVALID/);
+  assert.throws(() => assertViewerIntent({ operation: "ENABLE", requestId: id(1), userId: id(2), password: "12345678" }), /INTENT_INVALID/);
+  assert.equal(viewerInviteFailureCode({ code: "user_already_exists" }), "COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED");
+});
+
+
+test("direct creation stays behind operator, project and account authorization", () => {
+  const route = readFileSync(resolve(process.cwd(), "app/api/coinops-viewers/route.ts"), "utf8");
+  assert.match(route, /hostname !== "otdfpmsegjxpqrzisfmi.supabase.co"/);
+  assert.match(route, /user.app_metadata\?\.coinops_role === "VIEWER"/);
+  assert.match(route, /\.eq\("tenant_id", tenantId\)\.eq\("user_id", user.id\)\.eq\("status", "ACTIVE"\)/);
+  const direct = route.slice(route.indexOf('if (input.operation === "CREATE_WITH_PASSWORD")'), route.indexOf('if (input.operation === "CREATE")'));
+  assert.ok(direct.indexOf('assertViewerAccount(account.data, operator.id)') < direct.indexOf('createPasswordViewerIdentity(service'));
+  assert.doesNotMatch(direct, /updateUserById|deleteUser|resetPasswordForEmail|console\.|password:/);
 });

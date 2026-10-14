@@ -160,7 +160,7 @@ export default async function MeuCoinOps() {
       openPnl: group.reduce((sum, row) => sum + row.openPnl, 0) };
   });
   return <main className="viewer-app">
-    <div className="viewer-shell"><header className="viewer-header"><div className="viewer-brand"><span className="viewer-mark" aria-hidden="true"><i /></span><span><strong>CoinOps</strong><small>Meu CoinOps · {account.data.display_name}</small></span></div><div className="viewer-account"><span className="viewer-initial" aria-hidden="true">{firstName.charAt(0).toUpperCase()}</span><span>{account.data.display_name}</span><Link href="/assinatura">Assinatura</Link><ViewerSignOut /></div></header>
+    <div className="viewer-shell"><header className="viewer-header"><div className="viewer-brand"><span className="viewer-mark" aria-hidden="true"><i /></span><span><strong>CoinOps</strong><small>Meu CoinOps · {account.data.display_name}</small></span></div><div className="viewer-account"><span className="viewer-initial" aria-hidden="true">{firstName.charAt(0).toUpperCase()}</span><span>{account.data.display_name}</span><Link href="/assinatura">Assinatura</Link><Link href="/redefinir-senha">Trocar senha</Link><ViewerSignOut /></div></header>
     <BillingRenewalNotice notice={renewal.notice}/>
     <section className="viewer-hero"><div><h1>Bom dia, {firstName}!</h1><p>{allHealthy ? "Seu robô está operando normalmente." : "Confira o estado da sua operação abaixo."}</p></div>
       <div className="viewer-health-group"><span className={allHealthy ? "viewer-health is-ok" : "viewer-health"}>{allHealthy ? "● OPERANDO" : "● ATENÇÃO"}</span><small>Atualizado {latest ? new Date(latest).toLocaleString("pt-BR") : "sem reconciliação confirmada"}</small></div></section>

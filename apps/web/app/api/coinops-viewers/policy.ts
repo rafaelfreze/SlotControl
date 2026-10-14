@@ -1,19 +1,22 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type ViewerIntent = { operation?: string; requestId?: string; accountId?: string;
-  userId?: string; displayName?: string; email?: string };
+  userId?: string; displayName?: string; email?: string; password?: string };
 
 export function assertViewerIntent(input: ViewerIntent) {
-  if (!UUID.test(input.requestId ?? "") || !["CREATE", "DISABLE", "ENABLE", "RESET", "REVOKE", "REASSIGN", "DELETE"].includes(input.operation ?? ""))
+  if (!UUID.test(input.requestId ?? "") || !["CREATE", "CREATE_WITH_PASSWORD", "DISABLE", "ENABLE", "RESET", "REVOKE", "REASSIGN", "DELETE"].includes(input.operation ?? ""))
     throw new Error("COINOPS_VIEWER_INTENT_INVALID");
-  if (input.operation === "CREATE") {
-    if (!UUID.test(input.accountId ?? "") || !input.displayName || input.displayName.trim().length > 80
+  if (input.operation === "CREATE" || input.operation === "CREATE_WITH_PASSWORD") {
+    if (!UUID.test(input.accountId ?? "") || !input.displayName?.trim() || input.displayName.trim().length > 80
       || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email ?? "") || (input.email ?? "").length > 320)
       throw new Error("COINOPS_VIEWER_INTENT_INVALID");
+    if (input.operation === "CREATE_WITH_PASSWORD" && (typeof input.password !== "string" || input.password.length < 8))
+      throw new Error("COINOPS_VIEWER_PASSWORD_INVALID");
+    if (input.operation === "CREATE" && input.password !== undefined) throw new Error("COINOPS_VIEWER_INTENT_INVALID");
   } else if (input.operation === "REASSIGN") {
-    if (!UUID.test(input.userId ?? "") || !UUID.test(input.accountId ?? "") || input.email || input.displayName)
+    if (!UUID.test(input.userId ?? "") || !UUID.test(input.accountId ?? "") || input.email || input.displayName || input.password !== undefined)
       throw new Error("COINOPS_VIEWER_INTENT_INVALID");
-  } else if (!UUID.test(input.userId ?? "") || input.accountId || input.email || input.displayName) {
+  } else if (!UUID.test(input.userId ?? "") || input.accountId || input.email || input.displayName || input.password !== undefined) {
     throw new Error("COINOPS_VIEWER_INTENT_INVALID");
   }
 }
@@ -49,6 +52,6 @@ export function assertViewerAccount(account: { operator_id: string; status: stri
 }
 
 export function viewerInviteFailureCode(error: { code?: string; status?: number } | null) {
-  return error?.code === "email_exists"
+  return ["email_exists", "user_already_exists"].includes(error?.code ?? "")
     ? "COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED" : "COINOPS_VIEWER_INVITE_FAILED";
 }
