@@ -6,7 +6,8 @@ import type * as DecisionServer from "../execution/strategy-decision-server.ts";
 import { assertDomainRegistry, isIdentity, resolveEngineContext, visibleOperatorRegistry,
   type DomainRegistry } from "../execution/operator-context.ts";
 import { planStrategyInitialEntry } from "../execution/strategy-engine.ts";
-import { LiveReadUnavailable } from "../execution/live-read-error.ts";
+import { LiveLedgerReadFailed, LiveReadUnavailable } from "../execution/live-read-error.ts";
+import { observeLedgerRows } from "../execution/live-ledger-read.ts";
 
 type Row = Record<string, unknown>;
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -30,7 +31,8 @@ function compile(relative: string, dependencies: Record<string, unknown>) {
   return exports;
 }
 const registryServer = compile("../execution/operator-context-server.ts", {
-  "./live-read-error": { LiveReadUnavailable },
+  "./live-read-error": { LiveLedgerReadFailed, LiveReadUnavailable },
+  "./live-ledger-read": { observeLedgerRows },
   "server-only": {}, "./operator-context": { assertDomainRegistry, resolveEngineContext,
     visibleOperatorRegistry },
 });

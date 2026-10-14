@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import type * as OperatorServer from "../execution/operator-context-server.ts";
 import { assertDomainRegistry, resolveEngineContext, visibleOperatorRegistry } from "../execution/operator-context.ts";
-import { LiveReadUnavailable } from "../execution/live-read-error.ts";
+import { LiveLedgerReadFailed, LiveReadUnavailable, liveFailureEvidence } from "../execution/live-read-error.ts";
+import { observeLedgerRows } from "../execution/live-ledger-read.ts";
 
 type Row = Record<string, unknown>;
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -18,7 +19,8 @@ function compile(timeout = AbortSignal.timeout) {
   const exports: Row = {};
   new Function("require", "exports", "AbortSignal", compiled)((name: string) => {
     if (name === "server-only") return {};
-    if (name === "./live-read-error") return { LiveReadUnavailable };
+    if (name === "./live-read-error") return { LiveLedgerReadFailed, LiveReadUnavailable };
+    if (name === "./live-ledger-read") return { observeLedgerRows };
     if (name === "./operator-context") return { assertDomainRegistry, resolveEngineContext, visibleOperatorRegistry };
     throw new Error(`Unexpected dependency: ${name}`);
   }, exports, { timeout });
@@ -26,7 +28,9 @@ function compile(timeout = AbortSignal.timeout) {
 }
 
 function database(failTable?: string, options: { timeouts?: number; missing?: boolean;
-  wrongScope?: boolean; failAfterFirstPage?: boolean; permissionAfterTimeout?: boolean } = {}) {
+  wrongScope?: boolean; failAfterFirstPage?: boolean; permissionAfterTimeout?: boolean;
+  failures?: Array<{ code?: string; status?: number; message?: string; thrown?: unknown }>; malformed?: boolean;
+  parallelPermission?: boolean } = {}) {
   const operatorId = uuid(4), accountId = uuid(5), engineId = uuid(6);
   const tables: Record<string, Row[]> = {
     operators: [{ id: operatorId, ...scope, status: "ACTIVE", kill_switch: false }],
@@ -53,13 +57,25 @@ function database(failTable?: string, options: { timeouts?: number; missing?: bo
         if (table === "operators") operatorReads++;
         const rows = tables[table]!.filter((row) => predicates.every((predicate) => predicate(row))).slice(start, end + 1);
         const failingPage = !options.failAfterFirstPage || start >= 500;
-        if (table === failTable && failingPage && (options.timeouts === undefined || failures < options.timeouts)) {
+        if (table === "exchange_accounts" && options.parallelPermission)
+          return new Promise(done => setTimeout(() => done(resolve({ data: null,
+            error: { code: "42501", message: "must not leak" }, status: 403 })), 10));
+        if (table === failTable && failingPage && options.failures && failures < options.failures.length) {
+          const failure = options.failures[failures++]!;
+          if (failure.thrown) throw failure.thrown;
+          return Promise.resolve(resolve({ data: null, error: { code: failure.code ?? "",
+            message: failure.message ?? "must not leak" }, status: failure.status }));
+        }
+        if (table === failTable && failingPage && !options.failures
+          && (options.timeouts === undefined || failures < options.timeouts)) {
           failures++;
           if (options.timeouts !== undefined) controllers.get(signal)!.abort();
           return Promise.resolve(resolve({ data: null, error: options.missing ? null
             : { code: options.timeouts === undefined || options.permissionAfterTimeout ? "42501" : "", message: "must not leak" } }));
         }
         if (options.wrongScope && table === "operators") rows[0]!.tenant_id = uuid(999);
+        if (options.malformed && table === "trading_engines")
+          return Promise.resolve(resolve({ data: null, error: null, status: 200 }));
         return Promise.resolve(resolve({ data: single ? rows[0] ?? null : rows, error: null }));
       },
     };
@@ -130,4 +146,83 @@ test("permissions, missing operator and invalid tenant never receive the timeout
       error instanceof Error && !(error instanceof LiveReadUnavailable));
     assert.equal(db.operatorReads(), 1);
   }
+});
+
+test("proven transient GET responses reread the complete registry once", async () => {
+  for (const failure of [{ status: 502 }, { status: 503 }, { status: 504 },
+    { status: 503, code: "PGRST001" }, { status: 0, message: "TypeError: fetch failed" },
+    { thrown: new TypeError("fetch failed; must not leak") },
+    { thrown: new DOMException("must not leak", "TimeoutError") }]) {
+    const db = database("trading_engines", { failures: [failure], failAfterFirstPage: true });
+    db.tables.trading_engines = Array.from({ length: 501 }, (_, index) => ({
+      ...db.tables.trading_engines[0], id: uuid(index + 100),
+    }));
+    const registry = await compile(controlledDeadline).loadOperatorRegistry(db.client, scope);
+    assert.equal(db.operatorReads(), 2);
+    assert.equal(registry.engines.length, 501);
+    assert.equal(new Set(registry.engines.map(row => row.id)).size, 501);
+    assert.equal(new Set(db.signals).size, 2);
+  }
+});
+
+test("persistent transient registry GET preserves bounded typed provider evidence", async () => {
+  const db = database("trading_engines", { failures: [
+    { status: 503, code: "PGRST001" }, { status: 503, code: "PGRST001" }, { status: 503 },
+  ] });
+  await assert.rejects(server.loadOperatorRegistry(db.client, scope), (error: unknown) => {
+    assert.ok(error instanceof LiveReadUnavailable);
+    assert.deepEqual(liveFailureEvidence(error, "LOAD_LEDGER", "LIVE_CRON"), {
+      stage: "LOAD_LEDGER", source: "ENGINE", root_code: "COINOPS_OPERATOR_REGISTRY_READ_UNAVAILABLE",
+      read_path: "registry/trading_engines", read_attempts: 2, http_status: 503, provider_code: "PGRST001",
+    });
+    return true;
+  });
+  assert.equal(db.operatorReads(), 2);
+});
+
+test("permission/schema/unknown errors and malformed data remain fail-closed without retry", async () => {
+  for (const failure of [{ status: 503, code: "42501" }, { status: 504, code: "42P01" },
+    { status: 503, code: "PGRST204" }, { status: 400, code: "PGRST116" },
+    { status: 0, message: "unclassified upstream failure" }, { status: 500 },
+    { code: "must not leak provider secret", status: 503 },
+    { thrown: new Error("must not leak") }]) {
+    const db = database("trading_engines", { failures: [failure] });
+    await assert.rejects(server.loadOperatorRegistry(db.client, scope), (error: unknown) => {
+      assert.ok(error instanceof LiveLedgerReadFailed && !(error instanceof LiveReadUnavailable));
+      assert.equal(error.message, "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE");
+      assert.equal(error.path, "registry/trading_engines");
+      assert.equal(error.attempts, 1);
+      assert.ok(!JSON.stringify(liveFailureEvidence(error, "LOAD_LEDGER", "LIVE_CRON")).includes("must not leak"));
+      return true;
+    });
+    assert.equal(db.operatorReads(), 1);
+  }
+  const db = database(undefined, { malformed: true });
+  await assert.rejects(server.loadOperatorRegistry(db.client, scope), (error: unknown) =>
+    error instanceof LiveLedgerReadFailed && error.message === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE");
+  assert.equal(db.operatorReads(), 1);
+});
+
+test("registry logging only exposes typed allowlisted read evidence", async () => {
+  const db = database("operators", { failures: [{ code: "42501", status: 403,
+    message: "must not leak password" }] });
+  const messages: unknown[] = [];
+  const previous = console.error;
+  console.error = (...args) => { messages.push(args); };
+  try { await assert.rejects(server.loadOperatorRegistry(db.client, scope)); }
+  finally { console.error = previous; }
+  assert.deepEqual(messages, [["COINOPS_OPERATOR_REGISTRY_READ_FAILED", {
+    stage: "operators", code: "42501", root_code: "COINOPS_OPERATOR_SCOPE_UNAVAILABLE",
+    read_path: "registry/operators", read_attempts: 1, http_status: 403,
+    duration_ms: (messages[0] as [string, { duration_ms: number }])[1].duration_ms,
+  }]]);
+  assert.ok(!JSON.stringify(messages).includes("must not leak"));
+});
+
+test("parallel transient GET cannot supersede a slower real permission error", async () => {
+  const db = database("trading_engines", { failures: [{ status: 503 }], parallelPermission: true });
+  await assert.rejects(server.loadOperatorRegistry(db.client, scope), (error: unknown) =>
+    error instanceof LiveLedgerReadFailed && error.providerCode === "42501"
+    && error.path === "registry/exchange_accounts");
+  assert.equal(db.operatorReads(), 1);
 });

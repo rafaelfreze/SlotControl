@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders } from "./live-read-recovery.ts";
+import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
+  isRegistryStateReadRecovery, operatorRecoveryAlert } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);
@@ -29,15 +30,95 @@ test("legacy registry outage requires LOAD_LEDGER evidence and completed active 
   const code = "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE";
   const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
     last_seen_at: "2026-10-05T19:43:09.975Z", details: { stage: "LOAD_LEDGER", root_code: code } };
-  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, alert.details), true);
   assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code), false);
   assert.equal(mayRecoverReadOutage("PAUSED", "OK", code), false);
   assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
-  for (const details of [undefined, { stage: "ARM_ENTRY", root_code: code },
+  for (const details of [undefined, { stage: "READ_STATE", root_code: code },
     { stage: "LOAD_LEDGER", root_code: "PERMISSION_DENIED" }])
     assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
   for (const denied of ["COINOPS_OPERATOR_SCOPE_UNAVAILABLE", "COINOPS_OPERATOR_SCOPE_DENIED", "COINOPS_ENGINE_SCOPE_DENIED"])
     assert.equal(mayRecoverReadOutage("ACTIVE", "OK", denied), false);
+});
+
+test("registry GET recovery accepts only the audited read call sites, never an outer stage alone", () => {
+  const code = "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE";
+  const stages = ["LOAD_LEDGER", "RECONCILE_ORDERS", "PROTECT_TP", "ASSERT_NEW_POSITION",
+    "ARM_ENTRY", "ATH_TRANSITION", "RESTART_CYCLE", "CONFIG_UPDATE"];
+  for (const stage of stages) {
+    const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+      first_seen_at: "2026-10-14T13:52:17Z", last_seen_at: "2026-10-14T13:52:17Z",
+      details: { stage, root_code: code } };
+    assert.equal(isRegistryStateReadRecovery(code, alert.details), true);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, alert.details), true);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, alert.details), false);
+    assert.equal(mayRecoverReadOutage("PAUSED", "OK", code, alert.details), false);
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+    for (const details of [undefined, { stage }, { stage, root_code: "PERMISSION_DENIED" },
+      { stage, root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" }]) {
+      assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, details), false);
+      assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+    }
+  }
+  for (const stage of ["READ_STATE", "CREDIT_SLOTS", "RECYCLE_SLOTS", "ASSERT_PROTECTION",
+    "AUDIT_EVENT", "MONITOR", "POST_ORDER", "ASSERT_PAUSED_PROTECTION", "unknown", ""]) {
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, { stage, root_code: code }), false);
+  }
+  for (const denied of ["COINOPS_LIVE_MONITOR_RECONCILIATION_STALE", "COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED",
+    "COINOPS_LIVE_ARM_ENTRY_FAILED", "COINOPS_OPERATOR_SCOPE_UNAVAILABLE", "COINOPS_OPERATOR_SCOPE_DENIED"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", denied, { stage: "ARM_ENTRY", root_code: code }), false);
+});
+
+test("registry recovery rejects a changed read stage/root even if the code and timestamp match", () => {
+  const code = "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+    first_seen_at: "2026-10-14T13:52:17Z", last_seen_at: "2026-10-14T13:52:17Z",
+    details: { stage: "ARM_ENTRY", root_code: code } };
+  for (const details of [{ stage: "LOAD_LEDGER", root_code: code },
+    { stage: "ARM_ENTRY", root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }], alert), /INCIDENT_CHANGED/);
+});
+
+test("explicit operator recovery binds the sole current engine/run incident without enabling automatic stale recovery", () => {
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE",
+    first_seen_at: "2026-10-14T13:52:17Z", last_seen_at: "2026-10-14T18:00:06Z",
+    details: { stage: "MONITOR", root_code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE", read_path: "registry/trading_engines" } };
+  for (const status of ["ACTIVE", "PAUSED"]) {
+    assert.deepEqual(operatorRecoveryAlert(status, "run-a", [alert]), alert);
+    assert.deepEqual(operatorRecoveryAlert(status, "run-a", [alert], alert), alert);
+  }
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", alert.code, alert.details), false);
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), /INCIDENT_CHANGED/);
+  for (const status of ["PREPARING", "INACTIVE", "COMPLETED", "BLOCKED_SAFE"])
+    assert.throws(() => operatorRecoveryAlert(status, "run-a", [alert]), /INCIDENT_CHANGED/);
+  for (const alerts of [[alert, alert], [{ ...alert, alert_key: "LIVE_RUN:run-b:CRITICAL" }],
+    [{ ...alert, alert_key: "OTHER_CRITICAL" }], [{ ...alert, code: "EXECUTOR_UNKNOWN" }],
+    [{ ...alert, code: "COINOPS unsafe message" }], [{ ...alert, first_seen_at: undefined }],
+    [{ ...alert, first_seen_at: "invalid" }], [{ ...alert, last_seen_at: "invalid" }]])
+    assert.throws(() => operatorRecoveryAlert("ACTIVE", "run-a", alerts), /INCIDENT_CHANGED/);
+});
+
+test("intentional pause without critical remains resumable only while the critical inventory stays empty", () => {
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_OPEN_WITHOUT_RESIDENT_TP",
+    first_seen_at: "2026-10-14T13:52:17Z", last_seen_at: "2026-10-14T13:52:17Z" };
+  assert.equal(operatorRecoveryAlert("PAUSED", "run-a", []), null);
+  assert.equal(operatorRecoveryAlert("PAUSED", "run-a", [], null), null);
+  assert.throws(() => operatorRecoveryAlert("ACTIVE", "run-a", []), /INCIDENT_CHANGED/);
+  assert.throws(() => operatorRecoveryAlert("PAUSED", "run-a", [alert], null), /INCIDENT_CHANGED/);
+  assert.throws(() => operatorRecoveryAlert("PAUSED", "run-a", [], alert), /INCIDENT_CHANGED/);
+});
+
+test("explicit operator recovery rejects same-code/timestamp changes to any bound diagnostic identity", () => {
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE",
+    first_seen_at: "2026-10-14T13:52:17Z", last_seen_at: "2026-10-14T13:52:17Z",
+    details: { stage: "ARM_ENTRY", root_code: "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE", read_path: "registry/trading_engines" } };
+  for (const changed of [{ ...alert, code: "COINOPS_LIVE_TP_FAILED" },
+    { ...alert, first_seen_at: "2026-10-14T13:52:18Z" }, { ...alert, last_seen_at: "2026-10-14T13:52:18Z" },
+    { ...alert, details: { ...alert.details, stage: "LOAD_LEDGER" } },
+    { ...alert, details: { ...alert.details, root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" } },
+    { ...alert, details: { ...alert.details, read_path: "POST/order" } }])
+    assert.throws(() => operatorRecoveryAlert("ACTIVE", "run-a", [changed], alert), /INCIDENT_CHANGED/);
+  assert.throws(() => operatorRecoveryAlert("ACTIVE", "run-a", [alert], null), /INCIDENT_CHANGED/);
 });
 
 test("recovery under lease requires the same sole, scoped incident", () => {

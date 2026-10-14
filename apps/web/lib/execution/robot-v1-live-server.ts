@@ -9,7 +9,7 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
   createLiveExecutorOrder, cancelLiveExecutorOrder, proveLiveExecutorUnsentOrder, type LiveOrder,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
-import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
+import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   type ReadRecoveryAlert } from "./live-read-recovery";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
@@ -268,7 +268,7 @@ async function release(service: Service, run: Run, error: string | null, reconci
   if (result.error) throw new Error("COINOPS_LIVE_LEASE_RELEASE_FAILED");
 }
 
-async function preventNewBuys(service: Service, run: Run, code: string, evidence: Record<string, unknown> = {}) {
+async function closeNewBuyGates(service: Service, run: Run) {
   const gate = await service.from("trading_engines").update({ kill_switch: true })
     .eq("id", run.trading_engine_id).eq("operator_id", run.operator_id)
     .eq("exchange_account_id", run.exchange_account_id);
@@ -277,6 +277,10 @@ async function preventNewBuys(service: Service, run: Run, code: string, evidence
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
     .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id);
   if (result.error) throw new Error("COINOPS_LIVE_KILL_SWITCH_PERSIST_FAILED");
+}
+
+async function preventNewBuys(service: Service, run: Run, code: string, evidence: Record<string, unknown> = {}) {
+  await closeNewBuyGates(service, run);
   const alert = await service.from("robot_v1_live_alerts").upsert({ ...owned(run), asset: run.asset,
     alert_key: `LIVE_RUN:${run.id}:CRITICAL`, severity: "CRITICAL", code,
     details: { ...evidence, run_id: run.id }, last_seen_at: new Date().toISOString(), resolved_at: null },
@@ -1656,9 +1660,12 @@ export async function auditLiveRun(runId: string) {
   const lookup = await service.from("robot_v1_live_runs").select("*").eq("id", runId)
     .eq("tenant_id", getCoinOpsServiceTenantId()).single();
   if (lookup.error || !lookup.data) throw new Error("COINOPS_LIVE_MONITOR_RUN_UNAVAILABLE");
-  const run = lookup.data as Run;
-  if (run.status !== "ACTIVE" && run.status !== "PAUSED") return { status: "INACTIVE" };
-  if (run.lease_until && Date.parse(run.lease_until) > Date.now()) return { status: "LEASE_BUSY" };
+  if (!["ACTIVE", "PAUSED"].includes(lookup.data.status)) return { status: "INACTIVE" };
+  // A one-time lease observation cannot fence an audit against a cron that
+  // starts during the external reads. Share the reconciler's actual lease,
+  // and use the row returned by that claim, not the earlier snapshot.
+  const run = await claim(service, runId);
+  if (!run) return { status: "LEASE_BUSY" };
   try {
     await validateRunEngine(service, run);
     const health = await loadLiveEngineExecutorStatus(run);
@@ -1706,12 +1713,42 @@ export async function auditLiveRun(runId: string) {
       return { status: "RETRY", asset: run.asset, code: error.message };
     // The monitor never authorizes trading. A failed registry observation is
     // retried by the normal cron; it is not evidence of invalid permissions.
-    if (error instanceof LiveReadUnavailable && error.code === "COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT")
+    if (error instanceof LiveReadUnavailable
+      && ["COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT", "COINOPS_OPERATOR_REGISTRY_READ_UNAVAILABLE"].includes(error.code))
       return { status: "RETRY", asset: run.asset, code: error.message };
     const code = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "COINOPS_LIVE_MONITOR_FAILED";
+    await renewLease(service, run);
+    if (code === "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE") {
+      // Staleness/last_error is a secondary observation, not a new financial
+      // cause. Keep the original incident fingerprint and recovery evidence.
+      // This never acknowledges it, opens a gate, or reports healthy.
+      const existing = await service.from("robot_v1_live_alerts").select("code")
+        .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
+        .eq("user_id", run.user_id).eq("operator_id", run.operator_id)
+        .eq("exchange_account_id", run.exchange_account_id)
+        .eq("trading_engine_id", run.trading_engine_id)
+        .eq("alert_key", `LIVE_RUN:${run.id}:CRITICAL`).eq("severity", "CRITICAL")
+        .is("resolved_at", null).abortSignal(AbortSignal.timeout(5_000)).maybeSingle();
+      if (existing.error) throw new Error("COINOPS_LIVE_MONITOR_INCIDENT_READ_FAILED");
+      if (existing.data) {
+        // A crash between gate opening and incident CAS may leave this
+        // inconsistent. Fail closed, retaining the original cause verbatim.
+        if (!run.engine?.engine_kill_switch) {
+          await renewLease(service, run);
+          await closeNewBuyGates(service, run);
+        }
+        return { status: "CRITICAL", asset: run.asset,
+          code: existing.data.code, secondary_code: code };
+      }
+    }
+    await renewLease(service, run);
     await preventNewBuys(service, run, code);
     return { status: "CRITICAL", asset: run.asset, code };
+  } finally {
+    // An audit is not a completed reconciliation and must not manufacture
+    // freshness or erase the execution worker's error checkpoint.
+    await release(service, run, run.last_error, false);
   }
 }
 
@@ -1793,6 +1830,16 @@ async function readVerifiedRecoveryIncident(service: Service, run: Run, expected
   return verifiedReadRecoveryAlert(run.status, run.id, alerts.data ?? [], expected);
 }
 
+async function readOperatorRecoveryIncident(service: Service, run: Run, expected?: ReadRecoveryAlert | null) {
+  const alerts = await service.from("robot_v1_live_alerts")
+    .select("alert_key,code,first_seen_at,last_seen_at,details")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("severity", "CRITICAL").is("resolved_at", null);
+  if (alerts.error) throw new Error("COINOPS_LIVE_RECOVERY_ALERT_LOOKUP_FAILED");
+  return operatorRecoveryAlert(run.status, run.id, alerts.data ?? [], expected);
+}
+
 /** Recovery is not a way to approve or skip an actual strategy edit. Look
  * across this engine's runs: a queued successor edit also keeps BUY closed. */
 async function assertNoPendingStrategyUpdate(service: Service, run: Run) {
@@ -1853,6 +1900,28 @@ async function assertSettledPermissionReadRecovery(service: Service, run: Run, i
     || decisions.data.length || dispatch.data.length) throw new Error("COINOPS_LIVE_PERMISSION_RECOVERY_UNPROVEN");
 }
 
+/** Explicit recovery is not approval of an ambiguous dispatch. A complete
+ * openOrders snapshot alone cannot prove that an unknown BUY was never sent. */
+async function assertSettledOperatorRecovery(service: Service, run: Run, ledger: Ledger) {
+  if (ledger.orders.some(order => !order.client_order_id.startsWith(liveEngineOrderPrefix(run.engine!))
+    || !["NEW", "PARTIALLY_FILLED"].includes(order.status) && !LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
+    || amount(order.executed_quantity) > 0 && !order.trades_reconciled))
+    throw new Error("COINOPS_LIVE_OPERATOR_RECOVERY_UNSETTLED");
+  const decisions = await service.from("robot_v1_strategy_decisions").select("id")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
+    .in("action_type", ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
+    .or("result.neq.COMPLETED,result.is.null").limit(1).abortSignal(AbortSignal.timeout(5_000));
+  const dispatch = await service.from("account_order_budget_reservations").select("client_order_id")
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).is("acknowledged_at", null)
+    .limit(1).abortSignal(AbortSignal.timeout(5_000));
+  if (decisions.error || dispatch.error) throw new Error("COINOPS_LIVE_OPERATOR_RECOVERY_PROOF_UNAVAILABLE");
+  if (!Array.isArray(decisions.data) || !Array.isArray(dispatch.data)
+    || decisions.data.length || dispatch.data.length) throw new Error("COINOPS_LIVE_OPERATOR_RECOVERY_UNSETTLED");
+}
+
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
   source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
@@ -1871,6 +1940,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       throw new Error("COINOPS_LIVE_RESUME_RUN_NOT_READY");
     if (source === "VERIFIED_READ_RECOVERY")
       recoveryIncident = await readVerifiedRecoveryIncident(service, run);
+    else recoveryIncident = await readOperatorRecoveryIncident(service, run) ?? undefined;
     await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
@@ -1886,6 +1956,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
+    if (source === "OPERATOR_CONTROL") await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
     // recovered. Unknown fees cannot reopen a gate and immediately flap it.
@@ -1906,8 +1977,11 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       throw new Error("COINOPS_LIVE_RESUME_HARD_CAP_EXCEEDED");
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.
-    if (recoveryIncident) await readVerifiedRecoveryIncident(service, run, recoveryIncident);
+    if (source === "VERIFIED_READ_RECOVERY")
+      await readVerifiedRecoveryIncident(service, run, recoveryIncident);
+    else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
+    if (source === "OPERATOR_CONTROL") await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
@@ -1939,13 +2013,20 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       .eq("trading_engine_id", run.trading_engine_id)
       .is("resolved_at", null);
     if (recoveryIncident) alertUpdate = alertUpdate.eq("code", recoveryIncident.code)
-      .eq("last_seen_at", recoveryIncident.last_seen_at);
-    if (recoveryIncident && (bnbFeeReadRecovery || isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details)))
+      .eq("last_seen_at", recoveryIncident.last_seen_at).eq("first_seen_at", recoveryIncident.first_seen_at);
+    if (recoveryIncident && (bnbFeeReadRecovery || source === "VERIFIED_READ_RECOVERY"
+      && recoveryIncident.code === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE"
+      || isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details)))
       alertUpdate = alertUpdate.eq("first_seen_at", recoveryIncident.first_seen_at)
         .eq("details->>stage", recoveryIncident.details!.stage)
         .eq("details->>root_code", recoveryIncident.details!.root_code);
     if (recoveryIncident && bnbFeeReadRecovery)
       alertUpdate = alertUpdate.eq("details->>read_path", recoveryIncident.details!.read_path);
+    if (source === "OPERATOR_CONTROL" && recoveryIncident) {
+      for (const key of ["stage", "root_code", "read_path"] as const)
+        if (recoveryIncident.details?.[key] !== undefined)
+          alertUpdate = alertUpdate.eq(`details->>${key}`, recoveryIncident.details[key]);
+    }
     const alert = await alertUpdate.select("id");
     if (alert.error) throw new Error("COINOPS_LIVE_RESUME_ALERT_UPDATE_FAILED");
     if (recoveryIncident && alert.data?.length !== 1)

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
-import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders } from "./live-read-recovery.ts";
+import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
+  operatorRecoveryAlert } from "./live-read-recovery.ts";
 import { liveEngineExposure } from "./engine-exposure.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
@@ -21,12 +22,16 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   permissionRecentDecision?: boolean; permissionUnsettledDecision?: boolean;
   permissionPendingDispatch?: boolean; permissionProofDenied?: boolean;
   permissionSiblingOrder?: boolean; permissionExpectedCutoff?: string;
-  bnbFree?: number; staleBnb?: boolean; unknownBnb?: boolean } = {}) {
+  bnbFree?: number; staleBnb?: boolean; unknownBnb?: boolean; runStatus?: "ACTIVE" | "PAUSED";
+  operatorRecovery?: boolean; operatorPendingDispatch?: boolean; operatorUnsettledDecision?: boolean;
+  operatorLatePendingDispatch?: boolean; operatorLateUnsettledDecision?: boolean;
+  operatorProofDenied?: boolean; operatorOrderStatus?: string; operatorExecutedQuantity?: number;
+  operatorClientOrderId?: string } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
-  const run = { ...scope, id: "run-a", asset: "SOL", status: "ACTIVE", strategy_version: "fixture-v1",
+  const run = { ...scope, id: "run-a", asset: "SOL", status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date().toISOString(), lease_owner: "lease" };
   const engine = { ...scope, id: "engine-a", hard_cap_quote: 275, base_asset: "SOL", status: "ACTIVE", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
@@ -35,9 +40,10 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   const accounts = slots.map((slot) => ({ ...slot, balance_brl: 11, gain_count: 0 }));
   if (options.missingSlot) slots.pop();
   if (options.duplicateSlot) slots[24].slot_number = slots[0].slot_number;
-  const orders = [{ ...scope, id: "order-tp", run_id: run.id, slot_id: "slot-0", side: "SELL", status: "NEW",
-    client_order_id: "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
-    executed_quantity: 0, cumulative_quote: 0, reserved_notional_brl: 0, trades_reconciled: false,
+  const orders = [{ ...scope, id: "order-tp", run_id: run.id, slot_id: "slot-0", side: "SELL",
+    status: options.operatorOrderStatus ?? "NEW",
+    client_order_id: options.operatorClientOrderId ?? "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
+    executed_quantity: options.operatorExecutedQuantity ?? 0, cumulative_quote: 0, reserved_notional_brl: 0, trades_reconciled: false,
     price: 650, requested_quantity: 1, created_at: "2026-09-25T00:00:00Z" }];
   if (options.permissionRecovery) orders.push({ ...orders[0], id: "order-buy", side: "BUY", price: 630,
     client_order_id: "owned:buy", exchange_order_id: "buy-a", slot_id: "slot-1",
@@ -46,6 +52,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     created_at: options.permissionRecentOrder ? "2026-09-27T00:00:00Z" : orders[0].created_at });
   let alertReads = 0;
   let bulkReads = 0;
+  let operatorIntentReads = 0;
+  let operatorDispatchReads = 0;
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
@@ -64,7 +72,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       } else if (table === "robot_v1_live_alerts") data = options.casLost ? [] : [{ id: "incident" }];
       else if (table === "robot_v1_live_runs") {
         if (mutation?.lease_owner) calls.push("lease-claimed");
-        data = singular ? run : [run];
+        data = singular ? { ...run, ...mutation } : [{ ...run, ...mutation }];
       } else if (table === "operators") data = scope;
       else if (table === "robot_v1_live_preparations") data = { ...scope, id: "prep", live_enabled: true,
         kill_switch: mutation?.kill_switch ?? true, max_total_exposure_brl: 275 };
@@ -87,7 +95,9 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "robot_v1_live_orders") data = filters.id ? [{ id: "filled-order",
         client_order_id: "owned:filled-tp", status: "FILLED", trades_reconciled: true }] : orders;
       else if (table === "robot_v1_strategy_decisions" || table === "account_order_budget_reservations") {
-        calls.push(table === "robot_v1_strategy_decisions" ? "permission-intent-read" : "permission-dispatch-read");
+        calls.push(options.operatorRecovery
+          ? table === "robot_v1_strategy_decisions" ? "operator-intent-read" : "operator-dispatch-read"
+          : table === "robot_v1_strategy_decisions" ? "permission-intent-read" : "permission-dispatch-read");
         assert.equal(filters.trading_engine_id, "engine-a");
         assert.equal(filters.exchange_account_id, "account-a");
         assert.equal(filters.operator_id, "operator");
@@ -95,14 +105,26 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
         if (table === "robot_v1_strategy_decisions") {
           assert.equal(filters.environment, "REAL");
           assert.deepEqual(filters.action_type, ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"]);
-          const cutoff = options.permissionExpectedCutoff ?? "2026-09-26T23:58:42.000Z";
-          assert.equal(filters.or, `created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`);
-          data = options.permissionRecentDecision || options.permissionUnsettledDecision ? [{ id: "unsettled-decision" }] : [];
+          if (options.operatorRecovery) {
+            operatorIntentReads++;
+            assert.equal(filters.or, "result.neq.COMPLETED,result.is.null");
+            data = options.operatorUnsettledDecision || options.operatorLateUnsettledDecision && operatorIntentReads > 1
+              ? [{ id: "unsettled-decision" }] : [];
+          } else {
+            const cutoff = options.permissionExpectedCutoff ?? "2026-09-26T23:58:42.000Z";
+            assert.equal(filters.or, `created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`);
+            data = options.permissionRecentDecision || options.permissionUnsettledDecision ? [{ id: "unsettled-decision" }] : [];
+          }
         } else {
           assert.equal(filters.acknowledged_at, null);
-          data = options.permissionPendingDispatch ? [{ client_order_id: "uncertain-dispatch" }] : [];
+          if (options.operatorRecovery) {
+            operatorDispatchReads++;
+            data = options.operatorPendingDispatch || options.operatorLatePendingDispatch && operatorDispatchReads > 1
+              ? [{ client_order_id: "uncertain-dispatch" }] : [];
+          } else data = options.permissionPendingDispatch ? [{ client_order_id: "uncertain-dispatch" }] : [];
         }
-        if (options.permissionProofDenied) return { data: null, error: { code: "42501" }, status: 403 };
+        if (options.permissionProofDenied || options.operatorProofDenied)
+          return { data: null, error: { code: "42501" }, status: 403 };
       }
       else if (table === "account_quote_caps") data = { hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") data = {};
@@ -133,7 +155,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     "./live-read-error": readErrors,
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
-    "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders },
+    "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
+      operatorRecoveryAlert },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
     "./operator-context-server": { resolveOperatorEngine: async () => {
@@ -174,7 +197,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   const exports: Record<string, unknown> = {};
   new Function("require", "exports", compiled)((name: string) => dependencies[name] ?? {}, exports);
   const resume = exports.resumeLiveRun as (...args: string[]) => Promise<{ status: string }>;
-  return { run: () => resume("run-a", "user", "SOL", "VERIFIED_READ_RECOVERY"), calls, writes };
+  return { run: (source = "VERIFIED_READ_RECOVERY") => resume("run-a", "user", "SOL", source), calls, writes };
 }
 
 test("verified recovery claims lease, proves fresh health/protection and conditionally resolves only its incident", async () => {
@@ -185,9 +208,93 @@ test("verified recovery claims lease, proves fresh health/protection and conditi
   assert.equal(clear?.filters.code, known.code);
   assert.equal(clear?.filters.last_seen_at, known.last_seen_at);
   assert.equal(clear?.filters.trading_engine_id, "engine-a");
-  assert.equal(clear?.filters.first_seen_at, undefined);
+  assert.equal(clear?.filters.first_seen_at, known.first_seen_at);
   assert.equal(clear?.filters["details->>stage"], undefined);
   assert.equal(clear?.filters["details->>root_code"], undefined);
+});
+
+test("explicit operator resume of sole monitor-stale incident requires current full proof and scoped immutable CAS", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE",
+    details: { stage: "MONITOR", root_code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE",
+      read_path: "registry/trading_engines" } };
+  const scenario = fixture({ alerts: [[incident]], operatorRecovery: true });
+  assert.equal((await scenario.run("OPERATOR_CONTROL")).status, "RESUMED");
+  assert.deepEqual(scenario.calls.filter(call => !call.startsWith("operator-")),
+    ["lease-claimed", "alert-read", "health", "exchange-state", "alert-read"]);
+  assert.equal(scenario.calls.filter(call => call === "operator-intent-read").length, 2);
+  assert.equal(scenario.calls.filter(call => call === "operator-dispatch-read").length, 2);
+  const clear = scenario.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  for (const [key, value] of Object.entries({ code: incident.code, first_seen_at: incident.first_seen_at,
+    last_seen_at: incident.last_seen_at, trading_engine_id: "engine-a", exchange_account_id: "account-a",
+    operator_id: "operator", user_id: "user", tenant_id: "tenant", product_id: "product",
+    alert_key: "LIVE_RUN:run-a:CRITICAL", resolved_at: null,
+    "details->>stage": incident.details.stage, "details->>root_code": incident.details.root_code,
+    "details->>read_path": incident.details.read_path })) assert.equal(clear.filters[key], value, key);
+  const resumed = scenario.writes.find(write => write.table === "robot_v1_live_events"
+    && write.data.event_type === "LIVE_RESUMED")!;
+  assert.equal((resumed.data.details as Record<string, unknown>).source, "OPERATOR_CONTROL");
+  assert.equal((resumed.data.details as Record<string, unknown>).recovered_alert_code, incident.code);
+  assert.equal(scenario.writes.some(write => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"]
+    .includes(write.table)), false);
+  assert.ok(scenario.writes.filter(write => write.table === "trading_engines")
+    .every(write => write.filters.id === "engine-a" && write.filters.exchange_account_id === "account-a"));
+});
+
+test("explicit operator resume rejects new/additional/changed critical before unlocking an engine", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE",
+    details: { stage: "MONITOR", root_code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE", read_path: "registry/trading_engines" } };
+  for (const alerts of [
+    [[incident, { ...incident, alert_key: "OTHER_CRITICAL" }]],
+    [[incident], [incident, { ...incident, alert_key: "OTHER_CRITICAL" }]],
+    [[incident], [{ ...incident, code: "COINOPS_LIVE_TP_FAILED" }]],
+    [[incident], [{ ...incident, last_seen_at: "2026-09-27T00:01:00Z" }]],
+    [[incident], [{ ...incident, first_seen_at: "2026-09-27T00:00:13Z" }]],
+    [[incident], [{ ...incident, details: { ...incident.details, stage: "ARM_ENTRY" } }]],
+    [[incident], [{ ...incident, details: { ...incident.details, root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" } }]],
+    [[incident], [{ ...incident, details: { ...incident.details, read_path: "POST/order" } }]],
+  ]) {
+    const scenario = fixture({ alerts, operatorRecovery: true });
+    await assert.rejects(scenario.run("OPERATOR_CONTROL"), /RECOVERY_INCIDENT_CHANGED/);
+    assert.equal(scenario.writes.some(write => write.data.kill_switch === false), false);
+    assert.equal(scenario.writes.some(write => write.table === "robot_v1_live_events"
+      && write.data.event_type === "LIVE_RESUMED"), false);
+  }
+  const appeared = fixture({ runStatus: "PAUSED", alerts: [[], [incident]], operatorRecovery: true });
+  await assert.rejects(appeared.run("OPERATOR_CONTROL"), /RECOVERY_INCIDENT_CHANGED/);
+  assert.equal(appeared.writes.some(write => write.data.kill_switch === false), false);
+});
+
+test("explicit operator resume preserves fail-closed protection and re-closes on final incident CAS loss", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE" };
+  for (const options of [{ missingTp: true }, { healthy: false }, { missingSlot: true }, { ledgerDenied: true },
+    { monthlyFailure: true }, { configPending: true }, { bulkStatus: "PENDING" }, { bulkStatus: "BLOCKED_SAFE" }]) {
+    const scenario = fixture({ alerts: [[incident]], operatorRecovery: true, ...options });
+    await assert.rejects(scenario.run("OPERATOR_CONTROL"));
+    assert.equal(scenario.writes.some(write => write.data.kill_switch === false), false);
+  }
+  const lost = fixture({ alerts: [[incident]], casLost: true, operatorRecovery: true });
+  await assert.rejects(lost.run("OPERATOR_CONTROL"), /RECOVERY_INCIDENT_CHANGED/);
+  const gates = lost.writes.filter(write => write.table === "trading_engines");
+  assert.deepEqual(gates.map(write => write.data.kill_switch), [false, true]);
+  assert.ok(gates.every(write => write.filters.id === "engine-a" && write.filters.exchange_account_id === "account-a"));
+  assert.equal(lost.writes.some(write => write.table === "robot_v1_live_events"
+    && write.data.event_type === "LIVE_RESUMED"), false);
+});
+
+test("explicit operator resume never opens on prepared/unknown orders, pending dispatch or unsettled financial decisions", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_MONITOR_RECONCILIATION_STALE" };
+  for (const options of [{ operatorPendingDispatch: true }, { operatorUnsettledDecision: true },
+    { operatorLatePendingDispatch: true }, { operatorLateUnsettledDecision: true }, { operatorProofDenied: true },
+    { operatorExecutedQuantity: 1 }, { operatorClientOrderId: "another-engine:tp" },
+    ...["PREPARED", "UNKNOWN", "FAILED", "SUBMITTING", "PENDING_CANCEL"].map(operatorOrderStatus => ({ operatorOrderStatus }))]) {
+    const scenario = fixture({ alerts: [[incident]], operatorRecovery: true, ...options });
+    await assert.rejects(scenario.run("OPERATOR_CONTROL"));
+    assert.equal(scenario.writes.some(write => write.data.kill_switch === false), false);
+    assert.equal(scenario.writes.some(write => write.table === "robot_v1_live_events"
+      && write.data.event_type === "LIVE_RESUMED"), false);
+    assert.equal(scenario.writes.some(write => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"]
+      .includes(write.table)), false);
+  }
 });
 
 test("missing-order alert recovers only after a late trade-backed fill and current exchange agreement", async () => {
@@ -228,6 +335,33 @@ test("registry recovery revalidates real permissions and TP before opening only 
     await assert.rejects(denied.run(), /SCOPE_DENIED|RESUME_EXECUTOR_NOT_ACTIVE|EXCHANGE_ORDER_MISSING/);
     assert.equal(denied.writes.some(w => w.data.kill_switch === false), false);
   }
+});
+
+test("registry GET at later normal stages resumes only after complete unchanged engine-scoped proof", async () => {
+  const code = "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE";
+  for (const stage of ["RECONCILE_ORDERS", "PROTECT_TP", "ASSERT_NEW_POSITION", "ARM_ENTRY",
+    "ATH_TRANSITION", "RESTART_CYCLE", "CONFIG_UPDATE"]) {
+    const incident = { ...known, code, details: { stage, root_code: code } };
+    const safe = fixture({ alerts: [[incident]] });
+    assert.equal((await safe.run()).status, "RESUMED", stage);
+    assert.deepEqual(safe.calls, ["lease-claimed", "alert-read", "health", "exchange-state", "alert-read"]);
+    assert.ok(safe.writes.filter(write => write.table === "trading_engines")
+      .every(write => write.filters.id === "engine-a" && write.filters.exchange_account_id === "account-a"));
+    assert.equal(safe.writes.some(write => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"]
+      .includes(write.table)), false);
+  }
+  const incident = { ...known, code, details: { stage: "ARM_ENTRY", root_code: code } };
+  for (const options of [{ registryDenied: true }, { healthy: false }, { missingTp: true }, { missingSlot: true },
+    { ledgerDenied: true }, { monthlyFailure: true }, { configPending: true },
+    ...["PENDING", "APPLYING", "BLOCKED_SAFE"].map(bulkStatus => ({ bulkStatus }))]) {
+    const denied = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(denied.run());
+    assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
+  }
+  const changed = fixture({ alerts: [[incident], [{ ...incident,
+    details: { stage: "LOAD_LEDGER", root_code: code } }]] });
+  await assert.rejects(changed.run(), /RECOVERY_INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
 });
 
 test("legacy monthly outage resumes under lease only after monthly, health, TP and incident CAS proofs", async () => {

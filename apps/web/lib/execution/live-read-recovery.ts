@@ -1,5 +1,24 @@
 export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown };
 
+// validateRunEngine/scopedPreparation perform the same owner-scoped registry
+// GET in these exact advanceLiveRun stages. A failed observation at ARM_ENTRY
+// is not an order dispatch failure merely because of the outer stage name.
+// CONFIG_UPDATE eligibility never approves a bulk edit: guarded resume still
+// rejects every pending/applying/blocked edit and config gate under its lease.
+const REGISTRY_READ_RECOVERY_STAGES = new Set([
+  "LOAD_LEDGER", "RECONCILE_ORDERS", "PROTECT_TP", "ASSERT_NEW_POSITION",
+  "ARM_ENTRY", "ATH_TRANSITION", "RESTART_CYCLE", "CONFIG_UPDATE",
+]);
+
+/** Eligibility for a known registry GET only, never proof that the provider
+ * error was transient. Resume must reload real scope/permissions, all physical
+ * slots, Binance/ledger ownership, TP, fills, monthly facts and caps. */
+export function isRegistryStateReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return code === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE"
+    && details?.root_code === code && typeof details.stage === "string"
+    && REGISTRY_READ_RECOVERY_STAGES.has(details.stage);
+}
+
 /** Eligibility only: an old wrapper can represent a GET before any write.
  * Fresh permission/financial proof under lease is still mandatory; the legacy
  * root code itself never becomes retryable or proves a transient provider. */
@@ -15,6 +34,7 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
   alertCode: string | null, details?: ReadRecoveryDetails | null): boolean {
   return status === "ACTIVE" && reconciledStatus === "OK"
     && (isPermissionStateReadRecovery(alertCode, details)
+      || isRegistryStateReadRecovery(alertCode, details)
       || ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
       "COINOPS_LIVE_EXECUTOR_READ_STALE",
       "COINOPS_LIVE_LEDGER_READ_STALE",
@@ -24,9 +44,6 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
       // Eligibility only: the guarded resume must still prove fresh executor
       // health, exchange/ledger agreement, protected positions and hard caps.
       "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
-      // Legacy registry read failure: verifiedReadRecoveryAlert additionally
-      // requires LOAD_LEDGER evidence; resume reloads/validates the full scope.
-      "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE",
       // Legacy reads conflated provider failure and missing rows. Eligibility
       // is not proof: runRows must now validate all physical rows, complete
       // orders and ownership; resume still proves exchange/TP/caps under lease.
@@ -46,6 +63,32 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
 export type ReadRecoveryAlert = { alert_key: string; code: string; first_seen_at?: string;
   last_seen_at: string; details?: ReadRecoveryDetails | null };
 
+/** Explicit operator control only; this helper never broadens automatic read
+ * recovery. The caller must still prove current finance/ownership under lease
+ * and use the returned immutable identity in its final compare-and-set.
+ * A deliberate PAUSED run may have no CRITICAL; an unexplained ACTIVE gate
+ * cannot inherit that exception. */
+export function operatorRecoveryAlert(status: string, runId: string, alerts: ReadRecoveryAlert[],
+  expected?: ReadRecoveryAlert | null): ReadRecoveryAlert | null {
+  const fail = (): never => { throw new Error("COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED"); };
+  if (!["ACTIVE", "PAUSED"].includes(status)) return fail();
+  if (!alerts.length) {
+    if (status !== "PAUSED" || expected !== undefined && expected !== null) return fail();
+    return null;
+  }
+  const alert = alerts.length === 1 ? alerts[0] : null;
+  if (!alert || expected === null || alert.alert_key !== `LIVE_RUN:${runId}:CRITICAL`
+    || !/^COINOPS_[A-Z0-9_]+$/.test(alert.code)
+    || !Number.isFinite(Date.parse(alert.first_seen_at ?? ""))
+    || !Number.isFinite(Date.parse(alert.last_seen_at))) return fail();
+  if (expected && (alert.alert_key !== expected.alert_key || alert.code !== expected.code
+    || alert.first_seen_at !== expected.first_seen_at || alert.last_seen_at !== expected.last_seen_at
+    || alert.details?.stage !== expected.details?.stage
+    || alert.details?.root_code !== expected.details?.root_code
+    || alert.details?.read_path !== expected.details?.read_path)) return fail();
+  return alert;
+}
+
 /** The caller must load all unresolved CRITICAL alerts in the exact engine /
  * account scope while holding the run lease. Never clear a changed cause. */
 export function verifiedReadRecoveryAlert(status: string, runId: string,
@@ -54,7 +97,7 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
   if (!alert || alert.alert_key !== `LIVE_RUN:${runId}:CRITICAL`
     || !mayRecoverReadOutage(status, "OK", alert.code, alert.details)
     || alert.code === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE"
-      && (alert.details?.stage !== "LOAD_LEDGER" || alert.details?.root_code !== alert.code)
+      && !isRegistryStateReadRecovery(alert.code, alert.details)
     || alert.code === "COINOPS_LIVE_LEDGER_INCOMPLETE"
       && (!["LOAD_LEDGER", "RECONCILE_ORDERS"].includes(String(alert.details?.stage))
         || alert.details?.root_code !== alert.code)
@@ -75,6 +118,8 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
       || alert.first_seen_at !== expected.first_seen_at
       || isPermissionStateReadRecovery(expected.code, expected.details)
+        && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)
+      || isRegistryStateReadRecovery(expected.code, expected.details)
         && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)
       || expected.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"
         && (alert.details?.stage !== expected.details.stage || alert.details?.root_code !== expected.details.root_code
