@@ -59,35 +59,9 @@ export default async function HomePage() {
           </div>
         </div>
 
-        <div className="market-preview" aria-label="Previa do dashboard">
-          <div className="preview-header">
-            <span>BTC 1%</span>
-            <strong>+12.8%</strong>
-          </div>
-          <div className="chart-bars" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-          </div>
-          <div className="preview-metrics">
-            <article>
-              <span>Total atualizado</span>
-              <strong>1.482,40 USDT</strong>
-            </article>
-            <article>
-              <span>Slots abertos</span>
-              <strong>4</strong>
-            </article>
-          </div>
-          <div className="slot-tape" aria-hidden="true">
-            <span className="is-open">Aberto</span>
-            <span className="is-gain">Gain</span>
-            <span className="is-zero">Zerado</span>
-          </div>
+        <div className="market-preview" aria-label="Como começar"><h2>Seu acesso em três etapas</h2>
+          <ol><li>Crie seu cadastro e confirme o e-mail.</li><li>Siga o tutorial e combine o vínculo da conta com o administrador.</li><li>Acompanhe somente os dados da sua conta depois da configuração.</li></ol>
+          <p>Cadastro e acompanhamento não representam promessa de rendimento. A configuração operacional é uma etapa separada.</p>
         </div>
       </section>
 
@@ -95,17 +69,17 @@ export default async function HomePage() {
         <article>
           <span>01</span>
           <h2>Login e cadastro</h2>
-          <p>Supabase Auth fica responsavel por conta, sessao e separacao de usuarios.</p>
+          <p>Seu e-mail e senha dão acesso ao tutorial e ao acompanhamento autorizado.</p>
         </article>
         <article>
           <span>02</span>
           <h2>Dashboard protegido</h2>
-          <p>Rotas privadas passam pelo middleware antes de mostrar qualquer dado.</p>
+          <p>Cada cliente acompanha somente sua conta após o vínculo seguro.</p>
         </article>
         <article>
           <span>03</span>
-          <h2>PWA inicial</h2>
-          <p>Manifest, icones CoinOps e tema premium prontos para o uso no celular.</p>
+          <h2>No celular e computador</h2>
+          <p>Acesse pelo navegador e use os recursos disponíveis no seu dispositivo.</p>
         </article>
       </section>
     </main>

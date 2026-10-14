@@ -24,14 +24,14 @@ async function adminScope() {
   const { data: operator, error } = await client.from("operators").select("id,user_id,status")
     .eq("tenant_id", tenantId).eq("user_id", user.id).eq("status", "ACTIVE").single();
   if (error || !operator) throw new Error("COINOPS_VIEWER_ADMIN_DENIED");
-  return { operator, service: createServiceRoleClient() };
+  return { operator, service: createServiceRoleClient(15000) };
 }
 
 export async function GET() {
   try {
     const { operator, service } = await adminScope();
     const [access, accounts] = await Promise.all([
-      service.from("viewer_access").select("user_id,exchange_account_id,display_name,email,status,created_at")
+      service.from("viewer_access").select("user_id,exchange_account_id,display_name,email,status,created_at,company_name,owner_name,whatsapp")
         .eq("operator_id", operator.id).is("deleted_at", null).order("created_at", { ascending: false }),
       service.from("exchange_accounts").select("id,display_name,status")
         .eq("operator_id", operator.id).in("status", ["ACTIVE", "INACTIVE"]).order("display_name"),
@@ -52,36 +52,24 @@ export async function POST(request: NextRequest) {
     assertViewerIntent(input);
     const { operator, service } = await adminScope();
     if (input.operation === "CREATE_WITH_PASSWORD") {
-      const account = await service.from("exchange_accounts").select("operator_id,status")
-        .eq("id", input.accountId!).maybeSingle();
-      if (account.error) throw new Error("COINOPS_VIEWER_ACCOUNT_READ_FAILED");
-      assertViewerAccount(account.data, operator.id);
       const email = input.email!.trim().toLowerCase();
-      const prior = await service.from("viewer_access").select("user_id,exchange_account_id,status,deleted_at")
+      const prior = await service.from("viewer_access").select("user_id,status,deleted_at")
         .eq("operator_id", operator.id).eq("email", email).maybeSingle();
       if (prior.error) throw new Error("COINOPS_VIEWER_READ_FAILED");
       if (prior.data) {
         const identity = await service.auth.admin.getUserById(prior.data.user_id);
         const marker = identity.data.user?.app_metadata?.coinops_provision;
-        if (!identity.error && marker?.request_id === input.requestId && marker?.actor_id === operator.user_id && marker?.account_id === input.accountId
-          && prior.data.status === "ACTIVE" && !prior.data.deleted_at && prior.data.exchange_account_id === input.accountId)
+        if (!identity.error && marker?.request_id === input.requestId && marker?.actor_id === operator.user_id
+          && marker?.operator_id === operator.id && prior.data.status === "ACTIVE" && !prior.data.deleted_at)
           return json({ userId: prior.data.user_id, status: "ACTIVE", passwordAccess: true });
         throw new Error("COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED");
       }
-      // Only Auth receives the password. Existing identities are never reset.
-      const identity = await createPasswordViewerIdentity(service, input, operator.user_id);
-      const userId = identity.id;
-      const stored = await service.from("viewer_access").insert({ user_id: userId,
-        operator_id: operator.id, exchange_account_id: input.accountId!, role: "VIEWER",
-        display_name: input.displayName!.trim(), email, status: "ACTIVE", created_by: operator.user_id });
-      // Missing binding fails closed in middleware/RLS, preserving shared Auth.
-      if (stored.error) {
-        const readback = await service.from("viewer_access").select("operator_id,exchange_account_id,status,deleted_at")
-          .eq("user_id", userId).maybeSingle();
-        if (readback.error || readback.data?.operator_id !== operator.id || readback.data?.exchange_account_id !== input.accountId
-          || readback.data?.status !== "ACTIVE" || readback.data?.deleted_at) throw new Error("COINOPS_VIEWER_BINDING_FAILED");
-      }
-      return json({ userId, status: "ACTIVE", passwordAccess: true }, 201);
+      const identity = await createPasswordViewerIdentity(service, input, operator.user_id, operator.id);
+      const readback = await service.from("viewer_access").select("operator_id,status,deleted_at")
+        .eq("user_id", identity.id).maybeSingle();
+      if (readback.error || readback.data?.operator_id !== operator.id || readback.data?.status !== "ACTIVE"
+        || readback.data?.deleted_at) throw new Error("COINOPS_VIEWER_BINDING_FAILED");
+      return json({ userId: identity.id, status: "ACTIVE", passwordAccess: true }, 201);
     }
     if (input.operation === "CREATE") {
       const account = await service.from("exchange_accounts").select("operator_id,status")
@@ -155,6 +143,17 @@ export async function POST(request: NextRequest) {
         .is("deleted_at", null).select("user_id").single();
       if (removed.error || !removed.data) throw new Error("COINOPS_VIEWER_BINDING_CHANGED");
       return json({ status: "INACTIVE", accessRemoved: true });
+    }
+    if (input.operation === "ASSIGN") {
+      if (row.data.exchange_account_id || row.data.status !== "ACTIVE") throw new Error("COINOPS_VIEWER_BINDING_CHANGED");
+      const account = await service.from("exchange_accounts").select("operator_id,status").eq("id", input.accountId!).maybeSingle();
+      if (account.error) throw new Error("COINOPS_VIEWER_ACCOUNT_READ_FAILED");
+      assertViewerAccount(account.data, operator.id);
+      const updated = await service.from("viewer_access").update({ exchange_account_id: input.accountId!, updated_at: new Date().toISOString() })
+        .eq("operator_id", operator.id).eq("user_id", input.userId!).eq("status", "ACTIVE").is("exchange_account_id", null)
+        .is("deleted_at", null).select("user_id").single();
+      if (updated.error || !updated.data) throw new Error("COINOPS_VIEWER_BINDING_CHANGED");
+      return json({ status: "ACTIVE", accountId: input.accountId, bindingUpdated: true });
     }
     if (input.operation === "REASSIGN") {
       assertViewerInactive(row.data.status);

@@ -129,7 +129,7 @@ test("reset rejects disabled access before email delivery and identifies rate li
 
 
 test("direct password access enforces policy and never lets other operations carry a password", () => {
-  const base = { operation: "CREATE_WITH_PASSWORD", requestId: id(1), accountId: id(2), displayName: "Cliente", email: "cliente@example.com" };
+  const base = { operation: "CREATE_WITH_PASSWORD", requestId: id(1), companyName: "Empresa", ownerName: "Cliente", whatsapp: "67999990000", email: "cliente@example.com" };
   for (const password of ["12345678", "abcdefgh", "a".repeat(1000)]) assert.doesNotThrow(() => assertViewerIntent({ ...base, password }));
   for (const password of [undefined, "short"]) assert.throws(() => assertViewerIntent({ ...base, password }), /PASSWORD_INVALID/);
   assert.throws(() => assertViewerIntent({ operation: "ENABLE", requestId: id(1), userId: id(2), password: "12345678" }), /INTENT_INVALID/);
@@ -137,12 +137,30 @@ test("direct password access enforces policy and never lets other operations car
 });
 
 
-test("direct creation stays behind operator, project and account authorization", () => {
+test("direct creation authorizes the operator and defers account binding", () => {
   const route = readFileSync(resolve(process.cwd(), "app/api/coinops-viewers/route.ts"), "utf8");
   assert.match(route, /hostname !== "otdfpmsegjxpqrzisfmi.supabase.co"/);
   assert.match(route, /user.app_metadata\?\.coinops_role === "VIEWER"/);
   assert.match(route, /\.eq\("tenant_id", tenantId\)\.eq\("user_id", user.id\)\.eq\("status", "ACTIVE"\)/);
   const direct = route.slice(route.indexOf('if (input.operation === "CREATE_WITH_PASSWORD")'), route.indexOf('if (input.operation === "CREATE")'));
-  assert.ok(direct.indexOf('assertViewerAccount(account.data, operator.id)') < direct.indexOf('createPasswordViewerIdentity(service'));
+  assert.match(direct, /createPasswordViewerIdentity\(service, input, operator.user_id, operator.id\)/);
+  assert.doesNotMatch(direct, /assertViewerAccount|exchange_accounts/);
   assert.doesNotMatch(direct, /updateUserById|deleteUser|resetPasswordForEmail|console\.|password:/);
+});
+
+
+test("new registrations need only five fields and cannot choose an account or role", () => {
+  const input = { operation: "CREATE_WITH_PASSWORD", requestId: id(1), companyName: "Empresa", ownerName: "Cliente", whatsapp: "67999990000", email: "client@example.com", password: "12345678" };
+  assert.doesNotThrow(() => assertViewerIntent(input));
+  assert.throws(() => assertViewerIntent({ ...input, accountId: id(2) }), /INTENT_INVALID/);
+  assert.throws(() => assertViewerIntent({ ...input, whatsapp: "123" }), /CONTACT_INVALID/);
+  const route = readFileSync(resolve(process.cwd(), "app/api/coinops-viewers/route.ts"), "utf8");
+  const assign = route.slice(route.indexOf('if (input.operation === "ASSIGN")'), route.indexOf('if (input.operation === "REASSIGN")'));
+  assert.match(assign, /assertViewerAccount\(account.data, operator.id\)/);
+  assert.match(assign, /\.is\("exchange_account_id", null\)/);
+  assert.doesNotMatch(assign, /auth\.|trading_engines|robot_v1/);
+  const state = readFileSync(resolve(process.cwd(), "app/api/coinops-viewer-state/route.ts"), "utf8");
+  const page = readFileSync(resolve(process.cwd(), "app/meu-coinops/page.tsx"), "utf8");
+  assert.match(state, /!binding.data.exchange_account_id.*VIEWER_SETUP_REQUIRED/);
+  assert.match(page, /!binding.data.exchange_account_id.*redirect\("\/primeiros-passos"\)/);
 });

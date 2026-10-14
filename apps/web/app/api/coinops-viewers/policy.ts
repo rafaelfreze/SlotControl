@@ -1,19 +1,24 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type ViewerIntent = { operation?: string; requestId?: string; accountId?: string;
-  userId?: string; displayName?: string; email?: string; password?: string };
+  userId?: string; displayName?: string; email?: string; password?: string; companyName?: string; ownerName?: string; whatsapp?: string };
 
 export function assertViewerIntent(input: ViewerIntent) {
-  if (!UUID.test(input.requestId ?? "") || !["CREATE", "CREATE_WITH_PASSWORD", "DISABLE", "ENABLE", "RESET", "REVOKE", "REASSIGN", "DELETE"].includes(input.operation ?? ""))
+  if (!UUID.test(input.requestId ?? "") || !["CREATE", "CREATE_WITH_PASSWORD", "DISABLE", "ENABLE", "RESET", "REVOKE", "REASSIGN", "ASSIGN", "DELETE"].includes(input.operation ?? ""))
     throw new Error("COINOPS_VIEWER_INTENT_INVALID");
-  if (input.operation === "CREATE" || input.operation === "CREATE_WITH_PASSWORD") {
-    if (!UUID.test(input.accountId ?? "") || !input.displayName?.trim() || input.displayName.trim().length > 80
+  if (input.operation === "CREATE_WITH_PASSWORD") {
+    if (input.accountId !== undefined || input.userId !== undefined || input.displayName !== undefined
+      || typeof input.companyName !== "string" || input.companyName.trim().length < 2 || input.companyName.trim().length > 120
+      || typeof input.ownerName !== "string" || input.ownerName.trim().length < 2 || input.ownerName.trim().length > 120
       || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email ?? "") || (input.email ?? "").length > 320)
       throw new Error("COINOPS_VIEWER_INTENT_INVALID");
-    if (input.operation === "CREATE_WITH_PASSWORD" && (typeof input.password !== "string" || input.password.length < 8))
-      throw new Error("COINOPS_VIEWER_PASSWORD_INVALID");
-    if (input.operation === "CREATE" && input.password !== undefined) throw new Error("COINOPS_VIEWER_INTENT_INVALID");
-  } else if (input.operation === "REASSIGN") {
+    if (typeof input.password !== "string" || input.password.length < 8) throw new Error("COINOPS_VIEWER_PASSWORD_INVALID");
+    normalizeViewerWhatsApp(input.whatsapp);
+  } else if (input.operation === "CREATE") {
+    if (!UUID.test(input.accountId ?? "") || !input.displayName?.trim() || input.displayName.trim().length > 80
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email ?? "") || (input.email ?? "").length > 320 || input.password !== undefined)
+      throw new Error("COINOPS_VIEWER_INTENT_INVALID");
+  } else if (input.operation === "REASSIGN" || input.operation === "ASSIGN") {
     if (!UUID.test(input.userId ?? "") || !UUID.test(input.accountId ?? "") || input.email || input.displayName || input.password !== undefined)
       throw new Error("COINOPS_VIEWER_INTENT_INVALID");
   } else if (!UUID.test(input.userId ?? "") || input.accountId || input.email || input.displayName || input.password !== undefined) {
@@ -54,4 +59,11 @@ export function assertViewerAccount(account: { operator_id: string; status: stri
 export function viewerInviteFailureCode(error: { code?: string; status?: number } | null) {
   return ["email_exists", "user_already_exists"].includes(error?.code ?? "")
     ? "COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED" : "COINOPS_VIEWER_INVITE_FAILED";
+}
+
+export function normalizeViewerWhatsApp(value: unknown) {
+  if (typeof value !== "string") throw new Error("COINOPS_VIEWER_CONTACT_INVALID");
+  const digits=value.replace(/\D/g,"");const phone="+"+((digits.length===12||digits.length===13)&&digits.startsWith("55")?digits:"55"+digits);
+  if(!/^\+55[1-9][0-9](9[0-9]{8}|[2-9][0-9]{7})$/.test(phone)) throw new Error("COINOPS_VIEWER_CONTACT_INVALID");
+  return phone;
 }

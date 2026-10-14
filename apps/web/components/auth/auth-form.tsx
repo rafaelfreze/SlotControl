@@ -35,8 +35,10 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") || "").trim();
     const password = String(formData.get("password") || "");
-    const confirmation = String(formData.get("confirmation") || "");
-    const displayName = String(formData.get("displayName") || "").trim();
+    const companyName = String(formData.get("companyName") || "").trim();
+    const ownerName = String(formData.get("ownerName") || "").trim();
+    const digits = String(formData.get("whatsapp") || "").replace(/\D/g, "");
+    const whatsapp = "+" + ((digits.length === 12 || digits.length === 13) && digits.startsWith("55") ? digits : "55" + digits);
 
     startTransition(async () => {
       const supabase = createClient();
@@ -56,17 +58,18 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
       }
 
       if (isSignup) {
-        const validationError = validateNewPassword(password, confirmation);
+        const validationError = validateNewPassword(password);
         if (validationError) {
           setError(validationError);
           return;
         }
+        if (companyName.length < 2 || ownerName.length < 2 || !/^\+55[1-9][0-9](9[0-9]{8}|[2-9][0-9]{7})$/.test(whatsapp)) { setError("Confira empresa, nome do dono e WhatsApp com DDD."); return; }
         const { data, error: signupError } = await supabase.auth.signUp({
           email,
           password,
           options: {
             data: {
-              display_name: displayName
+              onplay_product: "coinops", company_name: companyName, owner_name: ownerName, whatsapp
             },
             emailRedirectTo: getCoinOpsAuthCallback(AUTHENTICATED_HOME)
           }
@@ -100,13 +103,11 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
 
   return (
     <form className="auth-form" onSubmit={handleSubmit}>
-      {isSignup ? (
-        <label>
-          Nome
-          <input name="displayName" type="text" placeholder="Rafael" autoComplete="name" />
-        </label>
-      ) : null}
-
+      {isSignup ? <>
+        <label>Nome da empresa<input name="companyName" minLength={2} maxLength={120} required autoComplete="organization" /></label>
+        <label>Nome do dono<input name="ownerName" minLength={2} maxLength={120} required autoComplete="name" /></label>
+        <label>WhatsApp<input name="whatsapp" type="tel" required autoComplete="tel" placeholder="DDD e número" /></label>
+      </> : null}
       <label>
         Email
         <input name="email" type="email" placeholder="voce@email.com" autoComplete="email" required />
@@ -126,15 +127,7 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
         </label>
       ) : null}
 
-      {isSignup ? (
-        <>
-          <p className="auth-hint">Use pelo menos 8 caracteres.</p>
-          <label>
-            Confirmar senha
-            <input name="confirmation" type="password" minLength={MIN_PASSWORD_LENGTH} placeholder="Repita sua senha" autoComplete="new-password" required />
-          </label>
-        </>
-      ) : null}
+
 
       {error ? <div className="form-error">{error}</div> : null}
       {message ? <div className="form-success">{message}</div> : null}

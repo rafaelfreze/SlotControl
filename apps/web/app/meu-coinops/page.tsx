@@ -55,6 +55,7 @@ export default async function MeuCoinOps() {
     .select("operator_id,exchange_account_id,display_name,status")
     .eq("user_id", user.id).maybeSingle();
   if (binding.error || !binding.data || binding.data.status !== "ACTIVE") redirect("/acesso-suspenso");
+  if (!binding.data.exchange_account_id) redirect("/primeiros-passos");
   const renewal = await readBillingRenewal(user.id);
   if (renewal.blocked) redirect("/assinatura?aviso=renovacao-vencida");
   const { operator_id: operatorId, exchange_account_id: accountId, display_name: name } = binding.data;

@@ -20,6 +20,7 @@ export async function GET() {
     const binding = await service.from("viewer_access").select("operator_id,exchange_account_id,status")
       .eq("user_id", user.id).maybeSingle();
     if (binding.error || !binding.data || binding.data.status !== "ACTIVE") return json({ error: "VIEWER_DENIED" }, 403);
+    if (!binding.data.exchange_account_id) return json({ error: "VIEWER_SETUP_REQUIRED" }, 403);
     const renewal = await readBillingRenewal(user.id);
     if (renewal.blocked) return json({ error: "VIEWER_RENEWAL_EXPIRED" }, 403);
     const { operator_id: operatorId, exchange_account_id: accountId } = binding.data;

@@ -3,7 +3,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "./env";
 import { fetchOperationalData } from "./no-store-fetch";
 
-export function createServiceRoleClient() {
+export function createServiceRoleClient(requestTimeoutMs?: number) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -19,7 +19,7 @@ export function createServiceRoleClient() {
       schema: dataSchema
     },
     global: {
-      fetch: fetchOperationalData,
+      fetch: requestTimeoutMs ? (input, init) => fetchOperationalData(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs) }) : fetchOperationalData,
       ...(dataSchema === "coinops" && coinOpsServiceTenantId
         ? { headers: { "x-coinops-tenant-id": coinOpsServiceTenantId } }
         : {})

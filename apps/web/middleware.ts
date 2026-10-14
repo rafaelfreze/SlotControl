@@ -75,8 +75,8 @@ export async function middleware(request: NextRequest) {
   // The account binding comes from RLS, never from a URL or browser claim.
   if (user?.app_metadata?.coinops_role === "VIEWER") {
     const { data: viewer, error } = await supabase.from("viewer_access")
-      .select("status").eq("user_id", user.id).maybeSingle();
-    const allowed = pathname === "/meu-coinops" || pathname === "/assinatura" || pathname === "/redefinir-senha"
+      .select("status,exchange_account_id").eq("user_id", user.id).maybeSingle();
+    const allowed = pathname === "/primeiros-passos" || pathname === "/meu-coinops" || pathname === "/assinatura" || pathname === "/redefinir-senha"
       || pathname === "/recuperar-senha" || pathname === "/auth/callback";
     const viewerRead = pathname === "/api/coinops-viewer-state" && request.method === "GET";
     const viewerBilling = pathname === "/api/assinatura" && request.method === "POST";
@@ -84,6 +84,9 @@ export async function middleware(request: NextRequest) {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_ACCESS_DISABLED" }, { status: 403 });
       if (pathname !== "/acesso-suspenso" && pathname !== "/redefinir-senha")
         return NextResponse.redirect(new URL("/acesso-suspenso", request.url));
+    } else if (!viewer.exchange_account_id && !["/primeiros-passos", "/redefinir-senha", "/recuperar-senha", "/auth/callback", "/assinatura", "/api/assinatura"].includes(pathname)) {
+      if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_SETUP_REQUIRED" }, { status: 403 });
+      return NextResponse.redirect(new URL("/primeiros-passos", request.url));
     } else if ((pathname === "/meu-coinops" || viewerRead) && getSupabaseDataSchema() === "coinops") {
       let expired = false;
       try {
