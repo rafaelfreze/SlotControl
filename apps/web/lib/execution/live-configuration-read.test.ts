@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import * as reads from "./live-ledger-read.ts";
 import * as errors from "./live-read-error.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 
 /** Exercise the real configuration GETs/catch path. No network or exchange
  * write is available; any database mutation at this boundary fails the test. */
@@ -54,6 +55,7 @@ function fixture(options: { engine?: string; resource?: string; status?: number;
   const compiled = ts.transpileModule(readFileSync(new URL("./robot-v1-live-server.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const deps: Record<string, unknown> = { "./live-ledger-read": reads, "./live-read-error": errors,
+    "./live-exposure-read": { readLiveExposure },
     "./strategy-engine": { STRATEGY_VERSION: "fixture" },
     "./strategy-parameter-registry": { strategyParameter: () => ({ applyPolicy: "CURRENT_LADDER", requiresOrderReconciliation: true }) },
     "./account-order-budget-server": { AccountOrderBudgetHold: class extends Error {} },

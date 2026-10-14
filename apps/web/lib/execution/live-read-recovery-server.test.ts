@@ -4,7 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert } from "./live-read-recovery.ts";
-import { liveEngineExposure } from "./engine-exposure.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
@@ -26,17 +26,20 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   operatorRecovery?: boolean; operatorPendingDispatch?: boolean; operatorUnsettledDecision?: boolean;
   operatorLatePendingDispatch?: boolean; operatorLateUnsettledDecision?: boolean;
   operatorProofDenied?: boolean; operatorOrderStatus?: string; operatorExecutedQuantity?: number;
-  operatorClientOrderId?: string } = {}) {
+  operatorClientOrderId?: string; caixetaLayout?: boolean; exposureCap?: number;
+  exposureCountMissing?: boolean; readPathAddedAtCas?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
   const run = { ...scope, id: "run-a", asset: "SOL", status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date().toISOString(), lease_owner: "lease" };
-  const engine = { ...scope, id: "engine-a", hard_cap_quote: 275, base_asset: "SOL", status: "ACTIVE", engine_kill_switch: true,
+  const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
+    environment: "REAL", executor_shard_id: "executor-02", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
   const slots = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index}`, run_id: run.id,
-    slot_number: index + 1, position_quantity: index === 0 ? 1 : 0, position_committed_brl: index === 0 ? 10 : 0 }));
+    slot_number: index + 1, position_quantity: index < (options.caixetaLayout ? 7 : 1) ? 1 : 0,
+    position_committed_brl: index < (options.caixetaLayout ? 7 : 1) ? 10 : 0 }));
   const accounts = slots.map((slot) => ({ ...slot, balance_brl: 11, gain_count: 0 }));
   if (options.missingSlot) slots.pop();
   if (options.duplicateSlot) slots[24].slot_number = slots[0].slot_number;
@@ -45,6 +48,12 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     client_order_id: options.operatorClientOrderId ?? "owned:tp", exchange_order_id: "tp-a", submission_guarded_at: known.last_seen_at,
     executed_quantity: options.operatorExecutedQuantity ?? 0, cumulative_quote: 0, reserved_notional_brl: 0, trades_reconciled: false,
     price: 650, requested_quantity: 1, created_at: "2026-09-25T00:00:00Z" }];
+  if (options.caixetaLayout) {
+    for (let index = 1; index < 7; index++) orders.push({ ...orders[0], id: `order-tp-${index + 1}`,
+      slot_id: `slot-${index}`, client_order_id: `owned:tp-${index + 1}`, exchange_order_id: `tp-${index + 1}` });
+    orders.push({ ...orders[0], id: "order-next-buy", slot_id: "slot-7", side: "BUY", price: 630,
+      client_order_id: "owned:next-buy-8", exchange_order_id: "next-buy-8", reserved_notional_brl: 10 });
+  }
   if (options.permissionRecovery) orders.push({ ...orders[0], id: "order-buy", side: "BUY", price: 630,
     client_order_id: "owned:buy", exchange_order_id: "buy-a", slot_id: "slot-1",
     status: options.permissionOrderStatus ?? "NEW",
@@ -58,6 +67,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
     let page: [number, number] | null = null;
+    let exactCount = false;
     const response = (singular = false) => {
       if (mutation) writes.push({ table, data: mutation, filters: { ...filters } });
       let data: unknown;
@@ -69,7 +79,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
         assert.equal(filters.resolved_at, null);
         const variants = options.alerts ?? [[known]];
         data = variants[Math.min(alertReads++, variants.length - 1)];
-      } else if (table === "robot_v1_live_alerts") data = options.casLost ? [] : [{ id: "incident" }];
+      } else if (table === "robot_v1_live_alerts") data = options.casLost || options.readPathAddedAtCas
+        && filters["details->>read_path"] === null ? [] : [{ id: "incident" }];
       else if (table === "robot_v1_live_runs") {
         if (mutation?.lease_owner) calls.push("lease-claimed");
         data = singular ? { ...run, ...mutation } : [{ ...run, ...mutation }];
@@ -126,17 +137,23 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
         if (options.permissionProofDenied || options.operatorProofDenied)
           return { data: null, error: { code: "42501" }, status: 403 };
       }
-      else if (table === "account_quote_caps") data = { hard_cap_quote: 275 };
+      else if (table === "account_quote_caps") data = { ...scope, hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") data = {};
       else assert.fail(`Unexpected table ${table}`);
+      if (exactCount && Array.isArray(data)) data = data.filter(row => Object.entries(filters).every(([key, value]) =>
+        Array.isArray(value) ? value.includes(row[key]) : row[key] === value));
+      const count = Array.isArray(data) ? data.length : undefined;
       if (page && Array.isArray(data)) data = data.slice(page[0], page[1] + 1);
       if (options.bulkDenied && table === "strategy_bulk_engine_updates")
         return { data: null, error: { code: "42501" }, status: 403 };
       return options.ledgerDenied && table === "robot_v1_live_slots"
-        ? { data: null, error: { code: "42501" }, status: 403 } : { data, error: null };
+        ? { data: null, error: { code: "42501" }, status: 403 } : { data, error: null,
+          ...(exactCount ? { count: options.exposureCountMissing ? null : count } : {}) };
     };
     const chain = {
-      select: () => chain, eq: (key: string, value: unknown) => { filters[key] = value; return chain; },
+      select: (_columns?: string, options?: { count?: string }) => {
+        exactCount = options?.count === "exact"; return chain;
+      }, eq: (key: string, value: unknown) => { filters[key] = value; return chain; },
       is: (key: string, value: unknown) => { filters[key] = value; return chain; },
       in: (key: string, value: unknown) => { filters[key] = value; return chain; },
       gte: () => chain, lte: () => chain, limit: () => chain,
@@ -150,7 +167,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
-    "./engine-exposure": { liveEngineExposure }, "./complete-ledger-read": { completeLedgerRead },
+    "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
@@ -181,7 +198,10 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
         balances: options.unknownBnb ? [] : [{ asset: "BNB", free: options.bnbFree ?? .001 }],
         bnb_quote_price: { symbol: "BNBBRL", price: 6000,
           observedAt: new Date(Date.now() - (options.staleBnb ? 30_001 : 0)).toISOString() },
-        open_orders: options.missingTp ? [] : options.permissionRecovery
+        open_orders: options.missingTp ? [] : options.caixetaLayout
+          ? orders.map(order => ({ id: order.exchange_order_id, side: order.side,
+            clientOrderId: order.client_order_id, status: "NEW", price: order.price,
+            executedQuantity: 0, originalQuantity: 1 })) : options.permissionRecovery
           ? [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp", status: "NEW", price: 650, executedQuantity: 0, originalQuantity: 1 },
             { id: "buy-a", side: "BUY", clientOrderId: "owned:buy", status: "NEW", price: options.permissionResidentPrice ?? 630,
               executedQuantity: 0, originalQuantity: options.permissionResidentQuantity ?? 1 }]
@@ -209,8 +229,56 @@ test("verified recovery claims lease, proves fresh health/protection and conditi
   assert.equal(clear?.filters.last_seen_at, known.last_seen_at);
   assert.equal(clear?.filters.trading_engine_id, "engine-a");
   assert.equal(clear?.filters.first_seen_at, known.first_seen_at);
-  assert.equal(clear?.filters["details->>stage"], undefined);
-  assert.equal(clear?.filters["details->>root_code"], undefined);
+  assert.equal(clear?.filters["details->>stage"], null);
+  assert.equal(clear?.filters["details->>root_code"], null);
+  assert.equal(clear?.filters["details->>read_path"], null);
+});
+
+test("legacy exposure ARM_ENTRY recovers seven protected OPENs and one resident NEXT BUY only after complete account proof", async () => {
+  const code = "COINOPS_LIVE_EXPOSURE_UNAVAILABLE";
+  const incident = { ...known, code, details: { stage: "ARM_ENTRY", root_code: code } };
+  const safe = fixture({ alerts: [[incident]], caixetaLayout: true });
+  assert.equal((await safe.run()).status, "RESUMED");
+  const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  assert.equal(clear.filters.code, code); assert.equal(clear.filters.last_seen_at, incident.last_seen_at);
+  assert.equal(clear.filters["details->>stage"], "ARM_ENTRY");
+  assert.equal(clear.filters["details->>root_code"], code);
+  assert.equal(clear.filters["details->>read_path"], null);
+  assert.equal(safe.writes.some(write => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"]
+    .includes(write.table)), false);
+  for (const options of [{ exposureCap: 5 }, { exposureCountMissing: true }, { missingTp: true },
+    { missingSlot: true }, { ledgerDenied: true }, { healthy: false }, { configPending: true }, { bulkStatus: "PENDING" }]) {
+    const denied = fixture({ alerts: [[incident]], caixetaLayout: true, ...options });
+    await assert.rejects(denied.run());
+    assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
+  }
+});
+
+test("typed binding exhaustion resumes only its exact read checkpoint, while hard routing/cap errors never inherit a wrapper", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_EXECUTOR_READ_STALE", details: {
+    stage: "RECONCILE_ORDERS", root_code: "COINOPS_EXECUTOR_BINDING_READ_UNAVAILABLE", read_path: "executor_binding/engine" } };
+  const safe = fixture({ alerts: [[incident]] });
+  assert.equal((await safe.run()).status, "RESUMED");
+  const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  assert.equal(clear.filters["details->>read_path"], incident.details.read_path);
+  for (const rootCode of ["EXECUTOR_ENGINE_SHARD_DENIED", "COINOPS_EXECUTOR_BINDING_READ_FAILED", "COINOPS_LIVE_HARD_CAP_BREACHED"]) {
+    const hard = { ...known, code: "COINOPS_LIVE_RECONCILE_ORDERS_FAILED",
+      details: { stage: "RECONCILE_ORDERS", root_code: rootCode, read_path: "executor_binding/engine" } };
+    const denied = fixture({ alerts: [[hard]] });
+    await assert.rejects(denied.run(), /RECOVERY_INCIDENT_CHANGED/);
+    assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
+    assert.equal(denied.calls.includes("exchange-state"), false);
+  }
+});
+
+test("a newly added read_path after the second incident read loses the absent-field final CAS and recloses only its engine", async () => {
+  const scenario = fixture({ alerts: [[known]], readPathAddedAtCas: true });
+  await assert.rejects(scenario.run(), /RECOVERY_INCIDENT_CHANGED/);
+  const clear = scenario.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  assert.equal(clear.filters["details->>read_path"], null);
+  assert.deepEqual(scenario.writes.filter(write => write.table === "trading_engines").map(write => write.data.kill_switch), [false, true]);
+  assert.equal(scenario.writes.some(write => write.table === "robot_v1_live_events"
+    && write.data.event_type === "LIVE_RESUMED"), false);
 });
 
 test("explicit operator resume of sole monitor-stale incident requires current full proof and scoped immutable CAS", async () => {

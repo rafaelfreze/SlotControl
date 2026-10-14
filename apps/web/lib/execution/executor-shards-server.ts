@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { boundedExecutorBindingRead, completeExecutorBindingFacts, observeExecutorBindingRecord } from "./executor-binding-read.ts";
 
 export type ExecutorShardConfig = {
   shardId: string; ip: string; base: string; secret: string; validatedVersion?: string;
@@ -231,14 +232,28 @@ export async function resolveExecutorForConnection(operatorId: string, accountId
 }
 /** Engine identity is mandatory. Account bootstrap metadata is never a fallback
  * for an unknown engine, including a same-symbol engine on another IP. */
+function assertEngineBindingOperator(operator: BoundOperator | null, operatorId: string,
+  tenantId: string): asserts operator is BoundOperator {
+  if (!operator || operator.id !== operatorId || operator.tenant_id !== tenantId || operator.status !== "ACTIVE")
+    throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+}
+function assertEngineBindingAccount(account: { id: string; operator_id: string } | null,
+  operatorId: string, accountId: string): asserts account is { id: string; operator_id: string } {
+  if (!account || account.id !== accountId || account.operator_id !== operatorId)
+    throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+}
+function assertEngineBindingEngine(engine: BoundEngine | null, operatorId: string,
+  accountId: string, engineId: string): asserts engine is BoundEngine {
+  if (!engine || engine.id !== engineId || engine.operator_id !== operatorId
+    || engine.exchange_account_id !== accountId || !SHARD.test(engine.executor_shard_id ?? ""))
+    throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+}
 export function assertExecutorEngineBinding(operator: BoundOperator | null,
   account: { id: string; operator_id: string } | null, engine: BoundEngine | null,
   operatorId: string, accountId: string, engineId: string, tenantId: string) {
-  if (!operator || operator.id !== operatorId || operator.tenant_id !== tenantId || operator.status !== "ACTIVE"
-    || !account || account.id !== accountId || account.operator_id !== operatorId
-    || !engine || engine.id !== engineId || engine.operator_id !== operatorId
-    || engine.exchange_account_id !== accountId || !SHARD.test(engine.executor_shard_id ?? ""))
-    throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+  assertEngineBindingOperator(operator, operatorId, tenantId);
+  assertEngineBindingAccount(account, operatorId, accountId);
+  assertEngineBindingEngine(engine, operatorId, accountId, engineId);
   return engine.executor_shard_id;
 }
 
@@ -255,19 +270,31 @@ export async function resolveExecutorForEngine(operatorId: string, accountId: st
     const value = (async () => {
       const { createServiceRoleClient } = await import("../supabase/service-role");
       const service = createServiceRoleClient();
-      const [operator, account, engine] = await Promise.all([
-        service.from("operators").select("id,tenant_id,status").eq("id", operatorId).eq("tenant_id", tenantId).single(),
-        service.from("exchange_accounts").select("id,operator_id").eq("id", accountId).eq("operator_id", operatorId).single(),
-        service.from("trading_engines").select("id,operator_id,exchange_account_id,executor_shard_id")
-          .eq("id", engineId).eq("exchange_account_id", accountId).eq("operator_id", operatorId).single(),
-      ]);
-      if (operator.error || account.error || engine.error) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
-      const shardId = assertExecutorEngineBinding(operator.data, account.data, engine.data,
-        operatorId, accountId, engineId, tenantId);
-      const shard = await service.from("executor_shards").select("id,egress_ipv4").eq("id", shardId).single();
-      const ip = String(shard.data?.egress_ipv4 ?? "").replace(/\/32$/, "");
-      if (shard.error || shard.data?.id !== shardId || isIP(ip) !== 4) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
-      return { shardId, ip };
+      return boundedExecutorBindingRead(async (deadline, attempt) => {
+        const [operator, account, engine] = await completeExecutorBindingFacts([
+          observeExecutorBindingRecord<BoundOperator>("operator", service.from("operators")
+            .select("id,tenant_id,status").eq("id", operatorId).eq("tenant_id", tenantId)
+            .abortSignal(deadline).single(), deadline, attempt,
+          value => assertEngineBindingOperator(value, operatorId, tenantId)),
+          observeExecutorBindingRecord<Pick<BoundAccount, "id" | "operator_id">>("account", service.from("exchange_accounts")
+            .select("id,operator_id").eq("id", accountId).eq("operator_id", operatorId)
+            .abortSignal(deadline).single(), deadline, attempt,
+          value => assertEngineBindingAccount(value, operatorId, accountId)),
+          observeExecutorBindingRecord<BoundEngine>("engine", service.from("trading_engines")
+            .select("id,operator_id,exchange_account_id,executor_shard_id")
+            .eq("id", engineId).eq("exchange_account_id", accountId).eq("operator_id", operatorId)
+            .abortSignal(deadline).single(), deadline, attempt,
+          value => assertEngineBindingEngine(value, operatorId, accountId, engineId)),
+        ] as const);
+        const shardId = assertExecutorEngineBinding(operator, account, engine,
+          operatorId, accountId, engineId, tenantId);
+        const shard = await observeExecutorBindingRecord<{ id: string; egress_ipv4: string }>("shard",
+          service.from("executor_shards").select("id,egress_ipv4").eq("id", shardId)
+            .abortSignal(deadline).single(), deadline, attempt);
+        const ip = String(shard.egress_ipv4 ?? "").replace(/\/32$/, "");
+        if (shard.id !== shardId || isIP(ip) !== 4) throw new Error("EXECUTOR_ENGINE_SHARD_DENIED");
+        return { shardId, ip };
+      });
     })();
     binding = { expires: Date.now() + 30_000, value };
     if (engineBindings.size >= 2048) engineBindings.clear();

@@ -210,6 +210,15 @@ no ambiente de destino antes de operação remota.
 - Checkpoint bulk, gate de configuração, preparação, operador e cap usam a mesma política de observação GET-only limitada, nunca retry de uma mutação ou etapa financeira inteira. Recuperação de checkpoint legado exige origem CONFIG_UPDATE, zero edição PENDING/APPLYING/BLOCKED_SAFE em qualquer run do engine, gate false e prova financeira integral sob lease/CAS. Não usar recuperação para aprovar uma edição real. Ver `docs/COINOPS_CONFIG_READ_RECOVERY_20261007.md`.
 - Target e totais de gains mensais REAL usam a mesma observação GET-only limitada. Não zerar contador na falha, não repetir crédito/trading e não contornar divergência de identidade/período/gains. Legado mensal só retoma sob prova integral e CAS: `docs/COINOPS_MONTHLY_LEDGER_RECOVERY_20261007.md`.
 
+- Exposição account-global e routing por engine usam observação GET-only limitada
+  (2 conjuntos completos/5s/250ms), com erro tipado e evidência sanitizada. Exposição
+  exige páginas completas/contagem exata, ownership e 25 slots por run ACTIVE/PAUSED;
+  leitura vazia/incompleta não é zero. Routing indisponível não é shard negado;
+  binding ausente/estrangeiro/desativado continua fail-closed, sem fallback. Legado
+  EXPOSURE_UNAVAILABLE só qualifica em ARM_ENTRY/root exato e após prova financeira
+  integral sob lease/CAS. Não repetir POST financeiro. Ver
+  `docs/COINOPS_EXPOSURE_ROUTING_READ_RECOVERY_20261014.md`.
+
 - O CoinOps é multi-account. Toda ação deve carregar explicitamente `operator_id`, `exchange_account_id`, `trading_engine_id`, ambiente e símbolo ao atravessar account → engine → job → lease/lock → reconciliação → alerta → kill switch. Falha local bloqueia somente o engine afetado; kill switch global exige causa sistêmica comprovada.
 - Norma autorizada em 04/10/2026: a conta pode possuir N motores, inclusive do mesmo símbolo, em N executores. O `trading_engine_id` pertence a exatamente um shard imutável; a conta não fica presa ao shard. Novos motores podem usar outro executor certificado sem mover os existentes. O campo antigo `exchange_accounts.executor_shard_id` é compatibilidade/bootstrap, nunca autoridade de roteamento de um motor. A implementação e os gates ainda precisam de prova antes da liberação; consultar `docs/COINOPS_MULTI_ENGINE_MULTI_SHARD.md`. Não rotacione IP para contornar rate limit Binance nem rebalanceie LIVE automaticamente.
 - Capacidade é medida, não deduzida do número de usuários. Antes de admitir nova carga, exigir telemetria fresca do shard, custo incremental conservador e headroom para recovery: peso Binance/IP, CPU, RAM, backlog, reconciliação, heartbeat e retries. Se a evidência estiver ausente, a decisão é `CAPACITY_UNKNOWN`, nunca um SIM inventado.

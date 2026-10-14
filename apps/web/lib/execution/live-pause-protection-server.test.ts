@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
-import { liveEngineExposure } from "./engine-exposure.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 import { continueLiveAdvance } from "./live-cycle-continuation.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
@@ -65,7 +65,9 @@ function fixture(options: Options = {}) {
   const siblingEngine: Row = { ...engine, ...siblingScope, id: "engine-b", kill_switch: false,
     engine_kill_switch: false, executor_shard_id: "executor-03" };
   const siblingSlot: Row = { ...slots[0], ...siblingScope, id: "slot-b", run_id: "run-b", position_committed_brl: 10 };
-  const siblingBefore = JSON.stringify([siblingRun, siblingEngine, siblingSlot]);
+  const siblingSlots = slots.map((slot, index) => index === 0 ? siblingSlot : { ...slot, ...siblingScope,
+    id: `slot-b-${index + 1}`, run_id: "run-b", position_committed_brl: 0, position_quantity: 0 });
+  const siblingBefore = JSON.stringify([siblingRun, siblingEngine, siblingSlots]);
   const exchangeOrders = new Map(orders.map(row => [row.client_order_id, { ...row }]));
   let credited = 0;
   const active = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
@@ -75,12 +77,13 @@ function fixture(options: Options = {}) {
   const resultRow = (row: Row) => structuredClone(row);
   const service = { from(table: string) {
     const filters: Row = {}; let values: Row | null = null, upsert = false, page: [number, number] | null = null;
+    let exactCount = false;
     const response = (singular = false) => {
       let rows: Row[];
       if (table === "robot_v1_live_runs") rows = options.sibling ? [run, siblingRun] : [run];
       else if (table === "trading_engines") rows = options.sibling ? [engine, siblingEngine] : [engine];
       else if (table === "robot_v1_live_preparations") rows = [prep];
-      else if (table === "robot_v1_live_slots") rows = options.sibling ? [...slots, siblingSlot] : slots;
+      else if (table === "robot_v1_live_slots") rows = options.sibling ? [...slots, ...siblingSlots] : slots;
       else if (table === "robot_v1_live_slot_accounts") rows = accounts;
       else if (table === "robot_v1_live_orders") rows = orders;
       else if (table === "operators") rows = [{ ...scope, status: "ACTIVE" }];
@@ -95,10 +98,14 @@ function fixture(options: Options = {}) {
         else rows.forEach(row => Object.assign(row, values));
         if (table === "trading_engines" && values.kill_switch !== undefined) engine.engine_kill_switch = values.kill_switch;
       }
+      const count = rows.length;
       if (page) rows = rows.slice(page[0], page[1] + 1);
-      return { data: singular ? rows[0] ? resultRow(rows[0]) : null : rows.map(resultRow), error: null };
+      return { data: singular ? rows[0] ? resultRow(rows[0]) : null : rows.map(resultRow), error: null,
+        ...(exactCount ? { count } : {}) };
     };
-    const query = { select: () => query, order: () => query, abortSignal: () => query,
+    const query = { select: (_columns?: string, options?: { count?: string }) => {
+      exactCount = options?.count === "exact"; return query;
+    }, order: () => query, abortSignal: () => query,
       eq: (key: string, value: unknown) => { filters[key] = value; return query; },
       is: (key: string, value: unknown) => { filters[key] = value; return query; },
       in: (key: string, value: unknown[]) => { filters[`in:${key}`] = value; return query; },
@@ -162,7 +169,7 @@ function fixture(options: Options = {}) {
     "../supabase/service-role": { createServiceRoleClient: () => service },
     "./live-read-error": readErrors,
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
-    "./complete-ledger-read": { completeLedgerRead }, "./engine-exposure": { liveEngineExposure },
+    "./complete-ledger-read": { completeLedgerRead }, "./live-exposure-read": { readLiveExposure },
     "./live-cycle-continuation": { continueLiveAdvance },
     "./operator-context-server": { resolveOperatorEngine: async (_db: unknown, _scope: unknown, selection: Row) => {
       assert.equal(selection.trading_engine_id, "engine-a");
@@ -217,7 +224,7 @@ function fixture(options: Options = {}) {
   new Function("require", "exports", compiled)((name: string) => dependencies[name] ?? {}, exports);
   return { advance: () => exports.advanceLiveRun("run-a"), pause: () => exports.pauseLiveRun("run-a", "user", "SOL"),
     calls, writes, run, slots, accounts, orders, credited: () => credited,
-    assertSibling: () => assert.equal(JSON.stringify([siblingRun, siblingEngine, siblingSlot]), siblingBefore) };
+    assertSibling: () => assert.equal(JSON.stringify([siblingRun, siblingEngine, siblingSlots]), siblingBefore) };
 }
 
 test("last TP in a paused run credits once and never recycles, resets, creates successor or BUY", async () => {

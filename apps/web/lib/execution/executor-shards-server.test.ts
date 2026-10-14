@@ -8,6 +8,7 @@ import { assertExecutorAccountBinding, assertExecutorConnectionBinding, assertEx
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import { readLiveExecutorState, createLiveExecutorOrder } from "./live-executor-transport.ts";
 import { loadLiveExecutorStatus } from "./live-executor-health.ts";
+import { boundedExecutorBindingRead, completeExecutorBindingFacts, observeExecutorBindingRecord } from "./executor-binding-read.ts";
 
 const configs = { "executor-02": { egressIp: "203.0.113.22", baseUrl: "https://203.0.113.22",
   hmacSecret: "fixture-second-shard-secret-only".repeat(2), validatedVersion: "shard02" } };
@@ -324,6 +325,7 @@ test("real resolver queries authoritative tenant/account, coalesces bindings, an
     return chain;
   } };
   const dependencies: Record<string, unknown> = { "node:net": { isIP },
+    "./executor-binding-read.ts": { boundedExecutorBindingRead, completeExecutorBindingFacts, observeExecutorBindingRecord },
     "../supabase/env": { getCoinOpsServiceTenantId: () => "tenant", getSupabaseDataSchema: () => "coinops" },
     "../supabase/service-role": { createServiceRoleClient: () => service } };
   const loadedModule = () => {

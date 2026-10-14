@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
-  isRegistryStateReadRecovery, operatorRecoveryAlert } from "./live-read-recovery.ts";
+  isRegistryStateReadRecovery, isExposureStateReadRecovery, operatorRecoveryAlert } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);
@@ -256,4 +256,61 @@ test("permission read recovery accepts only old settled orders and exact unfille
   assert.throws(() => assertPermissionReadRecoveryOrders(incident, [...orders, terminal], observed, "owned:"), /RECOVERY_UNPROVEN/);
   assert.equal(assertPermissionReadRecoveryOrders(incident, [...orders, { ...terminal, trades_reconciled: true }], observed, "owned:"),
     "2026-10-11T11:58:30.000Z");
+});
+
+test("exposure outage qualifies only the exact legacy pre-entry read, not a cap or dispatch failure", () => {
+  const code = "COINOPS_LIVE_EXPOSURE_UNAVAILABLE";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+    first_seen_at: "2026-10-14T21:38:35.363658Z", last_seen_at: "2026-10-14T21:38:35.340Z",
+    details: { stage: "ARM_ENTRY", root_code: code } };
+  assert.equal(isExposureStateReadRecovery(code, alert.details), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, alert.details), true);
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+  for (const details of [undefined, { stage: "ARM_ENTRY" }, { stage: "POST_ORDER", root_code: code },
+    { stage: "ARM_ENTRY", root_code: "COINOPS_LIVE_HARD_CAP_EXCEEDED" },
+    { stage: "ARM_ENTRY", root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" }]) {
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, details), false);
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  }
+  assert.equal(mayRecoverReadOutage("PAUSED", "OK", code, alert.details), false);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, alert.details), false);
+  for (const details of [{ ...alert.details, stage: "LOAD_LEDGER" },
+    { ...alert.details, read_path: "ledger/exposure_orders" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }], alert), /INCIDENT_CHANGED/);
+});
+
+test("typed exposure and routing outages bind read origin and immutable incident, never permission or POST", () => {
+  const base = { alert_key: "LIVE_RUN:run-a:CRITICAL",
+    first_seen_at: "2026-10-14T21:38:35Z", last_seen_at: "2026-10-14T21:38:35Z" };
+  const cases = [
+    ...["runs", "engines", "slots", "orders"].map(part => ({
+      code: "COINOPS_LIVE_LEDGER_READ_STALE", root: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", path: `ledger/exposure_${part}` })),
+    ...["operator", "account", "engine", "shard"].map(part => ({
+      code: "COINOPS_LIVE_EXECUTOR_READ_STALE", root: "COINOPS_EXECUTOR_BINDING_READ_UNAVAILABLE", path: `executor_binding/${part}` })),
+  ];
+  for (const { code, root, path } of cases) {
+    const alert = { ...base, code, details: { stage: "RECONCILE_ORDERS", root_code: root, read_path: path } };
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+    for (const read_path of ["POST/order", "executor_binding/unknown", "ledger/exposure_unknown"])
+      assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert,
+        details: { ...alert.details, read_path } }]), /INCIDENT_CHANGED/);
+    for (const details of [{ ...alert.details, stage: "PROTECT_TP" },
+      { ...alert.details, root_code: "COINOPS_EXECUTOR_BINDING_READ_FAILED" }])
+      assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }], alert), /INCIDENT_CHANGED/);
+  }
+  for (const denied of ["COINOPS_EXECUTOR_BINDING_READ_FAILED", "EXECUTOR_ENGINE_SHARD_DENIED",
+    "COINOPS_LIVE_EXPOSURE_INCOMPLETE", "COINOPS_ENGINE_HARD_CAP_EXCEEDED", "COINOPS_ACCOUNT_HARD_CAP_EXCEEDED"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", denied), false);
+});
+
+test("a hard routing/exposure/provider denial cannot recover through a legacy reconciliation wrapper", () => {
+  for (const root_code of ["EXECUTOR_ENGINE_SHARD_DENIED", "COINOPS_EXECUTOR_BINDING_READ_FAILED",
+    "COINOPS_LIVE_LEDGER_READ_FAILED", "COINOPS_LIVE_EXPOSURE_INCOMPLETE",
+    "COINOPS_LIVE_EXPOSURE_INVALID", "COINOPS_LIVE_HARD_CAP_BREACHED"]) {
+    const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_RECONCILE_ORDERS_FAILED",
+      first_seen_at: "2026-10-14T21:41:04Z", last_seen_at: "2026-10-14T21:41:04Z",
+      details: { stage: "RECONCILE_ORDERS", root_code } };
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", alert.code, alert.details), false);
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), /INCIDENT_CHANGED/);
+  }
 });

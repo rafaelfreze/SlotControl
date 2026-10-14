@@ -5,6 +5,7 @@ import ts from "typescript";
 import { liveQuoteBalanceCheck } from "./live-quote-balance.ts";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 
 const now = Date.parse("2026-10-07T13:50:03Z");
 const snapshot = (free: number, asset = "BRL") => ({ observed_at: new Date(now).toISOString(), balances: [{ asset, free }] });
@@ -39,22 +40,29 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
   const asset = options.asset ?? "SOL", quote = options.quote ?? "BRL";
   const scope = { operator_id: "operator", exchange_account_id: "account", trading_engine_id: options.engineId ?? "engine-a",
     product_id: "product", tenant_id: "tenant", user_id: "user", symbol: `${asset}${quote}`, quote_asset: quote };
-  const run = { ...scope, id: `run-${scope.trading_engine_id}`, asset, entry_regime: "NORMAL", engine: { id: scope.trading_engine_id } };
+  const run = { ...scope, id: `run-${scope.trading_engine_id}`, asset, status: "ACTIVE", entry_regime: "NORMAL",
+    engine: { id: scope.trading_engine_id } };
   const slot = { ...scope, id: "slot-4", slot_number: options.initial ? 1 : 4, operational_rank: 1,
     entry_state: "PLANNED", position_quantity: 0, operation_sequence: 1, target_buy_price: 562 };
-  const resident = { ...scope, id: "buy", slot_id: slot.id, side: "BUY", purpose: "ENTRY", revision: 1,
+  const resident = { ...scope, id: "buy", run_id: run.id, slot_id: slot.id, side: "BUY", purpose: "ENTRY", revision: 1,
     status: options.prepared ? "PREPARED" : "NEW", executed_quantity: 0, cumulative_quote: 0,
     reserved_notional_brl: 10.678, price: 562, exchange_order_id: options.prepared ? null : "own-buy",
     client_order_id: "owned-buy", operation_sequence: 1, requested_quantity: .019,
     strategy_decision_id: "fixture-decision",
     account_order_unsent_receipt: options.provenUnsent ? { request_nonce: "verified-under-lease" } : null };
-  const tp = { ...scope, id: "tp", slot_id: "open-slot-2", side: "SELL", purpose: "TP", revision: 1,
+  const tp = { ...scope, id: "tp", run_id: run.id, slot_id: "open-slot-2", side: "SELL", purpose: "TP", revision: 1,
     status: "NEW", executed_quantity: 0, cumulative_quote: 0, price: 600, exchange_order_id: "own-tp",
     client_order_id: "owned-tp", operation_sequence: 1, requested_quantity: .02, trades_reconciled: false,
     reserved_notional_brl: 0, strategy_decision_id: "tp-decision", account_order_unsent_receipt: null };
   const ledger = { slots: [slot], accounts: [{ slot_number: slot.slot_number, balance_brl: 11 }],
     orders: options.resident || options.prepared ? [resident] : options.initial ? [] : [{ side: "BUY", status: "FILLED", executed_quantity: .018 }] };
   if (options.withTp) ledger.orders.push(tp);
+  const exposureEngine = { ...scope, id: scope.trading_engine_id, base_asset: asset, environment: "REAL",
+    hard_cap_quote: 275, executor_shard_id: "executor-02" };
+  const exposureSlots = Array.from({ length: 25 }, (_, index) => ({ ...scope, run_id: run.id,
+    slot_number: index + 1, id: index + 1 === slot.slot_number ? slot.id : index === 1 ? tp.slot_id : `physical-${index + 1}`,
+    position_committed_brl: options.withTp && index === 1 ? 10 : 0 }));
+  const exposureOrders = [...(options.resident || options.prepared ? [resident] : []), ...(options.withTp ? [tp] : [])];
   const state = { ...scope, observed_at: new Date(Date.now() - (options.stale ? 31_000 : 0)).toISOString(),
     balances: [{ asset: quote, free: options.free ?? .0043 }, { asset: "BNB", free: options.bnbFree ?? 1 }], price: { price: 580 },
     bnb_quote_price: { symbol: `BNB${quote}`, price: 1000, observedAt: new Date().toISOString() },
@@ -63,9 +71,24 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
       ? [{ id: "own-buy", side: "BUY", status: "NEW", executedQuantity: 0, clientOrderId: "owned-buy", price: 562 }] : [] };
   const warnings = new Map<string, { code: string; resolved_at: string | null; first_seen_at?: string }>();
   const service = { from(table: string) {
-    assert.ok(["robot_v1_live_alerts", "robot_v1_strategy_decisions"].includes(table));
+    assert.ok(["robot_v1_live_alerts", "robot_v1_strategy_decisions", "robot_v1_live_runs", "trading_engines",
+      "robot_v1_live_slots", "robot_v1_live_orders", "account_quote_caps"].includes(table));
     const filters: Record<string, unknown> = {}; let data: Record<string, unknown> | null = null;
-    const response = () => {
+    let exactCount = false, page: [number, number] | null = null;
+    const response = (singular = false) => {
+      if (!["robot_v1_live_alerts", "robot_v1_strategy_decisions"].includes(table)) {
+        assert.equal(data, null, "funding checks cannot mutate the exposure ledger");
+        const all = table === "robot_v1_live_runs" ? [run] : table === "trading_engines" ? [exposureEngine]
+          : table === "robot_v1_live_slots" ? exposureSlots : table === "robot_v1_live_orders" ? exposureOrders
+          : [{ ...scope, hard_cap_quote: 275 }];
+        const rows = all.filter(row => Object.entries(filters).every(([key, value]) => {
+          const observed = (row as Record<string, unknown>)[key.startsWith("in:") ? key.slice(3) : key];
+          return key.startsWith("in:") ? (value as unknown[]).includes(observed) : observed === value;
+        }));
+        const selected = page ? rows.slice(page[0], page[1] + 1) : rows;
+        return { error: null, data: singular ? selected[0] ?? null : selected,
+          ...(exactCount ? { count: rows.length } : {}) };
+      }
       if (data) {
         assert.equal(filters.trading_engine_id ?? data.trading_engine_id, scope.trading_engine_id);
         writes.push({ table, data, filters: { ...filters } });
@@ -79,17 +102,24 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
           exchange_ack_at: null, completed_at: null } : filters.resolved_at === null && warnings.get(String(filters.alert_key))?.resolved_at !== null
           ? null : warnings.get(String(filters.alert_key)) ?? null };
     };
-    const chain = { select: () => chain, eq: (k: string, v: unknown) => { filters[k] = v; return chain; },
+    const chain = { select: (_columns?: string, options?: { count?: string }) => {
+      exactCount = options?.count === "exact"; return chain;
+    }, eq: (k: string, v: unknown) => { filters[k] = v; return chain; },
       is: (k: string, v: unknown) => { filters[k] = v; return chain; },
+      in: (k: string, v: unknown[]) => { filters[`in:${k}`] = v; return chain; },
+      order: () => chain, abortSignal: () => chain,
+      range: (start: number, end: number) => { page = [start, end]; return chain; },
       upsert: (v: Record<string, unknown>) => { data = v; return chain; },
       update: (v: Record<string, unknown>) => { data = v; return chain; },
-      maybeSingle: async () => response(), then: (done: (v: unknown) => unknown) => Promise.resolve(response()).then(done) };
+      single: async () => response(true), maybeSingle: async () => response(true),
+      then: (done: (v: unknown) => unknown) => Promise.resolve(response()).then(done) };
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
     "./live-quote-balance": { liveQuoteBalanceCheck },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "./live-read-error": { LiveReadUnavailable, liveFailureEvidence },
+    "./live-exposure-read": { readLiveExposure },
     "./live-executor-transport": { readLiveExecutorState: async () => state,
       readLiveExecutorOrder: async (_scope: unknown, clientId: string) => ({ order: clientId === tp.client_order_id
         ? { ...tp, clientOrderId: tp.client_order_id, symbol: scope.symbol, orderId: tp.exchange_order_id } : null }) },
@@ -115,7 +145,7 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
     validateRunEngine=async()=>{}; scopedPreparation=async()=>({live_enabled:true,kill_switch:false,max_order_notional_brl:11,max_total_exposure_brl:275});
     runRows=async()=>fixture.ledger; configUpdatePending=async()=>false;
     assertLiveOrderPrice=()=>{}; assertExchangeMatchesLedger=async()=>[];
-    entryBlocked=()=>false; quoteCap=async()=>275; exposure=async()=>({SOL:0,BTC:0,global:0});
+    entryBlocked=()=>false; quoteCap=async()=>275;
     monthly=async()=>[{physicalSlotNumber:fixture.slot.slot_number,operationalRank:1,eligibleForNewEntry:true}];
     candidate=()=>({});
     event=async(_service,_run,_key,type,_slot,details)=>fixture.events.push({type,details});

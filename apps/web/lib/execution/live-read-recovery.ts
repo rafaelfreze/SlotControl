@@ -1,5 +1,22 @@
 export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown };
 
+const EXPOSURE_READ_PATHS = ["ledger/exposure_runs", "ledger/exposure_engines",
+  "ledger/exposure_slots", "ledger/exposure_orders"];
+const BINDING_READ_PATHS = ["executor_binding/operator", "executor_binding/account",
+  "executor_binding/engine", "executor_binding/shard"];
+const NON_RECOVERABLE_READ_ROOTS = new Set(["EXECUTOR_ENGINE_SHARD_DENIED",
+  "COINOPS_EXECUTOR_BINDING_READ_FAILED", "COINOPS_LIVE_LEDGER_READ_FAILED",
+  "COINOPS_LIVE_EXPOSURE_INCOMPLETE", "COINOPS_LIVE_EXPOSURE_INVALID",
+  "COINOPS_LIVE_HARD_CAP_BREACHED"]);
+
+/** Historical exposure wrapper discarded the provider error. Only this exact
+ * pre-entry GET site qualifies; current complete account projection and every
+ * existing financial/ownership proof are still mandatory under the lease. */
+export function isExposureStateReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return code === "COINOPS_LIVE_EXPOSURE_UNAVAILABLE"
+    && details?.root_code === code && details.stage === "ARM_ENTRY";
+}
+
 // validateRunEngine/scopedPreparation perform the same owner-scoped registry
 // GET in these exact advanceLiveRun stages. A failed observation at ARM_ENTRY
 // is not an order dispatch failure merely because of the outer stage name.
@@ -33,8 +50,10 @@ export function isPermissionStateReadRecovery(code: string | null, details?: Rea
 export function mayRecoverReadOutage(status: string, reconciledStatus: string,
   alertCode: string | null, details?: ReadRecoveryDetails | null): boolean {
   return status === "ACTIVE" && reconciledStatus === "OK"
+    && !NON_RECOVERABLE_READ_ROOTS.has(String(details?.root_code))
     && (isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)
+      || isExposureStateReadRecovery(alertCode, details)
       || ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
       "COINOPS_LIVE_EXECUTOR_READ_STALE",
       "COINOPS_LIVE_LEDGER_READ_STALE",
@@ -105,7 +124,10 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
       && (alert.details?.root_code !== "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE"
         || !["ledger/slots", "ledger/orders", "ledger/slot_accounts", "ledger/monthly_target",
           "ledger/monthly_gains", "ledger/bulk_checkpoint", "ledger/config_gate", "ledger/quote_cap",
-          "ledger/preparation", "ledger/operator"].includes(String(alert.details?.read_path)))
+          "ledger/preparation", "ledger/operator", ...EXPOSURE_READ_PATHS].includes(String(alert.details?.read_path)))
+    || alert.details?.root_code === "COINOPS_EXECUTOR_BINDING_READ_UNAVAILABLE"
+      && (alert.code !== "COINOPS_LIVE_EXECUTOR_READ_STALE"
+        || !BINDING_READ_PATHS.includes(String(alert.details.read_path)))
     || alert.code === "COINOPS_BULK_CHECKPOINT_UNAVAILABLE"
       && (alert.details?.stage !== "CONFIG_UPDATE" || alert.details?.root_code !== alert.code)
     || alert.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"
@@ -117,13 +139,9 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
     || !Number.isFinite(Date.parse(alert.last_seen_at))
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
       || alert.first_seen_at !== expected.first_seen_at
-      || isPermissionStateReadRecovery(expected.code, expected.details)
-        && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)
-      || isRegistryStateReadRecovery(expected.code, expected.details)
-        && (alert.details?.stage !== expected.details?.stage || alert.details?.root_code !== expected.details?.root_code)
-      || expected.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE"
-        && (alert.details?.stage !== expected.details.stage || alert.details?.root_code !== expected.details.root_code
-          || alert.details?.read_path !== expected.details.read_path)))
+      || alert.details?.stage !== expected.details?.stage
+      || alert.details?.root_code !== expected.details?.root_code
+      || alert.details?.read_path !== expected.details?.read_path))
     throw new Error("COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED");
   return alert;
 }

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import * as readErrors from "./live-read-error.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
@@ -23,6 +24,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
   }};
   const deps:Record<string,unknown>={
     "./live-read-error":readErrors,
+    "./live-exposure-read":{readLiveExposure},
     "../supabase/service-role":{createServiceRoleClient:()=>service},
     "./strategy-engine":{STRATEGY_VERSION:"fixture"},
     "./live-executor-transport":{readLiveExecutorState:async()=>{throw error;}},
@@ -131,4 +133,20 @@ test("ledger outage uses its own diagnostic code, durable retry and engine-local
   await assert.rejects(stale.execute(), /COINOPS_LIVE_LEDGER_READ_STALE/);
   assert.ok(stale.writes.filter(w => w.table === "trading_engines")
     .every(w => w.filters.id === "engine-b" && w.data.kill_switch === true));
+});
+
+test("typed engine binding GET exhaustion remains a scoped read checkpoint with its exact diagnostic path", async () => {
+  const error = new readErrors.LiveReadUnavailable("COINOPS_EXECUTOR_BINDING_READ_UNAVAILABLE",
+    "executor_binding/engine", 2, 503, "PGRST001");
+  const transient = fixture(error, undefined, "engine-b");
+  assert.equal((await transient.execute()).status, "RETRY");
+  assert.ok(transient.writes.every(write => !write.data.kill_switch));
+  const alert = transient.writes.find(write => write.table === "robot_v1_live_alerts")!;
+  assert.equal(alert.data.trading_engine_id, "engine-b");
+  assert.deepEqual(alert.data.details, { run_id: transient.run.id, stage: "RECONCILE_ORDERS", source: "ENGINE",
+    root_code: error.code, read_path: "executor_binding/engine", read_attempts: 2, http_status: 503, provider_code: "PGRST001" });
+  const stale = fixture(error, new Date(Date.now() - 301000).toISOString(), "engine-b");
+  await assert.rejects(stale.execute(), /COINOPS_LIVE_EXECUTOR_READ_STALE/);
+  assert.ok(stale.writes.filter(write => write.table === "trading_engines")
+    .every(write => write.filters.id === "engine-b" && write.data.kill_switch === true));
 });

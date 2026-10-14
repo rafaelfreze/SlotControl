@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
-import { liveEngineExposure } from "./engine-exposure.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race.ts";
@@ -59,6 +59,8 @@ function fixture(options: Options = {}) {
   const siblingEngine: Row = { ...engine, id: "engine-b", trading_engine_id: "engine-b",
     engine_kill_switch: false, kill_switch: false, executor_shard_id: "executor-02" };
   const siblingRun: Row = { ...run, id: "run-b", trading_engine_id: "engine-b", last_error: null };
+  const siblingSlots = slots.map(slot => ({ ...slot, id: `sibling-${slot.id}`, run_id: "run-b",
+    trading_engine_id: "engine-b", position_committed_brl: 0, position_quantity: 0, entry_state: "PLANNED" }));
   const siblingBefore = JSON.stringify([siblingEngine, siblingRun]);
   const matches = (row: Row, filters: Row) => Object.entries(filters).every(([key, value]) => {
     if (key.startsWith("in:")) return (value as unknown[]).includes(row[key.slice(3)]);
@@ -68,12 +70,13 @@ function fixture(options: Options = {}) {
   });
   const service = { from(table: string) {
     const filters: Row = {}; let values: Row | null = null, upsert = false, page: [number, number] | null = null;
+    let exactCount = false;
     const response = (singular = false) => {
       let rows: Row[];
       if (table === "robot_v1_live_runs") rows = [run, siblingRun];
       else if (table === "trading_engines") rows = [engine, siblingEngine];
       else if (table === "robot_v1_live_preparations") rows = [preparation];
-      else if (table === "robot_v1_live_slots") rows = slots;
+      else if (table === "robot_v1_live_slots") rows = [...slots, ...siblingSlots];
       else if (table === "robot_v1_live_slot_accounts") rows = accounts;
       else if (table === "robot_v1_live_orders") rows = orders;
       else if (table === "robot_v1_live_alerts") rows = alerts;
@@ -96,13 +99,16 @@ function fixture(options: Options = {}) {
         if (upsert) rows = [values];
         else rows.forEach(row => Object.assign(row, values));
       }
+      const count = rows.length;
       if (page) rows = rows.slice(page[0], page[1] + 1);
       let data = singular ? rows[0] ? structuredClone(rows[0]) : null : structuredClone(rows);
       if (!values && table === "robot_v1_live_runs" && filters.id === "run-a" && options.staleLookup)
         data = { ...data, last_error: "COINOPS_OLD_SNAPSHOT_ERROR", last_reconciled_at: oldTimestamp };
-      return { data, error: null };
+      return { data, error: null, ...(exactCount ? { count } : {}) };
     };
-    const query = { select: () => query, order: () => query, abortSignal: () => query,
+    const query = { select: (_columns?: string, options?: { count?: string }) => {
+      exactCount = options?.count === "exact"; return query;
+    }, order: () => query, abortSignal: () => query,
       eq: (key: string, value: unknown) => { filters[key] = value; return query; },
       is: (key: string, value: unknown) => { filters[key] = value; return query; },
       in: (key: string, value: unknown[]) => { filters[`in:${key}`] = value; return query; },
@@ -121,7 +127,7 @@ function fixture(options: Options = {}) {
     "node:crypto": { randomUUID: () => "audit-lease" },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
-    "./complete-ledger-read": { completeLedgerRead }, "./engine-exposure": { liveEngineExposure },
+    "./complete-ledger-read": { completeLedgerRead }, "./live-exposure-read": { readLiveExposure },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors, "./live-order-snapshot-race": { isConfirmedFilledSnapshotRace },
     "./operator-context-server": { resolveOperatorEngine: async (_db: unknown, _scope: unknown, selected: Row) => {

@@ -5,6 +5,7 @@ import ts from "typescript";
 import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRows } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
+import { readLiveExposure } from "./live-exposure-read.ts";
 
 const physical = () => Array.from({ length: 25 }, (_, i) => ({ slot_number: i + 1 }));
 
@@ -92,6 +93,7 @@ function fixture(engine: string, failures: Record<string, { code: string; status
     return chain;
   } };
   const deps: Record<string, unknown> = { "./live-read-error": readErrors,
+    "./live-exposure-read": { readLiveExposure },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger },
     "./complete-ledger-read": { completeLedgerRead }, "./operator-context": { assertRowEngine: (row: Record<string, unknown>) => {
       assert.equal(row.trading_engine_id, engine); assert.equal(row.exchange_account_id, "same-account");

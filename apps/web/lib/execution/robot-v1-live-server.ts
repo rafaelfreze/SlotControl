@@ -36,7 +36,7 @@ import { assertRowEngine, type EngineContext, type EngineSelection } from "./ope
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
   type StrategyApplyPolicy, type StrategyParameterKey } from "./strategy-parameter-registry";
 import type { ExecutorEngineScope } from "./live-executor-transport";
-import { liveEngineExposure } from "./engine-exposure";
+import { readLiveExposure } from "./live-exposure-read";
 import { completeLedgerRead } from "./complete-ledger-read";
 import { accountExecutionPolicyRequired, reserveAccountOrderDispatch, acknowledgeAccountOrderDispatch,
   AccountOrderBudgetHold } from "./account-order-budget-server";
@@ -338,46 +338,7 @@ async function updateOrder(service: Service, run: Run, order: Order, values: Rec
 }
 
 async function exposure(service: Service, run: Run) {
-  const code = "COINOPS_LIVE_EXPOSURE_UNAVAILABLE";
-  const runs = await completeLedgerRead<{ id: string; asset: string; trading_engine_id: string }>((start, end) =>
-    service.from("robot_v1_live_runs").select("id,asset,trading_engine_id")
-    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
-    .eq("exchange_account_id", run.exchange_account_id).eq("quote_asset", run.quote_asset)
-    .eq("operator_id", run.operator_id).in("status", ["ACTIVE", "PAUSED"]).order("id").range(start, end), code);
-  const ids = runs.map((item) => item.id);
-  if (!ids.length) return { BTC: 0, SOL: 0, global: 0 };
-  const [engines, accountCap] = await Promise.all([
-    completeLedgerRead<{ id: string; base_asset: string; hard_cap_quote: number | string }>((start, end) =>
-      service.from("trading_engines").select("id,base_asset,hard_cap_quote")
-        .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
-        .eq("environment", "REAL").eq("quote_asset", run.quote_asset).order("id").range(start, end), code),
-    quoteCap(service, run),
-  ]);
-  const slots: Array<{ id: string; run_id: string; position_committed_brl: number | string }> = [];
-  const orders: Array<{ id: string; run_id: string; side: string; status: string;
-    reserved_notional_brl: number | string; cumulative_quote: number | string }> = [];
-  // Bound IN filters too; an arbitrary number of engines must not produce a
-  // truncated page or an unbounded request URL. Only resident orders matter.
-  for (let offset = 0; offset < ids.length; offset += 200) {
-    const selectedRuns = ids.slice(offset, offset + 200);
-    const [positions, resident] = await Promise.all([
-      completeLedgerRead<typeof slots[number]>((start, end) => service.from("robot_v1_live_slots")
-        .select("id,run_id,position_committed_brl").eq("operator_id", run.operator_id)
-        .eq("exchange_account_id", run.exchange_account_id).in("run_id", selectedRuns).order("id").range(start, end), code),
-      completeLedgerRead<typeof orders[number]>((start, end) => service.from("robot_v1_live_orders")
-        .select("id,run_id,side,status,reserved_notional_brl,cumulative_quote").eq("operator_id", run.operator_id)
-        .eq("exchange_account_id", run.exchange_account_id).in("run_id", selectedRuns)
-        .in("status", [...LIVE_ACTIVE_ORDER_STATUSES]).order("id").range(start, end), code),
-    ]);
-    slots.push(...positions); orders.push(...resident);
-  }
-  const engineByRun = new Map(runs.map((item) => [item.id, item.trading_engine_id]));
-  if (new Set(runs.map((item) => item.trading_engine_id)).size !== runs.length) throw new Error(code);
-  return liveEngineExposure(run.trading_engine_id, engines.map((engine) => ({ id: engine.id,
-    asset: engine.base_asset as V1Asset, cap: Number(engine.hard_cap_quote) })),
-  slots.map((slot) => ({ engineId: engineByRun.get(slot.run_id)!, committed: amount(slot.position_committed_brl) })),
-  orders.map((order) => ({ engineId: engineByRun.get(order.run_id)!, side: order.side, status: order.status,
-    reserved: amount(order.reserved_notional_brl), executedQuote: amount(order.cumulative_quote) })), accountCap);
+  return readLiveExposure(service, run);
 }
 
 async function assertExchangeMatchesLedger(run: Run, orders: Order[], state: LiveExecutorState,
@@ -2014,18 +1975,13 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       .is("resolved_at", null);
     if (recoveryIncident) alertUpdate = alertUpdate.eq("code", recoveryIncident.code)
       .eq("last_seen_at", recoveryIncident.last_seen_at).eq("first_seen_at", recoveryIncident.first_seen_at);
-    if (recoveryIncident && (bnbFeeReadRecovery || source === "VERIFIED_READ_RECOVERY"
-      && recoveryIncident.code === "COINOPS_OPERATOR_REGISTRY_UNAVAILABLE"
-      || isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details)))
-      alertUpdate = alertUpdate.eq("first_seen_at", recoveryIncident.first_seen_at)
-        .eq("details->>stage", recoveryIncident.details!.stage)
-        .eq("details->>root_code", recoveryIncident.details!.root_code);
-    if (recoveryIncident && bnbFeeReadRecovery)
-      alertUpdate = alertUpdate.eq("details->>read_path", recoveryIncident.details!.read_path);
-    if (source === "OPERATOR_CONTROL" && recoveryIncident) {
+    // All captured diagnostic identity participates in the final CAS, for
+    // both automatic read recovery and explicit operator control.
+    if (recoveryIncident) {
       for (const key of ["stage", "root_code", "read_path"] as const)
-        if (recoveryIncident.details?.[key] !== undefined)
-          alertUpdate = alertUpdate.eq(`details->>${key}`, recoveryIncident.details[key]);
+        alertUpdate = recoveryIncident.details?.[key] === undefined || recoveryIncident.details[key] === null
+          ? alertUpdate.is(`details->>${key}`, null)
+          : alertUpdate.eq(`details->>${key}`, recoveryIncident.details[key]);
     }
     const alert = await alertUpdate.select("id");
     if (alert.error) throw new Error("COINOPS_LIVE_RESUME_ALERT_UPDATE_FAILED");
