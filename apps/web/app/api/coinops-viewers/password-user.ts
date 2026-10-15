@@ -12,7 +12,7 @@ export async function createPasswordViewerIdentity(service: Pick<SupabaseClient,
   if (!created.error && created.data.user) return created.data.user;
   const existing = ["email_exists", "user_already_exists"].includes(created.error?.code ?? "");
   if (!existing) report?.("identity_create", created.error);
-  if (created.error?.code === "weak_password") throw new Error("COINOPS_VIEWER_PASSWORD_INVALID");
+  if (created.error?.code === "weak_password") throw Object.assign(new Error("COINOPS_VIEWER_PASSWORD_INVALID"), { code: "weak_password" });
   if (!existing)
     throw new Error("COINOPS_VIEWER_CREATE_UNCONFIRMED");
   // Recover only this exact request after a lost response/binding failure. The

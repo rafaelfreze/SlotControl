@@ -58,7 +58,8 @@ export async function receiveAccountRequest(request: Request, product: string, s
     const result = input.operation === "catalog" ? { plans: await source.catalog() } : await source.create(input);
     return Response.json({ ok: true, product_key: product, ...result as Record<string, unknown> }, { headers });
   } catch (error) {
-    const safe = error instanceof AccountError ? error : new AccountError(/email.*exists|email.*registered|request.*conflict/i.test(error instanceof Error ? error.message : "") ? "account_request_conflict" : "provisioning_unavailable", /email.*exists|email.*registered|request.*conflict/i.test(error instanceof Error ? error.message : "") ? 409 : 503);
+    const weakPassword = error instanceof Error && error.message === "COINOPS_VIEWER_PASSWORD_INVALID" && "code" in error && error.code === "weak_password";
+    const safe = error instanceof AccountError ? error : weakPassword ? new AccountError("weak_password", 422) : new AccountError(/email.*exists|email.*registered|request.*conflict/i.test(error instanceof Error ? error.message : "") ? "account_request_conflict" : "provisioning_unavailable", /email.*exists|email.*registered|request.*conflict/i.test(error instanceof Error ? error.message : "") ? 409 : 503);
     return Response.json({ ok: false, error: safe.message }, { status: safe.status, headers });
   }
 }

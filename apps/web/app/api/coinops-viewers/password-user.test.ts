@@ -53,6 +53,13 @@ test("failed Auth create reports native code safely without retrying or changing
   assert.deepEqual(records, [{ event: "COINOPS_ACCOUNT_PROVISION_FAILED", stage: "identity_create", code: "unexpected_failure", provider_status: 500 }]);
 });
 
+test("only native weak_password marks the typed password rejection and never retries Auth", async () => {
+  let calls = 0;
+  const service = { auth: { admin: { createUser: async () => { calls++; return { data: { user: null }, error: { code: "weak_password", status: 422, message: "private-provider-message" } }; } } } } as unknown as SupabaseClient;
+  await assert.rejects(createPasswordViewerIdentity(service, input, "actor", "operator"), { message: "COINOPS_VIEWER_PASSWORD_INVALID", code: "weak_password" });
+  assert.equal(calls, 1);
+});
+
 test("idempotent existing identity recovery does not log an expected duplicate as failure", async () => {
   const records: unknown[] = [];
   const service = { auth: { admin: { createUser: async () => ({ data: { user: null }, error: { code: "email_exists", status: 422 } }),

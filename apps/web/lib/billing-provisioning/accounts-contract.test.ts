@@ -63,6 +63,19 @@ test("provider errors are sanitized; no password or backend detail enters respon
   const response = await receiveAccountRequest(signed(), product, { consume: async () => ({ data: true, error: null }), catalog: async () => [], create: async () => { throw Error("provider failure " + input.password); } }, secret, now);
   assert.equal(response.status, 503); assert.deepEqual(await response.json(), { ok: false, error: "provisioning_unavailable" });
 });
+
+test("only a proven native weak_password rejection returns a safe422 instead of an unavailable503", async () => {
+  for (const [error, status, code] of [
+    [Object.assign(new Error("COINOPS_VIEWER_PASSWORD_INVALID"), { code: "weak_password" }), 422, "weak_password"],
+    [new Error("COINOPS_VIEWER_PASSWORD_INVALID"), 503, "provisioning_unavailable"],
+    [Object.assign(new Error("unrelated-provider-failure"), { code: "weak_password" }), 503, "provisioning_unavailable"],
+    [Object.assign(new Error("COINOPS_VIEWER_CREATE_UNCONFIRMED"), { code: "bad_jwt" }), 503, "provisioning_unavailable"],
+  ] as const) {
+    let calls = 0;
+    const response = await receiveAccountRequest(signed(), product, { consume: async () => ({ data: true, error: null }), catalog: async () => [], create: async () => { calls++; throw error; } }, secret, now);
+    assert.equal(response.status, status); assert.deepEqual(await response.json(), { ok: false, error: code }); assert.equal(calls, 1);
+  }
+});
 test("oversized payload is rejected before authentication or any database call", async () => {
   let called = false; const response = await receiveAccountRequest(signed({ ...input, password: "a".repeat(65536) }), product, { consume: async () => { called = true; return { data: true, error: null }; }, catalog: async () => [], create: async () => ({}) }, secret, now);
   assert.equal(response.status, 413); assert.equal(called, false);
