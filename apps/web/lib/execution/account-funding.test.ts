@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildAccountFunding, fundingClientMessage, type AccountFundingInput } from "./account-funding.ts";
+import { buildAccountFunding, fundingClientMessage, fundingResumeToleranceObservation, type AccountFundingInput } from "./account-funding.ts";
 import type { LiveExecutorState } from "./live-executor-transport.ts";
 
 const now = Date.parse("2026-10-13T13:00:00Z"), at = new Date(now).toISOString();
@@ -123,4 +123,41 @@ test("owner-ready text distinguishes complete principal from indefinite fees and
   assert.match(fundingClientMessage(row), /50 slots/); assert.match(fundingClientMessage(row), /254,00 BRL/);
   assert.match(fundingClientMessage(row), /taxas futuras não/); assert.match(fundingClientMessage(row), /não houve cancelamento/);
   row.status = "INCOMPLETE"; assert.doesNotMatch(fundingClientMessage(row), /Faltam/);
+});
+
+test("fresh BRL shortfall up to R$50 is an observation, preserving exact deficit and every amount", () => {
+  for (const deficit of [.03, 49.99, 50]) {
+    const input = fixture(); input.states[0].balances[0].free = 254 - deficit;
+    const row = buildAccountFunding(input)[0], before = structuredClone(row);
+    assert.equal(row.status, "SHORTFALL"); assert.equal(row.deficit, deficit);
+    assert.match(fundingResumeToleranceObservation(row, now)!, /tolerância administrativa de R\$ 50,00/);
+    assert.match(fundingClientMessage(row, now), /Cada nova BUY continua exigindo saldo Spot integral, reserva BNB/);
+    assert.match(fundingClientMessage(row, now), /Não acrescenta saldo nem autoriza ordens/);
+    assert.deepEqual(row, before);
+  }
+});
+
+test("tolerance observation never covers other currencies, excess, zero, stale, incomplete or malformed evidence", () => {
+  const input = fixture(); input.states[0].balances[0].free = 253.97;
+  const row = buildAccountFunding(input)[0];
+  const cases = [
+    { currency: "USDT" }, { currency: "USDC" }, { deficit: 50.00000001 }, { deficit: 0 },
+    { status: "COVERED" as const }, { status: "INCOMPLETE" as const }, { observedAt: null },
+    { observedAt: new Date(now - 30_001).toISOString() }, { observedAt: new Date(now + 2_001).toISOString() },
+    { spotFree: null }, { spotFree: -1 }, { deficit: NaN }, { cashRequired: Infinity },
+    { bnbStatus: "UNKNOWN" as const }, { issues: ["BNB_UNAVAILABLE"] }, { slotCount: 24 }, { engineCount: 0 },
+  ];
+  for (const changes of cases) assert.equal(fundingResumeToleranceObservation({ ...row, ...changes }, now), null,
+    JSON.stringify(changes));
+  assert.equal(fundingResumeToleranceObservation(row, NaN), null);
+  assert.doesNotMatch(fundingClientMessage({ ...row, observedAt: new Date(now - 30_001).toISOString() }, now), /tolerância administrativa/);
+});
+
+test("known BNB shortage remains explicit and is never authorized by the BRL observation", () => {
+  const input = fixture(); input.states[0].balances[0].free = 253.97;
+  input.states[0].balances[1].free = .00001;
+  const row = buildAccountFunding(input)[0];
+  assert.equal(row.bnbStatus, "LOW"); assert.equal(row.status, "SHORTFALL"); assert.equal(row.deficit, .03);
+  assert.match(fundingResumeToleranceObservation(row, now)!, /reserva BNB e todas as verificações/);
+  assert.match(fundingClientMessage(row, now), /reserva abaixo do mínimo técnico/);
 });

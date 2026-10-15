@@ -49,3 +49,13 @@ test("client message is copied only on click in a closable drawer and touch targ
   assert.match(css, /min-height:44px/);
   assert.match(css, /font-size:16px/);
 });
+
+test("BRL administrative observation appears in summary and details without changing shortage styling or financial controls", () => {
+  assert.match(card, /fundingResumeToleranceObservation\(summary, now\)/);
+  assert.match(card, /<p role="note">\{fundingResumeToleranceObservation\(summary, now\)\}/);
+  assert.match(card, /Falta para a grade completa <strong>\{money\(summary\.deficit, summary\.currency\)\}/);
+  assert.match(card, /summary\.status !== "COVERED"/);
+  assert.match(card, /fundingClientMessage\(summary, now\)/);
+  assert.match(card, /known\.map\(\(summary\) => fundingClientMessage\(summary\)\)/);
+  assert.doesNotMatch(card, /known\.map\(fundingClientMessage\)/);
+});

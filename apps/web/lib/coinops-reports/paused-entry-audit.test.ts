@@ -102,3 +102,20 @@ test("pause report never adds an exchange/financial read or account preference c
   const source = readFileSync(new URL("./paused-entry-audit.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /fetch\(|createOrder|cancelOrder|createServiceRoleClient|resumeLiveRun|from\(/);
 });
+
+test("explicit canonical resume stays auditable with exact engine/run identity, not a new financial operation", () => {
+  const generatedAt = "2026-10-13T12:03:00Z";
+  const report = buildAuditReport({ sources: { robot_v1_live_runs: [{ ...scope, id: "run-A", asset: "SOL",
+    symbol: "SOLBRL", status: "ACTIVE", created_at: at, last_reconciled_at: at }], robot_v1_live_events: [
+    { ...scope, id: "resume", run_id: "run-A", event_type: "LIVE_RESUMED", observed_at: at,
+      details: { source: "OPERATOR_CONTROL", protection_verified: true } }],
+  }, scope: { tenantId: "fixture", userId: "fixture" }, warnings: [], incompleteSources: [], generatedAt }, filters);
+  const resume = report.datasets.live_execution.find((row) => row.id === "resume");
+  assert.ok(resume);
+  assert.equal(resume.event_type, "LIVE_RESUMED"); assert.equal(resume.run_id, "run-A");
+  for (const key of ["operator_id", "exchange_account_id", "trading_engine_id", "executor_shard_id"] as const)
+    assert.equal(resume[key], scope[key]);
+  const pack = buildReportPackage(report, filters, generatedAt, "fixture-sha");
+  for (const filename of ["LIVE_EXECUTION.csv", "AUDITORIA_COMPLETA.json"])
+    assert.ok(pack.files.find((file) => file.name === filename)?.content.includes("LIVE_RESUMED"));
+});

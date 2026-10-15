@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { fundingClientMessage, type FundingSummary } from "@/lib/execution/account-funding";
+import { fundingClientMessage, fundingResumeToleranceObservation, type FundingSummary } from "@/lib/execution/account-funding";
 import { PremiumDrawer, displayMoney as money, displayNumber as number, displayTime as time } from "./premium-primitives";
 import "./account-funding-card.css";
 
@@ -26,7 +26,7 @@ export function AccountFundingCard({ accountName, summaries, loading, error, onR
     if (!known || oldSnapshot) return;
     if (known.some((summary) => stale(summary, Date.now()))) { setCopied("expired"); return; }
     try {
-      await navigator.clipboard.writeText(known.map(fundingClientMessage).join("\n\n"));
+      await navigator.clipboard.writeText(known.map((summary) => fundingClientMessage(summary)).join("\n\n"));
       setCopied("copied");
     } catch { setCopied("failed"); }
   };
@@ -44,6 +44,7 @@ export function AccountFundingCard({ accountName, summaries, loading, error, onR
       <span>Necessário · slots + pendências <strong>{money(summary.cashRequired, summary.currency)}</strong></span>
       <span>Falta para a grade completa <strong>{money(summary.deficit, summary.currency)}</strong></span>
       <small>{summary.engineCount} motor(es) · {summary.slotCount} slots · leitura {time(summary.observedAt)}</small>
+      {fundingResumeToleranceObservation(summary, now) ? <small>{fundingResumeToleranceObservation(summary, now)}</small> : null}
     </div>)}</div> : <p role="status">{loading ? "Consultando o saldo físico e o ledger da conta inteira…"
       : error ? "Não foi possível confirmar o saldo completo nesta consulta. Nenhum valor ausente foi tratado como zero."
         : "A consulta completa ainda não tem evidência disponível."}</p>}
@@ -74,8 +75,9 @@ export function AccountFundingCard({ accountName, summaries, loading, error, onR
           {summary.status === "INCOMPLETE" ? <p className="px-warning">Evidência incompleta: não é possível afirmar cobertura nem déficit total.</p> : null}
           {summary.bnbStatus === "UNKNOWN" ? <p className="px-warning">Reserva BNB não confirmada nesta leitura.</p> : null}
           {summary.issues.length ? <details><summary>Evidências a verificar</summary><ul>{summary.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></details> : null}
+          {fundingResumeToleranceObservation(summary, now) ? <p role="note">{fundingResumeToleranceObservation(summary, now)}</p> : null}
           <textarea readOnly aria-label={`Mensagem para o cliente ${summary.currency}`}
-            value={`${stale(summary, now) ? "LEITURA ANTIGA / NÃO CONFIRMADA. Atualize antes de informar um valor de reposição.\n\n" : ""}${fundingClientMessage(summary)}`} />
+            value={`${stale(summary, now) ? "LEITURA ANTIGA / NÃO CONFIRMADA. Atualize antes de informar um valor de reposição.\n\n" : ""}${fundingClientMessage(summary, now)}`} />
         </section>)}
         <button type="button" className="px-button" onClick={() => void copy()} disabled={!known || oldSnapshot}>Copiar mensagem para o cliente</button>
         {copied ? <p role="status">{copied === "copied" ? "Mensagem copiada. Nenhuma mensagem foi enviada."

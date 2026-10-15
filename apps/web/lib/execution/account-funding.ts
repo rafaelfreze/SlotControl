@@ -151,8 +151,26 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
   });
 }
 
-export function fundingClientMessage(row: FundingSummary): string {
+export const BRL_FUNDING_RESUME_OBSERVATION_LIMIT = 50;
+
+/** Administrative observation only: never funding, order permission or a gate.
+ * Keep the actual SHORTFALL/deficit. Every BUY still needs its full Spot amount,
+ * BNB, ownership and all canonical safety checks; other currencies never inherit BRL tolerance. */
+export function fundingResumeToleranceObservation(row: FundingSummary, now = Date.now()): string | null {
+  if (row.currency !== "BRL" || row.status !== "SHORTFALL" || row.issues.length
+    || !fresh(row.observedAt, now, 30_000) || !Number.isFinite(now)
+    || !Number.isSafeInteger(row.engineCount) || row.engineCount <= 0 || row.slotCount !== row.engineCount * 25
+    || row.bnbStatus === "UNKNOWN"
+    || [row.ledgerTarget, row.pending, row.configuredCap, row.positionCost, row.buyReserved,
+      row.spotFree, row.spotLocked, row.cashRequired, row.deficit, row.coverage, row.bnbFree]
+      .some((value) => value === null || !Number.isFinite(value) || value < 0)
+    || row.deficit! <= 0 || row.deficit! > BRL_FUNDING_RESUME_OBSERVATION_LIMIT) return null;
+  return "Diferença de principal dentro da tolerância administrativa de R$ 50,00. Essa diferença para a grade completa, sozinha, não impede solicitar a reativação manual. Cada nova BUY continua exigindo saldo Spot integral, reserva BNB e todas as verificações de segurança. Não acrescenta saldo nem autoriza ordens.";
+}
+
+export function fundingClientMessage(row: FundingSummary, now = Date.now()): string {
   const money = (value: number | null) => value === null ? "não apurado" : `${value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 8 })} ${row.currency}`;
   if (row.status === "INCOMPLETE") return `${row.accountName}: a verificação de saldo da operação completa está incompleta. Atualize os dados antes de indicar um valor de reposição. Nenhuma ordem foi alterada.`;
-  return `${row.accountName}: verificação Spot em ${row.observedAt}. Para ${row.engineCount} motor(es) e ${row.slotCount} slots, a alocação atual é ${money(row.ledgerTarget)}, com ${money(row.pending)} em aportes pendentes. Já estão aplicados ${money(row.positionCost)} em posições e ${money(row.buyReserved)} em BUY residentes próprias. O caixa livre necessário para o restante é ${money(row.cashRequired)}; há ${money(row.spotFree)} disponível no Spot. ${row.status === "SHORTFALL" ? `Faltam ${money(row.deficit)} de principal para cobrir toda essa alocação.` : "O principal da alocação está coberto neste snapshot."} BNB livre: ${row.bnbFree === null ? "não apurado" : row.bnbFree.toLocaleString("pt-BR", { maximumFractionDigits: 8 })}; ${row.bnbStatus === "LOW" ? "reserva abaixo do mínimo técnico." : "taxas futuras não estão provisionadas nesta conta de principal."} Saldo Earn não é caixa Spot; não houve cancelamento nem alteração de estratégia. Este diagnóstico não garante rentabilidade nem autoriza ordens.`;
+  const observation = fundingResumeToleranceObservation(row, now);
+  return `${row.accountName}: verificação Spot em ${row.observedAt}. Para ${row.engineCount} motor(es) e ${row.slotCount} slots, a alocação atual é ${money(row.ledgerTarget)}, com ${money(row.pending)} em aportes pendentes. Já estão aplicados ${money(row.positionCost)} em posições e ${money(row.buyReserved)} em BUY residentes próprias. O caixa livre necessário para o restante é ${money(row.cashRequired)}; há ${money(row.spotFree)} disponível no Spot. ${row.status === "SHORTFALL" ? `Faltam ${money(row.deficit)} de principal para cobrir toda essa alocação.` : "O principal da alocação está coberto neste snapshot."}${observation ? ` ${observation}` : ""} BNB livre: ${row.bnbFree === null ? "não apurado" : row.bnbFree.toLocaleString("pt-BR", { maximumFractionDigits: 8 })}; ${row.bnbStatus === "LOW" ? "reserva abaixo do mínimo técnico." : "taxas futuras não estão provisionadas nesta conta de principal."} Saldo Earn não é caixa Spot; não houve cancelamento nem alteração de estratégia. Este diagnóstico não garante rentabilidade nem autoriza ordens.`;
 }

@@ -64,8 +64,26 @@ export async function loadAccountPauseHome(client: Client, registry: DomainRegis
     strategy_config_pending: engine.strategy_config_pending === true })), runs, slots, accounts, orders, preparations, alerts,
     proofs: proofs.filter((proof): proof is NonNullable<typeof proof> => proof !== null), accountGateClosed: account.kill_switch,
     operatorGateClosed: op.kill_switch };
+  const now = Date.now();
+  const owned = (row: AccountPauseLedger["runs"][number] | AccountPauseLedger["preparations"][number]
+    | AccountPauseLedger["alerts"][number], engineId: string) => row.operator_id === op.id
+    && row.exchange_account_id === accountId && row.trading_engine_id === engineId;
   return { accountId, hidden: preference.data?.hidden === true, canHide: accountPauseProtection(ledger),
     engines: engines.map((engine) => { const current = runs.filter((run) => run.trading_engine_id === engine.id);
+      const prep = preparations.filter((row) => row.trading_engine_id === engine.id);
+      const reconciledAt = current.length === 1 ? Date.parse(current[0].last_reconciled_at ?? "") : NaN;
+      // ACTIVE alone is not entry permission: a fail-closed ACTIVE sibling must
+      // never make an account-wide resume confirmation look successful.
+      const entryEnabled = current.length === 1 && owned(current[0], engine.id)
+        && current[0].status === "ACTIVE" && current[0].last_error === null
+        && Number.isFinite(reconciledAt) && reconciledAt - now <= 1_000 && now - reconciledAt <= 180_000
+        && engine.kill_switch === false && engine.strategy_config_pending === false
+        && account.kill_switch === false && op.kill_switch === false
+        && prep.length === 1 && owned(prep[0], engine.id) && prep[0].symbol === engine.symbol
+        && prep[0].live_enabled === true && prep[0].kill_switch === false
+        && !alerts.some((row) => row.trading_engine_id === engine.id
+          && (!owned(row, engine.id) || row.severity !== "WARNING"));
       return { engineId: engine.id, symbol: engine.symbol, executorShardId: engine.executor_shard_id ?? null,
-        runId: current.length === 1 ? current[0].id : null, runStatus: current.length === 1 ? current[0].status : null }; }) };
+        runId: current.length === 1 ? current[0].id : null, runStatus: current.length === 1 ? current[0].status : null,
+        entryEnabled }; }) };
 }

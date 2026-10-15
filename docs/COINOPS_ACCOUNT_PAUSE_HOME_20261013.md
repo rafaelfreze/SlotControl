@@ -8,7 +8,15 @@ A pausa usa `pauseLiveRun`, lease e reconciliador oficiais. Fecha os gates de BU
 
 ### Posições antigas continuam
 
-O worker PAUSED segue reconciliando ordens/fills, assegurando TPs e creditando gain exatamente uma vez pelo mesmo ledger. Após esses passos, valida proteção/ownership/caps e conclui `RECONCILED` com `next=ENTRIES_PAUSED`. Não recicla slot CLOSED, decide reentrada, modifica ATH ou cria successor/reset durante a pausa. Fechar o último TP não pode causar RESET_GATE_FAILED nem abrir um novo ciclo. Retomada exige ação explícita pelo fluxo oficial de Estratégia e motores.
+O worker PAUSED segue reconciliando ordens/fills, assegurando TPs e creditando gain exatamente uma vez pelo mesmo ledger. Após esses passos, valida proteção/ownership/caps e conclui `RECONCILED` com `next=ENTRIES_PAUSED`. Não recicla slot CLOSED, decide reentrada, modifica ATH ou cria successor/reset durante a pausa. Fechar o último TP não pode causar RESET_GATE_FAILED nem abrir um novo ciclo. Retomada exige ação explícita pelo fluxo oficial de Estratégia e motores ou pelo botão **Reativar operação e reexibir na tela inicial** na conta.
+
+### Retomada explícita e reexibição (15/10/2026)
+
+O novo botão confirma a operação REAL, consulta inventário fresco da conta e envia `RESUME` sequencial somente para os engines PAUSED em `/api/coinops-engine-control`. Reutiliza `resumeLiveRun`: lease, ownership engine/account/shard, reconciliação recente, ledger/TPs completos, caps, BNB/Spot por ordem e CAS dos gates. Não usa ACTIVATE, não recria o run, não altera estratégia e não desfaz motores já retomados em caso de falha parcial. Resposta incerta exige readback; nenhum POST financeiro é repetido automaticamente. A confirmação exige `RESUMED` e o mesmo run; a leitura final confere inventário, run ACTIVE e gates de entrada abertos antes do SHOW. Reexibir sozinho permanece exclusivamente visual.
+
+O comando administrativo não interativo `/api/cron/live-control` aceita PAUSED ou ACTIVE exclusivamente em RESUME, com health ACTIVE/PROTECTED, como a rotina canônica. PREPARE continua exigindo READY; ACTIVATE continua exigindo PREPARING/ACTIVE-health e admissão. Segredo dedicado, host Production, schema e escopo existentes permanecem obrigatórios. `tools/operations/resume-engine-official.mjs` não repete requests nem aceita ordens/preços/valores.
+
+Diferença de principal de até **R$50 em BRL** no diagnóstico completo recebe somente observação administrativa, quando a evidência está completa e fresca. `SHORTFALL` e o déficit exato permanecem. O diagnóstico da grade inteira nunca foi gate de retomada: essa observação não acrescenta dinheiro, não autoriza BUY sem Spot integral, não afasta BNB/ownership/caps/TP nem se aplica a USDT. Dados antigos/incompletos não recebem certificação. Nenhum depósito, ajuste de ledger, ordem artificial ou migração é necessário.
 
 Um retry explícito de PAUSE para run já PAUSED revalida a proteção sob lease; status sozinho não é certificação. Nenhuma pausa/global kill de outros motores ou executores é executada.
 
@@ -29,6 +37,8 @@ Somente a projeção ALL da Home exclui cards, avisos de saldo reconhecidos, fee
 Watchdog observa ACTIVE e PAUSED. A pausa intencional protegida é contada separadamente (`paused_engines`), com TPs monitorados; não como motor comprando. Incidente real tem precedência. Recovery PAUSED usa o mesmo reconciliador, sem abrir gates de BUY. Não alterar cron, polling Binance ou capacidade.
 
 `LIVE_PAUSED` e `RECONCILED` mantêm evidência por operator/account/engine/run. Relatórios exportam o contrato e a evidência de pausa. `account_home_preference_events` mantém auditoria imutável de HIDE/SHOW por nonce/engine inventory; não é gain, trade nem autorização financeira.
+
+`LIVE_RESUMED` permanece no export LIVE_EXECUTION com a mesma identidade. O novo botão não introduz evento financeiro alternativo nem muda o formato v24 dos relatórios. A observação de R$50 é explicação de diagnóstico, não regra da Strategy Engine.
 
 Migration aditiva: `20261013145823_add_account_pause_home_preferences.sql`, somente schema coinops no projeto oficial. Cria duas tabelas metadata/RLS/RPC e acrescenta contador de pausados ao Watchdog. Não modifica linhas financeiras existentes.
 

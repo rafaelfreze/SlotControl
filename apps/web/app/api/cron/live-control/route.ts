@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadLiveEngineExecutorStatus } from "@/lib/execution/live-executor-health";
 import { resolveOperatorEngine } from "@/lib/execution/operator-context-server";
 import { liveEngineOrderPrefix } from "@/lib/execution/robot-v1-live-cycle";
-import type { EngineSelection } from "@/lib/execution/operator-context";
+import { isIdentity, type EngineSelection } from "@/lib/execution/operator-context";
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
 import { prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
@@ -34,7 +34,8 @@ export async function POST(request: NextRequest) {
     exchange_account_id?: string; trading_engine_id?: string } | null;
   if (!payload || Object.keys(payload).some((key) => !["action", "asset", "exchange_account_id", "trading_engine_id"].includes(key))
     || !["PREPARE", "ACTIVATE", "RESUME"].includes(String(payload.action))
-    || !["BTC", "SOL"].includes(String(payload.asset)))
+    || !["BTC", "SOL"].includes(String(payload.asset))
+    || payload.action === "RESUME" && (!isIdentity(payload.exchange_account_id) || !isIdentity(payload.trading_engine_id)))
     return NextResponse.json({ error: "COINOPS_LIVE_CONTROL_INVALID" }, { status: 400, headers });
   try {
     const service = createServiceRoleClient();
@@ -48,7 +49,10 @@ export async function POST(request: NextRequest) {
       exchange_account_id: payload.exchange_account_id, trading_engine_id: payload.trading_engine_id };
     const engine = await resolveOperatorEngine(service, owner.data[0], selection);
     const health = await loadLiveEngineExecutorStatus(engine);
-    if (health.gate !== (action === "PREPARE" ? "LIVE_EXECUTOR_READY" : "LIVE_EXECUTOR_ACTIVE"))
+    const allowedHealth = action === "RESUME"
+      ? ["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"]
+      : [action === "PREPARE" ? "LIVE_EXECUTOR_READY" : "LIVE_EXECUTOR_ACTIVE"];
+    if (!allowedHealth.includes(health.gate))
       throw new Error("COINOPS_LIVE_EXECUTOR_GATE_DENIED");
     if (action === "PREPARE") {
       const cycleId = await prepareLiveCycle(owner.data[0].user_id, asset, selection);
@@ -59,8 +63,10 @@ export async function POST(request: NextRequest) {
     const runs = await service.from("robot_v1_live_runs").select("id,status,product_id")
       .eq("tenant_id", getCoinOpsServiceTenantId()).eq("user_id", owner.data[0].user_id)
       .eq("trading_engine_id", engine.trading_engine_id).in("status", ["PREPARING", "ACTIVE", "PAUSED"]);
-    const requiredStatus = action === "RESUME" ? "ACTIVE" : "PREPARING";
-    if (runs.error || runs.data?.length !== 1 || runs.data[0].status !== requiredStatus
+    // Intentional account pause keeps the worker registered and its run PAUSED.
+    // Resume through the canonical lease/TP/ownership/CAS flow, never ACTIVATE.
+    const allowedStatuses = action === "RESUME" ? ["ACTIVE", "PAUSED"] : ["PREPARING"];
+    if (runs.error || runs.data?.length !== 1 || !allowedStatuses.includes(runs.data[0].status)
       || runs.data[0].product_id !== owner.data[0].product_id)
       throw new Error("COINOPS_LIVE_RUN_GATE_DENIED");
     if (action === "RESUME") {

@@ -46,7 +46,9 @@ test("presentation hiding preserves full synchronization and selector inventorie
   assert.match(source, /accountOptions\(accounts, engines\.filter/);
   assert.match(source, /selectPremiumEngines\(renderedEngines, environment, selection\)/);
   const panel = readFileSync(new URL("./account-pause-home-panel.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(panel, /localStorage|setInterval|RESUME|resumeLiveRun|createOrder|cancelOrder/);
+  assert.doesNotMatch(panel, /localStorage|setInterval|resumeLiveRun|createOrder|cancelOrder/);
+  assert.match(panel, /fetch\("\/api\/coinops-engine-control"/);
+  assert.match(panel, /action: "RESUME", accountId: selectedAccountId, engineId: engine\.engineId/);
   assert.match(panel, /window\.confirm/);
   assert.match(panel, /for \(let index = 0; index < current\.length; index\+\+\)/);
   assert.match(panel, /await request\(\{ action: "PAUSE_ENGINE"/);

@@ -91,7 +91,8 @@ function fixture(options: { truncatedTable?: string; duplicateSlots?: boolean; p
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ES2022 } }).outputText;
   const compiledModule = { exports: {} as { loadAccountPauseHome: (db: unknown, registry: DomainRegistry,
-    accountId: string) => Promise<{ canHide: boolean; hidden: boolean }> } };
+    accountId: string) => Promise<{ canHide: boolean; hidden: boolean;
+      engines: Array<{ engineId: string; runId: string | null; runStatus: string | null; entryEnabled: boolean }> }> } };
   new Function("require", "module", "exports", compiled)((name: string) => {
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
   }, compiledModule, compiledModule.exports);
@@ -101,12 +102,60 @@ function fixture(options: { truncatedTable?: string; duplicateSlots?: boolean; p
 test("pause Home reads complete exact owner scope and composite slot identity without remote writes", async () => {
   const f = fixture(); const result = await f.load();
   assert.equal(result.canHide, true); assert.equal(result.hidden, true);
+  assert.equal(result.engines[0].entryEnabled, false, "a protected PAUSED run is never entry-enabled");
   for (const call of f.calls) {
     assert.equal(call.filters.operator_id, operatorId); assert.equal(call.filters.exchange_account_id, accountId);
     if (call.table !== "account_home_preferences") for (const [key, value] of Object.entries(scope))
       assert.equal(call.filters[key], value);
   }
   assert.doesNotMatch(source, /\.rpc\(|\.update\(|\.insert\(|\.upsert\(|\.delete\(|readLiveExecutorState|pauseLiveRun|resumeLiveRun/);
+});
+
+function enableEntries(f: ReturnType<typeof fixture>) {
+  f.registry.engines[0].kill_switch = false;
+  f.registry.engines[0].strategy_config_pending = false;
+  f.rows.robot_v1_live_runs[0].status = "ACTIVE";
+  f.rows.robot_v1_live_preparations[0].kill_switch = false;
+}
+
+test("resume readback certifies entryEnabled only from exact ACTIVE fresh run and all real BUY gates open", async () => {
+  const f = fixture(); enableEntries(f);
+  assert.equal((await f.load()).engines[0].entryEnabled, true);
+  assert.equal(f.rows.robot_v1_live_alerts[0].severity, "WARNING", "balance warning is not a manufactured critical block");
+  for (const mutate of [
+    (input: typeof f) => { input.registry.engines[0].kill_switch = true; },
+    (input: typeof f) => { input.registry.engines[0].strategy_config_pending = true; },
+    (input: typeof f) => { delete input.registry.engines[0].strategy_config_pending; },
+    (input: typeof f) => { input.registry.accounts[0].kill_switch = true; },
+    (input: typeof f) => { input.registry.operator.kill_switch = true; },
+    (input: typeof f) => { input.rows.robot_v1_live_runs[0].last_error = "COINOPS_LIVE_BLOCKED"; },
+    (input: typeof f) => { input.rows.robot_v1_live_runs[0].last_reconciled_at = new Date(Date.now() - 180_001).toISOString(); },
+    (input: typeof f) => { input.rows.robot_v1_live_runs[0].last_reconciled_at = new Date(Date.now() + 30_000).toISOString(); },
+    (input: typeof f) => { input.rows.robot_v1_live_runs[0].last_reconciled_at = "invalid"; },
+    (input: typeof f) => { input.rows.robot_v1_live_runs[0].status = "PAUSED"; },
+    (input: typeof f) => { input.rows.robot_v1_live_runs[0].status = "PREPARING"; },
+    (input: typeof f) => { input.rows.robot_v1_live_runs = []; },
+    (input: typeof f) => { input.rows.robot_v1_live_runs.push({ ...input.rows.robot_v1_live_runs[0], id: uuid(900) }); },
+    (input: typeof f) => { input.rows.robot_v1_live_preparations[0].kill_switch = true; },
+    (input: typeof f) => { input.rows.robot_v1_live_preparations[0].live_enabled = false; },
+    (input: typeof f) => { input.rows.robot_v1_live_preparations[0].symbol = "BTCBRL"; },
+    (input: typeof f) => { input.rows.robot_v1_live_preparations = []; },
+    (input: typeof f) => { input.rows.robot_v1_live_preparations.push({ ...input.rows.robot_v1_live_preparations[0], id: uuid(901) }); },
+    (input: typeof f) => { input.rows.robot_v1_live_alerts[0].severity = "CRITICAL"; },
+  ]) {
+    const changed = fixture(); enableEntries(changed); mutate(changed);
+    assert.equal((await changed.load()).engines[0].entryEnabled, false);
+  }
+});
+
+test("closed-gate ACTIVE sibling remains false without disabling a healthy same-symbol cross-shard sibling", async () => {
+  const f = fixture(); enableEntries(f);
+  const siblingId = uuid(901);
+  f.registry.engines.push({ ...f.registry.engines[0], id: siblingId, kill_switch: true, executor_shard_id: "executor-03" });
+  f.rows.robot_v1_live_runs.push({ ...f.rows.robot_v1_live_runs[0], id: uuid(902), trading_engine_id: siblingId });
+  f.rows.robot_v1_live_preparations.push({ ...f.rows.robot_v1_live_preparations[0], id: uuid(903), trading_engine_id: siblingId });
+  const result = await f.load();
+  assert.deepEqual(result.engines.map((engine) => [engine.engineId, engine.entryEnabled]), [[engineId, true], [siblingId, false]]);
 });
 
 test("pause Home complete pagination retains more than 500 orders", async () => {
