@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { alertDeepLink, publicPushReason, pushDeliveryErrorCode, pushIncidentKey, shouldPush, validPushEndpoint } from "./push-policy.ts";
+import { alertDeepLink, publicPushReason, publicBlockedPushReason, pushDeliveryErrorCode, pushIncidentKey, shouldPush, validPushEndpoint } from "./push-policy.ts";
 
 test("same-account same-symbol alerts deep link to the exact engine, never just the market", () => {
   const account = "00000000-0000-4000-8000-000000000001";
@@ -40,6 +40,13 @@ test("deep link scopes account and market and never accepts arbitrary URL", () =
 test("push payload uses allowlisted public reasons", () => {
   assert.equal(publicPushReason("COINOPS_LIVE_RESET_FAILED"), "Falha na transição do ciclo");
   assert.equal(publicPushReason("SECRET_VALUE"), "Robô requer atenção operacional");
+});
+test("blocked payload reports a sanitized actionable reason without exposing arbitrary provider content", () => {
+  assert.equal(publicBlockedPushReason("COINOPS_LIVE_LEDGER_READ_FAILED"), "Falha de leitura do ledger");
+  assert.equal(publicBlockedPushReason("WATCHDOG_OWNERSHIP_MISMATCH"), "WATCHDOG_OWNERSHIP_MISMATCH");
+  for (const unsafe of ["apiKey=secret", "COINOPS_ERROR https://provider.invalid?token=secret",
+    "COINOPS_ERROR\ncredential=secret", "COINOPS_" + "X".repeat(111), "SECRET_VALUE"])
+    assert.equal(publicBlockedPushReason(unsafe), "Bloqueio operacional confirmado");
 });
 test("subscription endpoints cannot target internal hosts", () => {
   assert.equal(validPushEndpoint("https://fcm.googleapis.com/fcm/send/id"), true);

@@ -98,7 +98,7 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
 
   return <section className="px-onboarding" aria-label="Notificações operacionais">
     <h2>Notificações</h2>
-    <p>Alertas críticos de todos os seus motores, inclusive com CoinOps fechado. Cada aparelho precisa ser ativado separadamente.</p>
+    <p>Somente bloqueios persistentes confirmados pelo Watchdog que ainda exigem atenção, inclusive com CoinOps fechado. Reconciliações e recuperações rápidas ficam no painel. Cada aparelho precisa ser ativado separadamente.</p>
     {ios && !standalone ? <p>iPhone: Compartilhar → Adicionar à Tela de Início → abrir CoinOps pelo ícone → Ativar notificações.</p> : null}
     {!supported ? <p>Este navegador não oferece Web Push. No iPhone, use o aplicativo da Tela de Início.</p> : null}
     <p role="status">{status?.active ? "● NOTIFICAÇÕES ATIVAS neste dispositivo" : "Notificações desativadas neste dispositivo"} · {deviceCount} dispositivo(s) ativo(s)</p>
@@ -106,9 +106,7 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
     <div className="px-account-permissions">
       {!status?.active ? <button type="button" className="px-button" disabled={!supported || !publicKey || busy} onClick={() => void enable()}>Ativar notificações neste dispositivo</button>
         : <><button type="button" className="px-button" disabled={busy} onClick={() => void act("TEST")}>Enviar notificação de teste</button>
-          <button type="button" className="px-button" disabled={busy} onClick={() => void act("DISABLE")}>Desativar neste dispositivo</button>
-          <label><input type="checkbox" checked={status.warningEnabled} disabled={busy}
-            onChange={(event) => void act("PREFERENCES", { warningEnabled: event.target.checked })} /> Receber warnings operacionais</label></>}
+          <button type="button" className="px-button" disabled={busy} onClick={() => void act("DISABLE")}>Desativar neste dispositivo</button></>}
     </div>
     {status?.active && testnetEngines.length ? <div className="px-account-permissions"><label>Teste controlado Testnet
       <select value={probeEngine} onChange={(event) => setProbeEngine(event.target.value)}>
@@ -116,7 +114,7 @@ export function PushNotificationsPanel({ testnetEngines = [] }: { testnetEngines
         {testnetEngines.map((engine) => <option value={engine.id} key={engine.id}>{engine.label}</option>)}
       </select></label><button type="button" className="px-button" disabled={busy || !probeEngine}
         onClick={() => void act("TESTNET_PROBE", { engineId: probeEngine })}>Testar alerta Testnet</button></div> : null}
-    <small>CRITICAL sempre envia push. INFO permanece somente no painel. Nenhuma notificação inicia ou altera ordens.</small>
+    <small>Um aviso por bloqueio e dispositivo. Avisos informativos, pausas intencionais e incidentes já resolvidos não enviam push. Nenhuma notificação inicia ou altera ordens.</small>
     {message ? <p role="alert">{message}</p> : null}
   </section>;
 }

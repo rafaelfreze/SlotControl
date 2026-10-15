@@ -6,6 +6,7 @@ const BINDING_READ_PATHS = ["executor_binding/operator", "executor_binding/accou
   "executor_binding/engine", "executor_binding/shard"];
 const BUDGET_ALERT_READ_PATHS = ["ledger/account_budget_alert", "ledger/account_budget_decision",
   "ledger/account_budget_reservation"];
+const CAPITAL_AUDIT_READ_PATH = "ledger/capital_refresh_events";
 const NON_RECOVERABLE_READ_ROOTS = new Set(["EXECUTOR_ENGINE_SHARD_DENIED",
   "COINOPS_EXECUTOR_BINDING_READ_FAILED", "COINOPS_LIVE_LEDGER_READ_FAILED",
   "COINOPS_LIVE_EXPOSURE_INCOMPLETE", "COINOPS_LIVE_EXPOSURE_INVALID",
@@ -22,6 +23,18 @@ export function isAccountBudgetAlertRecovery(code: string | null, details?: Read
       && details.metadata_path === "alert/account_budget/resolve"
     || code === "COINOPS_LIVE_LEDGER_READ_STALE" && details.root_code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE"
       && BUDGET_ALERT_READ_PATHS.includes(String(details.read_path));
+}
+
+/** The old audit wrapper discarded the provider response after the entry step.
+ * Eligibility identifies only that GET, not a transient error or an approved
+ * capital/order change. Resume must reread the complete audit and prove all
+ * financial decisions and dispatches settled under the same run lease. */
+export function isCapitalAuditReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  if (code === "COINOPS_LIVE_CAPITAL_AUDIT_UNAVAILABLE")
+    return details?.root_code === code && ["ARM_ENTRY", "ASSERT_NEW_POSITION"].includes(String(details.stage));
+  return code === "COINOPS_LIVE_LEDGER_READ_STALE"
+    && details?.root_code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE"
+    && details.stage === "CONFIRM_CAPITAL_REFRESH" && details.read_path === CAPITAL_AUDIT_READ_PATH;
 }
 
 /** Historical exposure wrapper discarded the provider error. Only this exact
@@ -70,6 +83,7 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
       || isRegistryStateReadRecovery(alertCode, details)
       || isExposureStateReadRecovery(alertCode, details)
       || isAccountBudgetAlertRecovery(alertCode, details)
+      || isCapitalAuditReadRecovery(alertCode, details)
       || ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
       "COINOPS_LIVE_EXECUTOR_READ_STALE",
       "COINOPS_LIVE_LEDGER_READ_STALE",
@@ -142,9 +156,11 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
         || !["ledger/slots", "ledger/orders", "ledger/slot_accounts", "ledger/monthly_target",
           "ledger/monthly_gains", "ledger/bulk_checkpoint", "ledger/config_gate", "ledger/quote_cap",
           "ledger/preparation", "ledger/operator", ...EXPOSURE_READ_PATHS,
-          ...BUDGET_ALERT_READ_PATHS].includes(String(alert.details?.read_path)))
+          ...BUDGET_ALERT_READ_PATHS, CAPITAL_AUDIT_READ_PATH].includes(String(alert.details?.read_path)))
     || BUDGET_ALERT_READ_PATHS.includes(String(alert.details?.read_path))
       && !isAccountBudgetAlertRecovery(alert.code, alert.details)
+    || alert.details?.read_path === CAPITAL_AUDIT_READ_PATH
+      && !isCapitalAuditReadRecovery(alert.code, alert.details)
     || alert.details?.root_code === "COINOPS_EXECUTOR_BINDING_READ_UNAVAILABLE"
       && (alert.code !== "COINOPS_LIVE_EXECUTOR_READ_STALE"
         || !BINDING_READ_PATHS.includes(String(alert.details.read_path)))

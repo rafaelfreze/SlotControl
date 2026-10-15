@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
   isRegistryStateReadRecovery, isExposureStateReadRecovery, isAccountBudgetAlertRecovery,
-  operatorRecoveryAlert } from "./live-read-recovery.ts";
+  isCapitalAuditReadRecovery, operatorRecoveryAlert } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);
@@ -361,4 +361,43 @@ test("new budget-metadata exhaustion binds exact write/read site without treatin
   for (const root_code of ["COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_WRITE_FAILED", "COINOPS_LIVE_LEDGER_READ_FAILED"])
     assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED",
       { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code }), false);
+});
+
+test("capital audit legacy eligibility binds the exact old GET code/root and inherited entry stages", () => {
+  const code = "COINOPS_LIVE_CAPITAL_AUDIT_UNAVAILABLE";
+  for (const stage of ["ARM_ENTRY", "ASSERT_NEW_POSITION"]) {
+    const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+      first_seen_at: "2026-10-15T14:22:00Z", last_seen_at: "2026-10-15T14:22:00Z",
+      details: { stage, root_code: code } };
+    assert.equal(isCapitalAuditReadRecovery(code, alert.details), true);
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+    for (const status of ["PAUSED", "PREPARING", "BLOCKED"])
+      assert.equal(mayRecoverReadOutage(status, "OK", code, alert.details), false);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, alert.details), false);
+    for (const details of [undefined, { stage }, { stage: "POST_ORDER", root_code: code },
+      { stage: "CONFIRM_CAPITAL_REFRESH", root_code: code },
+      { stage, root_code: "COINOPS_LIVE_EVENT_PERSIST_FAILED" },
+      { stage, root_code: "COINOPS_LIVE_LEDGER_READ_FAILED" }]) {
+      assert.equal(isCapitalAuditReadRecovery(code, details), false);
+      assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+    }
+  }
+});
+
+test("new capital audit exhaustion requires its exact GET path and stage; hard reads remain blocked", () => {
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_LEDGER_READ_STALE",
+    first_seen_at: "2026-10-15T14:22:00Z", last_seen_at: "2026-10-15T14:22:00Z",
+    details: { stage: "CONFIRM_CAPITAL_REFRESH", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE",
+      read_path: "ledger/capital_refresh_events" } };
+  assert.equal(isCapitalAuditReadRecovery(alert.code, alert.details), true);
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+  for (const details of [{ ...alert.details, stage: "ARM_ENTRY" },
+    { ...alert.details, stage: "POST_ORDER" }, { ...alert.details, read_path: "POST/order" },
+    { ...alert.details, root_code: "COINOPS_LIVE_LEDGER_READ_FAILED" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert,
+    details: { ...alert.details, read_path: "ledger/orders" } }], alert), /INCIDENT_CHANGED/);
+  for (const code of ["COINOPS_LIVE_LEDGER_READ_FAILED", "COINOPS_LIVE_CAPITAL_AUDIT_INCOMPLETE",
+    "COINOPS_LIVE_EVENT_PERSIST_FAILED"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, { ...alert.details, root_code: code }), false);
 });

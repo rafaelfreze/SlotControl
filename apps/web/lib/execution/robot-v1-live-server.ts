@@ -10,7 +10,7 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  isAccountBudgetAlertRecovery, type ReadRecoveryAlert } from "./live-read-recovery";
+  isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, type ReadRecoveryAlert } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
@@ -1155,16 +1155,46 @@ async function appliedCapitalSources(service: Service, run: Run, order: Order) {
     ...(allSlots.data ?? []).map((r) => `adjustment:${r.id}`)];
 }
 
+type CapitalRefreshEvent = Scope & LedgerScope & { id: string; run_id: string; observed_at: string;
+  event_type: string; slot_number: number | null; details: { refresh_key?: string;
+    old_client_order_id?: string; new_client_order_id?: string; new_quantity?: number;
+    price?: number; [key: string]: unknown } };
+
+/** Only observation retries here: discard every partial page on a transient
+ * GET, preserve hard provider failures and never repeat a confirmation write
+ * or the trading step that produced the audit. Full scope uses the official
+ * event index and keeps same-account/symbol engines on other shards isolated. */
+async function readCapitalRefreshEvents(service: Service, run: Run) {
+  return boundedLedgerRead(async (deadline, attempt) => {
+    const rows = await completeLedgerRead<CapitalRefreshEvent>(async (start, end) => ({ error: null,
+      data: await observeLedgerRows<CapitalRefreshEvent>("capital_refresh_events",
+        service.from("robot_v1_live_events")
+          .select("id,run_id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,quote_asset,observed_at,event_type,slot_number,details")
+          .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+          .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+          .eq("trading_engine_id", run.trading_engine_id).eq("quote_asset", run.quote_asset).eq("run_id", run.id)
+          .in("event_type", ["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"])
+          .order("observed_at").order("id").range(start, end).abortSignal(deadline), deadline, attempt),
+    }), "COINOPS_LIVE_CAPITAL_AUDIT_INCOMPLETE");
+    if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
+    for (const row of rows) {
+      assertRowEngine(row, run.engine);
+      if (row.product_id !== run.product_id || row.tenant_id !== run.tenant_id || row.user_id !== run.user_id
+        || row.run_id !== run.id || !["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"].includes(row.event_type)
+        || !Number.isFinite(Date.parse(row.observed_at)) || !row.details || typeof row.details !== "object"
+        || Array.isArray(row.details)) throw new Error("COINOPS_LIVE_CAPITAL_AUDIT_INCOMPLETE");
+    }
+    return rows;
+  });
+}
+
 /** Audit completion is recoverable after a crash: the order ledger, not the
  * presence/absence of an event, is the authoritative cancellation checkpoint. */
 async function confirmCapitalRefreshes(service: Service, run: Run, ledger: Ledger) {
-  const result = await service.from("robot_v1_live_events").select("event_type,slot_number,details")
-    .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
-    .in("event_type", ["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"]);
-  if (result.error) throw new Error("COINOPS_LIVE_CAPITAL_AUDIT_UNAVAILABLE");
-  const confirmed = new Set((result.data ?? []).filter((r) => r.event_type.endsWith("CONFIRMED"))
+  const rows = await readCapitalRefreshEvents(service, run);
+  const confirmed = new Set(rows.filter((r) => r.event_type.endsWith("CONFIRMED"))
     .map((r) => r.details?.refresh_key));
-  for (const row of result.data ?? []) {
+  for (const row of rows) {
     const d = row.details;
     if (row.event_type !== "NEXT_BUY_CAPITAL_REFRESH_PLANNED" || !d || confirmed.has(d.refresh_key)) continue;
     const old = ledger.orders.find((o) => o.client_order_id === d.old_client_order_id);
@@ -1515,6 +1545,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       await assertAllPositionsProtected(run, after, state);
     }
     const finalLedger = await runRows(service, run);
+    stage = "CONFIRM_CAPITAL_REFRESH";
     await confirmCapitalRefreshes(service, run, finalLedger);
     stage = "RESOLVE_ACCOUNT_BUDGET_ALERT";
     await resolveAccountBudgetAlert(service, run, finalLedger.orders, next,
@@ -1909,6 +1940,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     else recoveryIncident = await readOperatorRecoveryIncident(service, run) ?? undefined;
     const budgetAlertRecovery = Boolean(recoveryIncident
       && isAccountBudgetAlertRecovery(recoveryIncident.code, recoveryIncident.details));
+    const capitalAuditRecovery = Boolean(recoveryIncident
+      && isCapitalAuditReadRecovery(recoveryIncident.code, recoveryIncident.details));
     await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
@@ -1924,7 +1957,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery) await assertSettledOperatorRecovery(service, run, ledger);
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery)
+      await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
     // recovered. Unknown fees cannot reopen a gate and immediately flap it.
@@ -1948,13 +1982,18 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
         { renewLease: () => renewLease(service, run) });
       if (metadata.status === "DEFERRED") throw new Error("COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RECOVERY_UNPROVEN");
     }
+    // A healthy order snapshot does not prove that the failed audit GET now
+    // works. This reread is observation-only: pending plans may reflect a
+    // legitimate fill/cancel race and never authorize an order or audit write.
+    if (capitalAuditRecovery) await readCapitalRefreshEvents(service, run);
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.
     if (source === "VERIFIED_READ_RECOVERY")
       await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery) await assertSettledOperatorRecovery(service, run, ledger);
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery)
+      await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")

@@ -34,8 +34,20 @@ export function publicPushReason(code: string) {
     COINOPS_LIVE_TP_MISSING: "Posição sem proteção TP",
     COINOPS_LIVE_RECONCILIATION_FAILED: "Falha de reconciliação",
     COINOPS_LIVE_ORDER_REJECTED: "Ordem rejeitada",
+    COINOPS_LIVE_LEDGER_READ_FAILED: "Falha de leitura do ledger",
+    COINOPS_LIVE_LEDGER_READ_STALE: "Leitura do ledger sem recuperação",
+    COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_FAILED: "Falha ao encerrar aviso operacional",
+    COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE: "Totais mensais indisponíveis",
   };
   return known[code] ?? "Robô requer atenção operacional";
+}
+
+/** Error codes are allowlisted identifiers, never a provider body or arbitrary message. */
+export function publicBlockedPushReason(code: string) {
+  const reason = publicPushReason(code);
+  if (reason !== "Robô requer atenção operacional") return reason;
+  return /^(?:COINOPS|WATCHDOG|ENGINE)_[A-Z0-9_]{1,110}$/.test(code)
+    ? code : "Bloqueio operacional confirmado";
 }
 
 export function validPushEndpoint(value: string) {

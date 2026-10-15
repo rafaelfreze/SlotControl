@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  operatorRecoveryAlert, isAccountBudgetAlertRecovery } from "./live-read-recovery.ts";
+  operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
@@ -29,7 +29,9 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   operatorProofDenied?: boolean; operatorOrderStatus?: string; operatorExecutedQuantity?: number;
   operatorClientOrderId?: string; caixetaLayout?: boolean; exposureCap?: number;
   exposureCountMissing?: boolean; readPathAddedAtCas?: boolean;
-  budgetMetadataRecovery?: boolean; budgetAlertDeferred?: boolean } = {}) {
+  budgetMetadataRecovery?: boolean; budgetAlertDeferred?: boolean;
+  capitalAuditRecovery?: boolean; capitalAuditReadDenied?: boolean; capitalAuditIncomplete?: boolean;
+  capitalAuditPendingPlan?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -65,7 +67,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   let bulkReads = 0;
   let operatorIntentReads = 0;
   let operatorDispatchReads = 0;
-  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery;
+  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery;
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
@@ -151,7 +153,19 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
           return { data: null, error: { code: "42501" }, status: 403 };
       }
       else if (table === "account_quote_caps") data = { ...scope, hard_cap_quote: 275 };
-      else if (table === "robot_v1_live_events") data = {};
+      else if (table === "robot_v1_live_events") {
+        if (!mutation) {
+          calls.push("capital-audit-read");
+          for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id"])
+            assert.equal(filters[key], scope[key as keyof typeof scope]);
+          assert.equal(filters.run_id, run.id);
+          assert.deepEqual(filters.event_type, ["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"]);
+          if (options.capitalAuditReadDenied) return { data: null, error: { code: "42501" }, status: 403 };
+          data = options.capitalAuditIncomplete ? null : options.capitalAuditPendingPlan ? [{ ...scope,
+            id: "pending-plan", run_id: run.id, event_type: "NEXT_BUY_CAPITAL_REFRESH_PLANNED", slot_number: 8,
+            observed_at: "2026-10-15T14:22:00Z", details: { refresh_key: "fill-race-plan" } }] : [];
+        } else data = {};
+      }
       else assert.fail(`Unexpected table ${table}`);
       if (exactCount && Array.isArray(data)) data = data.filter(row => Object.entries(filters).every(([key, value]) =>
         Array.isArray(value) ? value.includes(row[key]) : row[key] === value));
@@ -187,7 +201,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-      operatorRecoveryAlert, isAccountBudgetAlertRecovery },
+      operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
     "./operator-context-server": { resolveOperatorEngine: async () => {
@@ -679,5 +693,47 @@ test("fee observation outage cannot resume on TP proof alone; fresh known BNB re
     const blocked = fixture({ alerts: [[incident], [changed]] });
     await assert.rejects(blocked.run(), /INCIDENT_CHANGED/);
     assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+  }
+});
+
+test("capital audit recovery rereads the GET and proves settled decisions twice without replaying confirmation or orders", async () => {
+  const legacy = "COINOPS_LIVE_CAPITAL_AUDIT_UNAVAILABLE";
+  const cases = [
+    ...["ARM_ENTRY", "ASSERT_NEW_POSITION"].map(stage => ({ ...known, code: legacy,
+      details: { stage, root_code: legacy } })),
+    { ...known, code: "COINOPS_LIVE_LEDGER_READ_STALE", details: { stage: "CONFIRM_CAPITAL_REFRESH",
+      root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", read_path: "ledger/capital_refresh_events" } },
+  ];
+  for (const incident of cases) {
+    // A pending audit plan can be a legitimate fill/cancel race. It is not
+    // permission to write CONFIRMED and cannot replace financial truth proof.
+    const safe = fixture({ alerts: [[incident]], capitalAuditRecovery: true,
+      caixetaLayout: true, capitalAuditPendingPlan: true });
+    const ordersBefore = structuredClone(safe.orders);
+    assert.equal((await safe.run()).status, "RESUMED");
+    assert.deepEqual(safe.calls, ["lease-claimed", "alert-read", "health", "exchange-state",
+      "operator-intent-read", "operator-dispatch-read", "capital-audit-read", "alert-read",
+      "operator-intent-read", "operator-dispatch-read"]);
+    const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+    assert.equal(clear.filters.code, incident.code);
+    assert.equal(clear.filters["details->>stage"], incident.details.stage);
+    assert.equal(clear.filters["details->>root_code"], incident.details.root_code);
+    assert.ok(safe.writes.filter(write => write.table === "robot_v1_live_events")
+      .every(write => write.data.event_type === "LIVE_RESUMED"));
+    assert.ok(safe.writes.every(write => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(write.table)));
+    assert.deepEqual(safe.orders, ordersBefore);
+    for (const options of [{ capitalAuditReadDenied: true }, { capitalAuditIncomplete: true },
+      { operatorUnsettledDecision: true }, { operatorPendingDispatch: true },
+      { operatorLateUnsettledDecision: true }, { operatorLatePendingDispatch: true },
+      { healthy: false }, { missingTp: true }, { configPending: true }, { ledgerDenied: true }]) {
+      const blocked = fixture({ alerts: [[incident]], capitalAuditRecovery: true, caixetaLayout: true, ...options });
+      await assert.rejects(blocked.run());
+      assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+      assert.equal(blocked.writes.some(write => write.data.resolved_at), false);
+    }
+    const changed = fixture({ alerts: [[incident], [{ ...incident,
+      details: { ...incident.details, stage: "POST_ORDER" } }]], capitalAuditRecovery: true, caixetaLayout: true });
+    await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+    assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
   }
 });
