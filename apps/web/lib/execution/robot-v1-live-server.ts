@@ -10,7 +10,8 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  type ReadRecoveryAlert } from "./live-read-recovery";
+  isAccountBudgetAlertRecovery, type ReadRecoveryAlert } from "./live-read-recovery";
+import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
@@ -1513,11 +1514,11 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       state = await readLiveExecutorState(run);
       await assertAllPositionsProtected(run, after, state);
     }
-    await confirmCapitalRefreshes(service, run, await runRows(service, run));
-    const budgetRecovered = await service.from("robot_v1_live_alerts").update({ resolved_at: new Date().toISOString() })
-      .eq("trading_engine_id", run.trading_engine_id).eq("exchange_account_id", run.exchange_account_id)
-      .eq("alert_key", `LIVE_RUN:${run.id}:ACCOUNT_ORDER_BUDGET`).is("resolved_at", null);
-    if (budgetRecovered.error) throw new Error("COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_FAILED");
+    const finalLedger = await runRows(service, run);
+    await confirmCapitalRefreshes(service, run, finalLedger);
+    stage = "RESOLVE_ACCOUNT_BUDGET_ALERT";
+    await resolveAccountBudgetAlert(service, run, finalLedger.orders, next,
+      { renewLease: () => renewLease(service, run) });
     stage = "AUDIT_EVENT";
     await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
       "RECONCILED", null, { source, next, strategy_version: STRATEGY_VERSION });
@@ -1599,7 +1600,11 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     errorCode = error instanceof Error && /^COINOPS_[A-Z0-9_]+$/.test(error.message)
       ? error.message : `COINOPS_LIVE_${stage}_FAILED`;
     if (stage === "CONFIG_UPDATE") await markBulkUpdateBlocked(service, run, errorCode);
-    await preventNewBuys(service, run, errorCode, liveFailureEvidence(error, stage, source));
+    await preventNewBuys(service, run, errorCode, { ...liveFailureEvidence(error, stage, source),
+      ...(error instanceof AccountBudgetAlertResolutionError ? {
+        metadata_path: error.path, metadata_attempts: error.attempts, http_status: error.httpStatus,
+        ...(error.providerCode ? { provider_code: error.providerCode } : {}),
+      } : {}) });
     throw new Error(errorCode);
   } finally {
     await release(service, run, errorCode, reconciliationComplete);
@@ -1902,6 +1907,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (source === "VERIFIED_READ_RECOVERY")
       recoveryIncident = await readVerifiedRecoveryIncident(service, run);
     else recoveryIncident = await readOperatorRecoveryIncident(service, run) ?? undefined;
+    const budgetAlertRecovery = Boolean(recoveryIncident
+      && isAccountBudgetAlertRecovery(recoveryIncident.code, recoveryIncident.details));
     await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
@@ -1917,7 +1924,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     const ledger = await runRows(service, run);
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
-    if (source === "OPERATOR_CONTROL") await assertSettledOperatorRecovery(service, run, ledger);
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery) await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
     // recovered. Unknown fees cannot reopen a gate and immediately flap it.
@@ -1936,13 +1943,18 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (deployed[asset] > amount(prep.max_total_exposure_brl) + 1e-8
       || deployed.global > globalCap + 1e-8)
       throw new Error("COINOPS_LIVE_RESUME_HARD_CAP_EXCEEDED");
+    if (budgetAlertRecovery) {
+      const metadata = await resolveAccountBudgetAlert(service, run, ledger.orders, "VERIFIED_METADATA_RECOVERY",
+        { renewLease: () => renewLease(service, run) });
+      if (metadata.status === "DEFERRED") throw new Error("COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RECOVERY_UNPROVEN");
+    }
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.
     if (source === "VERIFIED_READ_RECOVERY")
       await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
-    if (source === "OPERATOR_CONTROL") await assertSettledOperatorRecovery(service, run, ledger);
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery) await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
@@ -1978,7 +1990,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     // All captured diagnostic identity participates in the final CAS, for
     // both automatic read recovery and explicit operator control.
     if (recoveryIncident) {
-      for (const key of ["stage", "root_code", "read_path"] as const)
+      for (const key of ["stage", "root_code", "read_path", "metadata_path"] as const)
         alertUpdate = recoveryIncident.details?.[key] === undefined || recoveryIncident.details[key] === null
           ? alertUpdate.is(`details->>${key}`, null)
           : alertUpdate.eq(`details->>${key}`, recoveryIncident.details[key]);

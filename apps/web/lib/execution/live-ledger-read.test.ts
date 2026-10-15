@@ -6,6 +6,7 @@ import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRows } from "./li
 import * as readErrors from "./live-read-error.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
+import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 
 const physical = () => Array.from({ length: 25 }, (_, i) => ({ slot_number: i + 1 }));
 
@@ -93,6 +94,7 @@ function fixture(engine: string, failures: Record<string, { code: string; status
     return chain;
   } };
   const deps: Record<string, unknown> = { "./live-read-error": readErrors,
+    "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-exposure-read": { readLiveExposure },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger },
     "./complete-ledger-read": { completeLedgerRead }, "./operator-context": { assertRowEngine: (row: Record<string, unknown>) => {

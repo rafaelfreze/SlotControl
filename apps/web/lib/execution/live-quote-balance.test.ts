@@ -6,6 +6,7 @@ import { liveQuoteBalanceCheck } from "./live-quote-balance.ts";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
+import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 
 const now = Date.parse("2026-10-07T13:50:03Z");
 const snapshot = (free: number, asset = "BRL") => ({ observed_at: new Date(now).toISOString(), balances: [{ asset, free }] });
@@ -116,6 +117,7 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-quote-balance": { liveQuoteBalanceCheck },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "./live-read-error": { LiveReadUnavailable, liveFailureEvidence },

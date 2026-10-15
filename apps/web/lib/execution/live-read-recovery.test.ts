@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
-  isRegistryStateReadRecovery, isExposureStateReadRecovery, operatorRecoveryAlert } from "./live-read-recovery.ts";
+  isRegistryStateReadRecovery, isExposureStateReadRecovery, isAccountBudgetAlertRecovery,
+  operatorRecoveryAlert } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);
@@ -313,4 +314,51 @@ test("a hard routing/exposure/provider denial cannot recover through a legacy re
     assert.equal(mayRecoverReadOutage("ACTIVE", "OK", alert.code, alert.details), false);
     assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), /INCIDENT_CHANGED/);
   }
+});
+
+test("legacy account-budget metadata failure qualifies only exact code/root and proven old cleanup stage", () => {
+  const code = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_FAILED";
+  for (const stage of ["ARM_ENTRY", "ASSERT_NEW_POSITION"]) {
+    const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+      first_seen_at: "2026-10-15T08:11:21.129136Z", last_seen_at: "2026-10-15T08:11:21.119Z",
+      details: { stage, root_code: code } };
+    assert.equal(isAccountBudgetAlertRecovery(code, alert.details), true);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, alert.details), true);
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+    for (const state of ["PAUSED", "PREPARING", "BLOCKED"])
+      assert.equal(mayRecoverReadOutage(state, "OK", code, alert.details), false);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, alert.details), false);
+    for (const details of [undefined, { stage }, { stage: "POST_ORDER", root_code: code },
+      { stage, root_code: "COINOPS_ACCOUNT_ORDER_RESERVE_FAILED" },
+      { stage, root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" }]) {
+      assert.equal(isAccountBudgetAlertRecovery(code, details), false);
+      assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+    }
+  }
+});
+
+test("new budget-metadata exhaustion binds exact write/read site without treating a financial POST as retryable", () => {
+  const code = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_RETRY";
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code,
+    first_seen_at: "2026-10-15T08:11:21Z", last_seen_at: "2026-10-15T08:11:21Z",
+    details: { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code: code, metadata_path: "alert/account_budget/resolve" } };
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+  for (const details of [{ ...alert.details, metadata_path: "POST/order" },
+    { ...alert.details, metadata_path: undefined }, { ...alert.details, stage: "ARM_ENTRY" },
+    { ...alert.details, root_code: "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_WRITE_FAILED" }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details }]), /INCIDENT_CHANGED/);
+  const changed = { ...alert, details: { ...alert.details, metadata_path: undefined } };
+  assert.throws(() => operatorRecoveryAlert("ACTIVE", "run-a", [changed], alert), /INCIDENT_CHANGED/);
+  for (const part of ["alert", "decision", "reservation"]) {
+    const stale = { ...alert, code: "COINOPS_LIVE_LEDGER_READ_STALE", details: {
+      stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE",
+      read_path: `ledger/account_budget_${part}` } };
+    assert.equal(isAccountBudgetAlertRecovery(stale.code, stale.details), true);
+    assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [stale], stale), stale);
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...stale,
+      details: { ...stale.details, stage: "POST_ORDER" } }]), /INCIDENT_CHANGED/);
+  }
+  for (const root_code of ["COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_WRITE_FAILED", "COINOPS_LIVE_LEDGER_READ_FAILED"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED",
+      { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code }), false);
 });

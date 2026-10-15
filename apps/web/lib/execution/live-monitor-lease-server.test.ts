@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
+import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race.ts";
@@ -124,6 +125,7 @@ function fixture(options: Options = {}) {
   const observedTp = { symbol: "SOLUSDT", side: "SELL" as const, orderId: "exchange-tp", id: "exchange-tp",
     clientOrderId: "owned:tp", status: "NEW", price: 11, originalQuantity: 1, executedQuantity: 0 };
   const dependencies: Record<string, unknown> = {
+    "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "node:crypto": { randomUUID: () => "audit-lease" },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },

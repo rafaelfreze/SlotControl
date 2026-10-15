@@ -219,6 +219,15 @@ no ambiente de destino antes de operação remota.
   integral sob lease/CAS. Não repetir POST financeiro. Ver
   `docs/COINOPS_EXPOSURE_ROUTING_READ_RECOVERY_20261014.md`.
 
+- Encerramento de aviso ACCOUNT_ORDER_BUDGET não certifica orçamento Binance:
+  alvo ausente não gera UPDATE; alvo existente exige o mesmo client/order,
+  decisão concluída e ACK/reserva do shard correto. Repetição limitada somente
+  ao CAS de resolved_at, após readback de resposta incerta, nunca ao trading.
+  Erro legado só retoma com origem exata, prova financeira integral, decisões/
+  dispatches assentados duas vezes e incidente inalterado sob lease. Permissão,
+  schema e ambiguidade continuam fail-closed. Ver
+  `docs/COINOPS_BUDGET_ALERT_RECOVERY_20261015.md`.
+
 - O CoinOps é multi-account. Toda ação deve carregar explicitamente `operator_id`, `exchange_account_id`, `trading_engine_id`, ambiente e símbolo ao atravessar account → engine → job → lease/lock → reconciliação → alerta → kill switch. Falha local bloqueia somente o engine afetado; kill switch global exige causa sistêmica comprovada.
 - Norma autorizada em 04/10/2026: a conta pode possuir N motores, inclusive do mesmo símbolo, em N executores. O `trading_engine_id` pertence a exatamente um shard imutável; a conta não fica presa ao shard. Novos motores podem usar outro executor certificado sem mover os existentes. O campo antigo `exchange_accounts.executor_shard_id` é compatibilidade/bootstrap, nunca autoridade de roteamento de um motor. A implementação e os gates ainda precisam de prova antes da liberação; consultar `docs/COINOPS_MULTI_ENGINE_MULTI_SHARD.md`. Não rotacione IP para contornar rate limit Binance nem rebalanceie LIVE automaticamente.
 - Capacidade é medida, não deduzida do número de usuários. Antes de admitir nova carga, exigir telemetria fresca do shard, custo incremental conservador e headroom para recovery: peso Binance/IP, CPU, RAM, backlog, reconciliação, heartbeat e retries. Se a evidência estiver ausente, a decisão é `CAPACITY_UNKNOWN`, nunca um SIM inventado.

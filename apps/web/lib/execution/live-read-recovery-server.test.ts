@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  operatorRecoveryAlert } from "./live-read-recovery.ts";
+  operatorRecoveryAlert, isAccountBudgetAlertRecovery } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
+import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
@@ -27,7 +28,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   operatorLatePendingDispatch?: boolean; operatorLateUnsettledDecision?: boolean;
   operatorProofDenied?: boolean; operatorOrderStatus?: string; operatorExecutedQuantity?: number;
   operatorClientOrderId?: string; caixetaLayout?: boolean; exposureCap?: number;
-  exposureCountMissing?: boolean; readPathAddedAtCas?: boolean } = {}) {
+  exposureCountMissing?: boolean; readPathAddedAtCas?: boolean;
+  budgetMetadataRecovery?: boolean; budgetAlertDeferred?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -63,6 +65,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   let bulkReads = 0;
   let operatorIntentReads = 0;
   let operatorDispatchReads = 0;
+  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery;
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
@@ -72,13 +75,23 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       if (mutation) writes.push({ table, data: mutation, filters: { ...filters } });
       let data: unknown;
       if (table === "robot_v1_live_alerts" && !mutation) {
-        calls.push("alert-read");
         for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id"])
           assert.equal(filters[key], scope[key as keyof typeof scope]);
-        assert.equal(filters.severity, "CRITICAL");
-        assert.equal(filters.resolved_at, null);
-        const variants = options.alerts ?? [[known]];
-        data = variants[Math.min(alertReads++, variants.length - 1)];
+        if (filters.alert_key === "LIVE_RUN:run-a:ACCOUNT_ORDER_BUDGET") {
+          // Metadata housekeeping is a separate exact key, not another read
+          // of the active CRITICAL incident used by the recovery CAS.
+          calls.push("budget-alert-read");
+          data = options.budgetAlertDeferred ? [{ ...scope, id: "budget-warning",
+            alert_key: "LIVE_RUN:run-a:ACCOUNT_ORDER_BUDGET", code: "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN",
+            first_seen_at: known.first_seen_at, last_seen_at: known.last_seen_at, resolved_at: null,
+            details: { run_id: run.id, side: "BUY", client_order_id: "owned:missing-held-buy" } }] : [];
+        } else {
+          calls.push("alert-read");
+          assert.equal(filters.severity, "CRITICAL");
+          assert.equal(filters.resolved_at, null);
+          const variants = options.alerts ?? [[known]];
+          data = variants[Math.min(alertReads++, variants.length - 1)];
+        }
       } else if (table === "robot_v1_live_alerts") data = options.casLost || options.readPathAddedAtCas
         && filters["details->>read_path"] === null ? [] : [{ id: "incident" }];
       else if (table === "robot_v1_live_runs") {
@@ -106,7 +119,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "robot_v1_live_orders") data = filters.id ? [{ id: "filled-order",
         client_order_id: "owned:filled-tp", status: "FILLED", trades_reconciled: true }] : orders;
       else if (table === "robot_v1_strategy_decisions" || table === "account_order_budget_reservations") {
-        calls.push(options.operatorRecovery
+        calls.push(settledProof
           ? table === "robot_v1_strategy_decisions" ? "operator-intent-read" : "operator-dispatch-read"
           : table === "robot_v1_strategy_decisions" ? "permission-intent-read" : "permission-dispatch-read");
         assert.equal(filters.trading_engine_id, "engine-a");
@@ -116,7 +129,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
         if (table === "robot_v1_strategy_decisions") {
           assert.equal(filters.environment, "REAL");
           assert.deepEqual(filters.action_type, ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"]);
-          if (options.operatorRecovery) {
+          if (settledProof) {
             operatorIntentReads++;
             assert.equal(filters.or, "result.neq.COMPLETED,result.is.null");
             data = options.operatorUnsettledDecision || options.operatorLateUnsettledDecision && operatorIntentReads > 1
@@ -128,7 +141,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
           }
         } else {
           assert.equal(filters.acknowledged_at, null);
-          if (options.operatorRecovery) {
+          if (settledProof) {
             operatorDispatchReads++;
             data = options.operatorPendingDispatch || options.operatorLatePendingDispatch && operatorDispatchReads > 1
               ? [{ client_order_id: "uncertain-dispatch" }] : [];
@@ -167,13 +180,14 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-      operatorRecoveryAlert },
+      operatorRecoveryAlert, isAccountBudgetAlertRecovery },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
     "./operator-context-server": { resolveOperatorEngine: async () => {
@@ -217,7 +231,8 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   const exports: Record<string, unknown> = {};
   new Function("require", "exports", compiled)((name: string) => dependencies[name] ?? {}, exports);
   const resume = exports.resumeLiveRun as (...args: string[]) => Promise<{ status: string }>;
-  return { run: (source = "VERIFIED_READ_RECOVERY") => resume("run-a", "user", "SOL", source), calls, writes };
+  return { run: (source = "VERIFIED_READ_RECOVERY") => resume("run-a", "user", "SOL", source), calls, writes,
+    orders, slots };
 }
 
 test("verified recovery claims lease, proves fresh health/protection and conditionally resolves only its incident", async () => {
@@ -252,6 +267,93 @@ test("legacy exposure ARM_ENTRY recovers seven protected OPENs and one resident 
     await assert.rejects(denied.run());
     assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
   }
+});
+
+test("budget metadata-only recovery preserves seven TPs and NEXT BUY after proving settled decisions and dispatches twice", async () => {
+  const legacy = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_FAILED";
+  const retry = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_RETRY";
+  const incidents = [
+    ...["ARM_ENTRY", "ASSERT_NEW_POSITION"].map(stage => ({ ...known, code: legacy,
+      details: { stage, root_code: legacy } })),
+    { ...known, code: retry, details: { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code: retry,
+      metadata_path: "alert/account_budget/resolve" } },
+    { ...known, code: "COINOPS_LIVE_LEDGER_READ_STALE", details: { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT",
+      root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", read_path: "ledger/account_budget_alert" } },
+  ];
+  for (const incident of incidents) {
+    const safe = fixture({ alerts: [[incident]], caixetaLayout: true, budgetMetadataRecovery: true });
+    const before = JSON.stringify({ orders: safe.orders, slots: safe.slots });
+    assert.equal((await safe.run()).status, "RESUMED");
+    assert.equal(safe.calls.filter(call => call === "operator-intent-read").length, 2);
+    assert.equal(safe.calls.filter(call => call === "operator-dispatch-read").length, 2);
+    assert.equal(safe.calls.filter(call => call === "budget-alert-read").length, 1);
+    assert.equal(safe.orders.filter(order => order.side === "SELL").length, 7);
+    assert.equal(safe.orders.find(order => order.side === "BUY")?.exchange_order_id, "next-buy-8");
+    assert.equal(JSON.stringify({ orders: safe.orders, slots: safe.slots }), before);
+    assert.equal(safe.writes.some(write => ["robot_v1_live_orders", "robot_v1_live_slots",
+      "robot_v1_live_slot_accounts", "robot_v1_strategy_decisions", "account_order_budget_reservations"].includes(write.table)), false);
+    const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts"
+      && write.filters.alert_key === known.alert_key && write.data.resolved_at)!;
+    assert.equal(clear.filters.code, incident.code);
+    assert.equal(clear.filters.first_seen_at, incident.first_seen_at);
+    assert.equal(clear.filters.last_seen_at, incident.last_seen_at);
+    assert.equal(clear.filters["details->>metadata_path"], "metadata_path" in incident.details
+      ? incident.details.metadata_path : null);
+    assert.ok(safe.writes.filter(write => write.table === "trading_engines")
+      .every(write => write.filters.id === "engine-a" && write.filters.exchange_account_id === "account-a"));
+  }
+});
+
+test("budget metadata recovery refuses pending or late financial work, incomplete protection and any deferred hold", async () => {
+  const code = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_FAILED";
+  const incident = { ...known, code, details: { stage: "ARM_ENTRY", root_code: code } };
+  for (const options of [{ operatorPendingDispatch: true }, { operatorUnsettledDecision: true },
+    { operatorLatePendingDispatch: true }, { operatorLateUnsettledDecision: true }, { operatorProofDenied: true },
+    { missingTp: true }, { missingSlot: true }, { ledgerDenied: true }, { monthlyFailure: true },
+    { exposureCap: 5 }, { configPending: true }, { bulkStatus: "PENDING" }, { healthy: false },
+    { budgetAlertDeferred: true }, { operatorOrderStatus: "PREPARED" }, { operatorClientOrderId: "foreign:tp" }]) {
+    const denied = fixture({ alerts: [[incident]], caixetaLayout: true, budgetMetadataRecovery: true, ...options });
+    await assert.rejects(denied.run());
+    assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
+    assert.equal(denied.writes.some(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at), false);
+    assert.equal(denied.writes.some(write => write.table === "robot_v1_live_events"
+      && write.data.event_type === "LIVE_RESUMED"), false);
+  }
+});
+
+test("hard metadata write failures and counterfeit retry paths never qualify for automatic recovery", async () => {
+  const hard = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_WRITE_FAILED";
+  const legacy = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_FAILED";
+  const retry = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_RETRY";
+  for (const incident of [
+    { ...known, code: hard, details: { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code: hard } },
+    { ...known, code: "COINOPS_LIVE_RECONCILE_ORDERS_FAILED", details: { stage: "RECONCILE_ORDERS", root_code: hard } },
+    { ...known, code: legacy, details: { stage: "RECONCILE_ORDERS", root_code: legacy } },
+    { ...known, code: legacy, details: { stage: "ARM_ENTRY", root_code: "EXECUTOR_BINANCE_RESULT_UNKNOWN" } },
+    { ...known, code: retry, details: { stage: "ARM_ENTRY", root_code: retry, metadata_path: "alert/account_budget/resolve" } },
+    { ...known, code: retry, details: { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code: retry, metadata_path: "POST/order" } },
+  ]) {
+    const denied = fixture({ alerts: [[incident]], caixetaLayout: true, budgetMetadataRecovery: true });
+    await assert.rejects(denied.run(), /RECOVERY_INCIDENT_CHANGED/);
+    assert.equal(denied.calls.includes("exchange-state"), false);
+    assert.equal(denied.writes.some(write => write.data.kill_switch === false), false);
+  }
+});
+
+test("budget recovery refuses an incident identity change after proof and re-closes its engine on final CAS loss", async () => {
+  const code = "COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_RETRY";
+  const incident = { ...known, code, details: { stage: "RESOLVE_ACCOUNT_BUDGET_ALERT", root_code: code,
+    metadata_path: "alert/account_budget/resolve" } };
+  const changed = fixture({ alerts: [[incident], [{ ...incident,
+    details: { ...incident.details, metadata_path: "POST/order" } }]], caixetaLayout: true,
+    budgetMetadataRecovery: true });
+  await assert.rejects(changed.run(), /RECOVERY_INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
+  const lost = fixture({ alerts: [[incident]], caixetaLayout: true, budgetMetadataRecovery: true, casLost: true });
+  await assert.rejects(lost.run(), /RECOVERY_INCIDENT_CHANGED/);
+  assert.deepEqual(lost.writes.filter(write => write.table === "trading_engines").map(write => write.data.kill_switch), [false, true]);
+  assert.equal(lost.writes.some(write => write.table === "robot_v1_live_events"
+    && write.data.event_type === "LIVE_RESUMED"), false);
 });
 
 test("typed binding exhaustion resumes only its exact read checkpoint, while hard routing/cap errors never inherit a wrapper", async () => {
