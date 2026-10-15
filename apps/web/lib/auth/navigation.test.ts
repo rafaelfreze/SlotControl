@@ -52,10 +52,10 @@ function compile(relative: string, dependencies: Record<string, unknown>) {
   return exports;
 }
 
-type ResponseResult = { location?: string; passthrough?: boolean; cookies: { set: () => void } };
+type ResponseResult = { location?: string; passthrough?: boolean; cookies: { set: () => void }; headers: Headers };
 const nextServer = { NextResponse: {
-  redirect: (url: URL): ResponseResult => ({ location: url.toString(), cookies: { set() {} } }),
-  next: (): ResponseResult => ({ passthrough: true, cookies: { set() {} } })
+  redirect: (url: URL): ResponseResult => ({ location: url.toString(), cookies: { set() {} }, headers: new Headers() }),
+  next: (): ResponseResult => ({ passthrough: true, cookies: { set() {} }, headers: new Headers() })
 } };
 const navigation = { AUTHENTICATED_HOME, getAuthDestination };
 
@@ -68,7 +68,7 @@ function callback(configured = true, error: unknown = null) {
       isSupabaseConfigured: () => configured,
       createClient: () => ({ auth: { exchangeCodeForSession: async (code: string) => {
         exchanged.push(code);
-        return { error };
+        return { data: { session: error ? null : { user: { id: "fixture" } } }, error };
       } } })
     }
   }) as { GET: (request: { url: string }) => Promise<ResponseResult> };
@@ -90,7 +90,7 @@ test("callback conserva next interno e sua query, incluindo recuperação de sen
 });
 
 test("callback externo inválido volta ao home interno", async () => {
-  const result = await callback().GET({ url: "https://coinops.example/auth/callback?next=https%3A%2F%2Fevil.example" });
+  const result = await callback().GET({ url: "https://coinops.example/auth/callback?code=fixture&next=https%3A%2F%2Fevil.example" });
   assert.equal(result.location, "https://coinops.example/automacao");
 });
 

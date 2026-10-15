@@ -14,16 +14,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(requestUrl);
   }
 
-  if (code) {
+  const callbackError = () => {
+    requestUrl.pathname = "/login";
+    requestUrl.search = "?auth=callback-error";
+    const response = NextResponse.redirect(requestUrl);
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  };
+  if (!code || requestUrl.searchParams.has("error") || requestUrl.searchParams.has("error_description")) return callbackError();
+  try {
     const supabase = createClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-    if (error) {
-      requestUrl.pathname = "/login";
-      requestUrl.search = "?auth=callback-error";
-      return NextResponse.redirect(requestUrl);
-    }
-  }
-
-  return NextResponse.redirect(new URL(next, requestUrl.origin));
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error || !data.session) return callbackError();
+    const response = NextResponse.redirect(new URL(next, requestUrl.origin));
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  } catch { return callbackError(); }
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState } from "react";
 
 import { getCoinOpsAuthCallback, getCoinOpsPasswordRedirect } from "@/lib/auth-email-url";
 import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
@@ -15,15 +15,17 @@ type AuthFormProps = {
 
 export function AuthForm({ mode, redirectTo }: AuthFormProps) {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setPending] = useState(false);
+  const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const configured = isSupabaseConfigured();
   const isSignup = mode === "signup";
   const isRecovery = mode === "recovery";
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (inFlight.current) return;
     setError(null);
     setMessage(null);
 
@@ -40,7 +42,9 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
     const digits = String(formData.get("whatsapp") || "").replace(/\D/g, "");
     const whatsapp = "+" + ((digits.length === 12 || digits.length === 13) && digits.startsWith("55") ? digits : "55" + digits);
 
-    startTransition(async () => {
+    inFlight.current = true;
+    setPending(true);
+    try {
       const supabase = createClient();
 
       if (isRecovery) {
@@ -98,7 +102,9 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
 
       router.replace(redirectTo);
       router.refresh();
-    });
+    } catch (failure) {
+      setError(friendlyAuthError(failure, isRecovery ? "recovery" : isSignup ? "signup" : "login"));
+    } finally { inFlight.current = false; setPending(false); }
   }
 
   return (
@@ -129,8 +135,8 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
 
 
 
-      {error ? <div className="form-error">{error}</div> : null}
-      {message ? <div className="form-success">{message}</div> : null}
+      {error ? <div className="form-error" role="alert">{error}</div> : null}
+      {message ? <div className="form-success" role="status">{message}</div> : null}
 
       <button className="solid-button" type="submit" disabled={isPending || !configured}>
         {isPending ? "Processando..." : isRecovery ? "Enviar instrucoes" : isSignup ? "Criar conta" : "Entrar"}

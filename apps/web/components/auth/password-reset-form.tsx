@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
 import { parsePasswordLink, passwordLinkError } from "@/lib/auth/password-link";
@@ -9,7 +9,8 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
 
 export function PasswordResetForm() {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setPending] = useState(false);
+  const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const configured = isSupabaseConfigured();
@@ -50,8 +51,9 @@ export function PasswordResetForm() {
     return () => { active = false; subscription.unsubscribe(); };
   }, [configured]);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (inFlight.current) return;
     setError(null);
     const formData = new FormData(event.currentTarget);
     const password = String(formData.get("password") || "");
@@ -63,7 +65,9 @@ export function PasswordResetForm() {
       return;
     }
 
-    startTransition(async () => {
+    inFlight.current = true;
+    setPending(true);
+    try {
       const supabase = createClient();
       const { error: updateError } = await supabase.auth.updateUser({ password });
       if (updateError) {
@@ -74,7 +78,9 @@ export function PasswordResetForm() {
       await supabase.auth.signOut();
       router.replace("/login?auth=password-updated");
       router.refresh();
-    });
+    } catch (failure) {
+      setError(friendlyAuthError(failure, "reset"));
+    } finally { inFlight.current = false; setPending(false); }
   }
 
   return (
@@ -88,7 +94,7 @@ export function PasswordResetForm() {
         <input name="confirmation" type="password" minLength={MIN_PASSWORD_LENGTH} placeholder="Repita a nova senha" autoComplete="new-password" required />
       </label>
       <p className="auth-hint">Use pelo menos 8 caracteres.</p>
-      {error ? <div className="form-error">{error}</div> : null}
+      {error ? <div className="form-error" role="alert">{error}</div> : null}
       <button className="solid-button" type="submit" disabled={isPending || !configured || !sessionReady}>
         {isPending ? "Atualizando..." : "Atualizar senha"}
       </button>
