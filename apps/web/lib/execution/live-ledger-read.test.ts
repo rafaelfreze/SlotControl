@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createClient } from "@supabase/supabase-js";
 import ts from "typescript";
 import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRows } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
+import { mayRecoverReadOutage, verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
@@ -53,6 +55,61 @@ test("own expired read deadline retries; permission/schema errors never inherit 
   }
   await assert.rejects(observeLedgerRows("slots", Promise.resolve({ data: null,
     error: { code: "PGRST003" }, status: 403 }), expired, 1), readErrors.LiveLedgerReadFailed);
+});
+
+test("SDK HTTP 400 envelopes without a provider code remain one fail-closed monthly GET, never a transient retry", async () => {
+  // These are synthetic possibilities, not a reconstruction of the historical
+  // upstream body. The incident retained HTTP 400 but no provider code/body.
+  const envelopes = [
+    { body: "<html><body>PRIVATE_FIXTURE</body></html>", contentType: "text/html" },
+    { body: "PRIVATE_FIXTURE", contentType: "text/plain" },
+    { body: "", contentType: "text/plain" },
+    { body: JSON.stringify({ message: "PRIVATE_FIXTURE" }), contentType: "application/json" },
+    { body: JSON.stringify("PRIVATE_FIXTURE"), contentType: "application/json" },
+  ];
+  for (const envelope of envelopes) {
+    let requests = 0;
+    const client = createClient("https://offline.invalid", "offline-fixture-not-a-secret", {
+      db: { schema: "coinops" }, auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: async (_input, init) => {
+        requests++;
+        assert.equal(init?.method, "GET");
+        assert.equal(init?.body, undefined);
+        return new Response(envelope.body, { status: 400,
+          headers: { "content-type": envelope.contentType } });
+      } },
+    });
+    await assert.rejects(boundedLedgerRead((deadline, attempt) => observeLedgerRows("monthly_gains",
+      client.from("robot_v1_slot_gain_totals").select("slot_number,monthly_gain_count")
+        .eq("trading_engine_id", "00000000-0000-0000-0000-000000000001").abortSignal(deadline),
+      deadline, attempt)), error => {
+      assert.ok(error instanceof readErrors.LiveLedgerReadFailed);
+      assert.equal(error.path, "ledger/monthly_gains");
+      assert.equal(error.httpStatus, 400);
+      assert.equal(error.attempts, 1);
+      assert.equal(error.providerCode, null);
+      const evidence = readErrors.liveFailureEvidence(error, "RECYCLE_SLOTS", "LIVE_CRON");
+      assert.equal(evidence.root_code, "COINOPS_LIVE_LEDGER_READ_FAILED");
+      assert.equal(evidence.http_status, 400);
+      assert.equal(evidence.read_path, "ledger/monthly_gains");
+      assert.equal(evidence.read_attempts, 1);
+      assert.equal("provider_code" in evidence, false);
+      assert.ok(!JSON.stringify(evidence).includes("PRIVATE_FIXTURE"));
+      return true;
+    });
+    assert.equal(requests, 1);
+  }
+});
+
+test("a later healthy reconciliation cannot automatically release the observed HTTP 400 monthly read failure", () => {
+  const failure = new readErrors.LiveLedgerReadFailed("ledger/monthly_gains", 1, 400, null);
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: failure.message,
+    first_seen_at: "2026-10-15T10:47:18.304891Z", last_seen_at: "2026-10-15T10:47:18.297Z",
+    details: readErrors.liveFailureEvidence(failure, "RECYCLE_SLOTS", "LIVE_CRON") };
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", alert.code, alert.details), false);
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]),
+    /COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED/);
+  assert.ok(!JSON.stringify(alert).includes("PRIVATE_FIXTURE"));
 });
 
 test("successful missing/null/malformed physical rows remain fail-closed, never an observation retry", async () => {
