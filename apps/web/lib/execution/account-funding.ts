@@ -16,11 +16,15 @@ export type AccountFundingInput = {
   pending: Array<{ trading_engine_id: string; amount_quote: Value }>;
   states: LiveExecutorState[];
 };
+/** Public read-only evidence from this funding observation, not an order command. */
+export type FundingResidentBuy = { engineId: string; runId: string; executorShardId: string;
+  clientOrderId: string; exchangeOrderId: string; price: number; quantity: number; executedQuantity: number; reservedQuote: number };
 export type FundingSummary = { accountId: string; accountName: string; currency: string; engineCount: number; slotCount: number;
   status: "COVERED" | "SHORTFALL" | "INCOMPLETE"; observedAt: string | null; ledgerTarget: number | null;
   pending: number | null; configuredCap: number | null; positionCost: number | null; buyReserved: number | null;
   spotFree: number | null; spotLocked: number | null; cashRequired: number | null; deficit: number | null;
-  coverage: number | null; bnbFree: number | null; bnbStatus: "AVAILABLE" | "LOW" | "UNKNOWN"; issues: string[] };
+  coverage: number | null; bnbFree: number | null; bnbStatus: "AVAILABLE" | "LOW" | "UNKNOWN"; issues: string[];
+  residentBuys?: FundingResidentBuy[] };
 
 const SCALE = BigInt("1000000000000"), ZERO = BigInt(0);
 /** Keep ledger precision, reject missing/negative amounts instead of treating them as zero. */
@@ -83,7 +87,7 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
         result.bnbStatus = result.bnbFree > LIVE_BNB_FEE_MINIMUM_EXCLUSIVE ? "AVAILABLE" : "LOW";
       } catch { issues.push("BNB_UNAVAILABLE"); }
       let target = ZERO, pending = ZERO, cost = ZERO, reserve = ZERO, cap = ZERO;
-      const residentKeys = new Set<string>();
+      const residentKeys = new Set<string>(), residentBuys: FundingResidentBuy[] = [];
       for (const engine of group) {
         if (!engine.executor_shard_id) throw new Error("ENGINE_SHARD_UNAVAILABLE");
         const runs = input.runs.filter((run) => run.trading_engine_id === engine.id && ["ACTIVE", "PAUSED", "PREPARING"].includes(run.status));
@@ -125,7 +129,12 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
             if (decimal(resident.price) !== decimal(order.price)) throw new Error("BUY_PRICE_MISMATCH");
             const logical = positive(decimal(order.reserved_notional_quote) - decimal(order.cumulative_quote));
             const physical = positive(decimal(resident.originalQuantity) - decimal(resident.executedQuantity)) * decimal(resident.price) / SCALE;
-            reserve += logical < physical ? logical : physical;
+            const reserved = logical < physical ? logical : physical;
+            reserve += reserved;
+            residentBuys.push({ engineId: engine.id, runId: run.id, executorShardId: engine.executor_shard_id,
+              clientOrderId: order.client_order_id, exchangeOrderId: order.exchange_order_id,
+              price: amount(decimal(resident.price)), quantity: amount(decimal(resident.originalQuantity)),
+              executedQuantity: amount(decimal(resident.executedQuantity)), reservedQuote: amount(reserved) });
           }
         }
       }
@@ -144,6 +153,9 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
       const required = positive(target + pending - cost - reserve), deficit = positive(required - quote.free);
       result.cashRequired = amount(required); result.deficit = amount(deficit); result.coverage = amount(cost + reserve + quote.free);
       result.status = deficit > ZERO ? "SHORTFALL" : "COVERED";
+      // Publish only after the complete observation (including reverse ownership
+      // and aggregate reservation checks) succeeded. Never expose partial proof.
+      result.residentBuys = residentBuys;
     } catch (error) {
       issues.push(error instanceof Error ? error.message : "FUNDING_OBSERVATION_UNAVAILABLE");
     }

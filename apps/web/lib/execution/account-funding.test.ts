@@ -32,6 +32,25 @@ test("whole grid is funded by native account wallet once, including same-symbol 
   assert.deepEqual([row.engineCount, row.slotCount, row.ledgerTarget, row.positionCost, row.buyReserved, row.cashRequired, row.spotFree, row.deficit],
     [2, 50, 550, 22, 20, 508, 254, 254]);
   assert.equal(row.status, "SHORTFALL");
+  assert.deepEqual(row.residentBuys, [0, 1].map((i) => ({ engineId: `engine${i}`, runId: `run-engine${i}`,
+    executorShardId: `executor-0${i + 1}`, clientOrderId: `C2-engine${i}-2-B-test`, exchangeOrderId: `engine${i}`,
+    price: 10, quantity: 1, executedQuantity: 0, reservedQuote: 10 })));
+});
+
+test("funding publishes exact per-engine resident evidence only after the full observation succeeds", () => {
+  const input = fixture(2);
+  input.orders = input.orders.slice(0, 1);
+  input.states[0].open_orders = input.states[0].open_orders.slice(0, 1);
+  const [row] = buildAccountFunding(input);
+  assert.equal(row.status, "SHORTFALL");
+  assert.equal(row.engineCount, 2);
+  assert.deepEqual(row.residentBuys?.map((proof) => proof.engineId), ["engine0"]);
+  // A's valid reserve never becomes evidence of a resident BUY on B.
+  const invalid = fixture(2);
+  invalid.orders[1].exchange_order_id = "foreign";
+  const [failed] = buildAccountFunding(invalid);
+  assert.equal(failed.status, "INCOMPLETE");
+  assert.equal(failed.residentBuys, undefined, "partial A proof must not escape after B failed");
 });
 test("configured cap is separate from current slot capital, pending is future need not cash", () => {
   const input = fixture(); input.engines[0].hard_cap_quote = 400;
@@ -45,7 +64,10 @@ test("price improvement on partial fill never overcredits physical BUY lock", ()
   Object.assign(order, { executed_quantity: .4, cumulative_quote: 3.5, status: "PARTIALLY_FILLED" });
   Object.assign(resident, { executedQuantity: .4, status: "PARTIALLY_FILLED" });
   input.states[0].balances[0].locked = 6;
-  assert.equal(buildAccountFunding(input)[0].buyReserved, 6); // not 10 - 3.5 = 6.5
+  const [row] = buildAccountFunding(input);
+  assert.equal(row.buyReserved, 6); // not 10 - 3.5 = 6.5
+  assert.deepEqual(row.residentBuys?.[0], { engineId: "engine0", runId: "run-engine0", executorShardId: "executor-01",
+    clientOrderId: "C2-engine0-2-B-test", exchangeOrderId: "engine0", price: 10, quantity: 1, executedQuantity: .4, reservedQuote: 6 });
 });
 test("foreign locked cash, Earn, future TP profits and marked prices never cover grid", () => {
   const input = fixture(); input.states[0].balances[0].free = 0; input.states[0].balances[0].locked = 900;

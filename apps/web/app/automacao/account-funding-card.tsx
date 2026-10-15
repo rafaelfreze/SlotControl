@@ -3,27 +3,24 @@
 import { useState } from "react";
 
 import { fundingClientMessage, fundingResumeToleranceObservation, type FundingSummary } from "@/lib/execution/account-funding";
+import { fundingPresentation, fundingSnapshotStale as stale, type FundingPresentationEngine } from "./account-funding-presentation";
 import { PremiumDrawer, displayMoney as money, displayNumber as number, displayTime as time } from "./premium-primitives";
 import "./account-funding-card.css";
 
-const statusText = (summary: FundingSummary) => summary.status === "INCOMPLETE" ? "VERIFICAÇÃO INCOMPLETA"
-  : summary.status === "SHORTFALL" ? "FALTA SALDO SPOT" : "PRINCIPAL COBERTO";
-const stale = (summary: FundingSummary, now: number) => summary.observedAt === null
-  || !Number.isFinite(Date.parse(summary.observedAt)) || Date.parse(summary.observedAt) - now > 2_000
-  || now - Date.parse(summary.observedAt) > 30_000;
-
-export function AccountFundingCard({ accountName, summaries, loading, error, onRefresh, refreshAvailableAt, now }: {
+export function AccountFundingCard({ accountName, summaries, engines, loading, error, onRefresh, refreshAvailableAt, now }: {
   accountName: string; summaries: FundingSummary[] | null; loading: boolean; error: boolean;
+  engines: FundingPresentationEngine[];
   onRefresh: () => void; refreshAvailableAt: number; now: number;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"copied" | "failed" | "expired" | null>(null);
   const cooldown = Math.max(0, Math.ceil((refreshAvailableAt - now) / 1_000));
   const known = summaries?.length ? summaries : null;
+  const rows = known?.map((summary) => ({ summary, presentation: fundingPresentation(summary, engines, now, error) }));
   const oldSnapshot = known?.some((summary) => stale(summary, now));
-  const needsAttention = known?.some((summary) => summary.status !== "COVERED" || summary.bnbStatus !== "AVAILABLE");
+  const needsAttention = error || rows?.some((row) => row.presentation.tone === "warning");
   const copy = async () => {
-    if (!known || oldSnapshot) return;
+    if (!known || oldSnapshot || error) return;
     if (known.some((summary) => stale(summary, Date.now()))) { setCopied("expired"); return; }
     try {
       await navigator.clipboard.writeText(known.map((summary) => fundingClientMessage(summary)).join("\n\n"));
@@ -37,9 +34,10 @@ export function AccountFundingCard({ accountName, summaries, loading, error, onR
       <button type="button" className="px-button" onClick={onRefresh} disabled={loading || cooldown > 0}
         title={cooldown > 0 ? `Nova consulta em ${cooldown}s` : "Consulta somente leitura; não altera ordens"}>
         {loading ? "Verificando saldo…" : "Verificar saldo da operação completa"}</button></div>
-    {known ? <div className="px-funding-summary">{known.map((summary) => <div key={summary.currency}>
-      <span className={`px-badge${!stale(summary, now) && summary.status === "COVERED" && summary.bnbStatus === "AVAILABLE" ? "" : " px-badge--warning"}`}>
-        {summary.currency} · {stale(summary, now) ? "LEITURA ANTIGA / NÃO CONFIRMADA" : statusText(summary)}</span>
+    {rows ? <div className="px-funding-summary">{rows.map(({ summary, presentation }) => <div key={summary.currency}>
+      <span className={`px-badge${presentation.tone === "warning" ? " px-badge--warning"
+        : presentation.tone === "observation" ? " px-badge--observation" : ""}`}>
+        {summary.currency} · {presentation.label}</span>
       <span>Spot livre <strong>{money(summary.spotFree, summary.currency)}</strong></span>
       <span>Necessário · slots + pendências <strong>{money(summary.cashRequired, summary.currency)}</strong></span>
       <span>Falta para a grade completa <strong>{money(summary.deficit, summary.currency)}</strong></span>
@@ -57,8 +55,8 @@ export function AccountFundingCard({ accountName, summaries, loading, error, onR
     <PremiumDrawer open={open} title={`${accountName} · saldo da operação completa`} onClose={() => setOpen(false)}>
       <div className="px-funding-details"><p>Leitura pontual e não atômica de Binance × ledger. Considera todos os motores da conta,
         inclusive em executores diferentes. Moedas permanecem separadas; saldo Earn não é caixa Spot.</p>
-        {known?.map((summary) => <section key={summary.currency}>
-          <h3>{summary.currency} · {stale(summary, now) ? "LEITURA ANTIGA / NÃO CONFIRMADA" : statusText(summary)}</h3>
+        {rows?.map(({ summary, presentation }) => <section key={summary.currency}>
+          <h3>{summary.currency} · {presentation.label}</h3>
           <small>{summary.engineCount} motor(es) · {summary.slotCount} slots · leitura {time(summary.observedAt)}</small>
           <dl>{[
             ["Alocação atual dos slots", money(summary.ledgerTarget, summary.currency)],
@@ -77,9 +75,9 @@ export function AccountFundingCard({ accountName, summaries, loading, error, onR
           {summary.issues.length ? <details><summary>Evidências a verificar</summary><ul>{summary.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></details> : null}
           {fundingResumeToleranceObservation(summary, now) ? <p role="note">{fundingResumeToleranceObservation(summary, now)}</p> : null}
           <textarea readOnly aria-label={`Mensagem para o cliente ${summary.currency}`}
-            value={`${stale(summary, now) ? "LEITURA ANTIGA / NÃO CONFIRMADA. Atualize antes de informar um valor de reposição.\n\n" : ""}${fundingClientMessage(summary, now)}`} />
+            value={`${error || stale(summary, now) ? "LEITURA ANTIGA / NÃO CONFIRMADA. Atualize antes de informar um valor de reposição.\n\n" : ""}${fundingClientMessage(summary, now)}`} />
         </section>)}
-        <button type="button" className="px-button" onClick={() => void copy()} disabled={!known || oldSnapshot}>Copiar mensagem para o cliente</button>
+        <button type="button" className="px-button" onClick={() => void copy()} disabled={!known || oldSnapshot || error}>Copiar mensagem para o cliente</button>
         {copied ? <p role="status">{copied === "copied" ? "Mensagem copiada. Nenhuma mensagem foi enviada."
           : copied === "expired" ? "A leitura expirou. Atualize antes de copiar um valor de reposição."
             : "Não foi possível copiar automaticamente. Selecione o texto acima para copiar."}</p> : null}

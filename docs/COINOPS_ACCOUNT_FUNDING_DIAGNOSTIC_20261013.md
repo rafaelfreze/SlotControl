@@ -36,4 +36,14 @@ Essa verificação é informativa: falhar não muda trading, Watchdog, Capacity 
 
 ## Regressões
 
+### Observação administrativa BRL (15/10/2026)
+
+Déficit de principal fresco, completo e estritamente positivo até R$50 pode aparecer como observação neutra (azul/cinza), não como principal coberto. `SHORTFALL`, valor e fórmula permanecem exatos. Isso não concede crédito, reativa motor nem muda os guards do executor.
+
+A apresentação neutra exige BNB disponível, inventário completo dos motores REAL daquela conta/moeda, todos ACTIVE, sem kill switch, alertas ou issues, reconciliação recente e exatamente uma NEXT BUY residente já financiada por motor. Evidência ambígua de ordem/fill, próximo pedido não confirmado, BNB insuficiente/desconhecido, erro, snapshot antigo, USDT ou déficit maior continuam destacados. Usa-se o inventário integral, nunca o filtro visual de mercado; irmãos em shards diferentes são considerados. Não se tenta prever uma nova decisão da Strategy Engine quando ainda não há BUY residente.
+
+A consulta só publica `residentBuys` após todas as validações existentes concluírem, com engine/run/shard/clientOrderId/exchangeOrderId e quantidades/preço/reserva da própria observação. A UI exige correspondência exata por motor; reserva agregada ou mera contagem não bastam. Snapshots antigos sem essa prova mantêm atenção. Falha da nova consulta impede copiar o diagnóstico anterior como atual, mesmo se ainda dentro dos 30s.
+
+O card e o título dos detalhes usam a mesma classificação. Alertas do ledger/Watchdog e guard de saldo integral de cada BUY não são reconhecidos, encerrados ou ocultados. Nenhuma nova consulta, cron, migration ou mudança de runtime dos executores.
+
 Mesmo símbolo/conta em shards diferentes; carteira contada uma vez; moedas separadas; 25 slots físicos; cap ≠ alocação; aportes pendentes; reserva parcial com melhoria de preço; locked externo; BNB separado; timestamps; fill concorrente; ownership divergente; falta de dados; auth/RLS/escopo; UI compacta e comando sem ordens.

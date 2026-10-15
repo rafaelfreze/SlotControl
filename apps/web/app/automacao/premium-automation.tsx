@@ -487,6 +487,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       </section> : null}
       {data.operator && !allAccounts && environment === "REAL" ? <AccountFundingCard key={`funding:${selection.accountId}`}
         accountName={accounts.find((account) => account.id === selection.accountId)?.displayName ?? "Conta"}
+        engines={engines}
         summaries={funding?.accountId === selection.accountId ? funding.summaries : null}
         loading={fundingLoading} error={fundingError} refreshAvailableAt={fundingRefreshAvailableAt}
         now={Date.now()} onRefresh={() => {
