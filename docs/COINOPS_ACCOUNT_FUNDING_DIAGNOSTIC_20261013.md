@@ -46,4 +46,6 @@ A consulta só publica `residentBuys` após todas as validações existentes con
 
 O card e o título dos detalhes usam a mesma classificação. Alertas do ledger/Watchdog e guard de saldo integral de cada BUY não são reconhecidos, encerrados ou ocultados. Nenhuma nova consulta, cron, migration ou mudança de runtime dos executores.
 
+Uma consulta completa em andamento na mesma conta/view sobrevive à atualização saudável de `snapshotAt`; antes, o cleanup do efeito podia abortá-la depois de consumir o cooldown, conservando o resultado antigo. Troca de conta/view, saída para Todos e desmontagem continuam abortando, e resposta tardia não cruza escopos. O limite de 12s, cooldown de 60s e validade de 30s permanecem; sem polling adicional ou retry automático.
+
 Mesmo símbolo/conta em shards diferentes; carteira contada uma vez; moedas separadas; 25 slots físicos; cap ≠ alocação; aportes pendentes; reserva parcial com melhoria de preço; locked externo; BNB separado; timestamps; fill concorrente; ownership divergente; falta de dados; auth/RLS/escopo; UI compacta e comando sem ordens.

@@ -240,6 +240,7 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   const fundingAlertSignatures = useRef(new Map<string, string>());
   const lastFundingRefresh = useRef(0);
   const fundingAccount = useRef<string | null>(null);
+  const balanceRequest = useRef<{ accountId: string; view: string; includeFunding: boolean; abort: AbortController } | null>(null);
   const fundingAlertSignature = (data.operator?.engines ?? []).filter((engine) => engine.environment === "REAL"
     && engine.accountId === selection.accountId).flatMap((engine) => engine.alerts
     .filter((alert) => fundingAlert(alert.code)).map((alert) => `${engine.engineId}:${alert.code}:${alert.at ?? ""}`)).sort().join("|");
@@ -254,7 +255,15 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
       .catch(() => undefined);
     return () => abort.abort();
   }, []);
+  useEffect(() => () => { balanceRequest.current?.abort.abort(); balanceRequest.current = null; }, []);
   useEffect(() => {
+    // A healthy dashboard refresh must not abort the bounded full diagnostic
+    // after consuming its cooldown. Account/view changes still cancel promptly;
+    // no additional query, retry, freshness extension or trading action is added.
+    const pendingRequest = balanceRequest.current;
+    if (pendingRequest?.includeFunding && !pendingRequest.abort.signal.aborted
+      && pendingRequest.accountId === selection.accountId && pendingRequest.view === view) return;
+    pendingRequest?.abort.abort(); balanceRequest.current = null;
     setQuoteBalances(null);
     // Free balances belong to account details, never the all-accounts home.
     if (selection.accountId === "ALL" || view !== "live" && view !== "overview") {
@@ -278,6 +287,8 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
       setFundingRefreshAvailableAt(now + 60_000); setFundingLoading(true); setFundingError(false);
     } else setFundingLoading(false);
     const abort = new AbortController();
+    const request = { accountId: selection.accountId, view, includeFunding, abort };
+    balanceRequest.current = request;
     // Full diagnostics happen on account entry, a new funding warning or explicit
     // request, never healthy snapshot polling. Keep the existing lightweight read.
     fetch(`/api/coinops-live-balances?account=${encodeURIComponent(selection.accountId)}${includeFunding ? "&funding=1" : ""}`, {
@@ -294,8 +305,10 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
         }
       } })
       .catch(() => { if (!abort.signal.aborted) { setQuoteBalances([]); if (includeFunding) setFundingError(true); } })
-      .finally(() => { if (!abort.signal.aborted && includeFunding) setFundingLoading(false); });
-    return () => abort.abort();
+      .finally(() => {
+        if (!abort.signal.aborted && includeFunding) setFundingLoading(false);
+        if (balanceRequest.current === request) balanceRequest.current = null;
+      });
   }, [view, selection.accountId, data.snapshotAt, fundingRefresh, fundingAlertSignature]);
   const environment = view === "shadow" ? "SHADOW" : view === "testnet" ? "TESTNET" : "REAL";
   const engines = useMemo(() => data.operator?.engines ?? legacyPremiumEngines(data), [data]);
