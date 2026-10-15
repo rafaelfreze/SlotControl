@@ -103,16 +103,17 @@ function clientModules() {
 
 async function mount(page: Page, view: View, width: number, height = 960,
   data: Presentation = automationPremiumFixture(), capacityData: unknown = null, assetHealthData: unknown = null,
-  watchdogData: unknown = null, engineControlData: unknown = null, fundingData: unknown = null, pauseData: unknown = null) {
+  watchdogData: unknown = null, engineControlData: unknown = null, fundingData: unknown = null, pauseData: unknown = null,
+  navigationFixture?: { query: string; alert: unknown; deferAlert?: boolean }) {
   const browserErrors: string[] = [], requests: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
   await page.route("**/*", async (route) => { requests.push(route.request().url()); await route.abort(); });
-  if (engineControlData || fundingData || pauseData) {
+  if (engineControlData || fundingData || pauseData || navigationFixture) {
     // The real control center constructs same-origin URLs. Give this fixture
     // a loopback origin via interception, without starting/contacting a server.
-    await page.route("http://127.0.0.1:39999/", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
-    await page.goto("http://127.0.0.1:39999/");
+    await page.route(/^http:\/\/127\.0\.0\.1:39999\/(?:\?.*)?$/, route => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
+    await page.goto(`http://127.0.0.1:39999/${navigationFixture?.query ?? ""}`);
   }
   await page.setViewportSize({ width, height });
   await page.clock.setFixedTime(new Date(AUTOMATION_FIXTURE_NOW));
@@ -132,13 +133,27 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const engineFixture = ${JSON.stringify(engineControlData)};
     const fundingFixture = ${JSON.stringify(fundingData)};
     const pauseFixture = ${JSON.stringify(pauseData)};
+    const navigationFixture = ${JSON.stringify(navigationFixture ?? null)};
     window.__fixtureEngineCommands = [];
     window.__fixturePauseCommands = [];
     window.__fixturePauseInFlight = 0;
     window.__fixturePauseMaxInFlight = 0;
     window.__fixtureReads = [];
+    window.__fixtureReleaseAlert = async () => {};
     window.fetch = async (url, settings) => {
       window.__fixtureReads.push(String(url));
+      if (String(url).startsWith('/api/coinops-push?alert=') && navigationFixture) {
+        const response = { ok: true, json: async () => ({ alert: navigationFixture.alert }) };
+        // Deliberately ignores AbortSignal: a completed transport may still
+        // deliver JSON after selection changes, so production needs its guard.
+        if (navigationFixture.deferAlert) return new Promise(resolve => {
+          window.__fixtureReleaseAlert = async () => {
+            resolve(response);
+            await new Promise(done => setTimeout(done, 0));
+          };
+        });
+        return response;
+      }
       if (String(url).startsWith('/api/coinops-account-pause') && pauseFixture) {
         if (!settings?.body) return { ok: true, json: async () => pauseFixture.snapshot };
         const command = JSON.parse(settings.body); window.__fixturePauseCommands.push(command);
@@ -201,16 +216,169 @@ async function mount(page: Page, view: View, width: number, height = 960,
     const panel = (label) => React.createElement('section', { 'aria-label': label }, React.createElement('h2',null,label),
       React.createElement('p',null,'Painel sintético; nenhuma operação será enviada.'),
       React.createElement('label',null,'Valor de demonstração',React.createElement('input',{defaultValue:'1',type:'number'})));
-    window.ReactDOM.createRoot(document.getElementById('premium-fixture-root')).render(React.createElement(PremiumAutomation,{
-      view:${JSON.stringify(view)},data:${JSON.stringify(data)},userLabel:'Rafael Demo',
+    const root = window.ReactDOM.createRoot(document.getElementById('premium-fixture-root'));
+    window.__fixtureRender = (data) => root.render(React.createElement(PremiumAutomation,{
+      view:${JSON.stringify(view)},data,userLabel:'Rafael Demo',
       strategyPanel:panel('Estratégia e parâmetros'),adjustmentsPanel:panel('Ajustes manuais')
     }));
+    window.__fixtureRender(${JSON.stringify(data)});
   })();` });
   await page.waitForTimeout(100);
   expect(browserErrors).toEqual([]);
   await expect(page.locator("#premium-fixture-root")).toContainText("CoinOps");
   return { browserErrors, requests };
 }
+
+async function renderSnapshot(page: Page, data: Presentation) {
+  await page.evaluate((next) => (window as unknown as { __fixtureRender: (data: Presentation) => void }).__fixtureRender(next), data);
+}
+
+async function chooseAccount(page: Page, label: string) {
+  await page.getByRole("button", { name: "Conta", exact: true }).click();
+  await page.getByRole("listbox", { name: "Contas encontradas", exact: true }).getByRole("option").filter({ hasText: label }).click();
+}
+
+async function expectAllAccountsHome(page: Page) {
+  await expect(page.getByRole("button", { name: "Conta", exact: true })).toContainText("Todos");
+  await expect(page.getByLabel("Mercado", { exact: true })).toHaveValue("ALL");
+  await expect(page.locator(".px-account-card")).toHaveCount(2);
+  for (const selector of [".px-account-pause", '[data-testid="account-funding-card"]', ".px-kpis",
+    "#premium-operations", ".px-assets", ".px-account-slots"]) await expect(page.locator(selector)).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect((await geometry(page)).overflow).toBe(0);
+}
+
+for (const width of [390, 1440]) test(`regressão visual: Todos remove painéis da conta após A/B e snapshots ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  const audit = await mount(page, "live", width, 900, data, null, null, null, null,
+    { balances: [], funding: [], unavailable: 1 });
+  for (const [index, label] of ["Rafael Demo", "Conta B Demo", "Rafael Demo"].entries()) {
+    await chooseAccount(page, label);
+    await expect(page.getByRole("region", { name: `Pausa e visibilidade · ${label}`, exact: true })).toBeVisible();
+    await expect(page.getByTestId("account-funding-card")).toBeVisible();
+    await expect(page.locator(".px-kpis")).toHaveCount(1);
+    await expect(page.locator("#premium-operations")).toHaveCount(1);
+    await page.getByLabel("Mercado", { exact: true }).selectOption("BTCBRL");
+    await page.getByRole("tab", { name: "Histórico de operações", exact: true }).click();
+    await renderSnapshot(page, { ...data, snapshotAt: new Date(Date.parse(AUTOMATION_FIXTURE_NOW) + index * 1_000).toISOString() });
+    await chooseAccount(page, "Todos");
+    await expectAllAccountsHome(page);
+    await renderSnapshot(page, { ...data, snapshotAt: new Date(Date.parse(AUTOMATION_FIXTURE_NOW) + (index + 1) * 1_000).toISOString() });
+    await expectAllAccountsHome(page);
+  }
+  await chooseAccount(page, "Conta B Demo");
+  await expect(page.getByRole("tab", { name: /^Posições abertas/, selected: true })).toBeVisible();
+  await chooseAccount(page, "Todos");
+  await expectAllAccountsHome(page);
+  await screenshot(page, testInfo, `account-panels-cleared-${width}`);
+  await noSideEffects(page, audit);
+});
+
+for (const width of [390, 1440]) test(`regressão visual: Início retorna a Todos e limpa estado de conta e alerta ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  data.operator!.selection = { accountId: ACCOUNT_A, symbol: "BTCBRL" };
+  const engineId = data.operator!.engines.find((engine) => engine.accountId === ACCOUNT_A && engine.symbol === "BTCBRL")!.engineId;
+  const alertId = "40000000-0000-4000-8000-000000000001";
+  const audit = await mount(page, "live", width, 900, data, null, null, null, null,
+    { balances: [], funding: [], unavailable: 1 }, null,
+    { query: `?account=${ACCOUNT_A}&market=BTCBRL&engine=${engineId}&tab=alerts&alert=${alertId}`,
+      alert: { account: "Rafael Demo", symbol: "BTCBRL", severity: "WARNING", reason: "ALERTA_SINTETICO_DEEP_LINK",
+        openedAt: AUTOMATION_FIXTURE_NOW, resolvedAt: null } });
+  await expect(page.getByRole("tab", { name: /^Alertas/, selected: true })).toBeVisible();
+  await expect(page.locator(".px-alert-list")).toContainText("ALERTA_SINTETICO_DEEP_LINK");
+  await page.getByRole("button", { name: "Ver BTC", exact: true }).click();
+  await page.getByRole("button", { name: "Detalhes do slot 1", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("Slot #1");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Início", exact: true }).click();
+  await expectAllAccountsHome(page);
+  await chooseAccount(page, "Rafael Demo");
+  await expect(page.getByRole("tab", { name: /^Posições abertas/, selected: true })).toBeVisible();
+  await page.getByRole("tab", { name: /^Alertas/, exact: false }).click();
+  await expect(page.locator(".px-alert-list")).not.toContainText("ALERTA_SINTETICO_DEEP_LINK");
+  await page.getByRole("button", { name: "Início", exact: true }).click();
+  await expectAllAccountsHome(page);
+  await screenshot(page, testInfo, `home-state-reset-${width}`);
+  await noSideEffects(page, audit);
+});
+
+for (const width of [390, 1440]) test(`regressão visual: ordem de entrada não muda por gains ou rank ${width}px`, async ({ page }, testInfo) => {
+  const data = automationOperatorFixture();
+  const engine = data.operator!.engines.find((row) => row.accountId === ACCOUNT_A && row.symbol === "BTCBRL")!;
+  data.operator!.engines = [engine];
+  engine.slots = engine.slots.map((slot): typeof slot => ({ ...slot, rank: 26 - slot.number,
+    gains: slot.number === 5 ? 12 : slot.number === 2 ? 4 : 0, monthlyGains: slot.number === 5 ? 3 : 0,
+    state: slot.number <= 5 ? "OPEN" : slot.number === 6 ? "NEXT_BUY" : "PLANNED",
+    label: slot.number <= 5 ? "ABERTO" : slot.number === 6 ? "PRÓXIMA BUY" : "PLANEJADO",
+    tone: slot.number <= 5 ? "open" : slot.number === 6 ? "armed" : "planned",
+    eligible: true, targetReached: false })).reverse();
+  engine.openCount = 5; engine.nextCount = 1; engine.plannedCount = 19;
+  const audit = await mount(page, "live", width, 900, data);
+  await chooseAccount(page, "Rafael Demo");
+  await page.getByRole("button", { name: "Ver BTC", exact: true }).click();
+  const rows = page.getByTestId("premium-slot-row");
+  const numbers = () => rows.evaluateAll((elements) => elements.map((row) => row.getAttribute("data-slot-number")));
+  expect(await numbers()).toEqual(["1", "2", "3", "4", "5", "6"]);
+  await expect(rows.nth(0)).toHaveAttribute("data-operational-rank", "25");
+  await expect(rows.nth(4)).toContainText("Gains totais 12");
+  await expect(rows.nth(5)).toContainText("PRÓXIMA BUY");
+  await page.getByRole("button", { name: "Ver todos os 25 slots", exact: true }).click();
+  const entryOrder = ["1", "2", "3", "4", "5", "6", ...Array.from({ length: 19 }, (_, index) => String(25 - index))];
+  expect(await numbers()).toEqual(entryOrder);
+  await page.getByLabel("Ordenação dos slots", { exact: true }).selectOption("gain_desc");
+  await expect(rows.first()).toHaveAttribute("data-slot-number", "5");
+  await page.getByLabel("Ordenação dos slots", { exact: true }).selectOption("entry");
+  expect(await numbers()).toEqual(entryOrder);
+  expect((await geometry(page)).overflow).toBe(0);
+  await screenshot(page, testInfo, `entry-order-preserved-${width}`);
+  await noSideEffects(page, audit);
+});
+
+test("regressão visual: resposta tardia do alerta de A nunca aparece na conta B", async ({ page }) => {
+  const data = automationOperatorFixture();
+  data.operator!.selection = { accountId: ACCOUNT_A, symbol: "BTCBRL" };
+  const audit = await mount(page, "live", 390, 900, data, null, null, null, null,
+    { balances: [], funding: [], unavailable: 1 }, null,
+    { query: `?account=${ACCOUNT_A}&market=BTCBRL&tab=alerts&alert=40000000-0000-4000-8000-000000000002`,
+      deferAlert: true,
+      alert: { account: "Rafael Demo", symbol: "BTCBRL", severity: "WARNING", reason: "ALERTA_TARDIO_EXCLUSIVO_A",
+        openedAt: AUTOMATION_FIXTURE_NOW, resolvedAt: null } });
+  expect(await page.evaluate(() => (window as unknown as { __fixtureReads: string[] }).__fixtureReads
+    .filter((url) => url.startsWith("/api/coinops-push?alert=")))).toHaveLength(1);
+  await chooseAccount(page, "Conta B Demo");
+  await page.evaluate(async () => (window as unknown as { __fixtureReleaseAlert: () => Promise<void> }).__fixtureReleaseAlert());
+  await page.getByRole("tab", { name: /^Alertas/ }).click();
+  const alerts = page.locator(".px-alert-list");
+  await expect(alerts).toContainText("Conta B Demo");
+  await expect(alerts).not.toContainText("Rafael Demo");
+  await expect(alerts).not.toContainText("ALERTA_TARDIO_EXCLUSIVO_A");
+  await expect(alerts.locator('[role="status"]')).toHaveCount(0);
+  await noSideEffects(page, audit);
+});
+
+test("regressão visual: detalhe aberto acompanha snapshot sem trocar ownership do slot", async ({ page }) => {
+  const data = automationOperatorFixture();
+  const engine = data.operator!.engines.find((row) => row.accountId === ACCOUNT_A && row.symbol === "BTCBRL")!;
+  data.operator!.engines = [engine];
+  const audit = await mount(page, "live", 390, 900, data);
+  await chooseAccount(page, "Rafael Demo");
+  await page.getByRole("button", { name: "Ver BTC", exact: true }).click();
+  await page.getByRole("button", { name: "Detalhes do slot 1", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const field = (name: string) => dialog.locator("dl > div").filter({ has: page.locator("dt", { hasText: new RegExp(`^${name}$`) }) }).locator("dd");
+  await expect(field("Gains totais")).toHaveText("0");
+  const next = structuredClone(data);
+  const refreshed = next.operator!.engines[0].slots.find((slot) => slot.number === 1)!;
+  refreshed.gains = 9; refreshed.monthlyGains = 2; refreshed.balance = 37.41;
+  refreshed.orders = [{ ...refreshed.orders[0], id: `${engine.engineId}:tp-refreshed`, status: "NEW" }];
+  await renderSnapshot(page, next);
+  await expect(dialog).toContainText("Slot #1");
+  await expect(field("Gains totais")).toHaveText("9");
+  await expect(field("Gains mês / meta")).toHaveText("2/7");
+  await expect(field("Valor atual do slot")).toContainText("37,41");
+  await expect(dialog).toContainText(`${engine.engineId}:tp-refreshed`);
+  await noSideEffects(page, audit);
+});
 
 for (const width of [390, 1440]) test(`multi-engine append existente, mesmo SOLBRL, roteamento 03 e preview sem escrita ${width}px`, async ({ page }, testInfo) => {
   const evidence = { physicalSlots: 25, open: 1, residentTp: 1, nextBuy: 1, recent: true, clean: true };

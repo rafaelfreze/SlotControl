@@ -37,6 +37,7 @@ import { buildFinopsNavigation } from "@/lib/coinops-finops/navigation";
 import { AssetIcon, PremiumDrawer, PremiumIcon, displayMoney as money, displayNumber as number, displayTime as time, type IconName } from "./premium-primitives";
 import "./premium-automation.css";
 import { compareOperationalSlots } from "@/lib/slotgain/operational-slot-order";
+import { orderSlotDisplayRows } from "./slot-display-order";
 
 const loadingPanel = () => <p role="status" aria-busy="true">Carregando este módulo…</p>;
 const AutomationDetails = dynamic(() => import("./automation-center").then((m) => m.AutomationDetails), { loading: loadingPanel });
@@ -91,17 +92,19 @@ function AssetCard({ model, candles, regime, onOpen, compact = false }: { model:
   </article>;
 }
 function SlotList({ model, onSelect }: { model: PremiumAsset; onSelect: (slot: PremiumSlot) => void }) {
-  const [filter, setFilter] = useState("operational");
+  const [filter, setFilter] = useState("entry");
   const [all, setAll] = useState(false);
-  const rows = [...model.slots].filter((slot) => filter === "reached" ? slot.targetReached : filter === "eligible" ? slot.eligible : filter === "open" ? slot.state === "OPEN" : filter === "waiting" ? slot.state !== "OPEN" && slot.state !== "NEXT_BUY" && !slot.targetReached : true)
-    .sort((a, b) => filter === "physical" ? a.number - b.number : filter === "gain_desc" ? (b.gains ?? 0) - (a.gains ?? 0) : filter === "gain_asc" ? (a.gains ?? 0) - (b.gains ?? 0) : compareOperationalSlots(
+  const filtered = model.slots.filter((slot) => filter === "reached" ? slot.targetReached : filter === "eligible" ? slot.eligible : filter === "open" ? slot.state === "OPEN" : filter === "waiting" ? slot.state !== "OPEN" && slot.state !== "NEXT_BUY" && !slot.targetReached : true);
+  const rows = filter === "entry" || ["reached", "eligible", "open", "waiting"].includes(filter)
+    ? orderSlotDisplayRows(filtered, (slot) => ({ physicalSlotNumber: slot.number, entryState: slot.state }))
+    : [...filtered].sort((a, b) => filter === "physical" ? a.number - b.number : filter === "gain_desc" ? (b.gains ?? 0) - (a.gains ?? 0) : filter === "gain_asc" ? (a.gains ?? 0) - (b.gains ?? 0) : compareOperationalSlots(
       { physicalSlotNumber: a.number, operationalRank: a.rank, entryState: a.state, eligible: a.eligible },
       { physicalSlotNumber: b.number, operationalRank: b.rank, entryState: b.state, eligible: b.eligible }));
-  return <section className="px-slot-section"><div className="px-section-heading"><h3>Slots {model.asset} <small>{model.slots.length} físicos</small></h3><label className="px-select-label">Ordenação<select aria-label="Ordenação dos slots" value={filter} onChange={(event) => setFilter(event.target.value)}>{[["operational", "Ordem operacional"], ["physical", "Slot físico"], ["gain_desc", "Mais gains"], ["gain_asc", "Menos gains"], ["reached", "Meta batida"], ["eligible", "Elegíveis"], ["open", "OPEN"], ["waiting", "Aguardando"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
+  return <section className="px-slot-section"><div className="px-section-heading"><h3>Slots {model.asset} <small>{model.slots.length} físicos</small></h3><label className="px-select-label">Ordenação<select aria-label="Ordenação dos slots" value={filter} onChange={(event) => setFilter(event.target.value)}>{[["entry", "Sequência dos slots abertos"], ["operational", "Rank operacional"], ["physical", "Slot físico"], ["gain_desc", "Mais gains"], ["gain_asc", "Menos gains"], ["reached", "Meta batida"], ["eligible", "Elegíveis"], ["open", "OPEN"], ["waiting", "Aguardando"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
     <div className="px-slot-summary">{[["OPEN", model.openCount], ["TP", model.tpCount], ["NEXT BUY", model.nextCount], ["PLANNED", model.plannedCount], ["META BATIDA", model.slots.filter((slot) => slot.targetReached).length], ["GAINS", model.gains]].map(([label, value]) => <span key={label}><strong>{value ?? "—"}</strong>{label}</span>)}</div>
     <div className="px-table-wrap"><table className="px-table px-slot-table"><thead><tr><th>Slot físico / rank operacional</th><th>Status</th><th>Valor / aportes</th><th>Entrada / atual</th><th>TP</th><th>P&L aberto</th><th>Mês/meta · totais</th><th>Detalhes</th></tr></thead><tbody>{(all ? rows : rows.slice(0, 6)).map((slot) => <tr key={slot.number} data-testid="premium-slot-row" data-slot-number={slot.number} data-operational-rank={slot.rank ?? ""} data-slot-state={slot.state}><td><strong>#{slot.number}</strong><small>Rank operacional {slot.rank ?? "—"}</small></td><td><span className={`px-badge px-state-${slot.state.toLowerCase()}`}>{slot.label}</span>{slot.targetReached ? <small className="px-warning">META BATIDA</small> : null}</td><td data-label="Valor atual"><strong>{money(slot.balance, model.currency)}</strong><small>Aportado {money(slot.contributed, model.currency)}</small>{slot.pendingContribution > 0 ? <small className="px-warning">+ {money(slot.pendingContribution, model.currency)} pendente</small> : null}</td><td data-label="Entrada / atual">{number(slot.entryPrice)}<small>{number(slot.currentPrice)}</small></td><td data-label="TP">{number(slot.tpPrice)}</td><td data-label="P&L" className={tones(slot.openPnl)}>{money(slot.openPnl, model.currency)}<small>Realizado {money(slot.realizedPnl, model.currency)}</small></td><td data-label="Mês / meta">{slot.monthlyGains ?? "?"}/{slot.goal}<small>Gains totais {slot.gains ?? "—"}</small></td><td><button type="button" className="px-row-link" onClick={() => onSelect(slot)} aria-label={`Detalhes do slot ${slot.number}`}>Ver <span aria-hidden="true">›</span></button></td></tr>)}</tbody></table></div>
     {rows.length > 6 ? <button type="button" className="px-text-button" onClick={() => setAll(!all)}>{all ? "Recolher lista" : `Ver todos os ${rows.length} slots`}</button> : null}
-    <p className="px-caption">Rank é operacional; o slot físico nunca muda. Meta mensal por slot · lifetime preservado.</p>
+    <p className="px-caption">Padrão visual: abertos na sequência dos slots, sem ordenar por gains. Rank e prioridade das próximas entradas continuam definidos pelo motor. Meta mensal por slot · lifetime preservado.</p>
   </section>;
 }
 
@@ -182,10 +185,12 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   }, [panel]);
   const [selection, setSelection] = useState<PremiumSelection>(data.operator?.selection ?? { accountId: "ALL", symbol: "ALL" });
   const [engineId, setEngineId] = useState<string | null>(null);
-  const [selectedSlot, setSelectedSlot] = useState<PremiumSlot | null>(null);
+  // Keep identity, not a frozen financial snapshot, while the drawer is open.
+  const [selectedSlotNumber, setSelectedSlotNumber] = useState<number | null>(null);
   const [operationTab, setOperationTab] = useState("positions");
   const [linkedAlert, setLinkedAlert] = useState<{ account: string; symbol: string; severity: string;
     reason: string; openedAt: string; resolvedAt: string | null } | null>(null);
+  const linkedAlertRequest = useRef<AbortController | null>(null);
   const [fundingAwareness, setFundingAwareness] = useState<string[]>([]);
   const [fundingAwarenessError, setFundingAwarenessError] = useState(false);
   useEffect(() => {
@@ -213,9 +218,13 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     }
     const alertId = params.get("alert");
     if (alertId && /^[0-9a-f-]{36}$/i.test(alertId)) {
-      void fetch(`/api/coinops-push?alert=${encodeURIComponent(alertId)}`, { cache: "no-store", credentials: "same-origin" })
+      const abort = new AbortController();
+      linkedAlertRequest.current = abort;
+      void fetch(`/api/coinops-push?alert=${encodeURIComponent(alertId)}`, { cache: "no-store", credentials: "same-origin", signal: abort.signal })
         .then((response) => response.ok ? response.json() : null)
-        .then((result) => setLinkedAlert(result?.alert ?? null)).catch(() => setLinkedAlert(null));
+        .then((result) => { if (!abort.signal.aborted) setLinkedAlert(result?.alert ?? null); })
+        .catch(() => { if (!abort.signal.aborted) setLinkedAlert(null); });
+      return () => abort.abort();
     }
   }, []);
   const [historyLimit, setHistoryLimit] = useState(8);
@@ -311,6 +320,7 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     [renderedEngines, environment, selection, market.prices, market.status]);
   const overview = useMemo(() => view === "overview" ? (["SHADOW", "TESTNET", "REAL"] as const).map((env) => ({ env, assets: selectPremiumEngines(renderedEngines, env, selection) })) : [], [renderedEngines, selection, view]);
   const active = engineId ? assets.find((item) => item.engineId === engineId) : assets[0];
+  const selectedSlot = active?.slots.find((slot) => slot.number === selectedSlotNumber) ?? null;
   const asset = active?.asset ?? "BTC";
   const currency = active?.currency ?? (environment === "REAL" ? "BRL" : "USDC");
   const groups = premiumNativeGroups(assets);
@@ -331,7 +341,12 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   const concrete = concretePremiumEngine(engines, selection, environment, engineId);
   const scopedData = active ? data.operator?.engineData[active.engineId] ?? data : data;
   const allowedControls = !data.operator || Boolean(concrete && active?.engineId === concrete.engineId);
-  const changeSelection = (next: PremiumSelection) => { setSelection(next); setPanel(null); setEngineId(null); setSelectedSlot(null); setAccountLimit(30); };
+  const changeSelection = (next: PremiumSelection, options?: { engineId: string; keepPanel: boolean }) => {
+    linkedAlertRequest.current?.abort(); setLinkedAlert(null);
+    setSelection(next); if (!options?.keepPanel) setPanel(null);
+    setEngineId(options?.engineId ?? null); setSelectedSlotNumber(null);
+    setAccountLimit(30); setHistoryLimit(8); setOperationTab("positions");
+  };
   const accounts = useMemo(() => data.operator?.accounts
     ?? [{ id: "legacy", displayName: "Rafael", status: "ACTIVE", killSwitch: false }],
     [data.operator?.accounts]);
@@ -377,7 +392,8 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
   const exposure = nativeTotal("exposure");
   const percent = cap && exposure !== null ? exposure / cap * 100 : null;
   const events = assets.flatMap((item) => item.events.map((event) => ({ ...event, asset: item.asset, engineId: item.engineId, account: item.accountDisplayName, symbol: item.symbol }))).sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
-  const positions = assets.flatMap((item) => item.slots.filter((slot) => slot.state === "OPEN").map((slot) => ({ model: item, slot })));
+  const positions = assets.flatMap((item) => orderSlotDisplayRows(item.slots.filter((slot) => slot.state === "OPEN"),
+    (slot) => ({ physicalSlotNumber: slot.number, entryState: slot.state })).map((slot) => ({ model: item, slot })));
   const orders = assets.flatMap((item) => item.orders.map((order) => ({ ...order, asset: item.asset, engineId: item.engineId, account: item.accountDisplayName, symbol: item.symbol, currency: item.currency })));
   const alerts = assets.flatMap((item) => item.alerts.map((alert) => ({ asset: item.asset, engineId: item.engineId, account: item.accountDisplayName, symbol: item.symbol, alert })));
   const acknowledgedFunding = new Set(fundingAwareness);
@@ -397,7 +413,7 @@ export function PremiumAutomation({ view, data: initialData, userLabel, strategy
     } catch { setFundingAwarenessError(true); }
   };
   const openAsset = (next: string) => { setEngineId(next); setPanel("asset"); };
-  const openSlot = (slot: PremiumSlot, next = active?.engineId) => { setEngineId(next ?? null); setSelectedSlot(slot); setPanel("slot"); };
+  const openSlot = (slot: PremiumSlot, next = active?.engineId) => { setEngineId(next ?? null); setSelectedSlotNumber(slot.number); setPanel("slot"); };
   const candlesFor = (item: PremiumAsset) => dailyCandles.filter((row) => row.symbol === item.symbol).sort((a, b) => a.candle_open_at.localeCompare(b.candle_open_at));
   const goOperations = () => view === "overview" ? setPanel("asset") : document.getElementById("premium-operations")?.scrollIntoView({ behavior: "smooth", block: "start" });
 const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMap((item) => item.events.map((event) => ({ ...event, asset: item.asset, account: item.accountDisplayName, symbol: item.symbol, environment: env })))).sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
@@ -411,7 +427,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
     <div className="px-context-bar">
        <nav className="px-environments" aria-label="Ambientes da Automação">{visibleEnvironments.map((item) => <Link key={item} href={viewHref(item)} aria-current={view === item ? "page" : undefined}>{labels[item]}{item === "live" && liveActive ? <i /> : null}</Link>)}<span>Central operacional</span></nav>
        <nav className="px-toolbar" aria-label="Ferramentas da Automação" data-testid="premium-toolbar">{([
-        ["home", "Início", () => window.scrollTo({ top: 0, behavior: "smooth" })], ["strategy", "Estratégia", () => setPanel("strategy")], ["adjust", "Ajustes", () => setPanel("adjustments")], ["settings", "Configurações", () => setPanel("config")],
+        ["home", "Início", () => { changeSelection({ accountId: "ALL", symbol: "ALL" }); window.scrollTo({ top: 0, behavior: "smooth" }); }], ["strategy", "Estratégia", () => setPanel("strategy")], ["adjust", "Ajustes", () => setPanel("adjustments")], ["settings", "Configurações", () => setPanel("config")],
       ] as Array<[IconName, string, () => void]>).map(([icon, label, action]) => <button key={label} type="button" onClick={action} className={icon === "home" ? "is-active" : ""}><PremiumIcon name={icon} />{label}</button>)}{data.operator ? <Link href={finopsNavigation.costsHref}><PremiumIcon name="wallet" />Custos &amp; Operação</Link> : null}</nav>
        <div className="px-scope-filters" aria-label="Filtros da operação"><AccountSelector options={accountChoices} value={selection.accountId} onChange={(accountId) => changeSelection({ accountId, symbol: "ALL" })} /><label>Mercado<select aria-label="Mercado" value={selection.symbol} onChange={(event) => changeSelection({ ...selection, symbol: event.target.value })}><option value="ALL">Todos os mercados</option>{symbols.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}</select></label><small>Filtros de leitura · não alteram ordens</small></div>
      </div>
@@ -430,7 +446,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {data.operator && (view === "live" || view === "overview") ? <WatchdogCard attentionOnly={!allAccounts} /> : null}
       </aside>
       </div>
-      {data.operator && !allAccounts && view === "live" ? <AccountPauseHomePanel key={selection.accountId}
+      {data.operator && !allAccounts && view === "live" ? <AccountPauseHomePanel key={`pause:${selection.accountId}`}
         selectedAccountId={selection.accountId} accountName={accounts.find((account) => account.id === selection.accountId)?.displayName ?? "Conta"}
         engines={engines.filter((engine) => engine.environment === "REAL" && engine.accountId === selection.accountId)}
         preference={data.operator.accountHomePreferences?.find((preference) => preference.accountId === selection.accountId)} /> : null}
@@ -469,7 +485,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
         <Metric label="Exposição total" value={nativeValues("exposure")} note="Posições + reservas de BUY" icon="shield" />
         <Metric label={environment === "REAL" ? "Limites por conta / moeda" : "Capital lógico total"} value={groups.length > 1 ? nativeValues(environment === "REAL" ? "cap" : "capital") : money(cap, currency)} note={percent !== null ? `${number(percent, 1)}% comprometido` : groups.length > 1 ? "Sem soma entre contas/moedas" : "Sem evidência disponível"} icon="wallet" percent={percent} />
       </section> : null}
-      {data.operator && !allAccounts && environment === "REAL" ? <AccountFundingCard key={selection.accountId}
+      {data.operator && !allAccounts && environment === "REAL" ? <AccountFundingCard key={`funding:${selection.accountId}`}
         accountName={accounts.find((account) => account.id === selection.accountId)?.displayName ?? "Conta"}
         summaries={funding?.accountId === selection.accountId ? funding.summaries : null}
         loading={fundingLoading} error={fundingError} refreshAvailableAt={fundingRefreshAvailableAt}
@@ -505,7 +521,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
       {visited.strategy || panel === "strategy" ? <div hidden={panel !== "strategy"}>{(view === "live" || view === "testnet") && data.operator ? <>
         {view === "live" ? <BulkStrategyEditor operator={data.operator} /> : null}
         <EngineControlCenter active={panel === "strategy"} initialAccountId={selection.accountId} environment={environment as "REAL" | "TESTNET"}
-          onEditEngine={(accountId, symbol, selectedEngineId) => { setSelection({ accountId, symbol }); setEngineId(selectedEngineId); }}
+          onEditEngine={(accountId, symbol, selectedEngineId) => changeSelection({ accountId, symbol }, { engineId: selectedEngineId, keepPanel: true })}
           onOpenCredentials={() => setPanel("config")} />
         {concrete && strategyPanels?.[concrete.engineId] ? <div className="px-engine-existing-profile">
           <h3>Regras do motor selecionado · {concrete.accountDisplayName} / {concrete.symbol}</h3>
