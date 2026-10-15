@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildPremiumAssets } from "./premium-model.ts";
+import { buildPremiumEngine } from "./premium-operator.ts";
 import type { Props } from "./automation-mobile";
 
 const NOW = Date.parse("2026-09-24T12:00:00Z");
@@ -32,6 +33,143 @@ function fundingHoldFixture(): Props {
     alerts: [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", last_seen_at: AT }],
   } } });
 }
+
+/** A resumed engine can retain crossed, never-submitted levels in its ledger.
+ * Those facts are audit history, not evidence of a current trading failure. */
+function historicalMissedLiveFixture(): Props {
+  const slots = Array.from({ length: 25 }, (_, index) => ({ slot_number: index + 1,
+    entry_state: index < 6 ? "OPEN" : index < 8 ? "MISSED" : index === 8 ? "ARMED" : "PLANNED",
+    target_buy_price: 500 - index * 10, operational_rank: index + 1,
+    post_ath_group: null, post_ath_group_rank: null, operation_sequence: 1,
+    position_quantity: index < 6 ? .02 : 0,
+    position_committed_quote: index < 6 ? 10.66 : 0,
+    missed_at: index >= 6 && index < 8 ? new Date(NOW - 300_000).toISOString() : null }));
+  return fixture({ engineContext: {
+    operator_id: "00000000-0000-0000-0000-000000000001",
+    exchange_account_id: "00000000-0000-0000-0000-000000000002",
+    trading_engine_id: "00000000-0000-0000-0000-000000000003",
+    account_display_name: "Renato", environment: "REAL", symbol: "SOLBRL", base_asset: "SOL",
+    quote_asset: "BRL", is_legacy_default: false, legacy_compatible: false,
+    global_kill_switch: false, account_kill_switch: false, engine_kill_switch: false,
+    strategy_config_pending: false, status: "ACTIVE", hard_cap_quote: 275,
+    ath_reference_symbol: "SOLBRL", executor_shard_id: "executor-02",
+  }, nativeLiveControl: { liveEnabled: true, killSwitch: false,
+    executor: { gate: "LIVE_EXECUTOR_ACTIVE" } },
+  livePreparation: { configs: [], sizing: [{ asset: "SOL", priceBrl: 540,
+    rules: { quantityStep: .001 } }] },
+  liveAssetData: { SOL: {
+    run: { id: "resumed-renato", status: "ACTIVE", symbol: "SOLBRL", entry_regime: "NORMAL",
+      last_reconciled_at: AT, last_error: null, gain_rate: .055, entry_spacing: .03 }, slots,
+    accounts: slots.map((slot) => ({ slot_number: slot.slot_number, balance_quote: 11,
+      market_pnl_quote: 0, contribution_quote: 11, fees_quote: 0, gain_count: 0 })),
+    monthlyGains: [],
+    orders: [
+      ...slots.slice(0, 6).map((slot) => order({ client_order_id: `renato-tp-${slot.slot_number}`,
+        exchange_order_id: `exchange-tp-${slot.slot_number}`, slot_number: slot.slot_number,
+        side: "SELL", purpose: "TP", price: 562.315, requested_quantity: .02 })),
+      order({ client_order_id: "renato-next-buy", exchange_order_id: "exchange-next-buy",
+        slot_number: 9, price: 420, requested_quantity: .02, reserved_notional_quote: 8.4 }),
+    ],
+    events: [{ event_type: "MISSED_LEVEL", slot_number: 7,
+      observed_at: new Date(NOW - 300_000).toISOString(),
+      details: { target_price: 440, observed_floor: 430, reason: "NO_RESIDENT_BUY_AT_OBSERVATION" } }],
+    alerts: [],
+  } } });
+}
+
+test("resumed LIVE engine with six protected positions and one BUY keeps crossed levels as history, not unhealthy status", () => {
+  const data = historicalMissedLiveFixture();
+  const before = structuredClone(data);
+  const model = buildPremiumAssets(data, "REAL", NOW)[1];
+  assert.equal(model.status, "ACTIVE");
+  assert.equal(model.openCount, 6); assert.equal(model.tpCount, 6); assert.equal(model.nextCount, 1);
+  assert.deepEqual(model.health, { healthy: true, tone: "ok", label: "OPERACIONAL",
+    reason: "Ciclo reconciliado; posições protegidas." });
+  assert.equal(model.activeIssueCount, 0);
+  assert.equal(model.events[0].type, "MISSED_LEVEL");
+  assert.equal(model.events[0].slotNumber, 7);
+  assert.deepEqual(model.events[0].details, data.liveAssetData!.SOL!.events[0].details);
+  assert.equal(model.slots[6].state, "MISSED", "do not invent a planned or filled state");
+  assert.equal((model.raw as { slots: Array<{ missed_at: string | null }> }).slots[6]!.missed_at,
+    before.liveAssetData!.SOL!.slots[6].missed_at);
+  assert.deepEqual(data, before, "presentation must not resolve, erase or mutate ledger history");
+});
+
+test("optional missed-level event history is not required to certify fresh complete LIVE core evidence", () => {
+  const data = historicalMissedLiveFixture();
+  data.liveAssetData!.SOL!.events = [];
+  const model = buildPremiumAssets(data, "REAL", NOW)[1];
+  assert.equal(model.health.healthy, true);
+  assert.equal(model.slots[6].state, "MISSED");
+  assert.equal(data.liveAssetData!.SOL!.slots[6].missed_at, new Date(NOW - 300_000).toISOString());
+});
+
+test("historical crossed levels never hide present LIVE faults or missing protection", async (t) => {
+  const cases: Array<[string, (data: Props) => void]> = [
+    ["last_error", (data) => { data.liveAssetData!.SOL!.run.last_error = "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN"; }],
+    ["critical alert", (data) => { data.liveAssetData!.SOL!.alerts.push({ code: "CURRENT_FAULT", severity: "CRITICAL", last_seen_at: AT }); }],
+    ["missing TP", (data) => { data.liveAssetData!.SOL!.orders.shift(); }],
+    ["duplicate TP", (data) => { data.liveAssetData!.SOL!.orders.push({ ...data.liveAssetData!.SOL!.orders[0], client_order_id: "duplicate-tp" }); }],
+    ["insufficient TP quantity", (data) => { data.liveAssetData!.SOL!.orders[0].requested_quantity = .01; }],
+    ["duplicate BUY", (data) => { data.liveAssetData!.SOL!.orders.push({ ...data.liveAssetData!.SOL!.orders[6], client_order_id: "duplicate-buy" }); }],
+    ["missing physical slot", (data) => { data.liveAssetData!.SOL!.slots.pop(); }],
+    ["duplicate physical slot", (data) => { data.liveAssetData!.SOL!.slots[24].slot_number = 24; }],
+    ["missing account", (data) => { data.liveAssetData!.SOL!.accounts.pop(); }],
+    ["cap exceeded", (data) => { data.engineContext!.hard_cap_quote = 50; }],
+    ["stale reconciliation", (data) => { data.liveAssetData!.SOL!.run.last_reconciled_at = new Date(NOW - 180_001).toISOString(); }],
+    ["future reconciliation", (data) => { data.liveAssetData!.SOL!.run.last_reconciled_at = new Date(NOW + 60_001).toISOString(); }],
+    ["paused run", (data) => { data.liveAssetData!.SOL!.run.status = "PAUSED"; }],
+    ["entry gate closed", (data) => { data.nativeLiveControl!.killSwitch = true; }],
+    ["live disabled", (data) => { data.nativeLiveControl!.liveEnabled = false; }],
+    ["executor attention", (data) => { data.nativeLiveControl!.executor!.gate = "ATTENTION"; }],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, () => {
+    const data = historicalMissedLiveFixture(); mutate(data);
+    const model = buildPremiumAssets(data, "REAL", NOW)[1];
+    assert.equal(model.health.healthy, false);
+    assert.notEqual(model.health.label, "OPERACIONAL");
+    assert.equal(model.events[0].type, "MISSED_LEVEL");
+  });
+});
+
+test("current Spot or BNB funding warnings remain visible despite historical crossed levels", () => {
+  for (const code of ["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING"]) {
+    const data = historicalMissedLiveFixture();
+    data.liveAssetData!.SOL!.alerts.push({ code, severity: "WARNING", last_seen_at: AT });
+    const model = buildPremiumAssets(data, "REAL", NOW)[1];
+    assert.equal(model.health.healthy, false);
+    assert.equal(model.health.label, "AGUARDANDO SALDO");
+    assert.equal(model.activeIssueCount, 1); assert.equal(model.alerts[0].code, code);
+  }
+});
+
+test("historical missed levels cannot bypass parent controls or a pending strategy update", () => {
+  const data = historicalMissedLiveFixture(), context = data.engineContext!;
+  assert.equal(buildPremiumEngine(data, context, NOW).health.healthy, true);
+  for (const patch of [{ global_kill_switch: true }, { account_kill_switch: true },
+    { engine_kill_switch: true }, { status: "INACTIVE" }, { strategy_config_pending: true }]) {
+    const model = buildPremiumEngine(data, { ...context, ...patch }, NOW);
+    assert.equal(model.health.healthy, false);
+    assert.notEqual(model.health.label, "OPERACIONAL");
+    assert.equal(model.events[0].type, "MISSED_LEVEL");
+  }
+});
+
+test("same-account same-symbol cross-shard history cannot soften a sibling engine fault", () => {
+  const first = historicalMissedLiveFixture(), second = historicalMissedLiveFixture();
+  second.engineContext = { ...second.engineContext!,
+    trading_engine_id: "00000000-0000-0000-0000-000000000004", executor_shard_id: "executor-03" };
+  second.liveAssetData!.SOL!.run.id = "sibling-engine-run";
+  second.liveAssetData!.SOL!.run.last_error = "COINOPS_LIVE_RECONCILE_ORDERS_FAILED";
+  const a = buildPremiumEngine(first, first.engineContext!, NOW);
+  const b = buildPremiumEngine(second, second.engineContext, NOW);
+  assert.equal(a.accountId, b.accountId); assert.equal(a.symbol, b.symbol);
+  assert.notEqual(a.engineId, b.engineId); assert.notEqual(a.executorShardId, b.executorShardId);
+  assert.equal(a.health.healthy, true); assert.equal(a.activeIssueCount, 0);
+  assert.equal(b.health.healthy, false); assert.equal(b.activeIssueCount, 1);
+  assert.equal(b.health.reason, "COINOPS_LIVE_RECONCILE_ORDERS_FAILED");
+  assert.equal(a.events[0].type, "MISSED_LEVEL"); assert.equal(b.events[0].type, "MISSED_LEVEL");
+});
 test("known funding hold is waiting for cash, never healthy or a financial pause", () => {
   const model = buildPremiumAssets(fundingHoldFixture(), "REAL", NOW)[0];
   assert.equal(model.health.label, "AGUARDANDO SALDO"); assert.equal(model.health.tone, "attention");

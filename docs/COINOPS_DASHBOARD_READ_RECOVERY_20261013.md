@@ -29,3 +29,11 @@ Regressões: 503 com descarte do conjunto parcial; feed 57014 mantendo core; >10
 O RPC de leitura `dashboard_live_engine_reads` e o fallback nativo passam a incluir `trades_reconciled` na projeção de ordens. A migration `20261013135419_add_dashboard_order_reconciliation_evidence.sql` acrescenta somente esse campo; preserva a definição restante, SECURITY INVOKER, filtros, owner, grants e RLS. Sem prova de fill reconciliado, o aviso não pode ser reconhecido como espera simples de saldo.
 
 Trading, cron, Watchdog, capacidade, capital, OPEN, TP e NEXT BUY não mudam. Nenhum restart de executor ou escrita financeira; somente a extensão aditiva do contrato de leitura acima.
+
+## Níveis atravessados e saúde atual (15/10/2026)
+
+A apresentação REAL não usa a existência de `slot.missed_at` como incidente atual. Essa marca é histórico persistido de um nível atravessado; a Strategy Engine pode registrar `MISSED_LEVEL` e seguir para uma próxima BUY válida. O cartão, seletor, banner e resumo devem refletir a operação atual, não permanecer amarelos pelo resto do ciclo.
+
+Somente a condição histórica foi retirada do cálculo de saúde e da razão de atenção em `premium-model.ts`. Permanecem obrigatórios o run ACTIVE, reconciliação recente, executor confirmado, gates abertos, 25 slots/contas, cobertura TP, no máximo uma BUY residente, caps e ausência de erros/alertas atuais. O contexto de conta/motor e atualização pendente mantém suas verificações existentes. WARNING de saldo continua AGUARDANDO SALDO; falha real nunca vira histórico para silenciar o painel.
+
+Não há reconhecimento local, limpeza de `missed_at`, resolução de alerta, UPDATE de ledger, trade retroativo ou alteração da seleção da NEXT BUY. Slots, eventos, auditoria e exports mantêm a evidência original. Nenhuma regra financeira, formato de relatório, migration, cron ou runtime de executor foi alterado. Regressões cobrem histórico preservado e os mesmos registros históricos combinados com bloqueios reais, stale e falha de TP, inclusive isolamento entre motores.

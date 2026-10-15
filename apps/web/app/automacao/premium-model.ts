@@ -160,13 +160,14 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     || live.accounts.length !== 25 || slots.some((slot) => slot.number < 1 || slot.number > 25);
   const exposure = add(committed, reserved);
   const capExceeded = exposure !== null && base.cap !== null && exposure > base.cap + 1e-8;
-  const missedCount = live.slots.filter((slot) => slot.missed_at).length;
   const activeIssue = Boolean(live.run.last_error) || live.alerts.length > 0 || unprotected > 0 || nextCount > 1 || invariantFailed || capExceeded;
   const executorActive = (native ? data.nativeLiveControl?.executor : data.livePreparation?.executor)?.gate === "LIVE_EXECUTOR_ACTIVE";
   const paused = native ? data.nativeLiveControl?.killSwitch === true || data.nativeLiveControl?.liveEnabled !== true
     : rawField(config, "kill_switch") === true || config?.live_enabled === false;
+  // missed_at is historical evidence, not a current financial gate.
+  // Keep it in raw slots/events/audit; only present operational facts set health.
   const healthy = !activeIssue && !paused && executorActive && live.run.status === "ACTIVE"
-    && fresh(live.run.last_reconciled_at, now) && missedCount === 0;
+    && fresh(live.run.last_reconciled_at, now);
   const executor = native ? data.nativeLiveControl?.executor : data.livePreparation?.executor;
   const context = data.engineContext;
   const entryPauseProtected = live.run.status === "PAUSED" && paused
@@ -217,7 +218,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
         : live.alerts.length ? "Alertas ativos no ledger." : invariantFailed ? "Evidência dos 25 slots e contas incompleta."
           : capExceeded ? "Exposição acima do hard cap configurado." : nextCount > 1 ? "Mais de uma BUY residente."
             : paused ? "Novas entradas protegidas pelo controle do ativo." : !executorActive ? "Executor LIVE sem confirmação operacional atual."
-              : missedCount ? "Níveis atravessados requerem consulta à auditoria." : healthy ? "Ciclo reconciliado; posições protegidas." : "Estado atual requer evidência recente.") },
+              : healthy ? "Ciclo reconciliado; posições protegidas." : "Estado atual requer evidência recente.") },
     status: live.run.status, lastCheck: live.run.last_reconciled_at, cycleId: live.run.id, slots, orders, events,
     alerts: live.alerts.map((row) => ({ code: row.code, severity: row.severity, at: row.last_seen_at })),
     openCount: slots.filter((slot) => slot.state === "OPEN").length, nextCount,
