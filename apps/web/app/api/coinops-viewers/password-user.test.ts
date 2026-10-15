@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createPasswordViewerIdentity } from "./password-user.ts";
+import { provisioningDiagnostic } from "../../../lib/billing-provisioning/diagnostics.ts";
 const input = { email: " CLIENT@example.com ", password: "12345678", companyName: "Empresa", ownerName: "Cliente", whatsapp: "67999990000", requestId: "request" };
 test("chosen password creates confirmed VIEWER access without messages or reset", async () => {
   let received: Record<string, unknown> = {};
@@ -41,4 +42,21 @@ test("uncertain create never retries or exposes provider secrets", async () => {
   const service = { auth: { admin: { createUser: async () => { calls++; return { data: { user: null }, error: { code: "timeout", message: input.password } }; } } } } as unknown as SupabaseClient;
   await assert.rejects(createPasswordViewerIdentity(service, input, "actor", "operator"), /^Error: COINOPS_VIEWER_CREATE_UNCONFIRMED$/);
   assert.equal(calls, 1);
+});
+
+test("failed Auth create reports native code safely without retrying or changing its public error", async () => {
+  let calls = 0;
+  const records: unknown[] = [];
+  const service = { auth: { admin: { createUser: async () => { calls++; return { data: { user: null }, error: { code: "unexpected_failure", status: 500, message: input.password, stack: "private-stack" } }; } } } } as unknown as SupabaseClient;
+  await assert.rejects(createPasswordViewerIdentity(service, input, "actor", "operator", undefined, (stage, error) => records.push(provisioningDiagnostic(stage, error))), /^Error: COINOPS_VIEWER_CREATE_UNCONFIRMED$/);
+  assert.equal(calls, 1);
+  assert.deepEqual(records, [{ event: "COINOPS_ACCOUNT_PROVISION_FAILED", stage: "identity_create", code: "unexpected_failure", provider_status: 500 }]);
+});
+
+test("idempotent existing identity recovery does not log an expected duplicate as failure", async () => {
+  const records: unknown[] = [];
+  const service = { auth: { admin: { createUser: async () => ({ data: { user: null }, error: { code: "email_exists", status: 422 } }),
+    listUsers: async () => ({ data: { users: [{ id: "same", email: "client@example.com", app_metadata: { coinops_role: "VIEWER", coinops_provision: { actor_id: "actor", request_id: "request", operator_id: "operator" } } }] }, error: null }) } } } as unknown as SupabaseClient;
+  assert.equal((await createPasswordViewerIdentity(service, input, "actor", "operator", undefined, (stage, error) => records.push(provisioningDiagnostic(stage, error)))).id, "same");
+  assert.deepEqual(records, []);
 });

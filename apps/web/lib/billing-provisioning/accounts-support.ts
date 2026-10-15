@@ -2,20 +2,22 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { AccountError, assertAccountMarker, type AccountInput, type AccountPlan, type ProvisionMarker } from "./accounts-contract";
 
-export async function assertProvisionUser(db: Pick<SupabaseClient, "auth">, id: string, marker?: ProvisionMarker) {
+export async function assertProvisionUser(db: Pick<SupabaseClient, "auth">, id: string, marker?: ProvisionMarker, report?: (error: unknown) => void) {
   const result = await db.auth.admin.getUserById(id), user = result.data.user;
+  if (result.error) report?.(result.error);
   if (result.error || !user || user.deleted_at || Date.parse(user.banned_until ?? "") > Date.now()) throw new AccountError("account_access_unavailable", 409);
   if (marker) assertAccountMarker(user.app_metadata?.onplay_billing_provision, marker);
   return user;
 }
 /** The central actor is never interpreted as a local role or foreign key. */
-export async function localProvisionActor(db: SupabaseClient, product: string, serviceTenantId?: string | null) {
+export async function localProvisionActor(db: SupabaseClient, product: string, serviceTenantId?: string | null, report?: (stage: "actor_operator_read" | "actor_auth_read", error: unknown) => void) {
   let id: string | undefined;
   if (product === "coinops") {
     if (!serviceTenantId) throw new AccountError("provisioning_actor_unavailable");
     const result = await db.from("operators").select("id,user_id,status").eq("tenant_id", serviceTenantId).eq("status", "ACTIVE").order("id").limit(1).maybeSingle();
+    if (result.error) report?.("actor_operator_read", result.error);
     if (result.error || !result.data) throw new AccountError("provisioning_actor_unavailable");
-    const user = await assertProvisionUser(db, result.data.user_id);
+    const user = await assertProvisionUser(db, result.data.user_id, undefined, error => report?.("actor_auth_read", error));
     if (user.app_metadata?.coinops_role === "VIEWER") throw new AccountError("provisioning_actor_unavailable");
     return { id: user.id, operatorId: result.data.id, email: user.email ?? null, fullName: null, role: "master" as const, isActive: true, mustChangePassword: false };
   }

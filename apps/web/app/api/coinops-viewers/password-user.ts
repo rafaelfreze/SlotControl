@@ -1,7 +1,7 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { normalizeViewerWhatsApp, type ViewerIntent } from "./policy.ts";
 
-export async function createPasswordViewerIdentity(service: Pick<SupabaseClient, "auth">, input: ViewerIntent, actorId: string, operatorId: string, centralMarker?: { request_id: string; product_key: string; fingerprint: string }) {
+export async function createPasswordViewerIdentity(service: Pick<SupabaseClient, "auth">, input: ViewerIntent, actorId: string, operatorId: string, centralMarker?: { request_id: string; product_key: string; fingerprint: string }, report?: (stage: "identity_create" | "identity_reconcile_read", error: unknown) => void) {
   const email = input.email!.trim().toLowerCase();
   const marker = { request_id: input.requestId, actor_id: actorId, operator_id: operatorId };
   const created = await service.auth.admin.createUser({ email, password: input.password!, email_confirm: true,
@@ -10,14 +10,16 @@ export async function createPasswordViewerIdentity(service: Pick<SupabaseClient,
       ...(/^onplay-qa-[a-z0-9-]+@example\.test$/i.test(email) && input.companyName!.trim().toUpperCase().startsWith("QA ONPLAY ")
         ? { onplay_qa: { product: "coinops", run_id: "20261014-signup", exclude_billing: true, exclude_analytics: true, allow_publication: false } } : {}) } });
   if (!created.error && created.data.user) return created.data.user;
+  const existing = ["email_exists", "user_already_exists"].includes(created.error?.code ?? "");
+  if (!existing) report?.("identity_create", created.error);
   if (created.error?.code === "weak_password") throw new Error("COINOPS_VIEWER_PASSWORD_INVALID");
-  if (!["email_exists", "user_already_exists"].includes(created.error?.code ?? ""))
+  if (!existing)
     throw new Error("COINOPS_VIEWER_CREATE_UNCONFIRMED");
   // Recover only this exact request after a lost response/binding failure. The
   // server never returns the Auth directory or modifies an existing password.
   for (let page = 1; page <= 20; page++) {
     const users = await service.auth.admin.listUsers({ page, perPage: 100 });
-    if (users.error) break;
+    if (users.error) { report?.("identity_reconcile_read", users.error); break; }
     const user = users.data.users.find((candidate: User) => candidate.email?.toLowerCase() === email);
     if (user) {
       const provision = user.app_metadata?.coinops_provision;
@@ -27,5 +29,6 @@ export async function createPasswordViewerIdentity(service: Pick<SupabaseClient,
     }
     if (users.data.users.length < 100) break;
   }
+  report?.("identity_create", created.error);
   throw new Error("COINOPS_VIEWER_EMAIL_ALREADY_REGISTERED");
 }

@@ -61,3 +61,12 @@ test("central trial keeps the initial Auth creation time across retry and charge
   const payload = support.centralTrialPayload({ plan: { code: "central" } }, "Company", "company", "2026-10-01T14:00:00Z") as unknown as { trial_ends_at: string; billing_start_on: string };
   assert.equal(payload.trial_ends_at, "2026-10-31T14:00:00.000Z"); assert.equal(payload.billing_start_on, "2026-11-01");
 });
+
+test("CoinOps actor Auth failure can be observed without changing access or exposing it to the caller", async () => {
+  const db = fakeDb({ operators: [{ id: "operator", tenant_id: "own", user_id: actor, status: "ACTIVE" }] });
+  const nativeError = { code: "bad_jwt", status: 401, message: "private-provider-message" }, reports: { stage: string; error: unknown }[] = [];
+  Object.assign(db.auth.admin, { getUserById: async () => ({ data: { user: null }, error: nativeError }) });
+  await assert.rejects(support.localProvisionActor(db, "coinops", "own", (stage: string, error: unknown) => reports.push({ stage, error })), /^Error: account_access_unavailable$/);
+  assert.deepEqual(reports, [{ stage: "actor_auth_read", error: nativeError }]);
+  assert.deepEqual(Object.keys(db.auth.admin), ["getUserById"]);
+});
