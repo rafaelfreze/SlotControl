@@ -3,11 +3,12 @@ import type { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { resolveExecutorForConnection } from "./executor-shards-server.ts";
 import { operatorConnectionAdmin } from "./operator-executor-admin.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type InactiveEngine = { id: string; symbol: string; base_asset: string; quote_asset: string;
   status: string; kill_switch: boolean; executor_shard_id: string; hard_cap_quote: number | string;
-  config: { slot_count: number; max_order_quote: number } };
+  slot_count?: number; config: { slot_count: number; max_order_quote: number } };
 
 /** Prepares only inactive engines. This path has no exchange write capability. */
 export async function syncInactiveBinanceAccount(service: Service, operatorId: string,
@@ -17,7 +18,7 @@ export async function syncInactiveBinanceAccount(service: Service, operatorId: s
     service.from("exchange_accounts").select("id,operator_id,status,kill_switch,is_legacy_default,executor_profile")
       .eq("id", accountId).eq("operator_id", operatorId).single(),
     completeLedgerRead<InactiveEngine>((start, end) => service.from("trading_engines")
-      .select("id,symbol,base_asset,quote_asset,status,kill_switch,hard_cap_quote,config,executor_shard_id")
+      .select("id,symbol,base_asset,quote_asset,status,kill_switch,hard_cap_quote,config,executor_shard_id,slot_count")
       .eq("operator_id", operatorId).eq("exchange_account_id", accountId).eq("environment", "REAL")
       .order("id").range(start, end), "COINOPS_ADMIN_REGISTRY_SCOPE_DENIED"),
   ]);
@@ -45,13 +46,14 @@ export async function syncInactiveBinanceAccount(service: Service, operatorId: s
       caps.set(engine.quote_asset, Number(cap.data!.hard_cap_quote));
     }
     const engineCap = Number(engine.hard_cap_quote), accountCap = caps.get(engine.quote_asset)!;
-    const slotCount = Number(engine.config?.slot_count);
+    const slotCount = configuredEngineSlotCount(engine);
     const maxOrder = Number(engine.config?.max_order_quote);
     if (!Number.isFinite(engineCap) || engineCap <= 0 || !Number.isFinite(accountCap)
-      || accountCap < engineCap || slotCount !== 25 || !Number.isFinite(maxOrder)
+      || accountCap < engineCap || !Number.isFinite(maxOrder)
       || maxOrder <= 0 || maxOrder > engineCap) throw new Error("COINOPS_ADMIN_REGISTRY_CAP_INVALID");
     rows.push({ operator_id: operatorId, exchange_account_id: accountId, trading_engine_id: engine.id,
       environment: "REAL", symbol: engine.symbol, base_asset: engine.base_asset, quote_asset: engine.quote_asset,
+      slot_count: slotCount,
       status: "INACTIVE", kill_switch: true, account_kill_switch: true, global_kill_switch: true,
       execution_allowed: false, is_legacy_default: false, legacy_ownership: false,
       hard_cap_quote: engineCap, account_cap_quote: accountCap, max_order_quote: maxOrder,

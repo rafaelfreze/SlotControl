@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as topology from "./engine-slot-topology.ts";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
@@ -62,6 +63,7 @@ function fixture(options: { busy?: number; acquireError?: boolean; recordError?:
   } };
   class Clock extends Date { constructor(value: string | number = now) { super(value); } static now() { return now; } }
   const dependencies: Record<string, any> = {
+    "./engine-slot-topology.ts": topology,
     "node:crypto": { randomUUID: () => `owner-${acquired}-${reads}` },
     "node:timers/promises": { setTimeout: async (ms: number) => { assert.equal(owner, null); events.push(`WAIT:${ms}`); now += ms; } },
     "./complete-ledger-read.ts": { completeLedgerRead },

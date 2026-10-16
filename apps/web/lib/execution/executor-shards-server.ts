@@ -133,7 +133,10 @@ type BoundConnection = { operator_id: string; exchange_account_id: string; execu
 type CandidateAccount = { id: string; operator_id: string; status: string;
   is_legacy_default: boolean; executor_shard_id: string | null };
 /** Credential setup may target another certified IP, but can neither change
- * an installed binding nor use a different account/tenant's vault reference. */
+ * an installed binding nor use a different account/tenant's vault reference.
+ * Revalidation may discover an already-installed canonical credential. Without
+ * a prior connection/engine it still needs admission before contacting that IP;
+ * only the authenticated executor observation can establish the connection. */
 export function assertExecutorConnectionCandidate(operator: BoundOperator | null, account: CandidateAccount | null,
   input: { operatorId: string; accountId: string; shardId: string; tenantId: string;
     operation: "CONNECT" | "REVALIDATE"; admissionCode: string; connectionRef?: string | null;
@@ -142,8 +145,8 @@ export function assertExecutorConnectionCandidate(operator: BoundOperator | null
     || operator.status !== "ACTIVE" || !account || account.id !== input.accountId
     || account.operator_id !== input.operatorId || !["ACTIVE", "INACTIVE"].includes(account.status)
     || !SHARD.test(input.shardId) || !["CONNECT", "REVALIDATE"].includes(input.operation)
-    || input.operation === "CONNECT" && input.admissionCode !== "CAPACITY_OK"
-    || input.operation === "REVALIDATE" && !input.installedEngine && !input.connectionRef)
+    || (input.operation === "CONNECT" || !input.installedEngine && !input.connectionRef)
+      && input.admissionCode !== "CAPACITY_OK")
     throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
   const canonicalRef = `account_${account.id.replaceAll("-", "")}`;
   const ref = input.connectionRef ?? (account.is_legacy_default && input.shardId === "executor-01"
@@ -164,7 +167,7 @@ export async function resolveExecutorForConnectionCandidate(operatorId: string, 
   if (getSupabaseDataSchema() !== "coinops" || !tenantId) throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
   const { createServiceRoleClient } = await import("../supabase/service-role");
   const service = createServiceRoleClient();
-  const [operator, account, connection, engines, shard, admission] = await Promise.all([
+  const [operator, account, connection, engines, shard] = await Promise.all([
     service.from("operators").select("id,tenant_id,status").eq("id", operatorId).eq("tenant_id", tenantId).single(),
     service.from("exchange_accounts").select("id,operator_id,status,is_legacy_default,executor_shard_id")
       .eq("id", accountId).eq("operator_id", operatorId).single(),
@@ -174,11 +177,17 @@ export async function resolveExecutorForConnectionCandidate(operatorId: string, 
     service.from("trading_engines").select("id").eq("exchange_account_id", accountId).eq("operator_id", operatorId)
       .eq("executor_shard_id", shardId).eq("environment", "REAL").limit(1),
     service.from("executor_shards").select("id,egress_ipv4,enabled").eq("id", shardId).single(),
-    operation === "CONNECT" ? service.rpc("preview_executor_admission", { p_shard_id: shardId,
-      p_environment: "REAL", p_engines: 1 }) : Promise.resolve({ error: null, data: { code: "READ_ONLY_REVALIDATION" } }),
   ]);
-  if ([operator, account, connection, engines, shard, admission].some((result) => result.error)
+  if ([operator, account, connection, engines, shard].some((result) => result.error)
     || shard.data?.id !== shardId || !shard.data.enabled) throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
+  const unbound = !engines.data?.length && !connection.data?.credential_ref;
+  // Existing engines/connections must remain revalidatable even when no new
+  // load can be admitted. Only discovery of a new connection needs this gate;
+  // it never reserves capacity or admits an engine/its slot topology.
+  const admission = operation === "CONNECT" || unbound
+    ? await service.rpc("preview_executor_admission", { p_shard_id: shardId, p_environment: "REAL", p_engines: 1 })
+    : { error: null, data: { code: "READ_ONLY_REVALIDATION" } };
+  if (admission.error) throw new Error("EXECUTOR_CONNECTION_SHARD_DENIED");
   const binding = assertExecutorConnectionCandidate(operator.data, account.data, { operatorId, accountId, shardId,
     tenantId, operation, admissionCode: admission.data?.code, connectionRef: connection.data?.credential_ref,
     installedEngine: !!engines.data?.length });

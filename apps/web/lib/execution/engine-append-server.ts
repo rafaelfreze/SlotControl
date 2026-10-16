@@ -9,6 +9,7 @@ import { buildLiveSizing, parseLiveRules } from "./live-preparation.ts";
 import { collectAccountOrderBudget, previewAccountOrderBudget } from "./account-order-budget-server.ts";
 import { ensureAccountExecutionPolicy } from "./account-execution-policy-server.ts";
 import { allocationSnapshotFingerprint, confirmedEngineCapitalExposure, type AllocationSlot, type AllocationOrder } from "./engine-append-exposure.ts";
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
 type Service = ReturnType<typeof createServiceRoleClient>;
 export type AppendPlanInput = EnginePlanInput & { shardId: string; previewHash?: string };
 type Allocated = { id: string; symbol: string; legacy_compatible: boolean; hard_cap_quote: number | string; executor_shard_id: string };
@@ -16,7 +17,7 @@ const unknown = "COINOPS_ENGINE_APPEND_ALLOCATION_UNKNOWN";
 function sqlPlan(plan: ReturnType<typeof validateEnginePlan>, shardId: string) {
   return { quote: plan.quote, capital: plan.capital, shardId, engines: plan.engines.map((engine) => ({
     asset: engine.asset, capital: engine.capital, gain: engine.gain, spacing: engine.spacing,
-    postAth: engine.postAth, monthlyTarget: engine.monthlyTarget })) };
+    postAth: engine.postAth, monthlyTarget: engine.monthlyTarget, slotCount: engine.slotCount })) };
 }
 export async function allocatedCapital(service: Service, operatorId: string, accountId: string,
   quote: string, snapshot: OperatorExchangeSnapshot) {
@@ -59,9 +60,15 @@ export async function previewEngineAppend(service: Service, operatorId: string, 
   deadline = Date.now() + 50_000) {
   const plan = validateEnginePlan(input);
   if (plan.quote === "USDC" || !/^executor-[0-9]{2,4}$/.test(input.shardId)) throw new Error("COINOPS_ENGINE_MARKET_DENIED");
-  const options = await loadEngineAdmissionOptions(service, operatorId, plan.accountId, plan.engines.length);
+  const options = await loadEngineAdmissionOptions(service, operatorId, plan.accountId, plan.engines.length,
+    plan.engines.map((engine) => engine.slotCount));
   const selected = options.find((option) => option.shardId === input.shardId);
-  if (selected?.capacityCode !== "CAPACITY_OK") throw new Error("COINOPS_CAPACITY_REQUIRED");
+  if (selected?.capacityCode !== "CAPACITY_OK") {
+    if (selected?.capacityCode === "CAPACITY_UNKNOWN")
+      throw new Error(selected.capacityReason === "SLOT_WORKLOAD_UNCERTIFIED"
+        ? "COINOPS_SLOT_WORKLOAD_UNCERTIFIED" : "COINOPS_CAPACITY_UNKNOWN");
+    throw new Error(selected ? "COINOPS_CAPACITY_REQUIRED" : "COINOPS_CAPACITY_UNKNOWN");
+  }
   if (selected.credential !== "VALIDATED") throw new Error("COINOPS_BINANCE_CREDENTIAL_SHARD_VALIDATION_REQUIRED");
   // Read all symbols for this quote, even when adding another same-symbol
   // engine, to distinguish actual shared wallet holds from spare allocation.
@@ -79,7 +86,8 @@ export async function previewEngineAppend(service: Service, operatorId: string, 
   for (let attempt = 0; attempt < 2; attempt++) {
     await collectAccountOrderBudget(service, operatorId, plan.accountId, input.shardId, newSymbols, fetch,
       { deadline, minimumValidityMs: 4000 });
-    budget = await previewAccountOrderBudget(service, operatorId, plan.accountId, newSymbols);
+    budget = await previewAccountOrderBudget(service, operatorId, plan.accountId, newSymbols, [],
+      plan.engines.map((engine) => engine.slotCount));
     if (budget.code !== "ACCOUNT_ORDER_BUDGET_UNKNOWN" || budget.reason !== "interval expired or invalid"
       || attempt === 1 || Date.now() + 5500 >= deadline) break;
     await wait(5500); // Fresh GET after a crossed window, never reuse expired evidence.
@@ -89,7 +97,7 @@ export async function previewEngineAppend(service: Service, operatorId: string, 
   const engines = plan.engines.map((engine) => {
     const market = snapshot.markets.find((row) => row.symbol === engine.symbol)!;
     const sizing = buildLiveSizing(parseLiveRules(market.rules), market.price, { asset: engine.asset,
-      symbol: engine.symbol, quote_asset: plan.quote, slot_count: 25, gain_rate: engine.gain,
+      symbol: engine.symbol, quote_asset: plan.quote, slot_count: engine.slotCount, gain_rate: engine.gain,
       normal_spacing_rate: engine.spacing, post_ath_spacing_rate: engine.postAth, regime: "NORMAL",
       monthly_target: engine.monthlyTarget, configured_live_capital_brl: engine.capital,
       max_order_notional_brl: engine.capital, max_total_exposure_brl: engine.capital, config_version: 1,
@@ -114,7 +122,7 @@ export async function previewEngineAppend(service: Service, operatorId: string, 
     executorIp: selected.ip, observedAt: snapshot.observed_at, free: allocation.free,
     allocatedCapital: allocation.allocatedCapital, availableCapital: allocation.availableCapital,
     capacity: selected, budget, previewHash, engines,
-    status: engines.every((engine) => engine.validSlots === 25) ? "PREVIEW_NO_ORDER" : "NOT_EXECUTABLE" };
+    status: engines.every((engine) => engine.validSlots === engine.slotCount) ? "PREVIEW_NO_ORDER" : "NOT_EXECUTABLE" };
 }
 
 export async function synchronizeAppendedEngines(service: Service, operatorId: string, accountId: string, requestId: string) {
@@ -136,7 +144,7 @@ export async function synchronizeAppendedEngines(service: Service, operatorId: s
   }
   const target = await import("./executor-shards-server.ts").then((module) => module.resolveExecutorForConnection(operatorId, accountId, saved.shardId));
   const ids = saved.result.map((row: { engineId: string }) => row.engineId);
-  const rows = await service.from("trading_engines").select("id,symbol,base_asset,quote_asset,hard_cap_quote,executor_shard_id,config")
+  const rows = await service.from("trading_engines").select("id,symbol,base_asset,quote_asset,hard_cap_quote,executor_shard_id,config,slot_count")
     .eq("operator_id", operatorId).eq("exchange_account_id", accountId).eq("environment", "REAL").in("id", ids);
   if (rows.error || rows.data?.length !== ids.length || rows.data.some((engine) => engine.executor_shard_id !== saved.shardId))
     throw new Error("COINOPS_ENGINE_APPEND_SYNC_PENDING");
@@ -144,6 +152,7 @@ export async function synchronizeAppendedEngines(service: Service, operatorId: s
     operatorId, accountId, saved.shardId, "/v1/admin/registry-append", { engines: rows.data.map((engine) => ({
       operator_id: operatorId, exchange_account_id: accountId, trading_engine_id: engine.id, environment: "REAL",
       symbol: engine.symbol, base_asset: engine.base_asset, quote_asset: engine.quote_asset,
+      slot_count: configuredEngineSlotCount(engine),
       status: "INACTIVE", execution_allowed: false, kill_switch: true, account_kill_switch: true, global_kill_switch: true,
       is_legacy_default: false, legacy_ownership: false, hard_cap_quote: Number(engine.hard_cap_quote),
       account_cap_quote: Number(cap.data!.hard_cap_quote), max_order_quote: Number(engine.config.max_order_quote),
@@ -164,8 +173,8 @@ export async function provisionEngineAppend(service: Service, operatorId: string
       // JSONB key ordering is not JS ordering. Compare semantic object values.
       const saved = existing.data.evidence.input;
       if (saved.quote !== configuration.quote || saved.capital !== configuration.capital || saved.shardId !== configuration.shardId
-        || JSON.stringify(saved.engines.map((engine: Record<string, unknown>) => [engine.asset, engine.capital, engine.gain, engine.spacing, engine.postAth, engine.monthlyTarget]))
-          !== JSON.stringify(configuration.engines.map((engine) => [engine.asset, engine.capital, engine.gain, engine.spacing, engine.postAth, engine.monthlyTarget])))
+        || JSON.stringify(saved.engines.map((engine: Record<string, unknown>) => [engine.asset, engine.capital, engine.gain, engine.spacing, engine.postAth, engine.monthlyTarget, engine.slotCount ?? 25]))
+          !== JSON.stringify(configuration.engines.map((engine) => [engine.asset, engine.capital, engine.gain, engine.spacing, engine.postAth, engine.monthlyTarget, engine.slotCount])))
         throw new Error("COINOPS_PLAN_REPLAY_MISMATCH");
     }
     return synchronizeAppendedEngines(service, operatorId, plan.accountId, plan.requestId);

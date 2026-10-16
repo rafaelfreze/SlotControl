@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
+import * as topology from "./engine-slot-topology.ts";
 
 test("first CONNECT leaves an empty shard registry empty until engines are provisioned", async () => {
   let resolved = 0, dispatched = 0;
@@ -16,6 +17,7 @@ test("first CONNECT leaves an empty shard registry empty until engines are provi
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./engine-slot-topology.ts": topology,
     "server-only": {}, "./complete-ledger-read.ts": { completeLedgerRead },
     "./operator-executor-admin.ts": { operatorConnectionAdmin: () => { dispatched++; } },
     "./executor-shards-server.ts": { resolveExecutorForConnection: () => { resolved++; } },
@@ -39,7 +41,7 @@ test("inactive same-symbol engines synchronize only to their own validated shard
   const account = { status: "INACTIVE", kill_switch: true, is_legacy_default: false, executor_profile: "coinops-fixed-ip" };
   const engines = ["executor-02", "executor-03"].map((shard, index) => ({ id: `engine-${index}`, symbol: "SOLBRL",
     base_asset: "SOL", quote_asset: "BRL", status: "INACTIVE", kill_switch: true, executor_shard_id: shard,
-    hard_cap_quote: 100, config: { slot_count: 25, max_order_quote: 100 } }));
+    hard_cap_quote: 100, slot_count: index ? 100 : 25, config: { slot_count: index ? 100 : 25, max_order_quote: 100 } }));
   const service = { from(table: string) {
     const response = { data: table === "exchange_accounts" ? account : table === "trading_engines" ? engines : { hard_cap_quote: 200 }, error: null };
     const chain = { select: () => chain, eq: () => chain, order: () => chain, range: () => chain, single: async () => response,
@@ -47,6 +49,7 @@ test("inactive same-symbol engines synchronize only to their own validated shard
   } };
   let denied = false; const calls: string[] = [], installed = new Set<string>();
   const deps: Record<string, unknown> = { "server-only": {}, "./complete-ledger-read.ts": { completeLedgerRead },
+    "./engine-slot-topology.ts": topology,
     "./executor-shards-server.ts": { resolveExecutorForConnection: async (_op: string, _account: string, shard: string) => {
       if (denied && shard === "executor-03") throw new Error("VALIDATION_REQUIRED");
       return { shardId: shard, credentialRef: `vault-${shard}` };
@@ -57,6 +60,7 @@ test("inactive same-symbol engines synchronize only to their own validated shard
       assert.equal(payload.engines?.length, 1);
       const row = payload.engines![0], engine = engines.find((engine) => engine.id === row.trading_engine_id)!;
       assert.equal(engine.executor_shard_id, shard); assert.equal(row.credential_ref, `vault-${shard}`);
+      assert.equal(row.slot_count, engine.slot_count);
       assert.equal(row.execution_allowed, false); assert.equal(row.kill_switch, true); assert.equal(row.status, "INACTIVE");
       installed.add(String(row.trading_engine_id)); return { registered_engines: 1, status: "INACTIVE", trading_enabled: false };
     } } };

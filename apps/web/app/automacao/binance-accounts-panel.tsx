@@ -105,7 +105,7 @@ export function BinanceAccountsPanel() {
           exchange_account_id: engine.accountId, trading_engine_id: engine.id }) });
       const result = await response.json();
       if (!response.ok || result.status !== "PREPARED") throw new Error(result.error ?? result.gate ?? "PREPARATION_FAILED");
-      setMessage(`${engine.symbol}: 25 slots preparados no ledger; nenhuma ordem enviada. Ciclo ${result.cycle_id}.`);
+      setMessage(`${engine.symbol}: ${engine.slotCount ?? "Quantidade não confirmada de"} slots preparados no ledger; nenhuma ordem enviada. Ciclo ${result.cycle_id}.`);
       await refresh();
     } catch (error) { setMessage(error instanceof Error ? error.message : "Preparação indisponível."); }
     finally { setBusy(false); }
@@ -179,7 +179,7 @@ export function BinanceAccountsPanel() {
         {" "}{engine.initialSlotQuote ?? "—"} {engine.quoteAsset}/slot
         {active.status === "INACTIVE" && engine.status === "INACTIVE" && <button type="button"
           className="px-button" disabled={busy || active.validation?.evidence.status !== "PASS"}
-          onClick={() => void prepare(engine)}>Preparar 25 slots · sem ordens</button>}
+          onClick={() => void prepare(engine)}>Preparar {engine.slotCount ?? ""} slots · sem ordens</button>}
       </p>)}
     </div>}
     {message && <p role="status">{message}</p>}

@@ -5,6 +5,7 @@ import { MONTHLY_SLOT_TARGET } from "@/lib/execution/monthly-slot-policy";
 import { orderOperationalSlots } from "@/lib/slotgain/operational-slot-order";
 
 import { saveAthNextProfile } from "./ath-config-actions";
+import { configuredEngineSlotCount } from "@/lib/execution/engine-slot-topology";
 
 type Profile = {
   id: string; environment: "SHADOW" | "TESTNET" | "REAL"; asset: "BTC" | "SOL";
@@ -48,7 +49,7 @@ export function AthProfilesPanel({ profiles, slots, marketPrices, view, realLive
           {context ? <p>Referência ATH: {context.ath_reference_symbol}. Ordens e ledger: {context.symbol} ({context.quote_asset}). São mercados distintos quando as moedas diferem; não há conversão implícita.</p> : null}
           <p>Floor: {profile.ath_floor_reference ?? "Referência de retorno ainda não definida"}{profile.ath_floor_source ? ` · ${profile.ath_floor_source}` : ""}</p>
           {floorDistance !== null ? <p>Distância ao floor pelo último preço Production consultado: {floorDistance.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%.</p> : null}
-          <p>Atual: gain {pct(profile.gain_rate)} · queda normal {pct(profile.normal_spacing_rate)} · queda pós-ATH {pct(profile.post_ath_spacing_rate)} · meta {monthlyTarget}/slot/mês · 25 slots.</p>
+          <p>Atual: gain {pct(profile.gain_rate)} · queda normal {pct(profile.normal_spacing_rate)} · queda pós-ATH {pct(profile.post_ath_spacing_rate)} · meta {monthlyTarget}/slot/mês · {configuredEngineSlotCount(context ?? {})} slots.</p>
           {post ? <p>Primary: {primary.length} selecionados · {available(primary)} disponíveis. Reserve: {reserve.length} selecionados · {available(reserve)} disponíveis.</p> : null}
           {profile.next_config_version ? <p>Próximo ciclo preparado: v{profile.next_config_version} · gain {pct(profile.next_gain_rate)} · normal {pct(profile.next_normal_spacing_rate)} · pós-ATH {pct(profile.next_post_ath_spacing_rate)}.</p> : null}
           {environment === "REAL" ? <p className="ath-profile-live-blocked">{realLiveActive

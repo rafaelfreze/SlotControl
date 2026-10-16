@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { liveQuoteBalanceCheck } from "./live-quote-balance.ts";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
@@ -117,6 +118,7 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-quote-balance": { liveQuoteBalanceCheck },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },

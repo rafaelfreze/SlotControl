@@ -1,12 +1,14 @@
 import type { MonthlySlotStatus } from "../../lib/execution/monthly-slot-policy.ts";
 import { compareOperationalSlots, isOperationalOpen as isOpen } from "../../lib/slotgain/operational-slot-order.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "../../lib/execution/engine-slot-topology.ts";
 
 export type MonthlySlotFilter = "operational" | "physical" | "gain_desc" | "gain_asc" | "reached" | "eligible" | "open" | "waiting";
 
 
 /** Sorts the existing slot list; physical identities and ledger rows never change. */
-export function orderMonthlySlotRows<T>(rows: readonly T[], statuses: readonly MonthlySlotStatus[], slotNumber: (row: T) => number, filter: MonthlySlotFilter): T[] {
-  if (statuses.length !== 25) return [...rows];
+export function orderMonthlySlotRows<T>(rows: readonly T[], statuses: readonly MonthlySlotStatus[], slotNumber: (row: T) => number, filter: MonthlySlotFilter,
+  slotCount = DEFAULT_ENGINE_SLOT_COUNT): T[] {
+  if (!hasCompletePhysicalSlotSet(statuses.map((row) => row.physicalSlotNumber), slotCount)) return [...rows];
   const byNumber = new Map(statuses.map((status) => [status.physicalSlotNumber, status]));
   const included = rows.filter((row) => {
     const status = byNumber.get(slotNumber(row));

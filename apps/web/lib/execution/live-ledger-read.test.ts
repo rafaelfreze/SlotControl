@@ -9,6 +9,7 @@ import { mayRecoverReadOutage, verifiedReadRecoveryAlert } from "./live-read-rec
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
+import * as slotTopology from "./engine-slot-topology.ts";
 
 const physical = () => Array.from({ length: 25 }, (_, i) => ({ slot_number: i + 1 }));
 
@@ -151,6 +152,7 @@ function fixture(engine: string, failures: Record<string, { code: string; status
     return chain;
   } };
   const deps: Record<string, unknown> = { "./live-read-error": readErrors,
+    "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-exposure-read": { readLiveExposure },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, assertPhysicalLedger },

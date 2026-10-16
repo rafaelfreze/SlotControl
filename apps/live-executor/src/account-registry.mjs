@@ -2,6 +2,7 @@ import { chown, chmod, open, readFile, rename, stat, unlink } from "node:fs/prom
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ExecutorRejection, sha256 } from "./security.mjs";
+import { configuredEngineSlotCount } from "../../web/lib/execution/engine-slot-topology.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEY = /^[a-zA-Z0-9:_-]{8,160}$/;
@@ -74,6 +75,7 @@ export function validateExecutorRegistry(registry) {
   const ids = new Set(), prefixes = new Set(), accounts = new Map(), credentials = new Map();
   const quoteCaps = new Map();
   for (const row of registry.engines) {
+    try { configuredEngineSlotCount(row); } catch { deny("EXECUTOR_REGISTRY_INVALID"); }
     if ((row.executor_shard_id ?? shardId) !== shardId
       || shardId !== "executor-01" && (row.is_legacy_default || row.legacy_ownership))
       deny("EXECUTOR_REGISTRY_SHARD_MISMATCH");
@@ -88,7 +90,7 @@ export function validateExecutorRegistry(registry) {
       || row.hard_cap_quote > row.account_cap_quote || row.max_order_quote > row.hard_cap_quote
       || row.executor_profile !== "coinops-fixed-ip"
       || !registry.credentials[row.credential_ref]) deny("EXECUTOR_REGISTRY_INVALID");
-    if (row.legacy_ownership && (!row.is_legacy_default || !["BTCBRL", "SOLBRL"].includes(row.symbol)
+    if (row.legacy_ownership && (configuredEngineSlotCount(row) !== 25 || !row.is_legacy_default || !["BTCBRL", "SOLBRL"].includes(row.symbol)
       || row.credential_ref !== "legacy-binance-production")) deny("EXECUTOR_LEGACY_SCOPE_DENIED");
     if (row.is_legacy_default && (row.execution_allowed || row.legacy_ownership)
       && !["BTCBRL", "SOLBRL"].includes(row.symbol)) deny("EXECUTOR_HARD_CAP_DENIED");
@@ -354,6 +356,9 @@ export async function saveInactiveRegistryAccount(staticRegistry, directory, sco
     const existing = dynamic.engines.filter((row) => row.exchange_account_id === scope.exchange_account_id);
     if (existing.some((row) => row.operator_id !== scope.operator_id || row.status !== "INACTIVE"
       || row.execution_allowed || !row.kill_switch)) deny("EXECUTOR_REGISTRY_SYNC_DENIED");
+    if (existing.some(row => rows.some(next => next.trading_engine_id === row.trading_engine_id
+      && configuredEngineSlotCount(next) !== configuredEngineSlotCount(row))))
+      deny("EXECUTOR_REGISTRY_SYNC_DENIED");
     const next = { version: 1, ...(staticRegistry.executor_shard_id
       ? { executor_shard_id: staticRegistry.executor_shard_id } : {}),
       ...(dynamic.capital_overrides ? { capital_overrides: dynamic.capital_overrides } : {}),
@@ -394,7 +399,8 @@ export async function appendInactiveRegistryEngines(staticRegistry, directory, s
       if (existing) {
         if (["operator_id", "exchange_account_id", "environment", "symbol", "base_asset", "quote_asset",
           "credential_ref", "hard_cap_quote", "max_order_quote", "legacy_ownership", "executor_profile"]
-          .some((field) => existing[field] !== row[field])) deny("EXECUTOR_REGISTRY_APPEND_REPLAY_MISMATCH");
+          .some((field) => existing[field] !== row[field])
+          || configuredEngineSlotCount(existing) !== configuredEngineSlotCount(row)) deny("EXECUTOR_REGISTRY_APPEND_REPLAY_MISMATCH");
       } else additions.push(row);
     }
     if (!additions.length) return { registered_engines: rows.length, status: "INACTIVE", trading_enabled: false, replayed: true };
@@ -472,6 +478,7 @@ export async function promoteRegistryEngine(staticRegistry, directory, scope) {
       || row.symbol !== scope.symbol || row.is_legacy_default || row.legacy_ownership
       || row.hard_cap_quote !== scope.hard_cap_quote || row.account_cap_quote !== scope.account_cap_quote
       || row.max_order_quote !== scope.max_order_quote
+      || configuredEngineSlotCount(row) !== configuredEngineSlotCount(scope)
       || staticRegistry.engines.some((item) => item.trading_engine_id === row.trading_engine_id))
       deny("EXECUTOR_REGISTRY_PROMOTION_DENIED");
     if (row.status === "ACTIVE" && row.execution_allowed && !row.kill_switch
@@ -636,9 +643,13 @@ export function assertEngineOrder(engine, symbol, id, side) {
     deny("EXECUTOR_ORDER_NOT_OWNED");
   const match = engine.legacy_ownership
     ? /^COR1-(BTC|SOL)-([1-9]|1[0-9]|2[0-5])-([1-9][0-9]*)-(BUY|SELL)-[a-f0-9]{14}$/.exec(id)
-    : /^C2-[a-f0-9]{10}-([1-9]|1[0-9]|2[0-5])-(B|S)-[a-f0-9]{14}$/.exec(id);
+    : /^C2-[a-f0-9]{10}-([1-9][0-9]{0,2})-(B|S)-[a-f0-9]{14}$/.exec(id);
   const actualSide = engine.legacy_ownership ? match?.[4] : match?.[2] === "B" ? "BUY" : "SELL";
-  if (!match || side && actualSide !== side) deny("EXECUTOR_ORDER_NOT_OWNED");
+  const slot = Number(engine.legacy_ownership ? match?.[2] : match?.[1]);
+  let count;
+  try { count = configuredEngineSlotCount(engine); } catch { deny("EXECUTOR_ORDER_NOT_OWNED"); }
+  if (!match || !Number.isInteger(slot) || slot < 1 || slot > count || side && actualSide !== side)
+    deny("EXECUTOR_ORDER_NOT_OWNED");
   return { slot: engine.legacy_ownership ? match[2] : match[1], side: actualSide };
 }
 

@@ -79,7 +79,7 @@ async function readRegistryAttempt(client: Client, scope: OperatorScope, attempt
   }
   const reads = await Promise.allSettled([
     pages("exchange_accounts", "id,operator_id,display_name,status,is_legacy_default,kill_switch,executor_shard_id"),
-    pages("trading_engines", "id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch,strategy_config_pending,hard_cap_quote,legacy_compatible,ath_reference_symbol,executor_shard_id"),
+    pages("trading_engines", "id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch,strategy_config_pending,hard_cap_quote,legacy_compatible,ath_reference_symbol,executor_shard_id,slot_count,config"),
   ]);
   // A fast transient sibling cannot hide a permission/scope/malformed read and
   // make a retry look like an authorized complete observation.

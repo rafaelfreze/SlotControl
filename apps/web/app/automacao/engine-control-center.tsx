@@ -6,11 +6,13 @@ import { activationAdmissionView, type ActivationAdmission } from "@/lib/coinops
 import { engineDisplayName } from "@/lib/execution/engine-display";
 import { newEngineStrategyPercentDefaults } from "@/lib/execution/strategy-defaults";
 import { EngineAppendBuilder } from "./engine-append-builder";
+import { DEFAULT_ENGINE_SLOT_COUNT, MIN_ENGINE_SLOT_COUNT, MAX_ENGINE_SLOT_COUNT } from "@/lib/execution/engine-slot-topology";
 
 type Account = { id: string; display_name: string; status: string; kill_switch: boolean;
   is_legacy_default: boolean; credentialValidated: boolean; environment: "REAL" | "TESTNET" | null;
   executor_shard_id: string | null };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: string;
+  slot_count: number;
   executor_shard_id?: string; created_at?: string;
   environment: "REAL" | "TESTNET"; status: string; kill_switch: boolean; hard_cap_quote: number | string;
   operational: boolean; ready: boolean; evidence: { physicalSlots: number; open: number;
@@ -19,7 +21,7 @@ type Engine = { id: string; exchange_account_id: string; symbol: string; quote_a
   run: { id: string; status: string; last_error: string | null; last_reconciled_at: string | null } | null;
   profile: { gain_rate: number | string; normal_spacing_rate: number | string;
     post_ath_spacing_rate: number | string; config_version: number } | null };
-type EnginePreview = { symbol: string; asset: "BTC" | "SOL"; capital: number;
+type EnginePreview = { symbol: string; asset: "BTC" | "SOL"; capital: number; slotCount: number;
   allocation: number[]; gain: number; spacing: number; postAth: number;
   monthlyTarget: number; currentPrice: number; minNotional: number; minQuantity: number;
   quantityStep: number; priceTick: number; recommendedPerSlot: number;
@@ -31,11 +33,11 @@ type Preview = { account: string; quote: string; capital: number; free: number;
   engines: EnginePreview[]; status: "PREVIEW_NO_WRITE" | "NOT_EXECUTABLE" };
 type MarketAsset = "BTC" | "SOL";
 type Rules = Record<MarketAsset, { gainPercent: string; spacingPercent: string;
-  postAthPercent: string; capital: string }>;
+  postAthPercent: string; capital: string; slotCount: string }>;
 
 const defaultRules: Rules = {
-  BTC: { ...newEngineStrategyPercentDefaults("BTC"), capital: "" },
-  SOL: { ...newEngineStrategyPercentDefaults("SOL"), capital: "" },
+  BTC: { ...newEngineStrategyPercentDefaults("BTC"), capital: "", slotCount: String(DEFAULT_ENGINE_SLOT_COUNT) },
+  SOL: { ...newEngineStrategyPercentDefaults("SOL"), capital: "", slotCount: String(DEFAULT_ENGINE_SLOT_COUNT) },
 };
 const api = "/api/coinops-engine-control";
 const decimal = (value: string) => value.trim().replace(",", ".");
@@ -112,7 +114,7 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
         capital: decimal(equal ? plannedSplit?.[asset] ?? "" : rules[asset].capital),
         gainPercent: decimal(rules[asset].gainPercent),
         spacingPercent: decimal(rules[asset].spacingPercent),
-        postAthPercent: decimal(rules[asset].postAthPercent) })) };
+        postAthPercent: decimal(rules[asset].postAthPercent), slotCount: Number(rules[asset].slotCount) })) };
   }
   async function send(body: Record<string, unknown>) {
     const response = await fetch(api, { method: "POST", cache: "no-store", credentials: "same-origin",
@@ -166,7 +168,7 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
   return <section className="px-engine-center" aria-label="Central de estratégia e motores">
     <header className="px-engine-center-head"><div><span className="px-eyebrow">CONFIGURAÇÃO OPERACIONAL · {testnet ? "TESTNET" : "REAL"}</span>
       <h2>Estratégia e motores</h2><p>Conta e moeda explícitas. O preview consulta a Binance, não envia ordens.
-      Cada motor tem seu cap, 25 slots e ciclo próprio.</p></div>
+      Cada motor tem seu cap, quantidade de slots e ciclo próprio.</p></div>
       <button type="button" className="px-button" onClick={onOpenCredentials}>Contas Binance →</button></header>
     <div className="px-engine-account-picker"><label>Conta Binance<select aria-label="Conta Binance para motores"
       value={accountId} onChange={(event) => { setAccountId(event.target.value); setEngines([]);
@@ -185,10 +187,10 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
       {accountEngines.map((engine) => {
         const engineAdmission = activationAdmissionView(engine.activationAdmission ?? null);
         return <article className="px-engine-row" key={engine.id}>
-        <div><strong>{engineDisplayName(engine, accountEngines)}{engine.executor_shard_id ? ` · ${engine.executor_shard_id.replace("executor-", "Executor ")}` : ""}</strong><small>{money(engine.hard_cap_quote, engine.quote_asset)} cap · 25 slots
+        <div><strong>{engineDisplayName(engine, accountEngines)}{engine.executor_shard_id ? ` · ${engine.executor_shard_id.replace("executor-", "Executor ")}` : ""}</strong><small>{money(engine.hard_cap_quote, engine.quote_asset)} cap · {engine.slot_count} slots
           {engine.profile ? ` · gain ${(Number(engine.profile.gain_rate) * 100).toLocaleString("pt-BR")}% · spacing ${(Number(engine.profile.normal_spacing_rate) * 100).toLocaleString("pt-BR")}%` : ""}</small>
           <small>Ciclo: {engine.run?.status ?? "não iniciado"} · Última reconciliação: {engine.run?.last_reconciled_at ?? "—"}</small>
-          {engine.run ? <small>Slots {engine.evidence.physicalSlots}/25 · OPEN {engine.evidence.open} ·
+          {engine.run ? <small>Slots {engine.evidence.physicalSlots}/{engine.slot_count} · OPEN {engine.evidence.open} ·
             TP {engine.evidence.residentTp} · próxima BUY {engine.evidence.nextBuy}</small> : null}
           {engine.run?.last_error ? <small className="px-warning">Erro: {engine.run.last_error}</small> : null}</div>
         <span className={`px-badge ${engine.status === "ACTIVE" && (!engine.operational || !engine.run) ? "px-badge--warning" : ""}`}>
@@ -203,7 +205,7 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
         <div className="px-engine-actions">
           <button type="button" className="px-button" onClick={() => onEditEngine(accountId, engine.symbol, engine.id)}>Editar regras</button>
           {engine.status === "INACTIVE" && !engine.run && !engine.ready ? <button type="button" className="px-button"
-            disabled={busy || engine.environment === "TESTNET" && !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>{engine.environment === "TESTNET" ? "Validar para READY" : "Preparar 25 slots"}</button> : null}
+            disabled={busy || engine.environment === "TESTNET" && !account.credentialValidated} onClick={() => void control(engine, "PREPARE")}>{engine.environment === "TESTNET" ? "Validar para READY" : `Preparar ${engine.slot_count} slots`}</button> : null}
           {engine.ready ? <button type="button" className="px-button px-button-primary"
             disabled={busy || loading || !engine.ready || engine.environment === "REAL" && !engineAdmission.allowed}
             onClick={() => void control(engine, "ACTIVATE")}>Ativar {engine.symbol}</button> : null}
@@ -236,9 +238,11 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
           }} />{asset}/{quote}</label>)}</div>
       <label className="px-engine-equal"><input type="checkbox" checked={equal}
         onChange={(event) => { setEqual(event.target.checked); invalidate(); }} />
-        Distribuir igualmente entre os motores e os 25 slots de cada um</label>
+        Distribuir igualmente entre os motores; cada motor distribui pelos seus slots</label>
       <div className="px-engine-rules">{assets.map((asset) => <fieldset key={asset}>
         <legend>{asset}/{quote} · PERFIL GERAL</legend>
+        <label>Quantidade de slots<input type="number" min={MIN_ENGINE_SLOT_COUNT} max={MAX_ENGINE_SLOT_COUNT} step="1"
+          value={rules[asset].slotCount} onChange={(event) => updateRule(asset, "slotCount", event.target.value)} /></label>
         <label>Capital do motor<input type="text" inputMode="decimal" disabled={equal}
           value={equal ? plannedSplit?.[asset] ?? "" : rules[asset].capital}
           onChange={(event) => updateRule(asset, "capital", event.target.value)} /></label>
@@ -260,12 +264,12 @@ export function EngineControlCenter({ active, initialAccountId, environment, onE
       <p>Binance GET {preview.observedAt} · IPv4 {preview.executorIp} · livre {money(preview.free, preview.quote)} ·
         capital {money(preview.capital, preview.quote)} · fora do CoinOps {money(preview.outsideCoinOps, preview.quote)}.</p>
       {preview.engines.map((engine, index) => <article key={`${requestId}:${index}`}><h4>{engine.symbol}{preview.engines.filter((item) => item.symbol === engine.symbol).length > 1 ? ` · Motor ${index + 1}` : ""}</h4>
-        <p>Capital {money(engine.capital, preview.quote)} · 25 slots ·
+        <p>Capital {money(engine.capital, preview.quote)} · {engine.slotCount} slots ·
           {money(engine.allocation[0], preview.quote)}/slot{new Set(engine.allocation).size > 1 ? " (sobra de centavos distribuída)" : ""} ·
-          {engine.validSlots === 25 ? "OK" : `Valor insuficiente: mínimo estimado ${money(engine.minimumCapital, preview.quote)} para 25 slots.`}</p>
+          {engine.validSlots === engine.slotCount ? "OK" : `Valor insuficiente: mínimo estimado ${money(engine.minimumCapital, preview.quote)} para ${engine.slotCount} slots.`}</p>
         <p>Cotação {price(engine.currentPrice, preview.quote)} · minNotional {engine.minNotional} · minQty {engine.minQuantity} · step {engine.quantityStep} · tick {engine.priceTick}</p>
         <p>Slot #1 MARKET estimada {price(engine.firstEntry, preview.quote)} → TP {price(engine.firstTp, preview.quote)} ·
-          Slot #2 próxima BUY {price(engine.nextBuy, preview.quote)} · Slots #3–25 PLANNED.</p>
+          Slot #2 próxima BUY {price(engine.nextBuy, preview.quote)} · Demais slots PLANNED ({engine.planned}).</p>
         <p>Gain {(engine.gain * 100).toLocaleString("pt-BR")}% · spacing {(engine.spacing * 100).toLocaleString("pt-BR")}% ·
           pós-ATH {(engine.postAth * 100).toLocaleString("pt-BR")}% · meta {engine.monthlyTarget}/slot/mês · compounding ON.</p>
       </article>)}{environment === "REAL" ? <p role="status">Capacidade do executor: {preview.capacity.code}.

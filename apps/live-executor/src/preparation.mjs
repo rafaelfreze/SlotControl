@@ -1,6 +1,7 @@
 import { buildLiveSizing, parseLiveRules } from "../../web/lib/execution/live-preparation.ts";
 import { STRATEGY_VERSION } from "../../web/lib/execution/strategy-engine.ts";
 import { ExecutorRejection } from "./security.mjs";
+import { configuredEngineSlotCount } from "../../web/lib/execution/engine-slot-topology.ts";
 
 export const EXECUTOR_CAPS = Object.freeze({
   BTC: Object.freeze({ symbol: "BTCBRL", capitalBrl: 450, orderBrl: 18, exposureBrl: 450 }),
@@ -31,7 +32,7 @@ export function validateDryRunIntent(input, engine = null) {
     || input.global_cap_brl > (engine?.account_cap_quote ?? EXECUTOR_CAPS.globalBrl)
     || input.global_cap_brl < portfolio.BTC + portfolio.SOL
     || config.asset !== input.asset || config.symbol !== input.symbol
-    || config.slot_count !== 25 || config.live_enabled !== false
+    || config.slot_count !== configuredEngineSlotCount(engine ?? {}) || config.live_enabled !== false
     || !Number.isSafeInteger(config.config_version) || config.config_version < 1
     || !finite(config.configured_live_capital_brl) || !finite(config.max_order_notional_brl)
     || !finite(config.max_total_exposure_brl)
@@ -55,7 +56,7 @@ export function buildExecutorDryRun(input, market, now = Date.now(), engine = nu
   } catch {
     throw new ExecutorRejection("EXECUTOR_FILTER_OR_PREVIEW_INVALID", 503);
   }
-  if (sizing.validSlots !== 25 || sizing.dryRun.status !== "NO_WRITE")
+  if (sizing.validSlots !== configuredEngineSlotCount(engine ?? {}) || sizing.dryRun.status !== "NO_WRITE")
     throw new ExecutorRejection("EXECUTOR_SLOT_OR_PREVIEW_INVALID", 503);
   return {
     status: "NO_WRITE", symbol: input.symbol, decision_id: input.decision_id,

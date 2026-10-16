@@ -78,3 +78,37 @@ test("reports: account market balances remain isolated by native quote", () => {
   assert.equal(selected.length, 1); assert.equal(selected[0]!.quote_asset, "USDT");
   assert.equal(selected[0]!.available_quote, 101);
 });
+
+test("reports v25: same-account same-symbol 25/100 engines retain separate topology and capital", () => {
+  const data = input();
+  data.registry = structuredClone(registry);
+  const engine = data.registry.engines[5]!;
+  const sibling = data.registry.engines[4]!;
+  sibling.base_asset = "SOL"; sibling.symbol = "SOLBRL";
+  for (const rows of Object.values(data.sources)) for (const row of rows)
+    if (row.trading_engine_id === sibling.id) { row.asset = "SOL"; row.symbol = "SOLBRL"; }
+  engine.slot_count = 100; engine.hard_cap_quote = 1100;
+  const own = { ...scoped(5) };
+  const accounts = Array.from({ length: 100 }, (_, index) => ({ ...own, slot_number: index + 1,
+    balance_quote: 11, market_pnl_quote: 0, fees_quote: 0, gain_count: 0 }));
+  const slots = Array.from({ length: 100 }, (_, index) => ({ ...own, id: id(5000 + index),
+    run_id: id(105), slot_number: index + 1, position_committed_quote: 0, entry_state: "PLANNED" }));
+  data.sources.robot_v1_live_slot_accounts = data.sources.robot_v1_live_slot_accounts
+    .filter((row) => row.trading_engine_id !== engine.id).concat(accounts);
+  data.sources.robot_v1_live_slots = data.sources.robot_v1_live_slots
+    .filter((row) => row.trading_engine_id !== engine.id).concat(slots);
+  data.sources.robot_v1_live_runs.find((row) => row.trading_engine_id === engine.id)!.slot_count = 100;
+  const report = buildAuditReport(data, filters);
+  const result = report.datasets.summary.find((row) => row.trading_engine_id === engine.id)!;
+  assert.equal(result.slots, 100); assert.equal(result.engine_slot_count, 100); assert.equal(result.capital_end, 1100);
+  const legacy = report.datasets.summary.find((row) => row.trading_engine_id === sibling.id)!;
+  assert.equal(legacy.slots, 25); assert.equal(legacy.capital_end, 350);
+  assert.equal(report.datasets.checks.find((row) => row.code === "PRODUCTION_LIVE_LEDGER"
+    && row.trading_engine_id === engine.id)?.status, "PASS");
+  data.sources.robot_v1_live_slots.pop();
+  const partial = buildAuditReport(data, filters);
+  assert.equal(partial.datasets.summary.find((row) => row.trading_engine_id === engine.id)!.capital_end, null);
+  assert.equal(partial.datasets.summary.find((row) => row.trading_engine_id === engine.id)!.slots, 100);
+  assert.equal(partial.datasets.checks.find((row) => row.code === "PRODUCTION_LIVE_LEDGER"
+    && row.trading_engine_id === engine.id)?.status, "FAIL");
+});

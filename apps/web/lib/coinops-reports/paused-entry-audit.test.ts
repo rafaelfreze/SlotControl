@@ -24,6 +24,16 @@ test("pause audit scope is persisted attestation, never certification of present
   assert.equal(check(rows(), ["robot_v1_live_orders:timed_out"]).status, "WARNING");
 });
 
+test("pause proof derives its maximum from the run snapshot, not a global 25 cap", () => {
+  const hundred = rows();
+  hundred[0].slot_count = 100;
+  (hundred[1].details as AuditRow).open_positions = 100;
+  assert.equal(check(hundred).status, "PASS");
+  (hundred[1].details as AuditRow).open_positions = 101;
+  assert.equal(check(hundred).status, "FAIL");
+  assert.equal(check([{ ...hundred[0], slot_count: 25 }, hundred[1]]).status, "FAIL");
+});
+
 test("pending/unknown order or unreconciled fill cannot certify a protected pause; resident BUY contradicts it", () => {
   for (const status of ["PREPARED", "UNKNOWN", "SUBMITTING", "PENDING_CANCEL"]) {
     assert.equal(check([...rows(), { ...scope, row_type: "ORDER", run_id: "run-A", status, side: "BUY" }]).status, "WARNING");
@@ -55,7 +65,7 @@ test("pause protection detail allowlist preserves counters and rejects credentia
 });
 
 test("v24 exports pause contract, proof CSV/JSON and gain after pause without reset or hiding critical alerts", () => {
-  assert.equal(REPORT_VERSION, 24);
+  assert.equal(REPORT_VERSION, 25);
   const input: AuditInput = { sources: { robot_v1_live_runs: [{ ...scope, id: "run-A", asset: "SOL", symbol: "SOLBRL",
     status: "PAUSED", created_at: at, last_reconciled_at: at }], robot_v1_live_events: [
     { ...scope, id: "pause", run_id: "run-A", event_type: "LIVE_PAUSED", observed_at: at, details: { ...proof, credential: "private" } },
@@ -88,7 +98,7 @@ test("v24 exports pause contract, proof CSV/JSON and gain after pause without re
   assert.deepEqual(report.datasets.live_execution.find((row) => row.id === "reconcile")?.details,
     { ...proof, next: "ENTRIES_PAUSED", source: "LIVE_CONTROL" });
   const pack = buildReportPackage(report, filters, input.generatedAt, "fixture-sha");
-  assert.equal(pack.manifest.report_version, 24);
+  assert.equal(pack.manifest.report_version, 25);
   const json = pack.files.find((file) => file.name === "AUDITORIA_COMPLETA.json")!.content;
   const csv = pack.files.find((file) => file.name === "LIVE_EXECUTION.csv")!.content;
   for (const output of [json, csv]) {

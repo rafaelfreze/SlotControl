@@ -6,6 +6,7 @@ import * as manager from "./capacity-manager.ts";
 import * as reservations from "./admission-reservations.ts";
 import * as environmentTelemetry from "./environment-telemetry.ts";
 import * as testnetPolicy from "../execution/testnet-policy.ts";
+import * as topology from "../execution/engine-slot-topology.ts";
 
 function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh = false, testnetReserved = 9000) {
   const calls: string[] = [];
@@ -37,7 +38,8 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
       single: async () => result, maybeSingle: async () => result,
       then: (fn: (value: unknown) => unknown) => Promise.resolve(result).then(fn) };
     return chain;
-  }, rpc: async (name: string, args: Record<string, unknown>) => { if(name === "preview_executor_admission") {
+  }, rpc: async (name: string, args: Record<string, unknown>) => { if(name === "preview_executor_admission" || name === "preview_engine_slot_admission") {
+    if (name === "preview_engine_slot_admission") { assert.deepEqual(args.p_slot_counts, [100]); calls.push("slot-profile:100"); }
     calls.push("preview-rpc"); return {data:{code: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN"
       : (environment === "REAL" ? realReserved : testnetReserved) > 0 ? "CAPACITY_REQUIRED" : "CAPACITY_OK"},error:null}; }
     assert.equal(args.p_shard_id, "executor-03", "reserve follows engine03, not account bootstrap01");
@@ -45,6 +47,7 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
     data: environment === "TESTNET" && !testnetFresh ? "CAPACITY_UNKNOWN" : "CAPACITY_OK", error: null }; } };
   const dependencies: Record<string, unknown> = {
     "../execution/testnet-policy": testnetPolicy,
+    "../execution/engine-slot-topology": topology,
     "node:crypto": {}, "@/lib/execution/live-executor-client": {},
     "@/lib/execution/executor-shards-server": {},
     "@/lib/execution/binance-identity-server": { requireAccountIdentityBinding: async () => { calls.push("identity"); } },
@@ -60,10 +63,11 @@ function fixture(environment: "REAL" | "TESTNET", realReserved = 0, testnetFresh
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
   }, loaded);
   const preview = loaded.previewAccountCapacity as
-    (service: unknown, account: string, count: number, environment: string) => Promise<{ code: string }>;
+    (service: unknown, account: string, count: number, environment: string, slots?: number[]) => Promise<{ code: string }>;
   const reserve = loaded.reserveEngineCapacity as
     (service: unknown, engine: string, account: string) => Promise<{ status: string }>;
   return { calls, preview: () => preview(service, "account", 1, environment),
+    preview100: () => preview(service, "account", 1, environment, [100]),
     reserve: () => reserve(service, "engine", "account") };
 }
 
@@ -92,4 +96,11 @@ test("Production final reservation still requires identity before serialized cap
   const scenario = fixture("REAL");
   assert.equal((await scenario.reserve()).status, "CAPACITY_OK");
   assert.deepEqual(scenario.calls, ["read:exchange_accounts", "read:trading_engines", "coverage", "identity", "reserve"]);
+});
+
+test("100-slot preview asks the canonical slot-workload RPC, never the old +1-engine profile", async () => {
+  const scenario = fixture("REAL");
+  assert.equal((await scenario.preview100()).code, "CAPACITY_OK");
+  assert.ok(scenario.calls.includes("slot-profile:100"));
+  assert.equal((await fixture("REAL", 900).preview100()).code, "CAPACITY_REQUIRED");
 });

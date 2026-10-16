@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-import { assertV1ShadowParameters, V1_SLOT_COUNT, type V1Asset, type V1ShadowParameters } from "./robot-v1.ts";
+import { assertV1ShadowParameters, type V1Asset, type V1ShadowParameters } from "./robot-v1.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet, validateEngineSlotCount } from "./engine-slot-topology.ts";
 import type { ExchangeSymbolInfo } from "./types.ts";
 
 /** The same decision contract is consumed by the Shadow and Testnet adapters.
@@ -9,7 +10,7 @@ export const STRATEGY_VERSION = "4.3.1" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
-export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: string };
+export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: string; slotCount?: number };
 export type StrategyCandidate = {
   id: string;
   slotNumber: number;
@@ -48,18 +49,20 @@ export type StrategyDecision = {
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 function assertContext(context: StrategyContext) {
+  validateEngineSlotCount(context.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT);
   if (!["BTC", "SOL"].includes(context.asset) || !context.cycleId || !Number.isFinite(Date.parse(context.observedAt))
     || context.quoteAsset !== undefined && !/^[A-Z0-9]{2,20}$/.test(context.quoteAsset)) {
     throw new Error("COINOPS_STRATEGY_CONTEXT_INVALID");
   }
 }
 
-function assertCandidates(candidates: readonly StrategyCandidate[]) {
+function assertCandidates(candidates: readonly StrategyCandidate[], slotCount = DEFAULT_ENGINE_SLOT_COUNT) {
+  validateEngineSlotCount(slotCount);
   const ids = new Set<string>();
   const physicalSlots = new Set<number>();
   for (const candidate of candidates) {
     if (!candidate.id || ids.has(candidate.id) || physicalSlots.has(candidate.slotNumber)
-      || !Number.isInteger(candidate.slotNumber) || candidate.slotNumber < 1 || candidate.slotNumber > V1_SLOT_COUNT
+      || !Number.isInteger(candidate.slotNumber) || candidate.slotNumber < 1 || candidate.slotNumber > slotCount
       || !Number.isInteger(candidate.operationSequence) || candidate.operationSequence < 1
       || !Number.isFinite(candidate.buyPrice) || candidate.buyPrice <= 0
       || !Number.isFinite(candidate.balanceQuote ?? candidate.balanceUsdc)
@@ -81,7 +84,7 @@ function monthlyEligible(candidate: StrategyCandidate) {
 
 export function strategyOperationId(context: StrategyContext, candidate: StrategyCandidate) {
   assertContext(context);
-  assertCandidates([candidate]);
+  assertCandidates([candidate], context.slotCount);
   return hash([STRATEGY_VERSION, context.asset, context.cycleId, candidate.slotNumber, candidate.operationSequence]);
 }
 
@@ -149,7 +152,7 @@ function wait(context: StrategyContext, candidate: StrategyCandidate | null, rea
 /** MARKET is allowed only for the highest-ranked eligible first operation in
  * a newly anchored cycle. Recycled slots always return to the LIMIT queue. */
 export function planStrategyInitialEntry(context: StrategyContext, slot: StrategyCandidate): StrategyDecision {
-  assertCandidates([slot]);
+  assertCandidates([slot], context.slotCount);
   if (slot.operationSequence !== 1 || !monthlyEligible(slot)
     || (slot.operationalRank === undefined ? slot.slotNumber !== 1 : slot.operationalRank !== 1))
     throw new Error("COINOPS_STRATEGY_INITIAL_SLOT_INVALID");
@@ -159,7 +162,7 @@ export function planStrategyInitialEntry(context: StrategyContext, slot: Strateg
 
 export function planStrategyTakeProfit(context: StrategyContext, slot: StrategyCandidate, averageFillPrice: number,
   filters: ExchangeSymbolInfo, parameters: V1ShadowParameters, residentTakeProfit = false): StrategyDecision {
-  assertCandidates([slot]);
+  assertCandidates([slot], context.slotCount);
   if (filters.symbol !== `${context.asset}${context.quoteAsset ?? "USDC"}`) throw new Error("COINOPS_STRATEGY_SYMBOL_MISMATCH");
   if (slot.state !== "OPEN") return wait(context, slot, "BUY_FILL_NOT_COMPLETE");
   if (residentTakeProfit) return wait(context, slot, "TAKE_PROFIT_ALREADY_RESIDENT");
@@ -187,7 +190,7 @@ export function calculateStrategyTakeProfit(averageFillPrice: number, priceTick:
 export function planStrategyNextEntry(context: StrategyContext, candidates: readonly StrategyCandidate[], observedFloor: number,
   residentBuy?: StrategyResidentBuy | null): { decision: StrategyDecision; missedCandidateIds: string[]; nextCandidateId: string | null } {
   assertContext(context);
-  assertCandidates(candidates);
+  assertCandidates(candidates, context.slotCount);
   if (!Number.isFinite(observedFloor) || observedFloor <= 0) throw new Error("COINOPS_STRATEGY_MARKET_INVALID");
   const armed = candidates.filter((candidate) => candidate.state === "ARMED" || candidate.state === "PARTIALLY_FILLED");
   if (armed.length > 1) throw new Error("COINOPS_STRATEGY_MULTIPLE_ARMED_BUYS");
@@ -233,7 +236,7 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
  * already-resident BUY retain price/fill priority even if classified RESERVE. */
 export function planStrategyPostAthNextEntry(context: StrategyContext,
   candidates: readonly StrategyCandidate[], observedFloor: number, residentBuy?: StrategyResidentBuy | null) {
-  assertCandidates(candidates);
+  assertCandidates(candidates, context.slotCount);
   const primaryAvailable = candidates.some((candidate) => candidate.postAthGroup === "PRIMARY"
     && monthlyEligible(candidate)
     && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(candidate.state));
@@ -249,8 +252,9 @@ export function planStrategyClosedSlot(context: StrategyContext, candidates: rea
   mode: "LOCAL_REENTRY" | "GLOBAL_RESET" | "MONTHLY_HOLD"; otherOpenPositions: number; decisions: StrategyDecision[];
 } {
   assertContext(context);
-  assertCandidates(candidates);
-  if (candidates.length !== V1_SLOT_COUNT) throw new Error("COINOPS_STRATEGY_SLOT_COUNT_INVALID");
+  assertCandidates(candidates, context.slotCount);
+  if (!hasCompletePhysicalSlotSet(candidates.map(candidate => candidate.slotNumber), context.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT))
+    throw new Error("COINOPS_STRATEGY_SLOT_COUNT_INVALID");
   const closed = candidates.find((candidate) => candidate.id === closedCandidateId);
   if (!closed || closed.state !== "CLOSED") throw new Error("COINOPS_STRATEGY_CLOSED_SLOT_INVALID");
   const otherOpenPositions = candidates.filter((candidate) => candidate.state === "OPEN" || candidate.state === "PARTIALLY_FILLED").length;

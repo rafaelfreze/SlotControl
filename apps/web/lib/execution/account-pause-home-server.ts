@@ -39,14 +39,14 @@ export async function loadAccountPauseHome(client: Client, registry: DomainRegis
         id: table === "robot_v1_live_slot_accounts" ? `${row.trading_engine_id}:${row.slot_number}` : row.id! })) };
     }, "COINOPS_ACCOUNT_PAUSE_READ_UNAVAILABLE");
   };
-  const runs = await rows<AccountPauseLedger["runs"][number]>("robot_v1_live_runs", `id,${owners},status,last_error,last_reconciled_at`, undefined,
+  const runs = await rows<AccountPauseLedger["runs"][number]>("robot_v1_live_runs", `id,${owners},status,last_error,last_reconciled_at,slot_count`, undefined,
     ["ACTIVE", "PAUSED", "PREPARING"]);
   const runIds = runs.map((row) => row.id);
   const [slots, accounts, orders, preparations, alerts, preference] = await Promise.all([
     rows<AccountPauseLedger["slots"][number]>("robot_v1_live_slots", `id,run_id,${owners},slot_number,entry_state,position_quantity,position_committed_quote`, runIds),
     rows<AccountPauseLedger["accounts"][number]>("robot_v1_live_slot_accounts", `${owners},slot_number,balance_quote`),
     rows<AccountPauseLedger["orders"][number] & { id: string }>("robot_v1_live_orders", `id,run_id,slot_id,${owners},side,purpose,status,client_order_id,exchange_order_id,requested_quantity,executed_quantity,trades_reconciled`, runIds),
-    rows<AccountPauseLedger["preparations"][number] & { id: string }>("robot_v1_live_preparations", `id,${owners},symbol,kill_switch,live_enabled`),
+    rows<AccountPauseLedger["preparations"][number] & { id: string }>("robot_v1_live_preparations", `id,${owners},symbol,kill_switch,live_enabled,slot_count`),
     rows<AccountPauseLedger["alerts"][number]>("robot_v1_live_alerts", `id,${owners},code,severity`, undefined, undefined, true),
     client.from("account_home_preferences").select("hidden,updated_at").eq("operator_id", op.id)
       .eq("exchange_account_id", accountId).abortSignal(deadline).maybeSingle(),

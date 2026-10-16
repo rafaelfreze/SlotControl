@@ -77,3 +77,19 @@ test("a future TP reserve survives fresh counters and never expires on timeout o
   assert.equal(accountOrderBudgetDecision(sample, [buy, { ...buy, protectionOrders: 0 }], input, now).code,
     "ACCOUNT_ORDER_BUDGET_UNKNOWN");
 });
+
+test("mixed 25/100 engines reserve 26/101 resident orders across shards, not 26 per engine", () => {
+  const variable = { ...input, newEngineSlotCounts: [100], existingEngineSlotCountsForSymbol: [25, 25],
+    existingEngineSlotCountsForAccount: [25, 25] };
+  assert.equal(accountOrderBudgetDecision(sample, [], variable, now).code, "PASS");
+  assert.equal(accountOrderBudgetDecision(sample, [], { ...variable, existingEngineSlotCountsForSymbol: [25, 100] }, now).code,
+    "ACCOUNT_ORDER_CAPACITY_REQUIRED");
+  const global = { ...sample, exchangeOrders: { limit: 200, openOrders: 20, externalOrders: 0 } };
+  assert.equal(accountOrderBudgetDecision(global, [], { ...variable, existingEngineSlotCountsForAccount: [25, 100] }, now).code,
+    "ACCOUNT_ORDER_CAPACITY_REQUIRED");
+  for (const counts of [[25], [25, 101], [25, 1.5]])
+    assert.equal(accountOrderBudgetDecision(sample, [], { ...variable, existingEngineSlotCountsForSymbol: counts }, now).code,
+      "ACCOUNT_ORDER_BUDGET_UNKNOWN");
+  assert.equal(accountOrderBudgetDecision(sample, [], { ...variable, existingEngineSlotCountsForSymbol: undefined }, now).code,
+    "ACCOUNT_ORDER_BUDGET_UNKNOWN");
+});

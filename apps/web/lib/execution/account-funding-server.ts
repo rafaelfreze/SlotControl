@@ -74,7 +74,7 @@ export async function loadAccountFunding(db: AuthenticatedClient, options: {
       .eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id) : result;
   };
   const engines = await pages<AccountFundingInput["engines"][number] & { base_asset: string; legacy_compatible: boolean }>(() =>
-    query("trading_engines", "id,operator_id,exchange_account_id,environment,quote_asset,symbol,executor_shard_id,status,hard_cap_quote,base_asset,legacy_compatible", false)
+    query("trading_engines", "id,operator_id,exchange_account_id,environment,quote_asset,symbol,executor_shard_id,status,hard_cap_quote,base_asset,legacy_compatible,slot_count,config", false)
       .eq("environment", "REAL").neq("status", "DISABLED").order("id"), (row) => row.id, deadline, "engines");
   const expectedEngines = registry.engines.filter((row) => row.environment === "REAL"
     && row.exchange_account_id === accountId && row.status !== "DISABLED");

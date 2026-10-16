@@ -104,3 +104,15 @@ test("selected OPEN capital is pending while available capital applies immediate
   assert.equal(available.balanceAfter, 220);
   assert.equal(available.committedAfter, 0);
 });
+
+test("mixed 25/100 adjustments derive physical sets independently and preserve every cent", () => {
+  const shares = [{ engineId: btc, amount: 25, slotCount: 25 }, { engineId: sol, amount: 100, slotCount: 100 }];
+  const allocation = allocateBulkSlots(125, shares);
+  assert.equal(allocation.filter((row) => row.engineId === btc).length, 25);
+  assert.equal(allocation.filter((row) => row.engineId === sol).length, 100);
+  assert.ok(allocation.every((row) => row.amount === 1));
+  assert.deepEqual(allocateSelectedSlots(22, sol, [99, 100], undefined, 100)
+    .map((row) => [row.slotNumber, row.amount]), [[99, 11], [100, 11]]);
+  assert.throws(() => allocateSelectedSlots(22, btc, [99, 100]), /SLOT_SELECTION_INVALID/);
+  assert.throws(() => allocateSelectedSlots(22, sol, [100, 101], undefined, 100), /SLOT_SELECTION_INVALID/);
+});

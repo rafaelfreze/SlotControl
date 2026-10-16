@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { assertOperationalEnvironment } from "./testnet-policy.ts";
+import * as topology from "./engine-slot-topology.ts";
+import { activationAdmissionFromEvidence, activationAdmissionView } from "../coinops-capacity/activation-admission-view.ts";
 
 function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alreadyActive = false,
   identity = "BOUND", accountStatus = "INACTIVE", engineShard = "executor-02", budget = "PASS") {
@@ -14,7 +16,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
   const engine = { operator_id: "operator", exchange_account_id: "account", trading_engine_id: "engine",
     environment, base_asset: "SOL", symbol: environment === "REAL" ? "SOLBRL" : "SOLUSDT",
     quote_asset: environment === "REAL" ? "BRL" : "USDT", hard_cap_quote: 100,
-    status: "INACTIVE", engine_kill_switch: true, executor_shard_id: engineShard };
+    status: "INACTIVE", engine_kill_switch: true, executor_shard_id: engineShard, slot_count: 25 };
   const service = { from(table: string) {
     let mutation = false;
     const data = () => table === "exchange_accounts" ? account : table === "operators" ? operator
@@ -36,6 +38,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
     "next/server": { NextResponse: { json: (body: unknown, options: { status: number }) => ({ body, status: options.status }) } },
     "@/lib/execution/binance-account-registry-server": {},
     "@/lib/execution/testnet-policy": { assertOperationalEnvironment },
+    "@/lib/execution/engine-slot-topology": topology,
     "@/lib/execution/binance-identity-server": { requireAccountIdentityBinding: async () => {
       calls.push("identity"); if (identity !== "BOUND") throw new Error(identity);
     } },
@@ -64,7 +67,7 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
       } },
     "@/lib/execution/complete-ledger-read": {},
     "@/lib/execution/engine-account-catalog": {},
-    "@/lib/coinops-capacity/activation-admission-view": {},
+    "@/lib/coinops-capacity/activation-admission-view": { activationAdmissionFromEvidence },
     "@/lib/execution/operator-context-server": { resolveOperatorEngine: async () => engine },
     "@/lib/execution/robot-v1-live-server": { advanceLiveRun: async () => { calls.push("start"); return {}; } },
     "@/lib/execution/robot-v1-testnet-server": { startTestnetRun: async () => { calls.push("start"); return "cycle"; } },
@@ -78,15 +81,44 @@ function fixture(environment: "REAL" | "TESTNET", decision = "CAPACITY_OK", alre
   const compiled = ts.transpileModule(readFileSync(new URL("../../app/api/coinops-engine-control/route.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: Record<string, unknown> = {};
-  new Function("require", "exports", "process", compiled)((name: string) => {
+  new Function("require", "exports", "process", `${compiled}\nexports.__testAdmission = readActivationAdmission;`)((name: string) => {
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
   }, exports, { env: { VERCEL_ENV: "production", COINOPS_LIVE_CRON_ENABLED: "true" } });
   const post = exports.POST as (request: unknown) => Promise<{ body: { error?: string; status?: string }; status: number }>;
   const request = { nextUrl: new URL("https://cripto-flax.vercel.app/api/coinops-engine-control"),
     headers: new Headers({ origin: "https://cripto-flax.vercel.app", "content-type": "application/json", "x-coinops-admin-intent": "engine-control" }),
     text: async () => JSON.stringify({ action: "ACTIVATE", accountId: "account", engineId: "engine" }) };
-  return { run: () => post(request), calls };
+  return { run: () => post(request), calls, readAdmission: exports.__testAdmission as
+    (service: unknown, engine: unknown) => Promise<ReturnType<typeof activationAdmissionFromEvidence>> };
 }
+
+test("activation button uses the engine topology: legacy +1 PASS never grants 100-slot admission", async () => {
+  const harness = fixture("REAL");
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  let hundredCode = "CAPACITY_UNKNOWN";
+  const service = { rpc: async (name: string, args: Record<string, unknown>) => {
+    calls.push({ name, args });
+    return { error: null, data: { code: name === "preview_executor_admission" ? "CAPACITY_OK" : hundredCode } };
+  } };
+  const engine = { id: "engine-100", executor_shard_id: "executor-03", slot_count: 100, config: { slot_count: 100 } };
+  for (const code of ["CAPACITY_UNKNOWN", "CAPACITY_REQUIRED"]) {
+    hundredCode = code;
+    const admission = await harness.readAdmission(service, engine);
+    assert.equal(admission.code, code);
+    assert.equal(activationAdmissionView(admission).allowed, false);
+    assert.deepEqual(calls.at(-1), { name: "preview_engine_slot_admission", args: {
+      p_shard_id: "executor-03", p_environment: "REAL", p_slot_counts: [100], p_exclude_engine: "engine-100",
+    } });
+  }
+  const legacy = await harness.readAdmission(service, { id: "engine-25", executor_shard_id: "executor-02", slot_count: 25 });
+  assert.equal(activationAdmissionView(legacy).allowed, true);
+  assert.deepEqual(calls.at(-1), { name: "preview_executor_admission", args: {
+    p_shard_id: "executor-02", p_environment: "REAL", p_engines: 1, p_exclude_engine: "engine-25",
+  } });
+  const before = calls.length;
+  await assert.rejects(harness.readAdmission(service, { ...engine, config: { slot_count: 25 } }), /SLOT_COUNT_MISMATCH/);
+  assert.equal(calls.length, before);
+});
 
 for (const environment of ["REAL"] as const) {
   test(`${environment} final capacity and physical identity checks precede every activation write`, async () => {

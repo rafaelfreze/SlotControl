@@ -1,5 +1,6 @@
 import { athLadderLevelPrice } from "./ath-ladder-price.ts";
 import { calculateStrategyTakeProfit } from "./strategy-engine.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "./engine-slot-topology.ts";
 
 const fail = (): never => { throw new Error("COINOPS_STRATEGY_PRICE_INVARIANT_FAILED"); };
 const samePrice = (left: number, right: number, tick: number) =>
@@ -14,13 +15,14 @@ function assertTickPrice(price: number, tick: number) {
  * to compounding capital. GRID references must also belong to the cycle's
  * geometric 25-level ladder (or to a recorded ATH transition anchor). */
 export function assertStrategyBuyPrice(input: { price: number; referencePrice: number;
-  anchorPrice: number; spacing: number; tick: number; entryOrigin: "GRID" | "REENTRY" }) {
+  anchorPrice: number; spacing: number; tick: number; entryOrigin: "GRID" | "REENTRY"; slotCount?: number }) {
+  const slotCount = validateEngineSlotCount(input.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT);
   assertTickPrice(input.price, input.tick);
   if (!Number.isFinite(input.referencePrice) || !samePrice(input.price, input.referencePrice, input.tick)) fail();
   if (input.entryOrigin === "GRID") {
     if (!Number.isFinite(input.anchorPrice) || input.anchorPrice <= 0
       || !Number.isFinite(input.spacing) || input.spacing <= 0 || input.spacing >= 1) fail();
-    if (!Array.from({ length: 25 }, (_, level) => athLadderLevelPrice(input.anchorPrice,
+    if (!Array.from({ length: slotCount }, (_, level) => athLadderLevelPrice(input.anchorPrice,
       input.spacing, level, input.tick)).some((expected) => samePrice(input.price, expected, input.tick))) fail();
   } else if (input.entryOrigin !== "REENTRY") fail();
   return input.price;

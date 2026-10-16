@@ -10,6 +10,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { assessShardCapacity, DEFAULT_CAPACITY_POLICY, type ShardMetrics } from "./capacity-manager";
 import { collectIndependentShards, shardLedgerMetrics, type CapacityLedger } from "./capacity-aggregation";
 import { testnetCredentialCoverage } from "./environment-telemetry";
+import { validateEngineSlotCount } from "../execution/engine-slot-topology";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type ExecutorSample = {
@@ -254,13 +255,21 @@ export async function reserveEngineCapacity(service: Service, engineId: string, 
 }
 
 export async function previewAccountCapacity(service: Service, accountId: string, engineCount: number,
-  environment: "REAL" | "TESTNET" = "REAL") {
+  environment: "REAL" | "TESTNET" = "REAL", plannedSlotCounts?: readonly number[]) {
+  if (!Number.isSafeInteger(engineCount) || engineCount < 1 || engineCount > 25 || plannedSlotCounts && plannedSlotCounts.length !== engineCount)
+    return { code: "CAPACITY_UNKNOWN", shardId: null };
+  let slotCounts: number[];
+  try { slotCounts = (plannedSlotCounts ?? Array.from({ length: engineCount }, () => 25)).map(validateEngineSlotCount); }
+  catch { return { code: "CAPACITY_UNKNOWN", shardId: null }; }
   const account = await service.from("exchange_accounts").select("executor_shard_id")
     .eq("id", accountId).single();
   if (account.error || !account.data?.executor_shard_id) return { code: "CAPACITY_UNKNOWN", shardId: null };
-  const decision = await service.rpc("preview_executor_admission", {
-    p_shard_id: account.data.executor_shard_id, p_environment: environment, p_engines: engineCount,
-  });
+  const decision = slotCounts.every(value => value === 25)
+    ? await service.rpc("preview_executor_admission", {
+      p_shard_id: account.data.executor_shard_id, p_environment: environment, p_engines: engineCount,
+    }) : await service.rpc("preview_engine_slot_admission", {
+      p_shard_id: account.data.executor_shard_id, p_environment: environment, p_slot_counts: slotCounts,
+    });
   if (decision.error || !["CAPACITY_OK", "CAPACITY_REQUIRED", "CAPACITY_UNKNOWN"].includes(decision.data?.code))
     return { code: "CAPACITY_UNKNOWN", shardId: account.data.executor_shard_id };
   return { code: decision.data.code as string, shardId: account.data.executor_shard_id };

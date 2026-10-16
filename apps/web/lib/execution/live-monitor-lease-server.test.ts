@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
@@ -125,6 +126,7 @@ function fixture(options: Options = {}) {
   const observedTp = { symbol: "SOLUSDT", side: "SELL" as const, orderId: "exchange-tp", id: "exchange-tp",
     clientOrderId: "owned:tp", status: "NEW", price: 11, originalQuantity: 1, executedQuantity: 0 };
   const dependencies: Record<string, unknown> = {
+    "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "node:crypto": { randomUUID: () => "audit-lease" },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },

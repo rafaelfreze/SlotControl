@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as topology from "../execution/engine-slot-topology.ts";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
@@ -48,6 +49,7 @@ async function collect(testnetFailure = false, testnetAvailable = true, historic
       binance_weight_average: 25, binance_weight_peak: 30, registry_scope: "CREDENTIAL_BOUND_TRANSPORT",
       credential_account_ids: ["testnet-account", "inactive-account"] } } : undefined };
   const dependencies: Record<string, unknown> = {
+    "../execution/engine-slot-topology": topology,
     "../execution/testnet-policy": historicalTestnet
       ? { isTestnetEnabled: () => true } : testnetPolicy,
     "node:crypto": { randomUUID: () => "request" },

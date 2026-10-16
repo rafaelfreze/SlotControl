@@ -7,6 +7,7 @@ import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { engineAppendAvailableCapital, engineAppendPreviewHash } from "./engine-append-allocation.ts";
 import { allocationSnapshotFingerprint, confirmedEngineCapitalExposure } from "./engine-append-exposure.ts";
 import { buildLiveSizing, parseLiveRules } from "./live-preparation.ts";
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
 import type { AppendPlanInput } from "./engine-append-server.ts";
 import type { OperatorExchangeSnapshot } from "./operator-executor-admin.ts";
 
@@ -18,7 +19,7 @@ const input: AppendPlanInput = { accountId: account, requestId: "55555555-5555-4
   quote: "BRL", capital: "100.00", shardId: "executor-03", engines: [
     { asset: "SOL", capital: "100.00", gainPercent: "5.5", spacingPercent: "3", postAthPercent: "8", monthlyTarget: 2 }] };
 type Row = Record<string, any>;
-function fixture(options: { capacity?: string; credential?: string; budget?: string; changedWallet?: boolean;
+function fixture(options: { capacity?: string; capacityReason?: "SLOT_WORKLOAD_UNCERTIFIED"; credential?: string; budget?: string; changedWallet?: boolean;
   insufficient?: boolean; registryFailure?: boolean; sqlBudgetFailures?: number; sqlError?: string;
   previewExpiry?: boolean } = {}) {
   const calls: Array<{ shard: string; path: string; payload: Row }> = [];
@@ -87,9 +88,11 @@ function fixture(options: { capacity?: string; credential?: string; budget?: str
     "./engine-append-allocation.ts": { engineAppendAvailableCapital, engineAppendPreviewHash },
     "./engine-append-exposure.ts": { allocationSnapshotFingerprint, confirmedEngineCapitalExposure },
     "./live-preparation.ts": { buildLiveSizing, parseLiveRules },
+    "./engine-slot-topology.ts": { configuredEngineSlotCount },
     "./engine-admission-router-server.ts": { loadEngineAdmissionOptions: async () => [
       { shardId: "executor-02", capacityCode: "CAPACITY_REQUIRED", credential: "VALIDATED" },
-      { shardId: "executor-03", ip: "203.0.113.3", capacityCode: options.capacity ?? "CAPACITY_OK", credential: options.credential ?? "VALIDATED" }] },
+      { shardId: "executor-03", ip: "203.0.113.3", capacityCode: options.capacity ?? "CAPACITY_OK", capacityReason: options.capacityReason,
+        credential: options.credential ?? "VALIDATED" }] },
     "./operator-executor-admin.ts": { operatorConnectionSnapshot: async (op: string, acct: string, shard: string) => {
       assert.equal(op, operator); assert.equal(acct, account); assert.equal(shard, "executor-03"); return snapshot(); },
       operatorConnectionAdmin: async (_op: string, _acct: string, shard: string, path: string, payload: Row) => {
@@ -170,7 +173,9 @@ test("append orchestration: lost registry ACK retries exact request without seco
 });
 test("append orchestration: unknown capacity/credential, shared-account limit, insufficient or changing wallet never create", async () => {
   for (const [options, error] of [
-    [{ capacity: "CAPACITY_UNKNOWN" }, /CAPACITY_REQUIRED/],
+    [{ capacity: "CAPACITY_UNKNOWN" }, /COINOPS_CAPACITY_UNKNOWN/],
+    [{ capacity: "CAPACITY_UNKNOWN", capacityReason: "SLOT_WORKLOAD_UNCERTIFIED" }, /COINOPS_SLOT_WORKLOAD_UNCERTIFIED/],
+    [{ capacity: "CAPACITY_REQUIRED" }, /COINOPS_CAPACITY_REQUIRED/],
     [{ credential: "VALIDATION_REQUIRED" }, /CREDENTIAL_SHARD_VALIDATION_REQUIRED/],
     [{ budget: "ACCOUNT_ORDER_LIMIT" }, /ACCOUNT_ORDER_LIMIT/],
     [{ insufficient: true }, /BALANCE_INSUFFICIENT/],

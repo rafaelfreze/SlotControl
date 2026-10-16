@@ -1,12 +1,14 @@
 import type { LiveExecutorState } from "./live-executor-transport.ts";
 import { LIVE_BNB_FEE_MINIMUM_EXCLUSIVE } from "./live-bnb-fee-balance.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet, MIN_ENGINE_SLOT_COUNT, MAX_ENGINE_SLOT_COUNT } from "./engine-slot-topology.ts";
 
 type Value = string | number | null;
 type Owned = { operator_id: string; exchange_account_id: string; trading_engine_id: string };
 export type AccountFundingInput = {
   operatorId: string; accountId: string; accountName: string; now?: number;
   engines: Array<{ id: string; operator_id: string; exchange_account_id: string; environment: string;
-    quote_asset: string; symbol: string; executor_shard_id?: string | null; status: string; hard_cap_quote: Value; orderPrefix?: string }>;
+    quote_asset: string; symbol: string; executor_shard_id?: string | null; status: string; hard_cap_quote: Value; orderPrefix?: string;
+    slot_count?: number; config?: unknown }>;
   runs: Array<Owned & { id: string; status: string; last_reconciled_at: string | null; last_error?: string | null }>;
   slotAccounts: Array<Owned & { slot_number: number; balance_quote: Value; dust_cost_quote?: Value }>;
   slots: Array<Owned & { id: string; run_id: string; slot_number: number; position_quantity: Value; position_committed_quote: Value }>;
@@ -20,6 +22,7 @@ export type AccountFundingInput = {
 export type FundingResidentBuy = { engineId: string; runId: string; executorShardId: string;
   clientOrderId: string; exchangeOrderId: string; price: number; quantity: number; executedQuantity: number; reservedQuote: number };
 export type FundingSummary = { accountId: string; accountName: string; currency: string; engineCount: number; slotCount: number;
+  engineSlotCounts?: number[];
   status: "COVERED" | "SHORTFALL" | "INCOMPLETE"; observedAt: string | null; ledgerTarget: number | null;
   pending: number | null; configuredCap: number | null; positionCost: number | null; buyReserved: number | null;
   spotFree: number | null; spotLocked: number | null; cashRequired: number | null; deficit: number | null;
@@ -40,9 +43,8 @@ const amount = (value: bigint) => Number(value) / Number(SCALE);
 const positive = (value: bigint) => value < ZERO ? ZERO : value;
 const fresh = (at: string | null, now: number, age: number) => at !== null && Number.isFinite(Date.parse(at))
   && Date.parse(at) - now <= 2_000 && now - Date.parse(at) <= age;
-const fullSlots = (rows: Array<{ slot_number: number }>) => rows.length === 25
-  && new Set(rows.map((row) => row.slot_number)).size === 25
-  && rows.every((row) => Number.isInteger(row.slot_number) && row.slot_number >= 1 && row.slot_number <= 25);
+const fullSlots = (rows: Array<{ slot_number: number }>, count: number) =>
+  hasCompletePhysicalSlotSet(rows.map((row) => row.slot_number), count);
 
 /** Informative principal coverage, NEVER a trading/admission decision. Wallet is counted once per account/currency.
  * No future TP proceeds, Earn balance, external locked cash or marked-to-market profit funds the remaining grid. */
@@ -62,7 +64,8 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
   return [...new Set(engines.map((engine) => engine.quote_asset))].sort().map((currency) => {
     const group = engines.filter((engine) => engine.quote_asset === currency), issues: string[] = [];
     const result: FundingSummary = { accountId: input.accountId, accountName: input.accountName, currency,
-      engineCount: group.length, slotCount: group.length * 25, status: "INCOMPLETE", observedAt: null,
+      engineCount: group.length, slotCount: group.reduce((sum, engine) => sum + configuredEngineSlotCount(engine), 0),
+      engineSlotCounts: group.map((engine) => configuredEngineSlotCount(engine)), status: "INCOMPLETE", observedAt: null,
       ledgerTarget: null, pending: null, configuredCap: null, positionCost: null, buyReserved: null,
       spotFree: null, spotLocked: null, cashRequired: null, deficit: null, coverage: null,
       bnbFree: null, bnbStatus: "UNKNOWN", issues };
@@ -94,7 +97,8 @@ export function buildAccountFunding(input: AccountFundingInput): FundingSummary[
         if (runs.length !== 1 || runs[0].last_error || !fresh(runs[0].last_reconciled_at, now, 180_000)) throw new Error("ENGINE_RECONCILIATION_INCOMPLETE");
         const run = runs[0], ledger = input.slotAccounts.filter((row) => row.trading_engine_id === engine.id);
         const slots = input.slots.filter((row) => row.trading_engine_id === engine.id && row.run_id === run.id);
-        if (!fullSlots(ledger) || !fullSlots(slots)) throw new Error("PHYSICAL_SLOTS_INCOMPLETE");
+        const slotCount = configuredEngineSlotCount(engine);
+        if (!fullSlots(ledger, slotCount) || !fullSlots(slots, slotCount)) throw new Error("PHYSICAL_SLOTS_INCOMPLETE");
         const ownCost = slots.reduce((sum, slot) => sum + decimal(slot.position_committed_quote), ZERO);
         const ownTarget = ledger.reduce((sum, slot) => sum + decimal(slot.balance_quote), ZERO);
         if (ownCost > ownTarget) throw new Error("POSITION_COST_EXCEEDS_ALLOCATION");
@@ -169,9 +173,16 @@ export const BRL_FUNDING_RESUME_OBSERVATION_LIMIT = 50;
  * Keep the actual SHORTFALL/deficit. Every BUY still needs its full Spot amount,
  * BNB, ownership and all canonical safety checks; other currencies never inherit BRL tolerance. */
 export function fundingResumeToleranceObservation(row: FundingSummary, now = Date.now()): string | null {
+  const counts = row.engineSlotCounts;
+  const topologyComplete = counts === undefined ? row.slotCount === row.engineCount * 25
+    : counts.length === row.engineCount && counts.every((count) => Number.isSafeInteger(count)
+      && count >= MIN_ENGINE_SLOT_COUNT && count <= MAX_ENGINE_SLOT_COUNT)
+      && counts.reduce((sum, count) => sum + count, 0) === row.slotCount;
   if (row.currency !== "BRL" || row.status !== "SHORTFALL" || row.issues.length
     || !fresh(row.observedAt, now, 30_000) || !Number.isFinite(now)
-    || !Number.isSafeInteger(row.engineCount) || row.engineCount <= 0 || row.slotCount !== row.engineCount * 25
+    || !Number.isSafeInteger(row.engineCount) || row.engineCount <= 0 || !Number.isSafeInteger(row.slotCount)
+    || row.slotCount < row.engineCount * MIN_ENGINE_SLOT_COUNT || row.slotCount > row.engineCount * MAX_ENGINE_SLOT_COUNT
+    || !topologyComplete
     || row.bnbStatus === "UNKNOWN"
     || [row.ledgerTarget, row.pending, row.configuredCap, row.positionCost, row.buyReserved,
       row.spotFree, row.spotLocked, row.cashRequired, row.deficit, row.coverage, row.bnbFree]

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery } from "./live-read-recovery.ts";
@@ -194,6 +195,7 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },

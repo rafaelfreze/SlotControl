@@ -1,4 +1,5 @@
 import { liveEngineOrderPrefix, LIVE_TERMINAL_ORDER_STATUSES } from "../execution/robot-v1-live-cycle.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
 
 export type FastRun = {
   id: string; trading_engine_id: string; exchange_account_id: string;
@@ -6,12 +7,12 @@ export type FastRun = {
   last_error: string | null; lease_until: string | null;
   created_at?: string;
   activated_at?: string;
-  operator_id?: string;
+  operator_id?: string; slot_count?: number;
 };
 
 export type FastEngine = { id: string; exchange_account_id: string; symbol: string;
   status: string; kill_switch: boolean; strategy_config_pending?: boolean; executor_shard_id?: string;
-  operator_id?: string; environment?: string; base_asset?: string; legacy_compatible?: boolean };
+  operator_id?: string; environment?: string; base_asset?: string; legacy_compatible?: boolean; slot_count?: number; config?: unknown };
 export type FastAccount = { id: string; executor_shard_id: string; status: string;
   kill_switch: boolean; operator_id?: string };
 export type FastSlot = { run_id: string; id: string; entry_state: string;
@@ -22,7 +23,7 @@ export type FastOrder = { run_id: string; slot_id: string; side: string; status:
   executed_quantity?: number | string; trades_reconciled?: boolean;
   operator_id?: string; trading_engine_id?: string; exchange_account_id?: string };
 export type FastPreparation = { trading_engine_id: string; exchange_account_id: string;
-  operator_id: string; symbol: string; live_enabled: boolean; kill_switch: boolean };
+  operator_id: string; symbol: string; live_enabled: boolean; kill_switch: boolean; slot_count?: number };
 export type FastAlert = { trading_engine_id: string; exchange_account_id: string;
   alert_key: string; severity: string; code: string; details?: unknown };
 
@@ -54,6 +55,13 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
   orders: FastOrder[]; alerts?: FastAlert[]; configUpdate?: FastConfigUpdate | null;
   preparation?: FastPreparation | null; now: number }): FastFinding {
   const { run, engine, account, shardId, slots, orders, now } = input;
+  let slotCount: number;
+  try {
+    slotCount = configuredEngineSlotCount(engine ?? {});
+    if (configuredEngineSlotCount(run) !== slotCount
+      || input.preparation && configuredEngineSlotCount(input.preparation) !== slotCount)
+      return { state: "BLOCKED", code: "WATCHDOG_SLOT_COUNT_INVALID", recoverable: false };
+  } catch { return { state: "BLOCKED", code: "WATCHDOG_SLOT_COUNT_INVALID", recoverable: false }; }
   if (!engine || !account || engine.id !== run.trading_engine_id
     || engine.exchange_account_id !== run.exchange_account_id
     || engine.symbol !== run.symbol || account.id !== run.exchange_account_id
@@ -84,10 +92,10 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
       || !engine.base_asset || typeof engine.legacy_compatible !== "boolean"
       || slots.some((slot) => !owned(slot)) || orders.some((order) => !owned(order)))
       return { state: "BLOCKED", code: "WATCHDOG_OWNERSHIP_MISMATCH", recoverable: false };
-    const numbers = new Set(slots.map((slot) => slot.slot_number));
-    if (slots.length !== 25 || new Set(slots.map((slot) => slot.id)).size !== 25
-      || numbers.size !== 25 || slots.some((slot) => !Number.isInteger(slot.slot_number)
-        || slot.slot_number! < 1 || slot.slot_number! > 25
+    if (!hasCompletePhysicalSlotSet(slots.map(slot => slot.slot_number!), slotCount)
+      || new Set(slots.map((slot) => slot.id)).size !== slotCount
+      || slots.some((slot) => !Number.isInteger(slot.slot_number)
+        || slot.slot_number! < 1 || slot.slot_number! > slotCount
         || !Number.isFinite(Number(slot.position_quantity)) || Number(slot.position_quantity) < 0))
       return { state: "BLOCKED", code: "WATCHDOG_SLOT_COUNT_INVALID", recoverable: false };
     const prefix = liveEngineOrderPrefix({ exchange_account_id: engine.exchange_account_id,
@@ -111,13 +119,15 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
   // worker one bounded scheduling window, never a grace period for an OPEN TP.
   const startedAt = run.activated_at ?? run.created_at;
   const age = startedAt ? now - Date.parse(startedAt) : NaN;
-  if (!paused && !run.last_reconciled_at && age >= 0 && age < 90_000 && slots.length === 25
+  if (!paused && !run.last_reconciled_at && age >= 0 && age < 90_000 && slots.length === slotCount
     && slots.every(slot => Number(slot.position_quantity) === 0) && orders.length === 0)
     return { state: "RECONCILING", code: null, recoverable: false };
   const last = run.last_reconciled_at ? Date.parse(run.last_reconciled_at) : NaN;
   if (!Number.isFinite(last) || (paused && last - now > 30_000) || now - last > 5 * 60_000)
     return { state: "STALE", code: "WATCHDOG_RECONCILIATION_STALE", recoverable: true };
-  if (slots.length !== 25)
+  if (slots.length !== slotCount || (slotCount !== 25 || slots.some(slot => slot.slot_number !== undefined))
+    && !hasCompletePhysicalSlotSet(slots.map(slot => slot.slot_number!), slotCount)
+    || new Set(slots.map(slot => slot.id)).size !== slotCount)
     return { state: "BLOCKED", code: "WATCHDOG_SLOT_COUNT_INVALID", recoverable: false };
   const buys = orders.filter((order) => order.side === "BUY" && ACTIVE_ORDERS.has(order.status));
   if (buys.length > 1)

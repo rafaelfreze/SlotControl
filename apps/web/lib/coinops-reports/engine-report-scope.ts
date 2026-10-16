@@ -1,6 +1,7 @@
 import { assertDomainRegistry, resolveEngineContext, type DomainRegistry, type EngineContext } from "../execution/operator-context.ts";
 import type { AuditFilters, AuditInput, AuditReport, ReportRuleDefinition } from "./report-engine.ts";
 import type { AuditRow } from "./trigger-audit.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
 
 export function selectedReportEngines(registry: DomainRegistry, filters: AuditFilters) {
   assertDomainRegistry(registry, registry.operator);
@@ -53,6 +54,7 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
       account_display_name: context.account_display_name, trading_engine_id: context.trading_engine_id,
       environment: context.environment, symbol: context.symbol, quote_asset: context.quote_asset,
       ath_reference_symbol: context.ath_reference_symbol, executor_shard_id: context.executor_shard_id ?? null });
+    row.engine_slot_count = configuredEngineSlotCount(context);
     if (row.unit === "USDC" || row.unit === "BRL") row.unit = context.quote_asset;
     // Suffixes of legacy storage/exports are retained for compatibility only;
     // their native equivalents and quote are the canonical 5.6 contract.
@@ -62,6 +64,13 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     }
   }
   if (context.environment !== "REAL") return;
+  report.datasets.rules.push({ environment: "REAL", asset: context.base_asset, symbol: context.symbol,
+    trading_engine_id: context.trading_engine_id, exchange_account_id: context.exchange_account_id,
+    operator_id: context.operator_id, executor_shard_id: context.executor_shard_id, quote_asset: context.quote_asset,
+    account_display_name: context.account_display_name,
+    parameter: "engine_slot_topology", value: configuredEngineSlotCount(context), unit: "slots", version: 25,
+    engine_slot_count: configuredEngineSlotCount(context), source: "trading_engines.slot_count",
+    notes: "Quantidade física imutável por engine. Legado 25; até 15 elegíveis PRIMARY e demais RESERVE, sem proporção 60/40. Uma NEXT BUY residente; cada posição mantém TP próprio. Contagem não certifica capacidade ou executabilidade Binance." });
   const accounts = sources.robot_v1_live_slot_accounts ?? [], runs = sources.robot_v1_live_runs ?? [],
     slots = sources.robot_v1_live_slots ?? [], orders = sources.robot_v1_live_orders ?? [];
   for (const summary of report.datasets.summary) {
@@ -69,7 +78,10 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     const activeRuns = runs.filter((run) => ["ACTIVE", "PAUSED"].includes(String(run.status)));
     const ownSlots = slots.filter((slot) => activeRuns.some((run) => run.id === slot.run_id));
     const ownOrders = orders.filter((order) => activeRuns.some((run) => run.id === order.run_id));
-    const ledgerComplete = accounts.length === 25 && ownSlots.length === 25;
+    const slotCount = configuredEngineSlotCount(context);
+    const ledgerComplete = hasCompletePhysicalSlotSet(accounts.map((row) => Number(row.slot_number)), slotCount)
+      && hasCompletePhysicalSlotSet(ownSlots.map((row) => Number(row.slot_number)), slotCount);
+    summary.slots = slotCount;
     const balance = ledgerComplete ? total(accounts, "balance_quote") : null;
     const committed = ledgerComplete ? total(ownSlots, "position_committed_quote") : null;
     const reserved = ownOrders.filter((order) => order.side === "BUY" && ["NEW", "PARTIALLY_FILLED", "PREPARED"].includes(String(order.status)))
@@ -104,7 +116,7 @@ export function buildScopedEngineReports(input: AuditInput, filters: AuditFilter
     const context = resolveEngineContext(registry, { environment: engine.environment,
       exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id });
     const sources = engineSources(input, context);
-    const report = build({ ...input, sources, registry: undefined }, { ...filters,
+    const report = build({ ...input, sources, registry: undefined, engineSlotCount: configuredEngineSlotCount(context) }, { ...filters,
       assets: [engine.base_asset as "BTC" | "SOL"], environments: [engine.environment] }, extensions);
     enrich(report, sources, context, input, filters);
     return report;

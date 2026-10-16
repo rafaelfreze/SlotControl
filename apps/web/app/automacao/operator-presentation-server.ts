@@ -246,7 +246,7 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
         ?? (context.base_asset === "BTC" ? 7 : 2);
       scoped.liveAssetData = { ...scoped.liveAssetData,
         [context.base_asset]: projectLiveSlotRanks({ ...liveData, displayOrderNamespace: liveEngineOrderPrefix(context) },
-          context.base_asset, Number(target), new Date().toISOString()) };
+          context.base_asset, Number(target), new Date().toISOString(), context.slot_count) };
     }
     engineData[context.trading_engine_id] = scoped;
     const engine = buildPremiumEngine(scoped, context);

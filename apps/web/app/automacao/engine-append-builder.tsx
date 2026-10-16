@@ -1,10 +1,12 @@
 "use client";
 import { useState } from "react";
 import type { EngineAdmissionOption } from "@/lib/execution/engine-admission-options";
+import { engineWorkloadCertificationNotice } from "@/lib/execution/engine-admission-options";
 import { newEngineStrategyPercentDefaults } from "@/lib/execution/strategy-defaults";
+import { DEFAULT_ENGINE_SLOT_COUNT, MIN_ENGINE_SLOT_COUNT, MAX_ENGINE_SLOT_COUNT } from "@/lib/execution/engine-slot-topology";
 type Preview = { previewHash: string; status: string; executorIp: string; quote: string;
   free: number; allocatedCapital: number; availableCapital: number; capital: number;
-  engines: Array<{ symbol: string; validSlots: number; minimumCapital: number; monthlyTarget: number;
+  engines: Array<{ symbol: string; slotCount: number; validSlots: number; minimumCapital: number; monthlyTarget: number;
     firstEntry: number; firstTp: number; nextBuy: number; currentPrice: number; minNotional: number }> };
 const decimal = (value: string) => value.trim().replace(",", ".");
 const defaultRates = (asset: "BTC" | "SOL") => {
@@ -18,9 +20,12 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
   const [options, setOptions] = useState<EngineAdmissionOption[]>([]), [shardId, setShardId] = useState("");
   const [asset, setAsset] = useState<"BTC" | "SOL">("SOL"), [quote, setQuote] = useState<"BRL" | "USDT">("BRL");
   const [capital, setCapital] = useState(""), [rates, setRates] = useState(() => defaultRates("SOL"));
+  const [slotCount, setSlotCount] = useState(String(DEFAULT_ENGINE_SLOT_COUNT));
+  const [perSlotQuote, setPerSlotQuote] = useState("");
   const [requestId, setRequestId] = useState(() => crypto.randomUUID()), [preview, setPreview] = useState<Preview | null>(null);
   const [apiKey, setApiKey] = useState(""), [apiSecret, setApiSecret] = useState("");
   const selected = options.find((option) => option.shardId === shardId);
+  const workloadNotice = engineWorkloadCertificationNotice(options, Number(slotCount));
   async function send(path: string, input: Record<string, unknown>, intent = "engine-control") {
     const response = await fetch(path, { method: "POST", cache: "no-store", credentials: "same-origin",
       headers: { "content-type": "application/json", "x-coinops-admin-intent": intent }, body: JSON.stringify(input) });
@@ -32,7 +37,11 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
     if (busy) return; setBusy(true); setMessage("");
     try { await action(); } catch (error) {
       const code = error instanceof Error ? error.message : "";
-      setMessage(code === "COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY"
+      setMessage(code === "COINOPS_SLOT_WORKLOAD_UNCERTIFIED"
+        ? "Perfil de carga ainda não certificado para essa quantidade de slots. Não é confirmação de executor lotado; nenhuma ordem ou motor foi criado."
+        : code === "COINOPS_CAPACITY_UNKNOWN"
+          ? "A capacidade ainda não pôde ser confirmada. Nenhuma ordem ou motor foi criado; atualize a capacidade antes de tentar novamente."
+        : code === "COINOPS_ACCOUNT_ORDER_BUDGET_PROBE_BUSY"
         ? "Outra consulta dos limites Binance está em andamento. Aguarde alguns segundos e tente novamente neste formulário."
         : code || "Ação não concluída. Confira o estado antes de repetir.");
     }
@@ -40,7 +49,7 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
   }
   function invalidate() { setPreview(null); setRequestId(crypto.randomUUID()); }
   async function loadOptions() {
-    const result = await send("/api/coinops-engine-control", { action: "APPEND_OPTIONS", accountId });
+    const result = await send("/api/coinops-engine-control", { action: "APPEND_OPTIONS", accountId, slotCount: Number(slotCount) });
     setOptions(result.options); setShardId((previous) => result.options.some((item: EngineAdmissionOption) => item.shardId === previous)
       ? previous : result.options.find((item: EngineAdmissionOption) => item.capacityCode === "CAPACITY_OK")?.shardId ?? "");
   }
@@ -52,7 +61,17 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
   function plan(action: string) {
     return { action, accountId, shardId, requestId, quote, capital: decimal(capital), previewHash: preview?.previewHash,
       engines: [{ asset, capital: decimal(capital), gainPercent: decimal(rates[0]), spacingPercent: decimal(rates[1]),
-        postAthPercent: decimal(rates[2]), monthlyTarget: Number(rates[3]) }] };
+        postAthPercent: decimal(rates[2]), monthlyTarget: Number(rates[3]), slotCount: Number(slotCount),
+        ...(perSlotQuote ? { perSlotQuote: decimal(perSlotQuote) } : {}) }] };
+  }
+  function updateAllocation(count: string, perSlot: string) {
+    if (count !== slotCount) { setOptions([]); setShardId(""); }
+    setSlotCount(count); setPerSlotQuote(perSlot);
+    const slots = Number(count), amount = Number(decimal(perSlot));
+    if (Number.isSafeInteger(slots) && slots >= MIN_ENGINE_SLOT_COUNT && slots <= MAX_ENGINE_SLOT_COUNT
+      && /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(decimal(perSlot)) && amount > 0)
+      setCapital((Math.round(amount * 100) * slots / 100).toFixed(2));
+    invalidate();
   }
   return <section aria-label={`Adicionar motor em ${name}`}>
     <button type="button" className="px-button px-button-primary" disabled={busy} onClick={() => {
@@ -66,8 +85,10 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
         onChange={(event) => { setShardId(event.target.value); invalidate(); }}>
         <option value="">Selecione um executor elegível</option>{options.map((item) => <option key={item.shardId} value={item.shardId}
           disabled={item.capacityCode !== "CAPACITY_OK"}>{item.shardId.replace("executor-", "Executor ")} ·
-          {item.capacityCode === "CAPACITY_OK" ? "+1 SIM" : "+1 NÃO"} · {item.ip} · {item.credential === "VALIDATED" ? "IP validado" : "Validar IP"}</option>)}</select></label>
+          {item.capacityReason === "SLOT_WORKLOAD_UNCERTIFIED" ? "Carga não certificada"
+            : item.capacityCode === "CAPACITY_OK" ? "+1 SIM" : item.capacityCode === "CAPACITY_UNKNOWN" ? "Capacidade não confirmada" : "+1 NÃO"} · {item.ip} · {item.credential === "VALIDATED" ? "IP validado" : "Validar IP"}</option>)}</select></label>
         <button type="button" className="px-button" disabled={busy} onClick={() => void work(loadOptions)}>Atualizar capacidade · sem ordens</button></div>
+      {workloadNotice ? <p role="status">{workloadNotice}</p> : null}
       {selected ? <><p>IP para whitelist Binance: <strong>{selected.ip}</strong>. Adicione este IP sem remover os anteriores.
         Não compartilhamos vaults entre executores.</p>
         <button type="button" className="px-button" disabled={busy} onClick={() => void work(async () => {
@@ -91,8 +112,13 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
         <option value="BTC">BTC</option><option value="SOL">SOL</option></select></label>
         <label>Moeda<select value={quote} disabled={busy} onChange={(event) => { setQuote(event.target.value as "BRL" | "USDT"); invalidate(); }}>
           <option value="BRL">BRL</option><option value="USDT">USDT</option></select></label>
+        <label>Quantidade de slots<input type="number" min={MIN_ENGINE_SLOT_COUNT} max={MAX_ENGINE_SLOT_COUNT}
+          step="1" value={slotCount} disabled={busy}
+          onChange={(event) => updateAllocation(event.target.value, perSlotQuote)} /></label>
+        <label>Capital por slot (opcional)<input type="text" inputMode="decimal" value={perSlotQuote} disabled={busy}
+          onChange={(event) => updateAllocation(slotCount, event.target.value)} /></label>
         <label>Capital adicional do novo motor<input type="text" inputMode="decimal" value={capital} disabled={busy}
-          onChange={(event) => { setCapital(event.target.value); invalidate(); }} /></label>
+          onChange={(event) => { setCapital(event.target.value); setPerSlotQuote(""); invalidate(); }} /></label>
         {["Gain %", "Queda normal %", "Queda pós-ATH %", "Meta por slot/mês"].map((label, index) => <label key={label}>{label}
           <input type="text" inputMode={index === 3 ? "numeric" : "decimal"} value={rates[index]} disabled={busy}
             onChange={(event) => { setRates((current) => current.map((value, i) => i === index ? event.target.value : value)); invalidate(); }} /></label>)}</div>
@@ -105,7 +131,7 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
         <h4>{asset}/{quote} · novo motor · {shardId.replace("executor-", "Executor ")}</h4>
         <p>Saldo Spot {money(preview.free, quote)} · capital já autorizado {money(preview.allocatedCapital, quote)} ·
           disponível para nova alocação {money(preview.availableCapital, quote)} · novo capital {money(preview.capital, quote)}.</p>
-        {preview.engines.map((engine, index) => <p key={index}>25 slots · {engine.validSlots}/25 executáveis · mínimo estimado {money(engine.minimumCapital, quote)} ·
+        {preview.engines.map((engine, index) => <p key={index}>{engine.slotCount} slots · {engine.validSlots}/{engine.slotCount} executáveis · mínimo estimado {money(engine.minimumCapital, quote)} ·
           meta {engine.monthlyTarget}/slot/mês · primeira entrada estimada {engine.firstEntry} → TP {engine.firstTp} · próxima BUY {engine.nextBuy}.</p>)}
         <button type="button" className="px-button px-button-primary" disabled={busy || preview.status !== "PREVIEW_NO_ORDER"}
           onClick={() => void work(async () => {
@@ -114,6 +140,8 @@ export function EngineAppendBuilder({ accountId, name, hostingShards, onChanged 
             invalidate(); await onChanged();
           })}>Confirmar e preparar motor INACTIVE</button>
       </section> : null}
+      <p>Quantidade imutável após criação. Capacidade e filtros Binance serão revalidados para essa grade.
+        Pós-ATH mantém até 15 elegíveis PRIMARY; demais RESERVE. Apenas uma NEXT BUY por motor.</p>
       {message ? <p role="status">{message}</p> : null}
     </div> : null}
   </section>;

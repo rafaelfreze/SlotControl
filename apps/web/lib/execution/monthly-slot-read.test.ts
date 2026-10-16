@@ -5,20 +5,21 @@ import ts from "typescript";
 import * as policy from "./monthly-slot-policy.ts";
 import * as reads from "./live-ledger-read.ts";
 import * as errors from "./live-read-error.ts";
+import * as topology from "./engine-slot-topology.ts";
 
 type Row = Record<string, unknown>;
 type Failure = { code: string; status: number; persistent?: boolean };
 function fixture(engineId = "engine-a", failures: Record<string, Failure> = {},
-  instant = "2026-10-07T20:02:00Z") {
+  instant = "2026-10-07T20:02:00Z", slotCount = 25) {
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", asset: "BTC",
     operator_id: "operator", exchange_account_id: "same-account", trading_engine_id: engineId };
-  const engine = { ...scope, legacy_compatible: false, executor_shard_id: engineId === "engine-a" ? "executor-02" : "executor-03" };
-  const slots = Array.from({ length: 25 }, (_, i) => ({ slot_number: i + 1, balance_brl: 220,
+  const engine = { ...scope, legacy_compatible: false, slot_count: slotCount, executor_shard_id: engineId === "engine-a" ? "executor-02" : "executor-03" };
+  const slots = Array.from({ length: slotCount }, (_, i) => ({ slot_number: i + 1, balance_brl: 220,
     gain_count: i === 1 ? 1 : 0, entry_state: i < 5 ? "OPEN" : i === 5 ? "ARMED" : "PLANNED" }));
   const totals: Row[] = [{ slot_number: 2, physical_slot_id: `REAL:${engineId}:2`,
     lifetime_gain_count: 1, monthly_gain_count: 1, period_key: policy.monthlyPeriodKey(instant),
     market_gain_count: 1, manual_gain_count: 0, monthly_market_gain_count: 1, monthly_manual_gain_count: 0 }];
-  const targets: Row[] = [{ monthly_target: 7 }];
+  const targets: Row[] = [{ monthly_target: 7, slot_count: slotCount }];
   const attempts: Record<string, number> = {};
   const service = { from(table: string) {
     const filters: Row = {};
@@ -40,6 +41,7 @@ function fixture(engineId = "engine-a", failures: Record<string, Failure> = {},
     return chain;
   } };
   const deps: Record<string, unknown> = { "./monthly-slot-policy": policy,
+    "./engine-slot-topology": topology,
     "./live-ledger-read": reads, "./live-read-error": errors,
     "./operator-context-server": { resolveOperatorEngine: async () => engine } };
   const compiled = ts.transpileModule(readFileSync(new URL("./monthly-slot-server.ts", import.meta.url), "utf8"),
@@ -108,6 +110,17 @@ test("same account and symbol in separate engines/shards never share monthly fac
     const f = fixture(id);
     const result = await f.read();
     assert.ok(result.every(slot => slot.physicalSlotId.startsWith(`REAL:${id}:`)));
+  }
+});
+
+for (const slotCount of [25, 50, 75, 100]) test(`${slotCount} slots: actual monthly GET retries503 and rolls calendar without touching lifetime/OPEN/TP`, async () => {
+  for (const instant of ["2026-11-01T04:00:00Z", "2027-01-01T04:00:00Z"]) {
+    const f = fixture("engine-b", { robot_v1_slot_gain_totals: { code: "", status: 503 } }, instant, slotCount);
+    f.totals[0].monthly_gain_count = 0; f.totals[0].monthly_market_gain_count = 0;
+    const before = JSON.stringify(f.slots), result = await f.read();
+    assert.equal(result.length, slotCount); assert.equal(result[1].lifetimeGainCount, 1);
+    assert.equal(result[1].monthlyGainCount, 0); assert.equal(f.attempts.robot_v1_slot_gain_totals, 2);
+    assert.equal(result[1].physicalSlotId, "REAL:engine-b:2"); assert.equal(JSON.stringify(f.slots), before);
   }
 });
 

@@ -142,6 +142,37 @@ no ambiente de destino antes de operação remota.
 - ATH continua organizando os grupos/ranks oficiais: até 15 elegíveis Primary em ordem crescente e demais Reserve em ordem decrescente, sem renumerar os 25 slots físicos. Igualar spacing não remove o regime, a prioridade mensal nem a seleção de slots.
 - Padronizar motores existentes exige prévia e confirmação pelo Bulk Strategy Editor oficial, alterando somente `normal_spacing_rate` e `post_ath_spacing_rate`; nunca UPDATE manual de perfil/ledger. OPEN/TP e snapshots históricos permanecem intactos, e NEXT BUY do regime ativo passa pelo reconciliador com ownership, lease, CAS e confirmação de zero fill. Ver `docs/COINOPS_SPACING_STANDARDIZATION_20261009.md`.
 
+### Topologia configurável por engine — 16/10/2026
+
+- `trading_engines.slot_count` é a autoridade imutável da quantidade física;
+  preparation, run e snapshots devem concordar. Ausência histórica significa
+  25, nunca a quantidade de linhas retornadas. Leituras incompletas falham fechadas.
+- O limite de validação de software desta release é 2..100, default 25;
+  isso não certifica a capacidade de qualquer executor. Não redimensionar um
+  motor financiado nem impor 100 sobre motores existentes. Versões históricas
+  e relatórios devem conservar a configuração original.
+- A prioridade canônica continua **até 15 elegíveis PRIMARY**, ordenados pelos
+  ganhos conforme a regra vigente; os demais elegíveis são RESERVE. Para 100
+  elegíveis, até 15/85, nunca uma proporção 60/40 implícita. Slots físicos não
+  são renumerados; PRIMARY não significa os primeiros 15 números físicos.
+- Uma NEXT BUY residente por engine continua sendo a invariante; N slots não
+  autoriza N BUY simultâneas. Reserva de ordens por conta/par soma `N+1` por
+  motor em todos os shards. Ownership permanece engine/order exato.
+- Admissão de N exige perfil de carga certificado para a quantidade exata,
+  runtime e política, incluindo fills concentrados/retries e isolamento dos
+  irmãos. Certificação legada cobre somente 25; ausência de perfil retorna
+  `CAPACITY_UNKNOWN / SLOT_WORKLOAD_UNCERTIFIED`. Nem uso atual baixo nem
+  `ceil(N/25)` comprovam segurança. Projeção, histerese, whitelist, taxas, saldo
+  não reservado, limites Binance, Watchdog e fleet parity são gates independentes.
+- As referências anteriores a provas de 25 slots descrevem motores legados;
+  em consumidores generalizados, a prova passa a exigir exatamente 1..N pelo
+  valor canônico do motor/run, preservando identidade e integridade financeira.
+- Relatórios novos usam contrato 25; snapshots históricos não são reescritos.
+- Acesso técnico Platform pode usar a CLI oficial autenticada se o connected
+  app/MCP não expuser a organização. Validar ref/schema/RLS/histórico pelo
+  verificador somente leitura em `tools/operations/check-coinops-supabase-access.ps1`;
+  ver `docs/COINOPS_SUPABASE_ACCESS_20261016.md`. Não usar `.env.local` legado.
+
 ## Backtests e Local
 
 - tools/backtests e datasets físicos são simulação isolada; não são fonte normativa para produção.
@@ -242,6 +273,13 @@ no ambiente de destino antes de operação remota.
 
 - Roteamento canônico: `operator_id + exchange_account_id + trading_engine_id + environment + executor_shard_id`, resolvido no backend pelo motor. Símbolo, posição visual e bootstrap da conta não identificam um motor. Um engine desconhecido nunca cai no Executor 01. O backfill mantém cada motor no executor onde já opera; alterações posteriores do shard do engine são proibidas. O antigo RPC de reatribuição staged não autoriza mover motores sob este contrato: sua compatibilidade deve ser revisada/guardada antes da nova release.
 - Cada vínculo conta/executor exige validação própria de credencial e whitelist no IP correto, mantendo todos os IPs anteriores. A identidade física Binance permanece única por conta/operador, não por shard; uma chave nova não transfere ownership. Não copiar vault, private keys, credenciais Binance ou estado entre executores. Credencial de outro shard é inserida pelo proprietário via painel/HTTPS e armazenada apenas no vault daquele shard; nenhum secret retorna ao browser.
+- Exceção operacional expressamente autorizada em 16/10/2026: somente Thyely
+  01→03 pode reutilizar a mesma credencial por transferência SSH autenticada,
+  cifrada no próprio 01 para chave efêmera do 03 e recriptografia no cofre do
+  destino. Não exportar ao notebook/browser/chat/log nem copiar vault/HMAC/estado.
+  Validar UID global, permissões e whitelist/IP antes de registrar. A validação
+  de credencial já instalada sem vínculo exige admissão e prova oficial; não
+  ativa motor. Ver `docs/COINOPS_INSTALLED_CREDENTIAL_REVALIDATION_20261016.md`.
 - Binance request weight é por IP; `ORDERS` e filtros de conta são compartilhados entre chaves/IPs. Admissão e dispatch multi-shard exigem amostra assinada recente, inventário completo e reserva serializada por conta, sem reset presumido, bypass, quota fixa de motores ou polling por render. Conservar orçamento para proteção/recovery. Motores do mesmo par exigem STP maker-preserving (`EXPIRE_TAKER`) em todos os transportes envolvidos: nunca usar EXPIRE_MAKER/BOTH para cancelar ordens de outro engine. Suporte publicado pela Binance, sozinho, não prova enforcement.
 - Ownership de BUY/TP/NEXT BUY/fill/cancel/recovery exige namespace determinístico do engine e identidade exata de ordem. `CANCELED`, account+symbol, orderId avulso ou flag do caller nunca são prova de ownership. Locks/leases/run/ledger/slots/strategy/ATH/meta/cap/recovery são por engine. Watchdog e falhas são do engine/shard afetado, nunca dos irmãos por compartilharem conta/símbolo.
 - Account UUID e identidade física Binance são fronteiras distintas: a mesma identidade Binance não pode ganhar outro dono em outro shard. Claims de identidade ficam server-side, sem UID/secret no frontend; falha de claim impede nova ativação.
@@ -296,7 +334,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 24`, com roteamento e metadados de isolamento por engine/shard, evidência de atribuição/retry do trading e proteção da pausa intencional. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 25`, com topologia canônica por engine, roteamento e isolamento por shard, evidência de atribuição/retry do trading e proteção da pausa intencional. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

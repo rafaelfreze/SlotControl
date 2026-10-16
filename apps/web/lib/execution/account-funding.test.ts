@@ -37,6 +37,25 @@ test("whole grid is funded by native account wallet once, including same-symbol 
     price: 10, quantity: 1, executedQuantity: 0, reservedQuote: 10 })));
 });
 
+test("mixed 25/100 same-symbol cross-shard funding counts canonical slots, never partial rows", () => {
+  const input = fixture(2), second = input.engines[1];
+  second.slot_count = 100; second.hard_cap_quote = 1100;
+  const account = input.slotAccounts.find((row) => row.trading_engine_id === second.id)!;
+  const slot = input.slots.find((row) => row.trading_engine_id === second.id)!;
+  input.slotAccounts.push(...Array.from({ length: 75 }, (_, i) => ({ ...account, slot_number: 26 + i })));
+  input.slots.push(...Array.from({ length: 75 }, (_, i) => ({ ...slot, id: `extra${i}`, slot_number: 26 + i,
+    position_quantity: 0, position_committed_quote: 0 })));
+  const [row] = buildAccountFunding(input);
+  assert.equal(row.slotCount, 125); assert.deepEqual(row.engineSlotCounts, [25, 100]);
+  assert.equal(row.ledgerTarget, 1375); assert.equal(row.spotFree, 254);
+  assert.equal(row.cashRequired, 1333); assert.equal(row.deficit, 1079);
+  assert.equal(row.status, "SHORTFALL");
+  input.slots.pop();
+  const [partial] = buildAccountFunding(input);
+  assert.equal(partial.status, "INCOMPLETE"); assert.equal(partial.deficit, null);
+  assert.equal(partial.slotCount, 125, "partial inventory must not redefine the engine");
+});
+
 test("funding publishes exact per-engine resident evidence only after the full observation succeeds", () => {
   const input = fixture(2);
   input.orders = input.orders.slice(0, 1);

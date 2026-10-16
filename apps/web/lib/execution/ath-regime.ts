@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "./monthly-slot-policy.ts";
 import type { V1Asset } from "./robot-v1.ts";
 import type { HistoricalAth } from "./ath-market-source.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "./engine-slot-topology.ts";
 
 export type AthEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type AthRegime = "NORMAL" | "POST_ATH";
@@ -119,19 +120,19 @@ export type PostAthSlot = AthSlot & {
 };
 
 export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[],
-  monthlyTarget = MONTHLY_SLOT_TARGET[asset]): PostAthSlot[] {
-  if (slots.length !== 25) throw new Error("COINOPS_ATH_SLOT_COUNT_INVALID");
+  monthlyTarget = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT): PostAthSlot[] {
+  if (!hasCompletePhysicalSlotSet(slots.map(slot => slot.physicalSlotNumber), slotCount)) throw new Error("COINOPS_ATH_SLOT_COUNT_INVALID");
   const ids = new Set<string>(), numbers = new Set<number>();
   for (const slot of slots) {
     if (!slot.physicalSlotId || ids.has(slot.physicalSlotId) || numbers.has(slot.physicalSlotNumber)
-      || !Number.isInteger(slot.physicalSlotNumber) || slot.physicalSlotNumber < 1 || slot.physicalSlotNumber > 25
+      || !Number.isInteger(slot.physicalSlotNumber) || slot.physicalSlotNumber < 1 || slot.physicalSlotNumber > slotCount
       || !Number.isInteger(slot.lifetimeGainCount) || slot.lifetimeGainCount < 0
       || slot.monthlyGainCount !== null && (!Number.isInteger(slot.monthlyGainCount) || slot.monthlyGainCount < 0
         || slot.monthlyGainCount > slot.lifetimeGainCount)) throw new Error("COINOPS_ATH_SLOT_EVIDENCE_INVALID");
     ids.add(slot.physicalSlotId); numbers.add(slot.physicalSlotNumber);
   }
   const eligibleStates = new Set(["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"]);
-  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget);
+  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget, slotCount);
   const eligible = slots.filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
     && (completed || slot.monthlyGainCount < monthlyTarget) && eligibleStates.has(slot.entryState));
   const byPhysicalId = (left: AthSlot, right: AthSlot) => left.physicalSlotId.localeCompare(right.physicalSlotId);

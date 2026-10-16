@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import * as slotTopology from "../execution/engine-slot-topology.ts";
 import ts from "typescript";
 import * as cycle from "../execution/robot-v1-live-cycle.ts";
 import * as strategy from "../execution/strategy-engine.ts";
@@ -18,6 +19,12 @@ import * as strategyParameterRegistry from "../execution/strategy-parameter-regi
 import * as scope from "../execution/operator-context.ts";
 import * as engineExposure from "../execution/engine-exposure.ts";
 import * as ledgerRead from "../execution/complete-ledger-read.ts";
+import * as liveLedgerRead from "../execution/live-ledger-read.ts";
+import * as liveReadError from "../execution/live-read-error.ts";
+import * as liveBudgetAlert from "../execution/live-account-budget-alert.ts";
+import { readLiveExposure } from "../execution/live-exposure-read.ts";
+import { liveBnbFeeBalanceCheck } from "../execution/live-bnb-fee-balance.ts";
+import { liveQuoteBalanceCheck } from "../execution/live-quote-balance.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
@@ -31,9 +38,10 @@ type Options = { asset?: "BTC" | "SOL"; currency?: "BRL" | "USDT"; legacy?: bool
   cancel?: "FILLED" | "PARTIALLY_FILLED" | "TIMEOUT_CANCELED" | "TIMEOUT_NEW";
   staleCaps?: boolean; noContribution?: boolean; contributionSource?: "SELECTIVE" | "ALL_SLOTS";
   openContributionOnly?: boolean; crashAfterCancel?: boolean; crashAfterPrepared?: boolean;
-  lostCreateResponse?: boolean };
+  lostCreateResponse?: boolean; slotCount?: number };
 
 function harness(options: Options = {}) {
+  const count = options.slotCount ?? 25;
   const identity = { product_id: "product-fixture", tenant_id: "tenant-fixture", user_id: "user-fixture",
     operator_id: "operator-fixture", exchange_account_id: "account-fixture", trading_engine_id: "engine-fixture",
     quote_asset: options.currency ?? "USDT" };
@@ -41,16 +49,17 @@ function harness(options: Options = {}) {
   const engine = { ...identity, id: identity.trading_engine_id, base_asset: asset, environment: "REAL",
     symbol: `${asset}${identity.quote_asset}`, status: "ACTIVE", global_kill_switch: false,
     account_kill_switch: false, engine_kill_switch: false, legacy_compatible: options.legacy ?? false,
-    hard_cap_quote: 1000, strategy_config_pending: false };
+    hard_cap_quote: 1000, strategy_config_pending: false, slot_count: count };
   const run: Row = { ...identity, id: "12345678-1234-1234-1234-123456789abc", asset, symbol: engine.symbol,
     engine, status: "ACTIVE", lease_owner: "lease-fixture", lease_until: new Date(Date.now() + 180_000).toISOString(),
-    entry_regime: "NORMAL", entry_spacing: 0.03, gain_rate: 0.05, anchor_price: 110, config_snapshot: {},
+    entry_regime: "NORMAL", entry_spacing: 0.03, gain_rate: 0.05, anchor_price: 110,
+    slot_count: count, config_snapshot: { slot_count: count },
     strategy_version: strategy.STRATEGY_VERSION };
   const profile: Row = { ...identity, id: "profile-fixture", asset, environment: "REAL",
     regime: "POST_ATH", config_version: 2, gain_rate: 0.05, normal_spacing_rate: 0.03,
     post_ath_spacing_rate: 0.05, next_config_version: null,
     transition_key: "transition-fixture", updated_at: new Date().toISOString() };
-  const slots: Row[] = Array.from({ length: 25 }, (_, index) => ({ ...identity,
+  const slots: Row[] = Array.from({ length: count }, (_, index) => ({ ...identity,
     id: `slot-${index + 1}`, run_id: run.id, slot_number: index + 1, operation_sequence: 1,
     entry_state: index === 0 ? "OPEN" : index === 1 ? "ARMED" : "PLANNED",
     entry_origin: "REENTRY", target_buy_price: index === 0 ? 110 : 101 - index,
@@ -84,8 +93,8 @@ function harness(options: Options = {}) {
     robot_v1_live_slots: slots, robot_v1_live_slot_accounts: accounts, robot_v1_live_orders: orders,
     robot_v1_strategy_decisions: [],
     robot_v1_live_preparations: [{ ...identity, live_enabled: true, kill_switch: false,
-      monthly_target: asset === "BTC" ? 7 : 2, max_order_notional_brl: 100, max_total_exposure_brl: 1000 }],
-    account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [],
+      monthly_target: asset === "BTC" ? 7 : 2, max_order_notional_brl: 100, max_total_exposure_brl: 1000, slot_count: count }],
+    account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [], robot_v1_live_alerts: [],
     robot_v1_ath_profiles: [profile],
     strategy_bulk_batches: [], strategy_bulk_engine_updates: [],
     robot_v1_live_selective_contribution_allocations: [
@@ -129,14 +138,15 @@ function harness(options: Options = {}) {
         }
         if (insert) {
           if (!rows.some((row) => conflict.split(",").every((key) => row[key] === insert![key]))) {
-            rows.push(structuredClone(insert));
+            rows.push({ ...structuredClone(insert), id: insert.id ?? `event-${rows.length + 1}`,
+              observed_at: insert.observed_at ?? new Date().toISOString() });
             writes.push({ table, values: structuredClone(insert), ids: [] });
           }
         }
-        return { data: structuredClone(page ? matches.slice(page[0], page[1] + 1) : matches), error: null };
+        return { data: structuredClone(page ? matches.slice(page[0], page[1] + 1) : matches), error: null, count: matches.length };
       };
       const query = {
-        select() { return query; }, order() { return query; }, limit() { return query; },
+        select() { return query; }, order() { return query; }, limit() { return query; }, abortSignal() { return query; },
         range(start: number, end: number) { page = [start, end]; return query; },
         eq(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         is(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
@@ -201,12 +211,18 @@ function harness(options: Options = {}) {
     price: { price: 120, observedAt: new Date().toISOString() },
     filters: { symbol: engine.symbol, baseAsset: asset, quoteAsset: identity.quote_asset, quantityStep: 0.001,
       priceTick: 0.01, minQuantity: 0.001, maxQuantity: 10000, minNotional: 5 },
-    balances: [{ asset: identity.quote_asset, free: 1000 }], supports_unfilled_buy_cancel: true,
+    balances: [{ asset: identity.quote_asset, free: 1000 }, { asset: "BNB", free: .001 }], supports_unfilled_buy_cancel: true,
+    bnb_quote_price: { symbol: `BNB${identity.quote_asset}`, price: 6000, observedAt: new Date().toISOString() },
     execution_caps: { engine: options.staleCaps ? 500 : 1000, account: 1000, max_order: 100 },
     open_orders: [...exchange.values()].filter((o) => ["NEW", "PARTIALLY_FILLED"].includes(String(o.status)))
       .map((o) => ({ ...o, id: o.orderId })),
   });
   const dependencies: Record<string, unknown> = {
+    "./live-ledger-read": liveLedgerRead, "./live-read-error": liveReadError,
+    "./live-exposure-read": { readLiveExposure },
+    "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck }, "./live-quote-balance": { liveQuoteBalanceCheck },
+    "./live-account-budget-alert": { ...liveBudgetAlert, resolveAccountBudgetAlert: async () => undefined },
+    "./engine-slot-topology": slotTopology,
     "./engine-exposure": engineExposure, "./complete-ledger-read": ledgerRead,
     "./robot-v1-live-cycle": cycle, "./strategy-engine": strategy, "./live-entry-capital-refresh": capitalRefresh,
     "./strategy-price-invariant": priceInvariant, "./live-reconciliation-shortcut": shortcut,
@@ -324,6 +340,39 @@ for (const asset of ["BTC", "SOL"] as const) for (const currency of ["BRL", "USD
     h.unchangedOpen();
   });
 }
+
+for (const slotCount of [50, 75, 100]) test(`${slotCount} slots NEXT BUY replacement is idempotent and OPEN/TP are frozen`, async () => {
+  const h = harness({ slotCount });
+  assert.equal(await h.arm(), "NEXT_BUY_ARMED");
+  assert.equal(await h.arm(), "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT");
+  assert.equal(h.calls.filter(call => call.kind === "create").length, 1);
+  assert.equal(h.calls.filter(call => call.kind === "cancel").length, 1);
+  assert.equal(h.orders.filter(order => order.side === "BUY" && order.status === "NEW").length, 1);
+  h.unchangedOpen();
+});
+
+for (const slotCount of [50, 100]) test(`${slotCount} slots known cancel503/crash checkpoint converge and ambiguous outcomes never duplicate`, async () => {
+  const canceled = harness({ slotCount, cancel: "TIMEOUT_CANCELED" });
+  assert.equal(await canceled.arm(), "NEXT_BUY_ARMED");
+  assert.equal(canceled.calls.filter(call => call.kind === "cancel").length, 1);
+  canceled.unchangedOpen();
+  const unknown = harness({ slotCount, cancel: "TIMEOUT_NEW" });
+  await assert.rejects(unknown.arm(), /EXECUTOR_HTTP_503/);
+  assert.equal(unknown.calls.filter(call => call.kind === "create").length, 0);
+  const crashed = harness({ slotCount, crashAfterCancel: true });
+  await assert.rejects(crashed.arm(), /COINOPS_LIVE_SLOT_UPDATE_FAILED/);
+  assert.equal(await crashed.arm(), "NEXT_BUY_ARMED");
+  assert.equal(crashed.calls.filter(call => call.kind === "cancel").length, 1);
+  assert.equal(crashed.calls.filter(call => call.kind === "create").length, 1);
+  crashed.unchangedOpen();
+  for (const cancel of ["FILLED", "PARTIALLY_FILLED"] as const) {
+    const racing = harness({ slotCount, cancel });
+    assert.equal(await racing.arm(), "ENTRY_FILLED_DURING_REPLACEMENT");
+    assert.equal(racing.calls.filter(call => call.kind === "create").length, 0);
+    assert.equal(racing.slots[1].entry_state, "OPEN");
+    racing.unchangedOpen();
+  }
+});
 
 test("bulk POST_ATH transition re-reads canceled BUY checkpoint, reprices its GRID slot and preserves OPEN/TP", async () => {
   const h = harness({ asset: "SOL", currency: "BRL" });

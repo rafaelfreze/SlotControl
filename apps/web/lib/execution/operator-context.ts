@@ -1,3 +1,5 @@
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
+
 /** Public, immutable routing identity. This contract never carries credentials. */
 export type EngineEnvironment = "REAL" | "SHADOW" | "TESTNET";
 export type OperatorScope = { product_id: string; tenant_id: string; user_id: string };
@@ -13,6 +15,8 @@ export type TradingEngineRow = {
   hard_cap_quote: number | string; legacy_compatible: boolean;
   ath_reference_symbol?: string;
   executor_shard_id?: string;
+  slot_count?: number;
+  config?: unknown;
 };
 export type DomainRegistry = {
   operator: OperatorRow; accounts: ExchangeAccountRow[]; engines: TradingEngineRow[];
@@ -26,6 +30,7 @@ export type EngineContext = {
   status: string; hard_cap_quote: number | string; legacy_compatible: boolean;
   ath_reference_symbol: string;
   executor_shard_id?: string;
+  slot_count?: number;
 };
 export type EngineSelection = {
   environment: EngineEnvironment; asset?: string; symbol?: string;
@@ -68,6 +73,7 @@ export function assertDomainRegistry(registry: DomainRegistry, scope: OperatorSc
       || typeof engine.kill_switch !== "boolean" || !Number.isFinite(Number(engine.hard_cap_quote))
       || Number(engine.hard_cap_quote) < 0) throw new Error("COINOPS_ENGINE_SCOPE_DENIED");
     assertNativeMarket(engine.base_asset, engine.quote_asset, engine.symbol);
+    configuredEngineSlotCount(engine);
     engines.add(engine.id);
   }
 }
@@ -96,7 +102,7 @@ export function resolveEngineContext(registry: DomainRegistry, selection: Engine
     base_asset: engine.base_asset, quote_asset: engine.quote_asset, is_legacy_default: account.is_legacy_default,
     global_kill_switch: registry.operator.kill_switch, account_kill_switch: account.kill_switch || account.status !== "ACTIVE",
     engine_kill_switch: engine.kill_switch, strategy_config_pending: engine.strategy_config_pending,
-    status: engine.status, hard_cap_quote: engine.hard_cap_quote,
+    status: engine.status, hard_cap_quote: engine.hard_cap_quote, slot_count: configuredEngineSlotCount(engine),
     legacy_compatible: engine.legacy_compatible, executor_shard_id: engine.executor_shard_id,
     ath_reference_symbol: engine.ath_reference_symbol ?? (engine.legacy_compatible ? `${engine.base_asset}USDC` : engine.symbol) };
 }

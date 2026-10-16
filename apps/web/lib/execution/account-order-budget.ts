@@ -1,3 +1,5 @@
+import { validateEngineSlotCount } from "./engine-slot-topology.ts";
+
 /** Binance ORDERS is account-global (all keys, IPs and API transports).
  * This projection never adds IP request-weight budgets or assumes that a fill
  * has released a counter. Only a signed fresh observation can lower usage. */
@@ -16,8 +18,26 @@ export type AccountOrderBudgetDecision = { code: "PASS" | "ACCOUNT_ORDER_BUDGET_
 export function accountOrderBudgetDecision(sample: AccountOrderBudget | null,
   reservations: readonly AccountOrderReservation[], input: { accountId: string; newOrders: number;
     newEngineSymbol?: string; existingEnginesForSymbol?: number; existingEnginesForAccount?: number;
-    newEngines?: number }, now = Date.now()): AccountOrderBudgetDecision {
+    newEngines?: number; newEngineSlotCounts?: readonly number[];
+    existingEngineSlotCountsForSymbol?: readonly number[];
+    existingEngineSlotCountsForAccount?: readonly number[] }, now = Date.now()): AccountOrderBudgetDecision {
   const unknown = (reason: string): AccountOrderBudgetDecision => ({ code: "ACCOUNT_ORDER_BUDGET_UNKNOWN", reason, intervals: [] });
+  const residentReserve = (counts: readonly number[] | undefined, engines: number | undefined): number | null => {
+    if (!Number.isSafeInteger(engines) || engines! < 0) return null;
+    // Legacy admission callers describe only 25-slot engines. Variable plans
+    // must provide the complete canonical inventory; no row-count inference.
+    if (counts === undefined) return 26 * engines!;
+    if (counts.length !== engines) return null;
+    try { return counts.reduce((total, count) => total + validateEngineSlotCount(count) + 1, 0); }
+    catch { return null; }
+  };
+  const proposedResident = residentReserve(input.newEngineSlotCounts, input.newEngines);
+  const symbolResident = residentReserve(input.existingEngineSlotCountsForSymbol, input.existingEnginesForSymbol);
+  const accountResident = residentReserve(input.existingEngineSlotCountsForAccount, input.existingEnginesForAccount);
+  if (input.newEngineSymbol && (proposedResident === null || symbolResident === null
+    || input.newEngineSlotCounts !== undefined && input.existingEngineSlotCountsForSymbol === undefined
+    || input.newEngineSlotCounts !== undefined && sample?.exchangeOrders && input.existingEngineSlotCountsForAccount === undefined))
+    return unknown("complete canonical slot-count inventory required for variable-slot admission");
   if (!sample || sample.accountId !== input.accountId || !Number.isFinite(now)
     || !Number.isFinite(sample.observedAt) || now - sample.observedAt > 30_000 || sample.observedAt > now + 2000
     || !Number.isFinite(sample.serverTime) || Math.abs(sample.serverTime - sample.observedAt) > 2000
@@ -67,10 +87,11 @@ export function accountOrderBudgetDecision(sample: AccountOrderBudget | null,
       || exchange.limit <= 0 || exchange.externalOrders > exchange.openOrders)
       return unknown("exchange MAX_NUM_ORDERS observation invalid");
     if (input.newEngineSymbol && (!Number.isSafeInteger(input.existingEnginesForAccount)
-      || input.existingEnginesForAccount! < 0 || !Number.isSafeInteger(input.newEngines) || input.newEngines! < 1))
+      || input.existingEnginesForAccount! < 0 || !Number.isSafeInteger(input.newEngines) || input.newEngines! < 1
+      || accountResident === null))
       return unknown("complete account-wide engine inventory required for global resident-order projection");
     const residentProjection = Math.max(exchange.openOrders + unobserved + input.newOrders,
-      input.newEngineSymbol ? exchange.externalOrders + 26 * (input.existingEnginesForAccount! + input.newEngines!) : 0);
+      input.newEngineSymbol ? exchange.externalOrders + accountResident! + proposedResident! : 0);
     if (residentProjection > exchange.limit)
       return { code: "ACCOUNT_ORDER_CAPACITY_REQUIRED", reason: "exchange resident-order filter exhausted", intervals };
   }
@@ -85,7 +106,7 @@ export function accountOrderBudgetDecision(sample: AccountOrderBudget | null,
     // One TP per physical slot and one NEXT BUY per independent engine. This
     // is a Binance filter projection, never a quota on engines/accounts.
     if (Math.max(symbol.openOrders + unobserved + input.newOrders,
-      symbol.externalOrders + 26 * (input.existingEnginesForSymbol! + input.newEngines!)) > symbol.maxOrders)
+      symbol.externalOrders + symbolResident! + proposedResident!) > symbol.maxOrders)
       return { code: "ACCOUNT_ORDER_CAPACITY_REQUIRED", reason: "projected resident orders exceed symbol MAX_NUM_ORDERS", intervals };
   }
   return { code: intervals.some((row) => row.projected > row.limit) ? "ACCOUNT_ORDER_CAPACITY_REQUIRED" : "PASS",

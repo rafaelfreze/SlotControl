@@ -2,6 +2,7 @@ import { projectCurrentLiveSlotRanks } from "../slotgain/live-slot-read-model.ts
 import { orderOperationalSlots, ledgerSlotKey } from "../slotgain/operational-slot-order.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
 import type { AuditRow } from "./trigger-audit.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
 
 /** Current read model only. Never infer a historical rank from today's state.
  * Keeps the raw ledger operational_rank and annotates the distinct current rank. */
@@ -13,7 +14,9 @@ export function buildSlotPresentationAudit(sources: Record<string, AuditRow[]>, 
     const rawSlots = (sources.robot_v1_live_slots ?? []).filter((slot) => slot.run_id === run.id);
     const rawAccounts = (sources.robot_v1_live_slot_accounts ?? []).filter((row) => row.trading_engine_id === engineId);
     const preparation = (sources.robot_v1_live_preparations ?? []).find((row) => row.trading_engine_id === engineId);
-    if (!engineId || rawSlots.length !== 25 || rawAccounts.length !== 25 || !preparation
+    const slotCount = configuredEngineSlotCount({ slot_count: run.slot_count, config: preparation ? { slot_count: preparation.slot_count } : undefined });
+    if (!engineId || !hasCompletePhysicalSlotSet(rawSlots.map((row) => Number(row.slot_number)), slotCount)
+      || !hasCompletePhysicalSlotSet(rawAccounts.map((row) => Number(row.slot_number)), slotCount) || !preparation
       || !Object.hasOwn(sources, "robot_v1_monthly_slot_gains")) continue;
     const credits = (sources.robot_v1_monthly_slot_gains ?? []).filter((row) => row.trading_engine_id === engineId
       && row.environment === "REAL" && Date.parse(String(row.effective_gain_at)) <= Date.parse(at));
@@ -32,7 +35,7 @@ export function buildSlotPresentationAudit(sources: Record<string, AuditRow[]>, 
       post_ath_group: slot.post_ath_group == null ? null : String(slot.post_ath_group),
     })), rawAccounts.map((row) => ({ slot_number: Number(row.slot_number), gain_count: Number(row.gain_count),
       balance_quote: Number(row.balance_quote ?? row.balance_brl) })), totals,
-    run.asset === "BTC" ? "BTC" : "SOL", target, at);
+    run.asset === "BTC" ? "BTC" : "SOL", target, at, slotCount);
     for (const [index, slot] of orderOperationalSlots(ranked, ledgerSlotKey).entries()) {
       const total = totals.find((row) => row.slot_number === slot.slot_number)!;
       output.set(slot.id, { visual_order: index + 1, current_operational_rank: slot.operational_rank,

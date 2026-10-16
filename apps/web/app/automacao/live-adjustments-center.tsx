@@ -8,11 +8,12 @@ import { allocateBulkSlots, allocateSelectedSlots, splitBulkEngines } from "@/li
 import { resolveSelectiveContributionPresetRegions } from "@/lib/execution/selective-contribution-presets";
 import { getLiveAdjustmentReasonError, liveAdjustmentErrorMessage } from "@/lib/execution/live-adjustment-validation";
 import "./live-adjustments-center.css";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet, MAX_ENGINE_SLOT_COUNT } from "@/lib/execution/engine-slot-topology";
 
 type Account = { id: string; display_name: string; is_legacy_default: boolean };
 type Engine = { id: string; exchange_account_id: string; symbol: string; quote_asset: "BRL" | "USDT";
   executor_shard_id?: string; created_at?: string;
-  base_asset: "BTC" | "SOL"; status: string; hard_cap_quote: number | string };
+  base_asset: "BTC" | "SOL"; status: string; hard_cap_quote: number | string; slot_count?: number; config?: unknown };
 type Slot = { trading_engine_id: string; slot_number: number; operation_sequence: number; entry_state: string;
   position_committed_brl: number | string; target_buy_price: number | string; entry_reference_price: number | string;
   operational_rank: number | null };
@@ -208,18 +209,19 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
   }
   const engineSlots = useMemo(() => orderOperationalSlots((status?.slots ?? [])
     .filter((item) => item.trading_engine_id === engineId), ledgerSlotKey), [status, engineId]);
+  const selectedEngineSlotCount = configuredEngineSlotCount(accountEngines.find((item) => item.id === engineId) ?? {});
   const activePresets = (status?.presets ?? []).filter((item) => item.status === "ACTIVE");
   const selectedPreset = activePresets.find((item) => item.id === presetId) ?? activePresets[0];
   const presetRegions = useMemo(() => {
-    if (!selectedPreset || engineSlots.length !== 25) return [];
+    if (!selectedPreset || !hasCompletePhysicalSlotSet(engineSlots.map((slot) => slot.slot_number), selectedEngineSlotCount)) return [];
     try {
       return resolveSelectiveContributionPresetRegions({ id: selectedPreset.id, name: selectedPreset.name,
         totalSlots: selectedPreset.total_slots, openSlots: selectedPreset.open_slots,
         followingSlots: selectedPreset.following_slots }, engineSlots.map((slot) => ({
         slotNumber: slot.slot_number, operationalRank: slot.operational_rank, entryState: slot.entry_state,
-      })));
+      })), selectedEngineSlotCount);
     } catch { return []; }
-  }, [selectedPreset, engineSlots]);
+  }, [selectedPreset, engineSlots, selectedEngineSlotCount]);
   const selectedPresetRegion = presetRegions.find((region) => region.anchorSlotNumber === presetAnchorSlot)
     ?? presetRegions[0];
   const effectiveSelectedSlots = useMemo(() => kind === "PRESET_CAPITAL"
@@ -230,10 +232,10 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
       const custom = slotDistribution === "CUSTOM" ? effectiveSelectedSlots.map((number) => ({
         slotNumber: number, amount: Number((customSlotAmounts[number] ?? "").replace(",", ".")),
       })) : undefined;
-      return new Map(allocateSelectedSlots(amount, engineId, effectiveSelectedSlots, custom)
+      return new Map(allocateSelectedSlots(amount, engineId, effectiveSelectedSlots, custom, selectedEngineSlotCount)
         .map((item) => [item.slotNumber, item.amount]));
     } catch { return new Map<number, number>(); }
-  }, [amount, customSlotAmounts, effectiveSelectedSlots, engineId, slotDistribution]);
+  }, [amount, customSlotAmounts, effectiveSelectedSlots, engineId, slotDistribution, selectedEngineSlotCount]);
 
   function invalidate() { setPreview(null); setPreviewDraft(null); setReverse(null); setError(""); setNotice(""); setRequestId(crypto.randomUUID()); }
   function chooseAccount(value: string) {
@@ -252,12 +254,14 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     const ids = selectedEngines.map((item) => item.id);
     if (distribution === "ABSOLUTE" && ids.length === 2) {
       const total = Math.round(amount * 100), first = Math.round(firstAmount * 100);
-      if (!Number.isSafeInteger(first) || first < 25 || total - first < 25)
+      if (!Number.isSafeInteger(first) || first < configuredEngineSlotCount(selectedEngines[0])
+        || total - first < configuredEngineSlotCount(selectedEngines[1]))
         throw new Error("COINOPS_ADJUSTMENT_DISTRIBUTION_INVALID");
       return [{ engineId: ids[0], amount: first / 100 },
         { engineId: ids[1], amount: (total - first) / 100 }];
     }
-    return splitBulkEngines(amount, ids, distribution === "EQUAL" ? 50 : firstPercent);
+    return splitBulkEngines(amount, ids, distribution === "EQUAL" ? 50 : firstPercent,
+      selectedEngines.map((engine) => configuredEngineSlotCount(engine)));
   }
   function draft(): Draft {
     if (!account || !quotes.includes(quote)) throw new Error("Selecione conta e moeda específicas.");
@@ -301,7 +305,8 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
     }
     try { setBusy(true); setError(""); setNotice(""); setReverse(null);
       const next = draft();
-      if (next.shares) allocateBulkSlots(next.amount!, next.shares);
+      if (next.shares) allocateBulkSlots(next.amount!, next.shares.map((share) => ({ ...share,
+        slotCount: configuredEngineSlotCount(accountEngines.find((engine) => engine.id === share.engineId)!) })));
       const result = await control(next) as Preview;
       setPreview(result); setPreviewDraft(next);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha no preview."); }
@@ -429,7 +434,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
           {engineSlots.map((slot) => <option value={slot.slot_number} key={slot.slot_number}>#{slot.slot_number} · Rank {slot.operational_rank ?? "—"} · {slot.entry_state}</option>)}</select></label>
           : <p className="lac-slot-note">{kind === "PRESET_CAPITAL"
             ? "A predefinição resolve a região pela ordem operacional oficial do motor."
-            : "Escolha manualmente qualquer subconjunto dos 25 slots deste motor."}</p>}
+            : `Escolha manualmente qualquer subconjunto dos ${selectedEngineSlotCount} slots deste motor.`}</p>}
       </div> : <fieldset className="lac-engines"><legend>Motores que receberão o aporte</legend>
         {inQuote.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)}
           onChange={(event) => { setSelected(event.target.checked ? [...selected,item.id] : selected.filter((id) => id !== item.id)); invalidate(); }} />{item.symbol} · limite {format(item.hard_cap_quote, quote)}</label>)}
@@ -457,7 +462,7 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
             {distribution === "ABSOLUTE" ? <label>{selectedEngines[0].symbol} · {quote}<input inputMode="decimal"
               value={firstAmountText} onChange={(event) => { setFirstAmountText(event.target.value); invalidate(); }} /></label> : null}
           </div> : null}
-          {kind === "BULK_CAPITAL" ? <p className="lac-slot-note">O valor de cada motor é distribuído igualmente entre seus 25 slots, com sobra de centavos explícita.</p> : null}</>}
+          {kind === "BULK_CAPITAL" ? <p className="lac-slot-note">O valor de cada motor é distribuído igualmente entre seus próprios slots, com sobra de centavos explícita.</p> : null}</>}
       {kind === "SELECTIVE_CAPITAL" || kind === "PRESET_CAPITAL" ? <section className="lac-selective" aria-label="Aporte em slots selecionados">
         <div className="lac-selective-head"><div><strong>{kind === "PRESET_CAPITAL" ? "Região predefinida" : "Slots do motor"}</strong>
           <small>{effectiveSelectedSlots.length} selecionado(s)
@@ -519,9 +524,9 @@ export function LiveAdjustmentsCenter({ active, initialAccountId = "ALL", initia
         <p className="lac-slot-note">Configuração somente de seleção: criar, editar ou desativar não movimenta capital e não envia ordens.</p>
         <div className="lac-grid"><label>Nome<input value={presetName} maxLength={80}
           onChange={(event) => setPresetName(event.target.value)} placeholder="Ex.: 1 + 2" /></label>
-          <label>Total de slots<input type="number" min={1} max={25} value={presetTotalSlots}
+          <label>Total de slots<input type="number" min={1} max={MAX_ENGINE_SLOT_COUNT} value={presetTotalSlots}
             onChange={(event) => setPresetTotalSlots(Number(event.target.value))} /></label>
-          <label>Slots OPEN da região<input type="number" min={1} max={25} value={presetOpenSlots}
+          <label>Slots OPEN da região<input type="number" min={1} max={MAX_ENGINE_SLOT_COUNT} value={presetOpenSlots}
             onChange={(event) => setPresetOpenSlots(Number(event.target.value))} /></label>
           <label>Seguintes abaixo<input type="number" min={0} max={24} value={presetFollowingSlots}
             onChange={(event) => setPresetFollowingSlots(Number(event.target.value))} /></label></div>

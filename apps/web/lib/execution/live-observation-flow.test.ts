@@ -1,4 +1,5 @@
 import test from "node:test";
+import * as slotTopology from "./engine-slot-topology.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -54,6 +55,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     return chain;
   }};
   const deps:Record<string,unknown>={
+    "./engine-slot-topology": slotTopology,
     "./live-read-error":readErrors,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-exposure-read":{readLiveExposure},

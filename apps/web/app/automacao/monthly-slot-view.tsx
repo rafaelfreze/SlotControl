@@ -4,19 +4,20 @@ import type { MonthlySlotStatus } from "@/lib/execution/monthly-slot-policy";
 import { nextMonthlyResetAt } from "@/lib/execution/monthly-slot-policy";
 import { monthlyNextAction } from "./monthly-slot-order";
 import type { MonthlySlotFilter } from "./monthly-slot-order";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "@/lib/execution/engine-slot-topology";
 
 export { orderMonthlySlotRows } from "./monthly-slot-order";
 export type { MonthlySlotFilter } from "./monthly-slot-order";
 const number = (value: number) => value.toLocaleString("pt-BR", { maximumFractionDigits: 4 });
 
-export function MonthlySlotToolbar({ statuses, filter, onFilter }: { statuses: MonthlySlotStatus[]; filter: MonthlySlotFilter; onFilter: (filter: MonthlySlotFilter) => void }) {
-  if (statuses.length !== 25) return <p className="av2-missed-note">Metas mensais: aguardando evidência completa dos 25 slots físicos.</p>;
+export function MonthlySlotToolbar({ statuses, filter, onFilter, slotCount = DEFAULT_ENGINE_SLOT_COUNT }: { statuses: MonthlySlotStatus[]; filter: MonthlySlotFilter; onFilter: (filter: MonthlySlotFilter) => void; slotCount?: number }) {
+  if (!hasCompletePhysicalSlotSet(statuses.map((row) => row.physicalSlotNumber), slotCount)) return <p className="av2-missed-note">Metas mensais: aguardando evidência completa dos {slotCount} slots físicos.</p>;
   const reached = statuses.filter((row) => row.monthlyTargetReached).length;
   const eligible = statuses.filter((row) => row.eligibleForNewEntry).length;
   const reset = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Campo_Grande", dateStyle: "short" })
     .format(new Date(nextMonthlyResetAt(`${statuses[0].periodKey}-15T12:00:00Z`)));
   return <div className="av2-monthly-toolbar" aria-label="Metas mensais e ordem dos slots">
-    <span><strong>{reached}/25 metas</strong> · {eligible} elegíveis · {statuses[0].periodKey} · reinicia {reset}</span>
+    <span><strong>{reached}/{slotCount} metas</strong> · {eligible} elegíveis · {statuses[0].periodKey} · reinicia {reset}</span>
     <label>Lista <select value={filter} onChange={(event) => onFilter(event.target.value as MonthlySlotFilter)}>
       <option value="operational">Ordem operacional</option><option value="physical">Slot físico</option>
       <option value="gain_desc">Mais gains</option><option value="gain_asc">Menos gains</option>

@@ -2,7 +2,8 @@ import { planAthLadder } from "./ath-ladder.ts";
 import { calculateStrategyTakeProfit, planStrategyClosedSlot, planStrategyInitialEntry, planStrategyNextEntry, planStrategyTakeProfit,
   planStrategyPostAthNextEntry, STRATEGY_VERSION, type StrategyCandidate } from "./strategy-engine.ts";
 import type { V1Asset } from "./robot-v1.ts";
-import { distributeLiveCapital, LIVE_SLOT_COUNT } from "./live-capital-distribution.ts";
+import { distributeLiveCapital } from "./live-capital-distribution.ts";
+import { validateEngineSlotCount } from "./engine-slot-topology.ts";
 export { distributeLiveCapital, LIVE_SLOT_COUNT } from "./live-capital-distribution.ts";
 
 export const LIVE_PREPARATION_VERSION = "5.1";
@@ -76,13 +77,14 @@ export function parseLiveRules(raw: RawLiveSymbol): LiveRules {
 
 export type LiveNativeLimits = { engineCap: number; orderCap: number; accountCap: number; quoteAsset: string };
 export function validateLiveConfig(config: LiveConfig, globalCapBrl: number, limits?: LiveNativeLimits) {
+  const slotCount = validateEngineSlotCount(config.slot_count);
   const capital = positive(config.configured_live_capital_brl, "COINOPS_LIVE_CAP_INVALID");
   const orderCap = positive(config.max_order_notional_brl, "COINOPS_LIVE_CAP_INVALID");
   const exposure = positive(config.max_total_exposure_brl, "COINOPS_LIVE_CAP_INVALID");
   const assetHardCap = limits?.engineCap ?? (config.asset === "BTC" ? 450 : 275);
   const orderHardCap = limits?.orderCap ?? (config.asset === "BTC" ? 18 : 11);
   const quote = limits?.quoteAsset ?? "BRL";
-  if (config.symbol !== `${config.asset}${quote}` || config.slot_count !== LIVE_SLOT_COUNT
+  if (config.symbol !== `${config.asset}${quote}` || config.slot_count !== slotCount
     || !Number.isInteger(config.monthly_target) || config.monthly_target < 1 || config.monthly_target > 1000
     || ![config.gain_rate, config.normal_spacing_rate, config.post_ath_spacing_rate].every((v) => Number(v) > 0 && Number(v) < 1)
     || orderCap > exposure || orderCap > orderHardCap || exposure > capital
@@ -120,13 +122,14 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
   if (rules.symbol !== config.symbol || rules.status !== "TRADING") throw new Error("COINOPS_LIVE_PAIR_UNAVAILABLE");
   const spacing = Number(config.regime === "POST_ATH" ? config.post_ath_spacing_rate : config.normal_spacing_rate);
   const gainRate = Number(config.gain_rate);
-  const initial = Array.from({ length: LIVE_SLOT_COUNT }, (_, i) => ({
+  const slotCount = validateEngineSlotCount(config.slot_count);
+  const initial = Array.from({ length: slotCount }, (_, i) => ({
     physicalSlotId: `LIVE_PREVIEW:${config.asset}:${i + 1}`, physicalSlotNumber: i + 1,
     lifetimeGainCount: 0, monthlyGainCount: 0, entryState: "PLANNED", blocked: false,
     buyPrice: price, entryOrigin: "GRID" as const, operationSequence: 1, status: "PENDING" }));
   const ladder = planAthLadder(config.asset, config.regime, price,
     { gainRate, normalSpacing: Number(config.normal_spacing_rate), postAthSpacing: Number(config.post_ath_spacing_rate) },
-    rules.priceTick, initial);
+    rules.priceTick, initial, config.monthly_target, slotCount);
   const levels = ladder.map((level) => {
     const entry = level.nextBuyPrice;
     const tp = calculateStrategyTakeProfit(entry, rules.priceTick, { gainRate, entrySpacing: spacing });
@@ -136,7 +139,7 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
   const currentMinimumBrl = levels.find((level) => level.operationalRank === 1)!.minimumNotionalBrl;
   const ladderMinimumBrl = Math.max(...levels.map((level) => level.minimumNotionalBrl));
   const recommendedSlotBrl = centsUp(ladderMinimumBrl * (1 + LIVE_FEE_RESERVE_RATE + LIVE_PRICE_BUFFER_RATE));
-  const slotCapitals = distributeLiveCapital(caps.capital);
+  const slotCapitals = distributeLiveCapital(caps.capital, slotCount);
   const slots: LiveSlotPreview[] = levels.map((level) => {
     const slotCapital = slotCapitals[level.physicalSlotNumber - 1];
     const estimatedQuantity = roundDownStep(slotCapital / level.entry, rules.quantityStep);
@@ -153,7 +156,7 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
     slotNumber: slot.physicalSlotNumber, operationSequence: 1, buyPrice: slot.entryPriceBrl,
     balanceQuote: slot.capitalBrl, operationalRank: slot.operationalRank,
     monthlyTargetReached: false, postAthGroup: slot.postAthGroup, entryOrigin: "GRID", state: "PLANNED" }));
-  const context = { asset: config.asset, cycleId: `LIVE_PREVIEW:${config.asset}`, observedAt, quoteAsset: rules.quoteAsset };
+  const context = { asset: config.asset, cycleId: `LIVE_PREVIEW:${config.asset}`, observedAt, quoteAsset: rules.quoteAsset, slotCount };
   const first = candidates.find((item) => item.operationalRank === 1)!;
   const initialDecision = planStrategyInitialEntry(context, first);
   const tpDecision = planStrategyTakeProfit(context, { ...first, state: "OPEN" }, first.buyPrice,
@@ -175,12 +178,12 @@ export function buildLiveSizing(rules: LiveRules, observedPriceBrl: number, conf
     [adjustedClosed, ...candidates.slice(1).map((item) => ({ ...item, state: "CLOSED" as const }))], first.id);
   return { asset: config.asset, symbol: config.symbol, observedAt, priceBrl: price, rules,
     currentMinimumBrl, ladderMinimumBrl, recommendedSlotBrl,
-    minimumCapitalBrl: centsUp(ladderMinimumBrl * LIVE_SLOT_COUNT),
-    recommendedCapitalBrl: centsUp(recommendedSlotBrl * LIVE_SLOT_COUNT),
+    minimumCapitalBrl: centsUp(ladderMinimumBrl * slotCount),
+    recommendedCapitalBrl: centsUp(recommendedSlotBrl * slotCount), slotCount,
     configuredCapitalBrl: caps.capital, orderCapBrl: caps.orderCap, exposureCapBrl: caps.exposure,
     slots, validSlots: slots.filter((slot) => slot.valid).length,
     dryRun: { status: "NO_WRITE" as const, strategyVersion: STRATEGY_VERSION,
-      initial: initialDecision, takeProfit: tpDecision, nextBuy: next.decision, planned: 23, open: 0,
+      initial: initialDecision, takeProfit: tpDecision, nextBuy: next.decision, planned: slotCount - 2, open: 0,
       localReentry: localReentry.decisions[0], monthlyHold: monthlyHold.decisions[0],
       globalReset: globalReset.decisions, hypotheticalManualGainBrl: 5 } };
 }

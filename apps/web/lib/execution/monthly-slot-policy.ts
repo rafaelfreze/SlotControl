@@ -1,4 +1,4 @@
-import { V1_SLOT_COUNT } from "./robot-v1-constants.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "./engine-slot-topology.ts";
 import type { V1Asset } from "./robot-v1.ts";
 
 export const MONTHLY_SLOT_TIMEZONE = "America/Campo_Grande";
@@ -58,23 +58,25 @@ export type MonthlySlotStatus = MonthlySlotInput & {
 /** A monthly goal is a floor, not a ceiling. Only a complete, evidenced
  * physical set can release the goal-based priority for the rest of the month. */
 export function monthlyGoalsComplete(asset: V1Asset,
-  slots: readonly { monthlyGainCount: number | null }[], target = MONTHLY_SLOT_TARGET[asset]): boolean {
+  slots: readonly { monthlyGainCount: number | null }[], target = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT): boolean {
+  validateEngineSlotCount(slotCount);
   if (!Number.isInteger(target) || target < 1 || target > 1000)
     throw new Error("COINOPS_MONTHLY_TARGET_INVALID");
-  return slots.length === V1_SLOT_COUNT && slots.every((slot) => slot.monthlyGainCount !== null
+  return slots.length === slotCount && slots.every((slot) => slot.monthlyGainCount !== null
     && Number.isInteger(slot.monthlyGainCount) && slot.monthlyGainCount >= target);
 }
 
 /** Gain rank is independent of price. The engine still decides which priced
  * opportunity is valid; an OPEN position can finish after reaching its goal. */
 export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs: readonly MonthlySlotInput[],
-  target = MONTHLY_SLOT_TARGET[asset]): MonthlySlotStatus[] {
+  target = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT): MonthlySlotStatus[] {
+  validateEngineSlotCount(slotCount);
   if (!Number.isInteger(target) || target < 1 || target > 1000)
     throw new Error("COINOPS_MONTHLY_TARGET_INVALID");
   const periodKey = monthlyPeriodKey(instant);
   const ids = new Set<string>(), numbers = new Set<number>();
   const statuses = inputs.map((input): MonthlySlotStatus => {
-    if (!Number.isInteger(input.physicalSlotNumber) || input.physicalSlotNumber < 1 || input.physicalSlotNumber > 25
+    if (!Number.isInteger(input.physicalSlotNumber) || input.physicalSlotNumber < 1 || input.physicalSlotNumber > slotCount
       || !input.physicalSlotId || ids.has(input.physicalSlotId) || numbers.has(input.physicalSlotNumber)
       || !Number.isInteger(input.lifetimeGainCount) || input.lifetimeGainCount < 0
       || input.monthlyGainCount !== null && (!Number.isInteger(input.monthlyGainCount) || input.monthlyGainCount < 0 || input.monthlyGainCount > input.lifetimeGainCount)
@@ -91,7 +93,7 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
     return { ...input, monthlyGainTarget: target, periodKey, timezone: MONTHLY_SLOT_TIMEZONE,
       monthlyTargetReached: reached, eligibleForNewEntry: blockedReason === null, blockedReason, operationalRank: null };
   });
-  if (monthlyGoalsComplete(asset, statuses, target)) for (const slot of statuses) {
+  if (monthlyGoalsComplete(asset, statuses, target, slotCount)) for (const slot of statuses) {
     slot.eligibleForNewEntry = true;
     slot.blockedReason = null;
   }
@@ -103,9 +105,10 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
 
 export function physicalSlotIdentity(environment: "SHADOW" | "TESTNET" | "REAL", scope: {
   productId: string; tenantId: string; userId: string; asset: V1Asset; configId?: string;
-  tradingEngineId?: string; legacyCompatible?: boolean;
+  tradingEngineId?: string; legacyCompatible?: boolean; slotCount?: number;
 }, physicalSlotNumber: number): string {
-  if (!Number.isInteger(physicalSlotNumber) || physicalSlotNumber < 1 || physicalSlotNumber > 25) {
+  const slotCount = validateEngineSlotCount(scope.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT);
+  if (!Number.isInteger(physicalSlotNumber) || physicalSlotNumber < 1 || physicalSlotNumber > slotCount) {
     throw new Error("COINOPS_MONTHLY_PHYSICAL_SLOT_INVALID");
   }
   if (scope.tradingEngineId && scope.legacyCompatible === false)

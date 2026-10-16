@@ -8,6 +8,7 @@ import * as plans from "../execution/live-adjustment-plans.ts";
 import * as validation from "../execution/live-adjustment-validation.ts";
 import { adjustmentEngineInventory } from "../execution/adjustment-engine-inventory.ts";
 import { projectCurrentLiveSlotRanks } from "./live-slot-read-model.ts";
+import * as topology from "../execution/engine-slot-topology.ts";
 
 const routeSource = readFileSync(new URL("../../app/api/coinops-live-adjustments/route.ts", import.meta.url), "utf8");
 const uiSource = readFileSync(new URL("../../app/automacao/live-adjustments-center.tsx", import.meta.url), "utf8");
@@ -31,7 +32,7 @@ function routeHarness(options: { engines?: number; user?: string | null; schema?
   const engines = Array.from({ length: count }, (_, n) => ({ id: `engine-${String(n).padStart(3, "0")}`,
     operator_id: operator.id, exchange_account_id: "account", symbol: "SOLBRL", quote_asset: "BRL",
     base_asset: "SOL", status: "ACTIVE", environment: "REAL", hard_cap_quote: 250,
-    executor_shard_id: n % 2 ? "executor-03" : "executor-02" }));
+    executor_shard_id: n % 2 ? "executor-03" : "executor-02", slot_count: 25, config: { slot_count: 25 } }));
   const balances = engines.flatMap(engine => Array.from({ length: 25 }, (_, n) => ({
     operator_id: operator.id, trading_engine_id: engine.id, slot_number: n + 1,
     balance_quote: 10, contribution_quote: 10, market_pnl_quote: 0, fees_quote: 0, gain_count: 0,
@@ -99,6 +100,7 @@ function routeHarness(options: { engines?: number; user?: string | null; schema?
     "@/lib/execution/live-adjustment-validation": validation,
     "@/lib/execution/complete-ledger-read": { completeLedgerRead },
     "@/lib/execution/adjustment-engine-inventory": { adjustmentEngineInventory },
+    "@/lib/execution/engine-slot-topology": topology,
     "@/lib/slotgain/live-slot-read-model": { projectCurrentLiveSlotRanks },
     "@/lib/supabase/env": { getSupabaseDataSchema: () => options.schema ?? "coinops", getCoinOpsServiceTenantId: () => options.tenant ?? "tenant" },
     "@/lib/supabase/service-role": { createServiceRoleClient: () => service },
@@ -181,6 +183,7 @@ function uiHarness() {
     "@/lib/execution/monthly-slot-policy": { monthlyPeriodKey: () => "2026-10" },
     "@/lib/execution/engine-display": {},
     "@/lib/execution/live-adjustment-plans": plans,
+    "@/lib/execution/engine-slot-topology": topology,
     "@/lib/execution/selective-contribution-presets": {},
     "@/lib/execution/live-adjustment-validation": validation,
     "./live-adjustments-center.css": {},

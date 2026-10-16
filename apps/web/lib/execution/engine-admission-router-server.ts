@@ -2,10 +2,15 @@ import type { createServiceRoleClient } from "../supabase/service-role";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { discoverEngineAdmissionOptions } from "./engine-admission-router.ts";
 import { resolveExecutorForConnection } from "./executor-shards-server.ts";
+import { validateEngineSlotCount } from "./engine-slot-topology.ts";
 type Service = ReturnType<typeof createServiceRoleClient>;
 /** Persisted capacity/registry only. Never collect exchange data or reserve on
  * GET, advance hysteresis, prefer the bootstrap IP, or mutate any old engine. */
-export async function loadEngineAdmissionOptions(service: Service, operatorId: string, accountId: string, count: number) {
+export async function loadEngineAdmissionOptions(service: Service, operatorId: string, accountId: string, count: number,
+  plannedSlotCounts?: readonly number[]) {
+  if (!Number.isSafeInteger(count) || count < 1 || count > 25 || plannedSlotCounts && plannedSlotCounts.length !== count)
+    throw new Error("COINOPS_ENGINE_SLOT_COUNT_INVALID");
+  const slotCounts = (plannedSlotCounts ?? Array.from({ length: count }, () => 25)).map(validateEngineSlotCount);
   const account = await service.from("exchange_accounts").select("id,status,onboarding_environment")
     .eq("id", accountId).eq("operator_id", operatorId).single();
   if (account.error || !account.data || !["ACTIVE", "INACTIVE"].includes(account.data.status)
@@ -15,10 +20,12 @@ export async function loadEngineAdmissionOptions(service: Service, operatorId: s
     .select("id,egress_ipv4").eq("enabled", true).order("id").range(start, end), "COINOPS_CAPACITY_UNKNOWN");
   return discoverEngineAdmissionOptions(shards.map((shard) => ({ id: shard.id, ip: shard.egress_ipv4.replace(/\/32$/, "") })), count, {
     preview: async (id, engines) => {
-      const result = await service.rpc("preview_executor_admission", { p_shard_id: id, p_environment: "REAL", p_engines: engines });
+      const result = slotCounts.every(value => value === 25)
+        ? await service.rpc("preview_executor_admission", { p_shard_id: id, p_environment: "REAL", p_engines: engines })
+        : await service.rpc("preview_engine_slot_admission", { p_shard_id: id, p_environment: "REAL", p_slot_counts: slotCounts });
       if (result.error || !result.data) throw new Error("COINOPS_CAPACITY_UNKNOWN");
       const raw = result.data.projected_percent;
-      return { code: result.data.code, projected_percent: typeof raw === "number" ? raw
+      return { code: result.data.code, reason: result.data.reason, projected_percent: typeof raw === "number" ? raw
         : typeof raw === "string" && raw.trim() ? Number(raw) : null };
     },
     validatedConnection: async (shard) => (await resolveExecutorForConnection(operatorId, accountId, shard.id)).ip === shard.ip,

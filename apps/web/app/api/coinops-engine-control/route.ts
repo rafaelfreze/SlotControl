@@ -24,6 +24,7 @@ import { allocationSnapshotFingerprint } from "@/lib/execution/engine-append-exp
 import { resolveExecutorForConnection } from "@/lib/execution/executor-shards-server";
 import { collectAccountOrderBudget, previewAccountOrderBudget } from "@/lib/execution/account-order-budget-server";
 import { completeLedgerRead } from "@/lib/execution/complete-ledger-read";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "@/lib/execution/engine-slot-topology";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -126,7 +127,7 @@ async function planPreview(scope: Scope, input: EnginePlanInput) {
     if (market.open_orders.length) throw new Error("COINOPS_ENGINE_EXISTING_MARKET_ORDERS");
     const sizing = buildLiveSizing(parseLiveRules(market.rules), market.price, {
       asset: engine.asset, symbol: engine.symbol, quote_asset: plan.quote,
-      slot_count: 25, gain_rate: engine.gain, normal_spacing_rate: engine.spacing,
+      slot_count: engine.slotCount, gain_rate: engine.gain, normal_spacing_rate: engine.spacing,
       post_ath_spacing_rate: engine.postAth, regime: "NORMAL", monthly_target: engine.monthlyTarget,
       configured_live_capital_brl: engine.capital,
       max_order_notional_brl: engine.capital, max_total_exposure_brl: engine.capital,
@@ -136,7 +137,7 @@ async function planPreview(scope: Scope, input: EnginePlanInput) {
       accountCap: plan.capital, quoteAsset: plan.quote,
     });
     return { symbol: engine.symbol, asset: engine.asset, capital: engine.capital,
-      allocation: engine.allocation, gain: engine.gain, spacing: engine.spacing,
+      allocation: engine.allocation, slotCount: engine.slotCount, gain: engine.gain, spacing: engine.spacing,
       postAth: engine.postAth, monthlyTarget: engine.monthlyTarget,
       currentPrice: market.price, minNotional: sizing.rules.minNotional,
       minQuantity: sizing.rules.minQuantity, quantityStep: sizing.rules.quantityStep,
@@ -149,12 +150,25 @@ async function planPreview(scope: Scope, input: EnginePlanInput) {
   });
   // Testnet also consumes this shard's resources. Never manufacture an OK when
   // telemetry is unavailable merely because its exchange funds are fictitious.
-  const capacity = await previewAccountCapacity(scope.service, plan.accountId, plan.engines.length, environment);
+  const capacity = await previewAccountCapacity(scope.service, plan.accountId, plan.engines.length, environment,
+    plan.engines.map((engine) => engine.slotCount));
   return { account: account.display_name, accountId: account.id, environment, quote: plan.quote,
     capital: plan.capital, free, outsideCoinOps: Number((free - plan.capital).toFixed(2)),
     observedAt: snapshot.observed_at, executorIp: snapshot.executor_ip,
-    capacity, engines, status: engines.every((item) => item.validSlots === 25)
+    capacity, engines, status: engines.every((item) => item.validSlots === item.slotCount)
       ? "PREVIEW_NO_WRITE" as const : "NOT_EXECUTABLE" as const };
+}
+
+async function readActivationAdmission(service: Service, engine: {
+  id: string; executor_shard_id: string | null; slot_count?: unknown; config?: unknown;
+}) {
+  const slotCount = configuredEngineSlotCount(engine);
+  const read = engine.executor_shard_id ? slotCount === 25
+    ? await service.rpc("preview_executor_admission", { p_shard_id: engine.executor_shard_id,
+      p_environment: "REAL", p_engines: 1, p_exclude_engine: engine.id })
+    : await service.rpc("preview_engine_slot_admission", { p_shard_id: engine.executor_shard_id,
+      p_environment: "REAL", p_slot_counts: [slotCount], p_exclude_engine: engine.id }) : null;
+  return activationAdmissionFromEvidence(read?.error ? null : read?.data);
 }
 
 export async function GET(request: NextRequest) {
@@ -194,7 +208,7 @@ export async function GET(request: NextRequest) {
     if (!accountId) return json({ accounts, engines: [], caps: [] });
     const [engines, caps, runs, testnetRuns, profiles, readyChecks, preparations, alerts] = await Promise.all([
       paged((start, end) => service.from("trading_engines")
-        .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config,executor_shard_id,created_at")
+        .select("id,exchange_account_id,environment,symbol,quote_asset,status,kill_switch,hard_cap_quote,config,slot_count,executor_shard_id,created_at")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId)
         .eq("environment", "REAL").order("id").range(start, end)),
       service.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
@@ -228,7 +242,7 @@ export async function GET(request: NextRequest) {
     const runIds = (runs.data ?? []).map((run) => run.id);
     const testnetRunIds = (testnetRuns.data ?? []).map((run) => run.id);
     const [slots, orders] = runIds.length ? await Promise.all([
-      runRows(runIds, (ids, start, end) => service.from("robot_v1_live_slots").select("id,run_id,trading_engine_id,entry_state")
+      runRows(runIds, (ids, start, end) => service.from("robot_v1_live_slots").select("id,run_id,trading_engine_id,slot_number,entry_state")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId).in("run_id", ids).order("id").range(start, end)),
       runRows(runIds, (ids, start, end) => service.from("robot_v1_live_orders").select("id,run_id,trading_engine_id,side,status")
         .eq("operator_id", operator.id).eq("exchange_account_id", accountId).in("run_id", ids).in("status", ["NEW", "PARTIALLY_FILLED"]).order("id").range(start, end)),
@@ -245,12 +259,7 @@ export async function GET(request: NextRequest) {
     // clock mutation on GET; account bootstrap is not routing authority.
     const engineAdmissions = new Map(await Promise.all((engines.data ?? []).filter((engine) => engine.environment === "REAL"
       && (runs.data ?? []).some((run) => run.trading_engine_id === engine.id && run.status === "PREPARING"))
-      .map(async (engine) => {
-        const read = engine.executor_shard_id ? await service.rpc("preview_executor_admission", {
-          p_shard_id: engine.executor_shard_id, p_environment: "REAL", p_engines: 1, p_exclude_engine: engine.id,
-        }) : null;
-        return [engine.id, activationAdmissionFromEvidence(read?.error ? null : read?.data)] as const;
-      })));
+      .map(async (engine) => [engine.id, await readActivationAdmission(service, engine)] as const)));
     const accountById = new Map(accounts.map((item) => [item.id, item]));
     return json({ accounts,
       engines: (engines.data ?? []).filter((item) => accountById.has(item.exchange_account_id)).map((item) => {
@@ -265,12 +274,14 @@ export async function GET(request: NextRequest) {
         const clean = !run?.last_error && !(alerts.data ?? []).some((row) => row.trading_engine_id === item.id);
         const recent = !!run?.last_reconciled_at && Date.now() - Date.parse(run.last_reconciled_at) < 10 * 60_000;
         const account = accountById.get(item.exchange_account_id);
+        const slotCount = configuredEngineSlotCount(item);
+        const physicalComplete = hasCompletePhysicalSlotSet(runSlots.map((row) => Number((row as { slot_number?: number }).slot_number)), slotCount);
         const operational = run?.status === "ACTIVE" && item.status === "ACTIVE" && !item.kill_switch
           && account?.status === "ACTIVE" && !account.kill_switch && (isTestnet || prep?.live_enabled && !prep.kill_switch)
-          && clean && recent && runSlots.length === 25 && open > 0 && tp === open && nextBuy === 1;
+          && clean && recent && physicalComplete && open > 0 && tp === open && nextBuy === 1;
         const ready = isTestnet ? !run && item.status === "INACTIVE" && item.kill_switch
           && readyChecks.data?.some((row) => row.trading_engine_id === item.id && row.status === "PASS")
-          : run?.status === "PREPARING" && !run.last_error && runSlots.length === 25
+          : run?.status === "PREPARING" && !run.last_error && physicalComplete
             && prep?.kill_switch && !prep.live_enabled;
         return { ...item, run, operational: Boolean(operational), ready: Boolean(ready),
           activationAdmission: engineAdmissions.get(item.id) ?? null,
@@ -281,7 +292,7 @@ export async function GET(request: NextRequest) {
   } catch { return json({ error: "COINOPS_ENGINE_ADMIN_UNAVAILABLE" }, 403); }
 }
 
-type Intent = { action?: string; accountId?: string; engineId?: string;
+type Intent = { action?: string; accountId?: string; engineId?: string; slotCount?: number;
   requestId?: string; quote?: string; capital?: string; engines?: EnginePlanInput["engines"];
   shardId?: string; previewHash?: string };
 
@@ -296,7 +307,7 @@ export async function POST(request: NextRequest) {
       throw new Error("COINOPS_ENGINE_ACTION_INVALID");
     const scope = await adminScope();
     if (input.action === "APPEND_OPTIONS") return json({ options: await loadEngineAdmissionOptions(
-      scope.service, scope.operator.id, String(input.accountId), 1) });
+      scope.service, scope.operator.id, String(input.accountId), 1, [input.slotCount === undefined ? 25 : input.slotCount]) });
     if (input.action === "APPEND_PREVIEW") return json(await previewEngineAppend(scope.service, scope.operator.id, input as AppendPlanInput));
     if (input.action === "APPEND_PROVISION") return json(await provisionEngineAppend(scope.service, scope.operator.id, input as AppendPlanInput));
     if (input.action === "PREVIEW" || input.action === "PROVISION") {
@@ -312,7 +323,7 @@ export async function POST(request: NextRequest) {
         p_environment: preview.environment,
         p_engines: plan.engines.map((engine) => ({ asset: engine.asset,
           capital: engine.capital, gain: engine.gain, spacing: engine.spacing,
-          postAth: engine.postAth })), p_request_id: plan.requestId,
+          postAth: engine.postAth, slotCount: engine.slotCount, monthlyTarget: engine.monthlyTarget })), p_request_id: plan.requestId,
       });
       if (created.error || !Array.isArray(created.data) || created.data.length !== plan.engines.length)
         throw new Error("COINOPS_ENGINE_PROVISION_FAILED");
@@ -556,6 +567,7 @@ export async function POST(request: NextRequest) {
         exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id,
         credential_ref: connection.credentialRef, environment: "REAL",
         symbol: engine.symbol, hard_cap_quote: Number(engine.hard_cap_quote),
+        slot_count: configuredEngineSlotCount(engine),
         account_cap_quote: Number(capRead.data.hard_cap_quote),
         max_order_quote: Number(engine.hard_cap_quote) }, "PROMOTE");
     if (promoted.status !== "ACTIVE" || promoted.trading_engine_id !== engine.trading_engine_id)

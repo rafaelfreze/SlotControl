@@ -4,6 +4,7 @@ import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRecord, observeLe
 import { LiveReadUnavailable } from "./live-read-error.ts";
 import { LIVE_ACTIVE_ORDER_STATUSES } from "./robot-v1-live-cycle.ts";
 import type { V1Asset } from "./robot-v1";
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 export type ExposureScope = { id: string; asset: V1Asset; symbol: string;
@@ -11,10 +12,10 @@ export type ExposureScope = { id: string; asset: V1Asset; symbol: string;
   exchange_account_id: string; trading_engine_id: string; quote_asset: string };
 type Ownership = Pick<ExposureScope, "product_id" | "tenant_id" | "user_id" | "operator_id"
   | "exchange_account_id" | "trading_engine_id" | "quote_asset">;
-type ExposureRun = Ownership & { id: string; asset: V1Asset; symbol: string; status: string };
+type ExposureRun = Ownership & { id: string; asset: V1Asset; symbol: string; status: string; slot_count?: number };
 type ExposureEngine = { id: string; operator_id: string; exchange_account_id: string;
   environment: string; symbol: string; quote_asset: string; base_asset: V1Asset;
-  hard_cap_quote: number | string; executor_shard_id: string };
+  hard_cap_quote: number | string; executor_shard_id: string; slot_count?: number; config?: unknown };
 type ExposureSlot = Ownership & { id: string; run_id: string; slot_number: number;
   position_committed_brl: number | string };
 type ExposureOrder = Ownership & { id: string; run_id: string; slot_id: string; side: string;
@@ -76,7 +77,7 @@ async function pages<T extends { id: string }>(resource: ExposureResource,
 export async function readLiveExposure(service: Service, scope: ExposureScope) {
   return boundedLedgerRead(async (deadline, attempt) => {
     const runs = await pages<ExposureRun>("exposure_runs", (start, end) => service.from("robot_v1_live_runs")
-      .select("id,asset,symbol,status,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,quote_asset", { count: "exact" })
+      .select("id,asset,symbol,status,slot_count,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,quote_asset", { count: "exact" })
       .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
       .eq("operator_id", scope.operator_id).eq("exchange_account_id", scope.exchange_account_id)
       .eq("quote_asset", scope.quote_asset).in("status", ["ACTIVE", "PAUSED"]).order("id")
@@ -89,7 +90,7 @@ export async function readLiveExposure(service: Service, scope: ExposureScope) {
       || new Set(runs.map(row => row.trading_engine_id)).size !== runs.length) return incomplete();
     const [engines, cap] = await observations(
       pages<ExposureEngine>("exposure_engines", (start, end) => service.from("trading_engines")
-        .select("id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,hard_cap_quote,executor_shard_id", { count: "exact" })
+        .select("id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,hard_cap_quote,executor_shard_id,slot_count,config", { count: "exact" })
         .eq("operator_id", scope.operator_id).eq("exchange_account_id", scope.exchange_account_id)
         .eq("environment", "REAL").eq("quote_asset", scope.quote_asset).order("id")
         .range(start, end).abortSignal(deadline), deadline, attempt),
@@ -132,7 +133,11 @@ export async function readLiveExposure(service: Service, scope: ExposureScope) {
       || orders.some(row => !["BUY", "SELL"].includes(row.side) || !LIVE_ACTIVE_ORDER_STATUSES.has(row.status)
         || slotById.get(row.slot_id)?.run_id !== row.run_id
         || slotById.get(row.slot_id)?.trading_engine_id !== row.trading_engine_id)) return incomplete();
-    for (const run of runs) assertPhysicalLedger(slots.filter(row => row.run_id === run.id));
+    for (const run of runs) {
+      const slotCount = configuredEngineSlotCount(engineById.get(run.trading_engine_id)!);
+      if (configuredEngineSlotCount(run) !== slotCount) return incomplete();
+      assertPhysicalLedger(slots.filter(row => row.run_id === run.id), slotCount);
+    }
     return liveEngineExposure(scope.trading_engine_id,
       engines.map(row => ({ id: row.id, asset: row.base_asset, cap: amount(row.hard_cap_quote) })),
       slots.map(row => ({ engineId: row.trading_engine_id, committed: amount(row.position_committed_brl) })),

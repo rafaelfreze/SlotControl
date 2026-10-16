@@ -26,3 +26,15 @@ test("failed, malformed and missing decision of one shard never authorizes it or
   assert.ok(options.every((option) => option.projectedPercent === null));
   await assert.rejects(discoverEngineAdmissionOptions(shards, 0, { preview: async () => ({ code: "CAPACITY_OK" }), validatedConnection: async () => true }), /SCOPE_DENIED/);
 });
+
+test("uncertified slot workload stays UNKNOWN with an allowlisted reason, not a false full-executor result", async () => {
+  const options = await discoverEngineAdmissionOptions(shards, 1, {
+    preview: async (id) => ({ code: "CAPACITY_UNKNOWN", projected_percent: 10,
+      reason: id === "executor-03" ? "SLOT_WORKLOAD_UNCERTIFIED" : "private provider payload must not escape" }),
+    validatedConnection: async () => true,
+  });
+  assert.ok(options.every((option) => option.capacityCode === "CAPACITY_UNKNOWN"));
+  assert.equal(options.find((option) => option.shardId === "executor-03")?.capacityReason, "SLOT_WORKLOAD_UNCERTIFIED");
+  assert.ok(options.filter((option) => option.shardId !== "executor-03").every((option) => option.capacityReason === null));
+  assert.doesNotMatch(JSON.stringify(options), /private provider payload/);
+});

@@ -5,6 +5,7 @@ import { selectTestnetAssetData } from "../../lib/slotgain/testnet-asset-view.ts
 import type { Props } from "./automation-mobile";
 import { isOperationalOpen } from "../../lib/slotgain/operational-slot-order.ts";
 import { pausedPositionCovered } from "../../lib/execution/paused-position-protection.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../../lib/execution/engine-slot-topology.ts";
 
 /** Read-only view models. They never produce strategy decisions or dispatch actions. */
 export type PremiumEnvironment = "REAL" | "SHADOW" | "TESTNET";
@@ -94,6 +95,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
   const config = data.livePreparation?.configs.find((row) => row.asset === asset);
   const sizing = data.livePreparation?.sizing.find((row) => row.asset === asset);
   const native = data.engineContext?.environment === "REAL" && !data.engineContext.legacy_compatible;
+  const slotCount = configuredEngineSlotCount(data.engineContext ?? { config: { slot_count: config?.slot_count } });
   const amount = (row: unknown, brl: string, quote: string) => number(rawField(row, native ? quote : brl));
   const price = number(sizing?.priceBrl);
   base.price = price; base.cap = native ? number(data.engineContext?.hard_cap_quote)
@@ -102,9 +104,9 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     ?? MONTHLY_SLOT_TARGET[asset];
   if (!live) return base;
   const orders = live.orders.map(normalizeOrder), events = eventsFor(live.events);
-  const complete = new Set(live.monthlyGains.map((row) => row.slot_number)).size === 25
+  const complete = hasCompletePhysicalSlotSet(live.monthlyGains.map((row) => row.slot_number), slotCount)
     && monthlyGoalsComplete(asset,
-      live.monthlyGains.map((row) => ({ monthlyGainCount: number(row.monthly_gain_count) })), base.goal);
+      live.monthlyGains.map((row) => ({ monthlyGainCount: number(row.monthly_gain_count) })), base.goal, slotCount);
   const slots = live.slots.map((row): PremiumSlot => {
     const account = live.accounts.find((item) => item.slot_number === row.slot_number);
     const monthly = live.monthlyGains.find((item) => item.slot_number === row.slot_number);
@@ -156,8 +158,8 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
       || slot.quantity - remaining >= (quantityStep ?? 1e-10) + 1e-10;
   }).length;
   const nextCount = orders.filter((order) => order.side === "BUY" && order.resident).length;
-  const invariantFailed = slots.length !== 25 || new Set(slots.map((slot) => slot.number)).size !== 25
-    || live.accounts.length !== 25 || slots.some((slot) => slot.number < 1 || slot.number > 25);
+  const invariantFailed = !hasCompletePhysicalSlotSet(slots.map((slot) => slot.number), slotCount)
+    || !hasCompletePhysicalSlotSet(live.accounts.map((row) => row.slot_number), slotCount);
   const exposure = add(committed, reserved);
   const capExceeded = exposure !== null && base.cap !== null && exposure > base.cap + 1e-8;
   const activeIssue = Boolean(live.run.last_error) || live.alerts.length > 0 || unprotected > 0 || nextCount > 1 || invariantFailed || capExceeded;
@@ -181,8 +183,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     && typeof live.displayOrderNamespace === "string"
     && /^(?:COR1-(?:BTC|SOL)-|C2-[0-9a-f]{10}-)$/.test(live.displayOrderNamespace)
     && orders.every((order) => order.id.startsWith(live.displayOrderNamespace!))
-    && !invariantFailed && new Set(live.accounts.map((row) => row.slot_number)).size === 25
-    && live.accounts.every((row) => row.slot_number >= 1 && row.slot_number <= 25)
+    && !invariantFailed && hasCompletePhysicalSlotSet(live.accounts.map((row) => row.slot_number), slotCount)
     && capital !== null && committed !== null && reserved === 0
     && slots.every((slot) => slot.quantity !== null && slot.quantity >= 0 && slot.committed !== null
       && slot.committed >= 0 && slot.balance !== null && slot.balance >= 0
@@ -215,7 +216,7 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     entryPauseProtected,
     health: { healthy, tone: entryPauseProtected ? "ok" : fundingHold ? "attention" : activeIssue ? "error" : healthy ? "ok" : "attention", label: entryPauseProtected ? "PAUSADO · POSIÇÕES PROTEGIDAS" : fundingHold ? "AGUARDANDO SALDO" : activeIssue ? "REVISAR LIVE" : healthy ? "OPERACIONAL" : "EM ACOMPANHAMENTO",
       reason: entryPauseProtected ? "Novas compras pausadas por você; posições e TPs antigos continuam sob reconciliação." : fundingHold ? "Novas compras aguardam reposição Spot; posições e TPs continuam sob reconciliação." : live.run.last_error || (unprotected ? `${unprotected} posição com cobertura de TP a verificar.`
-        : live.alerts.length ? "Alertas ativos no ledger." : invariantFailed ? "Evidência dos 25 slots e contas incompleta."
+        : live.alerts.length ? "Alertas ativos no ledger." : invariantFailed ? `Evidência dos ${slotCount} slots e contas incompleta.`
           : capExceeded ? "Exposição acima do hard cap configurado." : nextCount > 1 ? "Mais de uma BUY residente."
             : paused ? "Novas entradas protegidas pelo controle do ativo." : !executorActive ? "Executor LIVE sem confirmação operacional atual."
               : healthy ? "Ciclo reconciliado; posições protegidas." : "Estado atual requer evidência recente.") },

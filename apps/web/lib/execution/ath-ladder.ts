@@ -3,6 +3,7 @@ import { buildPostAthQueue, orderedPostAthSlots, validateAthParameters, type Ath
 import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "./monthly-slot-policy.ts";
 import type { V1Asset } from "./robot-v1.ts";
 import { athLadderLevelPrice } from "./ath-ladder-price.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet, validateEngineSlotCount } from "./engine-slot-topology.ts";
 
 export type AthLadderSlot = AthSlot & {
   buyPrice: number;
@@ -23,14 +24,14 @@ export type AthLadderDecision = {
 };
 
 export function validateAthTransitionedGrid(slots: ReadonlyArray<{ physicalSlotNumber: number;
-  buyPrice: number; status: string; operationalRank: number | null }>, tick: number) {
+  buyPrice: number; status: string; operationalRank: number | null }>, tick: number, slotCount = DEFAULT_ENGINE_SLOT_COUNT) {
   const errors: string[] = [];
-  if (slots.length !== 25) errors.push("SLOT_COUNT_INVALID");
+  if (!hasCompletePhysicalSlotSet(slots.map(slot => slot.physicalSlotNumber), slotCount)) errors.push("SLOT_COUNT_INVALID");
   if (!Number.isFinite(tick) || tick <= 0) errors.push("PRICE_TICK_INVALID");
   const numbers = new Set<number>(), activeRanks = new Set<number>();
   for (const slot of slots) {
     if (!Number.isInteger(slot.physicalSlotNumber) || slot.physicalSlotNumber < 1
-      || slot.physicalSlotNumber > 25 || numbers.has(slot.physicalSlotNumber)) errors.push("PHYSICAL_SLOT_INVALID");
+      || slot.physicalSlotNumber > slotCount || numbers.has(slot.physicalSlotNumber)) errors.push("PHYSICAL_SLOT_INVALID");
     numbers.add(slot.physicalSlotNumber);
     if (!Number.isFinite(slot.buyPrice) || slot.buyPrice <= 0 || tick <= 0
       || Math.abs(slot.buyPrice / tick - Math.round(slot.buyPrice / tick)) > 1e-6)
@@ -38,7 +39,7 @@ export function validateAthTransitionedGrid(slots: ReadonlyArray<{ physicalSlotN
     if (!Number.isInteger(slot.operationalRank) && slot.operationalRank !== null)
       errors.push(`RANK_INVALID_${slot.physicalSlotNumber}`);
     if (slot.operationalRank !== null) {
-      if (slot.operationalRank < 1 || slot.operationalRank > 25 || activeRanks.has(slot.operationalRank))
+      if (slot.operationalRank < 1 || slot.operationalRank > slotCount || activeRanks.has(slot.operationalRank))
         errors.push(`RANK_DUPLICATE_OR_INVALID_${slot.physicalSlotNumber}`);
       activeRanks.add(slot.operationalRank);
     }
@@ -53,13 +54,14 @@ export function validateAthTransitionedGrid(slots: ReadonlyArray<{ physicalSlotN
  * targets under its cycle/run lease before allowing another BUY. */
 export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: number,
   parameters: AthParameters, tick: number, slots: readonly AthLadderSlot[],
-  monthlyTarget = MONTHLY_SLOT_TARGET[asset]): AthLadderDecision[] {
+  monthlyTarget = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT): AthLadderDecision[] {
+  validateEngineSlotCount(slotCount);
   if (!Number.isFinite(anchorPrice) || anchorPrice <= 0 || !Number.isFinite(tick) || tick <= 0
-    || slots.length !== 25) throw new Error("COINOPS_ATH_LADDER_INPUT_INVALID");
+    || slots.length !== slotCount) throw new Error("COINOPS_ATH_LADDER_INPUT_INVALID");
   validateAthParameters(parameters);
   // Both regimes require the same physical identity and gain evidence checks.
-  const validatedQueue = buildPostAthQueue(asset, slots, monthlyTarget);
-  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget);
+  const validatedQueue = buildPostAthQueue(asset, slots, monthlyTarget, slotCount);
+  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget, slotCount);
   const queue = regime === "POST_ATH" ? validatedQueue : null;
   const ordered = queue ? orderedPostAthSlots(queue) : [...slots]
     .filter((slot) => !slot.blocked && slot.monthlyGainCount !== null

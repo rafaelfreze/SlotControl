@@ -1,5 +1,6 @@
 import { buildLiveSizing, liveOperationalDivergences, livePreparationGate, type LiveConfig, type LiveRules } from "../execution/live-preparation.ts";
 import { STRATEGY_VERSION } from "../execution/strategy-engine.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
 
 type Row = Record<string, unknown>;
 type Sources = Record<string, Row[]>;
@@ -38,7 +39,8 @@ export function buildLivePreparationAudit(sources: Sources, generatedAt: string)
         String(market.observed_at), Date.parse(generatedAt));
     } catch { /* An unverified filter or cap must not become a passing report. */ }
     const accountRows = accounts.filter((row) => row.asset === asset);
-    const nativeLedger = accountRows.length === 25 && accountRows.every((row) => row.quote_asset === "BRL");
+    const nativeLedger = hasCompletePhysicalSlotSet(accountRows.map((row) => Number(row.slot_number)), configuredEngineSlotCount(raw))
+      && accountRows.every((row) => row.quote_asset === "BRL");
     return [{ environment: "REAL", asset, symbol: `${asset}BRL`, status: quote?.rules.status ?? null,
       filters: quote?.rules ?? null, current_price: quote?.priceBrl ?? null,
       observed_at: market?.observed_at ?? null, source: market?.source ?? null,
@@ -91,7 +93,8 @@ function buildEnginePreparationAudit(sources: Sources, generatedAt: string) {
     const marketRows = Array.isArray(market?.markets) ? market.markets as Array<{ rules: LiveRules; priceQuote: number; priceBrl: number; trading_engine_id: string }> : [];
     const quote = marketRows.find((row) => row.trading_engine_id === raw.trading_engine_id && row.rules.symbol === symbol && row.rules.quoteAsset === quoteAsset);
     const accountRows = (sources.robot_v1_live_slot_accounts ?? []).filter(same);
-    const nativeReady = accountRows.length === 25 && accountRows.every((row) => row.quote_asset === quoteAsset);
+    const nativeReady = hasCompletePhysicalSlotSet(accountRows.map((row) => Number(row.slot_number)), configuredEngineSlotCount(raw))
+      && accountRows.every((row) => row.quote_asset === quoteAsset);
     const run = (sources.robot_v1_live_runs ?? []).find((row) => same(row) && ["ACTIVE", "PAUSED"].includes(String(row.status)));
     let sizing: ReturnType<typeof buildLiveSizing> | null = null;
     if (quote && profile && cap && market?.observed_at) try {

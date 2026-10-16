@@ -6,6 +6,7 @@ import ts from "typescript";
 import * as validation from "../execution/live-adjustment-validation.ts";
 import * as plans from "../execution/live-adjustment-plans.ts";
 import { isIdentity } from "../execution/operator-context.ts";
+import * as topology from "../execution/engine-slot-topology.ts";
 
 const { getLiveAdjustmentReasonError, liveAdjustmentErrorMessage } = validation;
 const required = "COINOPS_ADJUSTMENT_REASON_REQUIRED";
@@ -63,6 +64,7 @@ function routeHarness() {
     "next/server": { NextResponse: { json: (body: unknown, init: { status: number }) => ({ body, status: init.status }) } },
     "next/cache": { revalidatePath: () => deny("REVALIDATION") },
     "@/lib/execution/live-adjustment-plans": plans,
+    "@/lib/execution/engine-slot-topology": topology,
     "@/lib/execution/selective-contribution-presets": { resolveSelectiveContributionPresetRegion: () => deny("PRESET_RESOLUTION") },
     "@/lib/execution/operator-executor-admin": { operatorAccountSnapshot: () => deny("EXCHANGE_READ"),
       operatorExecutorAdmin: () => deny("EXECUTOR_CALL") },

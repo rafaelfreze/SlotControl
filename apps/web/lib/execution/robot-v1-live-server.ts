@@ -45,6 +45,7 @@ import { AccountOrderNotSubmitted } from "./account-order-unsent-proof";
 import { mayAttestUnsentEntry } from "./live-unsent-entry-recovery";
 import { liveQuoteBalanceCheck } from "./live-quote-balance";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "./engine-slot-topology";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Symbol = string;
@@ -55,7 +56,7 @@ type Preparation = Scope & EngineScope & { asset: V1Asset; symbol: Symbol; slot_
   configured_live_capital_brl: number | string; max_order_notional_brl: number | string;
   max_total_exposure_brl: number | string; monthly_target: number;
   live_enabled: boolean; kill_switch: boolean; config_version: number };
-type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; status: string;
+type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; status: string; slot_count?: number;
   execution_source?: string;
   anchor_price: number | string; slot_notional_brl: number | string; gain_rate: number | string;
   entry_spacing: number | string; entry_regime: "NORMAL" | "POST_ATH";
@@ -113,6 +114,8 @@ async function validateRunEngine(service: Service, run: Run) {
     trading_engine_id: run.trading_engine_id, exchange_account_id: run.exchange_account_id, symbol: run.symbol });
   assertRowEngine(run, engine);
   if (engine.base_asset !== run.asset) throw new Error("COINOPS_LIVE_ENGINE_ASSET_MISMATCH");
+  if (configuredEngineSlotCount(engine) !== configuredEngineSlotCount({ slot_count: run.slot_count, config: run.config_snapshot }))
+    throw new Error("COINOPS_ENGINE_SLOT_COUNT_MISMATCH");
   run.engine = engine;
   return engine;
 }
@@ -140,7 +143,7 @@ async function configUpdatePending(service: Service, run: Run) {
   return row.strategy_config_pending;
 }
 const context = (run: Run, transitionKey?: string) => ({ asset: run.asset, cycleId: run.id,
-  observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey });
+  observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey, slotCount: configuredEngineSlotCount(run.engine ?? run) });
 
 function assertScope() {
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId())
@@ -168,6 +171,8 @@ async function scopedPreparation(service: Service, userId: string, asset: V1Asse
     .eq("trading_engine_id", engine.trading_engine_id).abortSignal(deadline).single(),
     deadline, attempt, "COINOPS_LIVE_PREPARATION_UNAVAILABLE"));
   assertRowEngine(row, engine);
+  if (configuredEngineSlotCount(row) !== configuredEngineSlotCount(engine))
+    throw new Error("COINOPS_ENGINE_SLOT_COUNT_MISMATCH");
   return { ...row, engine } as Preparation;
 }
 
@@ -194,8 +199,9 @@ async function runRows(service: Service, run: Run) {
     if (o.status === "rejected") throw o.reason;
     if (a.status === "rejected") throw a.reason;
     const slots = s.value, orders = o.value, accounts = a.value;
-    assertPhysicalLedger(slots); assertPhysicalLedger(accounts);
     if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
+    const slotCount = configuredEngineSlotCount(run.engine);
+    assertPhysicalLedger(slots, slotCount); assertPhysicalLedger(accounts, slotCount);
     for (const row of [...slots, ...orders, ...accounts]) assertRowEngine(row, run.engine);
     return { slots, orders, accounts };
   });
@@ -413,7 +419,8 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
     if (order.side === "BUY") {
       const rates = strategyRatesForOrder(order, run);
       assertStrategyBuyPrice({ price, referencePrice: amount(slot.entry_reference_price),
-        anchorPrice: rates.anchor, spacing: rates.spacing, tick, entryOrigin: slot.entry_origin });
+        anchorPrice: rates.anchor, spacing: rates.spacing, tick, entryOrigin: slot.entry_origin,
+        slotCount: configuredEngineSlotCount(run.engine ?? run) });
     } else {
       const buys = ledger.orders.filter((item) => item.slot_id === slot.id
         && item.operation_sequence === order.operation_sequence && item.side === "BUY"
@@ -650,6 +657,8 @@ async function retireNeverSubmittedEntry(service: Service, run: Run, order: Orde
 async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState) {
   const filters = symbolFilters(state);
+  // One complete immutable-gain observation per protection phase, not one per TP.
+  let statuses: Awaited<ReturnType<typeof monthly>> | undefined;
   for (const slot of ledger.slots) {
     let orders = operationOrders(ledger.orders, slot);
     let buys = orders.filter((item) => item.side === "BUY" && amount(item.executed_quantity) > 0);
@@ -672,7 +681,8 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
     if (!buyQuantity || slot.entry_state !== "OPEN") throw new Error("COINOPS_LIVE_POSITION_MISSING");
     const revision = Math.max(0, ...ledger.orders.filter((item) => item.slot_id === slot.id
       && item.side === "SELL").map((item) => item.revision)) + 1;
-    const status = (await monthly(service, run, ledger.slots, ledger.accounts))
+    statuses ??= await monthly(service, run, ledger.slots, ledger.accounts);
+    const status = statuses
       .find((item) => item.physicalSlotNumber === slot.slot_number);
     if (!status) throw new Error("COINOPS_LIVE_MONTHLY_STATUS_MISSING");
     const tp = planStrategyTakeProfit(context(run, `TP:${revision}`),
@@ -838,7 +848,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
           : slot.entry_state === "MISSED" ? "CANCELLED" : slot.entry_state,
         buyPrice: amount(slot.target_buy_price), entryOrigin: slot.entry_origin,
         operationSequence: slot.operation_sequence };
-    }), statuses[0]!.monthlyGainTarget);
+    }), statuses[0]!.monthlyGainTarget, configuredEngineSlotCount(run.engine!));
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   for (const item of decisions) {
     const slot = ledger.slots.find((row) => row.slot_number === item.physicalSlotNumber)!;
@@ -1058,7 +1068,7 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
         lifetimeGainCount: month.lifetimeGainCount, monthlyGainCount: month.monthlyGainCount,
         entryState: "PLANNED", status: "PENDING", buyPrice: amount(slot.target_buy_price),
         entryOrigin: "GRID" as const, operationSequence: 1 };
-    }), statuses[0]!.monthlyGainTarget);
+    }), statuses[0]!.monthlyGainTarget, configuredEngineSlotCount(run.engine!));
   const accounts = new Map(latest.accounts.map((item) => [item.slot_number, item]));
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   for (const item of planned.filter((item) => item.operationalRank !== null)) {
@@ -1081,6 +1091,7 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
   }
   const resetKey = `RESET:${run.id}:${closed.last_credited_sell_client_order_id ?? closed.id}`;
   const snapshot = { gain_rate: gain, ladder_anchor_price: state.price.price,
+    slot_count: configuredEngineSlotCount(run.engine!),
     normal_spacing_rate: amount(profile.normal_spacing_rate),
     post_ath_spacing_rate: amount(profile.post_ath_spacing_rate), regime: profile.regime,
     monthly_target: statuses[0]!.monthlyGainTarget,
@@ -2054,11 +2065,12 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
   }
 }
 
-/** Stages the 25-slot BRL cycle while both kill switches remain ON. */
+/** Stages the engine's immutable physical topology while both kill switches remain ON. */
 export async function prepareLiveCycle(userId: string, asset: V1Asset, selection?: EngineSelection) {
   assertScope();
   const service = createServiceRoleClient();
   const prep = await scopedPreparation(service, userId, asset, selection);
+  const slotCount = configuredEngineSlotCount(prep.engine!);
   if (prep.live_enabled || !prep.kill_switch) throw new Error("COINOPS_LIVE_PREPARATION_FLAGS_INVALID");
   const existing = await service.from("robot_v1_live_runs").select("*")
     .eq("product_id", prep.product_id).eq("tenant_id", prep.tenant_id).eq("user_id", prep.user_id)
@@ -2077,21 +2089,25 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
     globalCap, state.price.observedAt, Date.now(), { engineCap: Number(prep.engine!.hard_cap_quote),
       orderCap: Number(prep.max_order_notional_brl), accountCap: globalCap, quoteAsset: prep.quote_asset });
   const brlFree = state.balances.find((row) => row.asset === prep.quote_asset)?.free;
-  if (sizing.validSlots !== 25 || sizing.dryRun.strategyVersion !== STRATEGY_VERSION
+  if (sizing.validSlots !== slotCount || sizing.dryRun.strategyVersion !== STRATEGY_VERSION
     || brlFree === undefined || brlFree < sizing.configuredCapitalBrl
     || state.open_orders.some((order) => order.clientOrderId?.startsWith(liveEngineOrderPrefix(prep.engine!))))
     throw new Error("COINOPS_LIVE_PREPARATION_GATE_FAILED");
-  const snapshot = { gain_rate: Number(profile.gain_rate), ladder_anchor_price: anchor,
+  const snapshot = { gain_rate: Number(profile.gain_rate), ladder_anchor_price: anchor, slot_count: slotCount,
     normal_spacing_rate: Number(profile.normal_spacing_rate),
     post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
     monthly_target: prep.monthly_target,
     ath_price: profile.ath_price, ath_source: profile.ath_source };
+  // This run-level average is a numeric(20,8) reference, not the funded
+  // per-slot allocation. Compare at the database scale on insert and replay;
+  // actual balances still use sizing.slots' exact whole-cent distribution.
+  const slotNotionalReference = Number((sizing.configuredCapitalBrl / slotCount).toFixed(8));
   const inserted = existing.data ? { data: existing.data, error: null }
     : await service.from("robot_v1_live_runs").insert({
     product_id: prep.product_id, tenant_id: prep.tenant_id, user_id: prep.user_id,
     operator_id: prep.operator_id, exchange_account_id: prep.exchange_account_id, trading_engine_id: prep.trading_engine_id, quote_asset: prep.quote_asset,
-    asset, symbol: prep.symbol, status: "PREPARING", anchor_price: anchor,
-    slot_notional_brl: sizing.configuredCapitalBrl / 25,
+    asset, symbol: prep.symbol, status: "PREPARING", anchor_price: anchor, slot_count: slotCount,
+    slot_notional_brl: slotNotionalReference,
     gain_rate: profile.gain_rate, entry_spacing: profile.regime === "POST_ATH"
       ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
     entry_regime: profile.regime, config_version: profile.config_version,
@@ -2102,7 +2118,7 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
   const run = inserted.data as Run;
   await validateRunEngine(service, run);
   if (run.asset !== asset || run.symbol !== prep.symbol || run.status !== "PREPARING"
-    || amount(run.slot_notional_brl) !== sizing.configuredCapitalBrl / 25
+    || amount(run.slot_notional_brl) !== slotNotionalReference
     || run.config_version !== profile.config_version || run.strategy_version !== STRATEGY_VERSION)
     throw new Error("COINOPS_LIVE_PREPARATION_RECOVERY_MISMATCH");
   const payload = sizing.slots.map((slot) => ({ run_id: run.id, ...owned(run),
@@ -2115,32 +2131,22 @@ export async function prepareLiveCycle(userId: string, asset: V1Asset, selection
   if (slots.error) throw new Error("COINOPS_LIVE_PLAN_CREATE_FAILED");
   const savedSlots = await service.from("robot_v1_live_slots").select("slot_number,target_buy_price,operational_rank")
     .eq("run_id", run.id).eq("tenant_id", run.tenant_id);
-  if (savedSlots.error || savedSlots.data?.length !== 25
+  if (savedSlots.error || !savedSlots.data || !hasCompletePhysicalSlotSet(savedSlots.data.map(slot => slot.slot_number), slotCount)
     || savedSlots.data.some((saved) => { const planned = payload.find((item) => item.slot_number === saved.slot_number);
       return !planned || amount(saved.target_buy_price) !== planned.target_buy_price
         || saved.operational_rank !== planned.operational_rank; }))
     throw new Error("COINOPS_LIVE_PLAN_RECOVERY_MISMATCH");
-  for (let number = 1; number <= 25; number++) {
-    const slotCapital = sizing.slots.find((slot) => slot.physicalSlotNumber === number)?.capitalBrl;
-    if (slotCapital === undefined) throw new Error("COINOPS_LIVE_ACCOUNT_SEED_FAILED");
-    const account = await service.from("robot_v1_live_slot_accounts").update({
-      contribution_brl: slotCapital,
-      balance_brl: slotCapital,
-    }).eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-      .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).eq("slot_number", number)
-      .eq("balance_brl", 0).eq("contribution_brl", 0).select("slot_number").maybeSingle();
-    if (account.error) throw new Error("COINOPS_LIVE_ACCOUNT_SEED_FAILED");
-    if (!account.data) {
-      const prior = await service.from("robot_v1_live_slot_accounts").select("balance_brl,contribution_brl")
-        .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id)
-        .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).eq("slot_number", number).single();
-      if (prior.error || amount(prior.data?.balance_brl) !== slotCapital
-        || amount(prior.data?.contribution_brl) !== slotCapital)
-        throw new Error("COINOPS_LIVE_ACCOUNT_RECOVERY_MISMATCH");
-    }
-  }
+  const seeded = await service.rpc("seed_robot_v1_live_slot_accounts", { p_run_id: run.id,
+    p_slot_capitals: [...sizing.slots].sort((a, b) => a.physicalSlotNumber - b.physicalSlotNumber).map(slot => slot.capitalBrl) });
+  if (seeded.error || seeded.data?.seeded_count !== slotCount)
+    throw new Error("COINOPS_LIVE_ACCOUNT_SEED_FAILED");
+  const prepared = await runRows(service, run);
+  if (prepared.accounts.some(account => {
+    const capital = sizing.slots.find(slot => slot.physicalSlotNumber === account.slot_number)?.capitalBrl;
+    return capital === undefined || amount(account.balance_brl) !== capital || amount(account.contribution_brl) !== capital;
+  })) throw new Error("COINOPS_LIVE_ACCOUNT_RECOVERY_MISMATCH");
   await event(service, run, "RUN_PREPARED", "RUN_PREPARED", null,
-    { symbol: run.symbol, capital_brl: sizing.configuredCapitalBrl, slot_count: 25,
+    { symbol: run.symbol, capital_brl: sizing.configuredCapitalBrl, slot_count: slotCount,
       config_version: run.config_version, strategy_version: STRATEGY_VERSION });
   return run.id;
 }

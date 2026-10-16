@@ -1,19 +1,20 @@
 import { liveEngineOrderPrefix } from "./robot-v1-live-cycle.ts";
 import { pausedPositionCovered } from "./paused-position-protection.ts";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "./engine-slot-topology.ts";
 
 type Owner = { operator_id: string; exchange_account_id: string; trading_engine_id: string };
 export type AccountPauseLedger = {
   operatorId: string; accountId: string; accountGateClosed: boolean; operatorGateClosed: boolean;
   engines: Array<{ id: string; symbol: string; base_asset: string; legacy_compatible: boolean;
-    status: string; kill_switch: boolean; strategy_config_pending: boolean; hard_cap_quote: number | string }>;
-  runs: Array<Owner & { id: string; status: string; last_error: string | null; last_reconciled_at: string | null }>;
+    status: string; kill_switch: boolean; strategy_config_pending: boolean; hard_cap_quote: number | string; slot_count?: number }>;
+  runs: Array<Owner & { id: string; status: string; last_error: string | null; last_reconciled_at: string | null; slot_count?: number }>;
   slots: Array<Owner & { id: string; run_id: string; slot_number: number; entry_state: string;
     position_quantity: number | string; position_committed_quote: number | string }>;
   accounts: Array<Owner & { slot_number: number; balance_quote: number | string }>;
   orders: Array<Owner & { run_id: string; slot_id: string; side: string; purpose: string; status: string;
     client_order_id: string; exchange_order_id: string | null; requested_quantity: number | string | null;
     executed_quantity: number | string; trades_reconciled: boolean }>;
-  preparations: Array<Owner & { symbol: string; kill_switch: boolean; live_enabled: boolean }>;
+  preparations: Array<Owner & { symbol: string; kill_switch: boolean; live_enabled: boolean; slot_count?: number }>;
   alerts: Array<Owner & { code: string; severity: string }>;
   proofs: Array<Owner & { run_id: string; observed_at: string; details: unknown }>;
 };
@@ -32,24 +33,27 @@ export function accountPauseProtection(input: AccountPauseLedger, now = Date.now
   const owned = (row: Owner, engineId: string) => row.operator_id === input.operatorId
     && row.exchange_account_id === input.accountId && row.trading_engine_id === engineId;
   return active.every((engine) => {
+    let slotCount: number;
+    try { slotCount = configuredEngineSlotCount(engine); } catch { return false; }
     const runs = input.runs.filter((row) => row.trading_engine_id === engine.id);
     if (runs.length !== 1 || !owned(runs[0], engine.id)) return false;
     const run = runs[0];
+    if (configuredEngineSlotCount(run) !== slotCount) return false;
     if (run.status !== "PAUSED" || run.last_error || !fresh(run.last_reconciled_at, now)
       || !engine.kill_switch || engine.strategy_config_pending || !finite(engine.hard_cap_quote)) return false;
     const slots = input.slots.filter((row) => row.trading_engine_id === engine.id);
     const accounts = input.accounts.filter((row) => row.trading_engine_id === engine.id);
     const orders = input.orders.filter((row) => row.trading_engine_id === engine.id);
     const preparations = input.preparations.filter((row) => row.trading_engine_id === engine.id);
-    const physical = (rows: Array<Owner & { slot_number: number }>) => rows.length === 25
-      && new Set(rows.map((row) => row.slot_number)).size === 25
-      && rows.every((row) => owned(row, engine.id) && Number.isInteger(row.slot_number) && row.slot_number >= 1 && row.slot_number <= 25);
-    if (!physical(slots) || !physical(accounts) || new Set(slots.map((row) => row.id)).size !== 25
+    const physical = (rows: Array<Owner & { slot_number: number }>) => hasCompletePhysicalSlotSet(rows.map(row => row.slot_number), slotCount)
+      && rows.every((row) => owned(row, engine.id));
+    if (!physical(slots) || !physical(accounts) || new Set(slots.map((row) => row.id)).size !== slotCount
       || slots.some((row) => row.run_id !== run.id || !finite(row.position_quantity) || !finite(row.position_committed_quote)
         || Number(row.position_quantity) > 0 && row.entry_state !== "OPEN")
       || accounts.some((row) => !finite(row.balance_quote)) || preparations.length !== 1
       || !owned(preparations[0], engine.id) || preparations[0].symbol !== engine.symbol
-      || !preparations[0].kill_switch || !preparations[0].live_enabled) return false;
+      || !preparations[0].kill_switch || !preparations[0].live_enabled
+      || configuredEngineSlotCount(preparations[0]) !== slotCount) return false;
     if (input.alerts.filter((row) => row.trading_engine_id === engine.id).some((row) => !owned(row, engine.id)
       || row.severity !== "WARNING" || !safeWarnings.has(row.code))) return false;
     const prefix = liveEngineOrderPrefix({ exchange_account_id: input.accountId, trading_engine_id: engine.id,

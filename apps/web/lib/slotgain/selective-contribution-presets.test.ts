@@ -19,6 +19,18 @@ test("1 OPEN + 4 abaixo resolves the official strategy order", () => {
   assert.deepEqual(region.openAnchorSlotNumbers, [8]);
 });
 
+test("100-slot region keeps physical ownership and never accepts a partial 99-slot response", () => {
+  const hundred = slots([97], Array.from({ length: 100 }, (_, index) => index + 1));
+  const preset = { id: "p100", name: "1 aberto + 2 seguintes", totalSlots: 3, openSlots: 1, followingSlots: 2 };
+  const region = resolveSelectiveContributionPresetRegion(preset, hundred, 97, 100);
+  assert.equal(region.anchorSlotNumber, 97);
+  assert.equal(region.slotNumbers.length, 3);
+  assert.equal(new Set(region.slotNumbers).size, 3);
+  assert.throws(() => resolveSelectiveContributionPresetRegions(preset, hundred.slice(0, 99), 100), /ORDER_UNAVAILABLE/);
+  assert.throws(() => resolveSelectiveContributionPresetRegions(preset, hundred), /ORDER_UNAVAILABLE/,
+    "100 rows cannot redefine a default 25-slot engine");
+});
+
 test("2 OPEN + 3 seguintes uses the same OPEN prefix and NEXT BUY as the operational UI", () => {
   assert.deepEqual(resolveSelectiveContributionPresetRegion(preset23, slots([7, 8]), 7).slotNumbers,
     [7, 8, 3, 1, 2]);

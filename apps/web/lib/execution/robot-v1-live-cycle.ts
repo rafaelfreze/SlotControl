@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { V1Asset } from "./robot-v1";
 import type { EngineContext } from "./operator-context";
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
 
 export function liveEngineOrderPrefix(engine: Pick<EngineContext, "exchange_account_id" | "trading_engine_id" | "base_asset" | "legacy_compatible">) {
   return engine.legacy_compatible ? `COR1-${engine.base_asset}-`
@@ -13,9 +14,10 @@ export const LIVE_TERMINAL_ORDER_STATUSES = new Set(["FILLED", "CANCELED", "EXPI
 
 export function liveClientOrderId(runId: string, asset: V1Asset, slotNumber: number,
   operationSequence: number, side: "BUY" | "SELL", revision: number,
-  engine?: Pick<EngineContext, "exchange_account_id" | "trading_engine_id" | "base_asset" | "legacy_compatible">) {
+  engine?: Pick<EngineContext, "exchange_account_id" | "trading_engine_id" | "base_asset" | "legacy_compatible" | "slot_count">) {
+  const slotCount = configuredEngineSlotCount(engine ?? {});
   if (!/^[0-9a-f-]{36}$/.test(runId) || !["BTC", "SOL"].includes(asset)
-    || !Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 25
+    || !Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > slotCount
     || !Number.isInteger(operationSequence) || operationSequence < 1
     || !Number.isInteger(revision) || revision < 1) throw new Error("COINOPS_LIVE_CLIENT_ID_INVALID");
   const identity = `coinops-live|${runId}|${asset}|${slotNumber}|${operationSequence}|${side}|${revision}`;

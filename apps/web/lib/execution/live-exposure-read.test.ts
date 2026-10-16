@@ -90,6 +90,21 @@ test("complete exposure uses native account total across same-symbol engines/sha
   assert.equal(new Set(f.calls.slice(0, 5).map(call => call.signal)).size, 1);
 });
 
+test("same account same symbol 25 and100 slots across shards use their own complete canonical counts", async () => {
+  const f = fixture();
+  f.tables.robot_v1_live_runs[1].slot_count = 100;
+  f.tables.trading_engines[1].slot_count = 100;
+  f.tables.trading_engines[1].config = { slot_count: 100 };
+  const existing = f.tables.robot_v1_live_slots.find(row => row.run_id === "run-b")!;
+  for (let number = 26; number <= 100; number++) f.tables.robot_v1_live_slots.push({ ...existing,
+    id: `run-b-slot-${number}`, slot_number: number, position_committed_brl: 0 });
+  assert.deepEqual(await readLiveExposure(f.client, scope), { BTC: 0, SOL: 40, global: 150 });
+  f.tables.robot_v1_live_slots.pop();
+  await assert.rejects(readLiveExposure(f.client, scope), /LEDGER_INCOMPLETE/);
+  f.tables.robot_v1_live_runs[1].slot_count = 25;
+  await assert.rejects(readLiveExposure(f.client, scope), /EXPOSURE_INCOMPLETE/);
+});
+
 test("the first activated run with 25 seeded zero-position slots legitimately has zero exposure before dispatch", async () => {
   const f = fixture();
   f.tables.robot_v1_live_runs = f.tables.robot_v1_live_runs.filter(row => row.id === scope.id);

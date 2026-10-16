@@ -1,9 +1,9 @@
 import type { EngineAdmissionOption } from "./engine-admission-options.ts";
-import { rankEngineAdmissionOptions } from "./engine-admission-options.ts";
+import { knownEngineCapacityReason, rankEngineAdmissionOptions } from "./engine-admission-options.ts";
 
 export type EngineAdmissionShard = { id: string; ip: string };
 export type EngineAdmissionDependencies = {
-  preview: (shardId: string, count: number) => Promise<{ code: string; projected_percent?: unknown }>;
+  preview: (shardId: string, count: number) => Promise<{ code: string; reason?: unknown; projected_percent?: unknown }>;
   validatedConnection: (shard: EngineAdmissionShard) => Promise<boolean>;
 };
 
@@ -25,6 +25,7 @@ export async function discoverEngineAdmissionOptions(shards: readonly EngineAdmi
       ? decision!.code : "CAPACITY_UNKNOWN";
     const pressure = decision?.projected_percent;
     return { shardId: shard.id, ip: shard.ip, capacityCode,
+      capacityReason: capacityCode === "CAPACITY_UNKNOWN" ? knownEngineCapacityReason(decision?.reason) : null,
       projectedPercent: typeof pressure === "number" && Number.isFinite(pressure) && pressure >= 0 ? pressure : null,
       credential: connection.status === "fulfilled" && connection.value === true ? "VALIDATED" as const : "VALIDATION_REQUIRED" as const };
   }));

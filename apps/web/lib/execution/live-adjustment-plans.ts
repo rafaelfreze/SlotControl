@@ -1,8 +1,9 @@
 import { distributeLiveCapital } from "./live-capital-distribution.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "./engine-slot-topology.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export type BulkEngineShare = { engineId: string; amount: number };
+export type BulkEngineShare = { engineId: string; amount: number; slotCount?: number };
 export type SlotAllocation = { engineId: string; slotNumber: number; amount: number };
 export type SelectedSlotAmount = { slotNumber: number; amount: number };
 export type SlotAdjustmentInput = { balanceBefore: number; committed: number; amount: number;
@@ -42,15 +43,18 @@ function cents(value: number): number {
   return rounded;
 }
 
-export function splitBulkEngines(total: number, engineIds: string[], firstEnginePercent = 50): BulkEngineShare[] {
+export function splitBulkEngines(total: number, engineIds: string[], firstEnginePercent = 50,
+  slotCounts: readonly number[] = engineIds.map(() => DEFAULT_ENGINE_SLOT_COUNT)): BulkEngineShare[] {
   const totalCents = cents(total);
   if (engineIds.length < 1 || engineIds.length > 2 || new Set(engineIds).size !== engineIds.length
     || engineIds.some((id) => !UUID.test(id)) || !Number.isFinite(firstEnginePercent)
     || firstEnginePercent <= 0 || firstEnginePercent >= 100 && engineIds.length === 2)
     throw new Error("COINOPS_ADJUSTMENT_ENGINE_SELECTION_INVALID");
+  if (slotCounts.length !== engineIds.length) throw new Error("COINOPS_ADJUSTMENT_ENGINE_SELECTION_INVALID");
+  slotCounts.forEach(validateEngineSlotCount);
   if (engineIds.length === 1) return [{ engineId: engineIds[0], amount: total }];
   const first = Math.round(totalCents * firstEnginePercent / 100);
-  if (first < 25 || totalCents - first < 25)
+  if (first < slotCounts[0] || totalCents - first < slotCounts[1])
     throw new Error("COINOPS_ADJUSTMENT_SLOT_MINIMUM_INVALID");
   return [{ engineId: engineIds[0], amount: first / 100 },
     { engineId: engineIds[1], amount: (totalCents - first) / 100 }];
@@ -62,7 +66,7 @@ export function allocateBulkSlots(total: number, shares: BulkEngineShare[]): Slo
     || shares.some((share) => !UUID.test(share.engineId))
     || shares.reduce((sum, share) => sum + cents(share.amount), 0) !== totalCents)
     throw new Error("COINOPS_ADJUSTMENT_DISTRIBUTION_INVALID");
-  return shares.flatMap((share) => distributeLiveCapital(share.amount).map((amount, index) => ({
+  return shares.flatMap((share) => distributeLiveCapital(share.amount, validateEngineSlotCount(share.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT)).map((amount, index) => ({
     engineId: share.engineId, slotNumber: index + 1, amount,
   })));
 }
@@ -71,12 +75,13 @@ export function allocateBulkSlots(total: number, shares: BulkEngineShare[]): Slo
  * engine's physical slots. Remainder cents are deterministic (lowest selected
  * slot first), so preview, confirmation and retry have the same fingerprint. */
 export function allocateSelectedSlots(total: number, engineId: string, slotNumbers: number[],
-  customAmounts?: SelectedSlotAmount[]): SlotAllocation[] {
+  customAmounts?: SelectedSlotAmount[], slotCount = DEFAULT_ENGINE_SLOT_COUNT): SlotAllocation[] {
   const totalCents = cents(total);
+  validateEngineSlotCount(slotCount);
   const selected = [...slotNumbers].sort((left, right) => left - right);
-  if (!UUID.test(engineId) || selected.length < 1 || selected.length > 25
+  if (!UUID.test(engineId) || selected.length < 1 || selected.length > slotCount
     || new Set(selected).size !== selected.length
-    || selected.some((slot) => !Number.isInteger(slot) || slot < 1 || slot > 25))
+    || selected.some((slot) => !Number.isInteger(slot) || slot < 1 || slot > slotCount))
     throw new Error("COINOPS_ADJUSTMENT_SLOT_SELECTION_INVALID");
   if (customAmounts) {
     const sorted = [...customAmounts].sort((left, right) => left.slotNumber - right.slotNumber);

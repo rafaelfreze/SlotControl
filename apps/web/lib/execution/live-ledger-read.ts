@@ -1,4 +1,5 @@
 import { LiveLedgerReadFailed, LiveReadUnavailable } from "./live-read-error.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "./engine-slot-topology.ts";
 
 type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "monthly_gains"
   | "bulk_checkpoint" | "config_gate" | "quote_cap" | "preparation" | "operator"
@@ -67,8 +68,7 @@ export async function observeLedgerRecord<T extends object>(resource: Resource,
   return rows[0];
 }
 
-export function assertPhysicalLedger(rows: { slot_number: number }[]) {
-  if (rows.length !== 25 || new Set(rows.map(row => row.slot_number)).size !== 25
-    || rows.some(row => !Number.isInteger(row.slot_number) || row.slot_number < 1 || row.slot_number > 25))
+export function assertPhysicalLedger(rows: { slot_number: number }[], slotCount = DEFAULT_ENGINE_SLOT_COUNT) {
+  if (!hasCompletePhysicalSlotSet(rows.map(row => row.slot_number), slotCount))
     throw new Error("COINOPS_LIVE_LEDGER_INCOMPLETE");
 }

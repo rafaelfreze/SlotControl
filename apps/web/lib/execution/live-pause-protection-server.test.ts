@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
@@ -13,22 +14,25 @@ import { AccountOrderNotSubmitted } from "./account-order-unsent-proof.ts";
 type Row = Record<string, any>;
 type Options = { status?: string; lastTpFill?: boolean; remainingOpen?: boolean; missingTp?: boolean;
   residentBuy?: boolean; fillDuringCancel?: boolean; cancelUnknown?: boolean; busy?: boolean;
-  ambiguousBuy?: boolean; gateLost?: boolean; exposureBreach?: boolean; sibling?: boolean };
+  ambiguousBuy?: boolean; gateLost?: boolean; exposureBreach?: boolean; sibling?: boolean; slotCount?: number };
 
 /** In-memory DB and exchange only. Exercise the real public pause/advance
  * orchestrators, with isolated deterministic transport and no LIVE credentials. */
 function fixture(options: Options = {}) {
+  const count = options.slotCount ?? 25;
   const calls: string[] = [], writes: Array<{ table: string; values: Row; filters: Row }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
   const run: Row = { ...scope, id: "run-a", asset: "SOL", status: options.status ?? "PAUSED",
     strategy_version: "fixture", last_error: null, last_reconciled_at: new Date().toISOString(),
-    lease_owner: null, lease_until: null, gain_rate: .1, entry_spacing: .03, entry_regime: "NORMAL" };
+    lease_owner: null, lease_until: null, gain_rate: .1, entry_spacing: .03, entry_regime: "NORMAL",
+    slot_count: count, config_snapshot: { slot_count: count } };
   const engine: Row = { ...scope, id: "engine-a", environment: "REAL", base_asset: "SOL", status: "ACTIVE",
     engine_kill_switch: true, kill_switch: true, global_kill_switch: false, account_kill_switch: false,
-    hard_cap_quote: options.exposureBreach ? 5 : 275, strategy_config_pending: false, executor_shard_id: "executor-02" };
-  const prep: Row = { ...scope, id: "prep-a", live_enabled: true, kill_switch: true, max_total_exposure_brl: 275 };
-  const slots: Row[] = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index + 1}`, run_id: run.id,
+    hard_cap_quote: options.exposureBreach ? 5 : count * 11, strategy_config_pending: false,
+    executor_shard_id: "executor-02", slot_count: count };
+  const prep: Row = { ...scope, id: "prep-a", live_enabled: true, kill_switch: true, max_total_exposure_brl: count * 11, slot_count: count };
+  const slots: Row[] = Array.from({ length: count }, (_, index) => ({ ...scope, id: `slot-${index + 1}`, run_id: run.id,
     slot_number: index + 1, entry_state: "PLANNED", operation_sequence: 1, position_quantity: 0,
     position_committed_brl: 0, target_buy_price: 10, entry_reference_price: 10,
     entry_origin: "GRID", operational_rank: index + 1, missed_at: null,
@@ -62,11 +66,11 @@ function fixture(options: Options = {}) {
     orders.push({ ...order(3, "BUY", options.ambiguousBuy ? "UNKNOWN" : "NEW", 0), trades_reconciled: false });
   }
   const siblingScope = { ...scope, trading_engine_id: "engine-b" };
-  const siblingRun: Row = { ...run, ...siblingScope, id: "run-b", status: "ACTIVE" };
+  const siblingRun: Row = { ...run, ...siblingScope, id: "run-b", status: "ACTIVE", slot_count: 25, config_snapshot: { slot_count: 25 } };
   const siblingEngine: Row = { ...engine, ...siblingScope, id: "engine-b", kill_switch: false,
-    engine_kill_switch: false, executor_shard_id: "executor-03" };
+    engine_kill_switch: false, executor_shard_id: "executor-03", slot_count: 25, hard_cap_quote: 275 };
   const siblingSlot: Row = { ...slots[0], ...siblingScope, id: "slot-b", run_id: "run-b", position_committed_brl: 10 };
-  const siblingSlots = slots.map((slot, index) => index === 0 ? siblingSlot : { ...slot, ...siblingScope,
+  const siblingSlots = slots.slice(0, 25).map((slot, index) => index === 0 ? siblingSlot : { ...slot, ...siblingScope,
     id: `slot-b-${index + 1}`, run_id: "run-b", position_committed_brl: 0, position_quantity: 0 });
   const siblingBefore = JSON.stringify([siblingRun, siblingEngine, siblingSlots]);
   const exchangeOrders = new Map(orders.map(row => [row.client_order_id, { ...row }]));
@@ -88,7 +92,7 @@ function fixture(options: Options = {}) {
       else if (table === "robot_v1_live_slot_accounts") rows = accounts;
       else if (table === "robot_v1_live_orders") rows = orders;
       else if (table === "operators") rows = [{ ...scope, status: "ACTIVE" }];
-      else if (table === "account_quote_caps") rows = [{ ...scope, hard_cap_quote: 1000 }];
+      else if (table === "account_quote_caps") rows = [{ ...scope, hard_cap_quote: 2000 }];
       else if (table === "robot_v1_live_alerts" || table === "robot_v1_live_events") rows = [];
       else assert.fail(`Unexpected table ${table}`);
       rows = rows!.filter(row => matches(row, filters));
@@ -165,6 +169,7 @@ function fixture(options: Options = {}) {
     - rows.filter(row => row.side === "SELL").reduce((n, row) => n + Number(row.executed_quantity)
       + (active.has(row.status) ? Number(row.requested_quantity) - Number(row.executed_quantity) : 0), 0));
   const dependencies: Record<string, unknown> = {
+    "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "node:crypto": { randomUUID: () => "lease" },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
@@ -310,4 +315,25 @@ test("uncertain cancellation is never treated as confirmed pause or recreated BU
   assert.equal(f.run.status, "ACTIVE"); assert.equal(f.orders.find(row => row.slot_number === 3)!.status, "NEW");
   assert.equal(f.calls.some(call => call === "create-protective-tp"), false);
   assert.equal(f.writes.some(write => write.values.kill_switch === false), false);
+});
+
+for (const count of [25, 50, 75, 100]) test(`${count} physical slots: gain credited once, reinvestment retained and sibling25 cross-shard untouched`, async () => {
+  const f = fixture({ slotCount: count, remainingOpen: true, sibling: true });
+  const tp = JSON.stringify(f.orders.find(row => row.slot_number === 2 && row.side === "SELL"));
+  assert.equal((await f.advance()).status, "PAUSED");
+  assert.equal((await f.advance()).status, "PAUSED");
+  assert.equal(f.credited(), 1); assert.equal(f.accounts[0].gain_count, 1);
+  assert.equal(f.accounts[0].balance_brl, 12); assert.equal(f.slots.length, count);
+  assert.equal(JSON.stringify(f.orders.find(row => row.slot_number === 2 && row.side === "SELL")), tp);
+  f.assertSibling();
+});
+
+for (const count of [50, 100]) test(`${count} slots: resident fill during pause cancellation receives TP and never duplicate BUY`, async () => {
+  const f = fixture({ slotCount: count, status: "ACTIVE", lastTpFill: false, remainingOpen: true,
+    residentBuy: true, fillDuringCancel: true, sibling: true });
+  assert.equal((await f.pause()).status, "PAUSED");
+  assert.equal(f.slots[2].entry_state, "OPEN");
+  assert.equal(f.calls.filter(call => call === "create-protective-tp").length, 1);
+  assert.equal(f.orders.some(row => row.side === "BUY" && row.status === "NEW"), false);
+  f.assertSibling();
 });

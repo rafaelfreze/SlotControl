@@ -1,4 +1,5 @@
 import type { AuditRow } from "./trigger-audit.ts";
+import { configuredEngineSlotCount } from "../execution/engine-slot-topology.ts";
 
 const text = (value: unknown) => String(value ?? "");
 const object = (value: unknown): AuditRow => value && typeof value === "object" && !Array.isArray(value) ? value as AuditRow : {};
@@ -24,6 +25,7 @@ export function pausedProtectionDetails(value: unknown): AuditRow {
 export function auditPausedEntryEvidence(rows: AuditRow[], incompleteSources: readonly string[]): AuditRow[] {
   const incomplete = incompleteSources.some((source) => /^robot_v1_live_(runs|slots|orders|events)(:|$)/.test(source));
   return rows.filter((row) => row.row_type === "RUN" && row.status === "PAUSED").map((run) => {
+    const slotCount = configuredEngineSlotCount({ slot_count: run.slot_count ?? run.engine_slot_count });
     const orders = rows.filter((row) => row.row_type === "ORDER" && belongs(row, run));
     const events = rows.filter((row) => row.row_type === "EVENT" && belongs(row, run)
       && ["LIVE_PAUSED", "RECONCILED"].includes(text(row.event_type)))
@@ -39,7 +41,7 @@ export function auditPausedEntryEvidence(rows: AuditRow[], incompleteSources: re
       || numeric(details.resident_buy_count) !== null && numeric(details.resident_buy_count)! !== 0
       || numeric(details.quantity_step) !== null && numeric(details.quantity_step)! <= 0
       || numeric(details.open_positions) !== null && (!Number.isInteger(numeric(details.open_positions)!)
-        || numeric(details.open_positions)! < 0 || numeric(details.open_positions)! > 25);
+        || numeric(details.open_positions)! < 0 || numeric(details.open_positions)! > slotCount);
     return { code: "PAUSED_ENTRY_PROTECTION_EVIDENCE", status: broken ? "FAIL" : incomplete || missing || pending ? "WARNING" : "PASS",
       environment: "REAL", asset: run.asset, symbol: run.symbol, cycle_id: run.id, ...Object.fromEntries(identity.map((field) => [field, run[field]])),
       evidence_scope: "PERSISTED_PAUSE_ATTESTATION_AND_ORDER_LEDGER_NOT_CURRENT_BINANCE",

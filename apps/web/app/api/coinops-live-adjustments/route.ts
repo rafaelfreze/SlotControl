@@ -15,6 +15,7 @@ import { createClient } from "@/lib/supabase/server";
 import { projectCurrentLiveSlotRanks } from "@/lib/slotgain/live-slot-read-model";
 import { completeLedgerRead } from "@/lib/execution/complete-ledger-read";
 import { adjustmentEngineInventory } from "@/lib/execution/adjustment-engine-inventory";
+import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "@/lib/execution/engine-slot-topology";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -46,7 +47,7 @@ async function inventoryRows<T>(ids: string[], page: (ids: string[], start: numb
 type Scope = { service: Service; operator: { id: string; user_id: string; product_id: string; tenant_id: string } };
 type Engine = { id: string; exchange_account_id: string; operator_id: string; symbol: string;
   quote_asset: "BRL" | "USDT"; base_asset: "BTC" | "SOL"; status: string;
-  hard_cap_quote: number | string; executor_shard_id: string };
+  hard_cap_quote: number | string; executor_shard_id: string; slot_count?: number; config?: unknown };
 type Run = { id: string; trading_engine_id: string; status: string; last_error: string | null;
   last_reconciled_at: string | null; lease_until: string | null };
 type Slot = { id: string; trading_engine_id: string; slot_number: number; operation_sequence: number;
@@ -128,7 +129,7 @@ async function loadAccount(scope: Scope, accountId: string, quote: string) {
       .select("id,operator_id,display_name,status,is_legacy_default,credential_ref")
       .eq("id", accountId).eq("operator_id", scope.operator.id).single(),
     paged((start, end) => scope.service.from("trading_engines")
-      .select("id,exchange_account_id,operator_id,symbol,quote_asset,base_asset,status,hard_cap_quote,executor_shard_id")
+      .select("id,exchange_account_id,operator_id,symbol,quote_asset,base_asset,status,hard_cap_quote,executor_shard_id,slot_count,config")
       .eq("exchange_account_id", accountId).eq("operator_id", scope.operator.id)
       .eq("environment", "REAL").eq("quote_asset", quote).order("id").range(start, end)),
     scope.service.from("account_quote_caps").select("hard_cap_quote")
@@ -180,8 +181,10 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
       .in("trading_engine_id", selected).order("id").range(start, end), row => row.id),
   ]);
   if ([slotRows, accounts, orderRows, totals, alerts, preparations].some((result) => result.error)
-    || slotRows.data?.length !== ids.length * 25
-    || accounts.data?.length !== ids.length * 25 || alerts.data?.length)
+    || loaded.engines.some((engine) => !hasCompletePhysicalSlotSet((slotRows.data ?? [])
+      .filter((slot) => slot.trading_engine_id === engine.id).map((slot) => slot.slot_number), configuredEngineSlotCount(engine))
+      || !hasCompletePhysicalSlotSet((accounts.data ?? []).filter((slot) => slot.trading_engine_id === engine.id)
+        .map((slot) => slot.slot_number), configuredEngineSlotCount(engine))) || alerts.data?.length)
     throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNHEALTHY");
   const runList = runs.data as Run[];
   if (runList.some((run) => run.last_error || !run.last_reconciled_at
@@ -214,9 +217,12 @@ async function inspect(scope: Scope, accountId: string, quote: "BRL" | "USDT") {
     (accounts.data as SlotAccount[]).filter((slot) => slot.trading_engine_id === engine.id),
     (totals.data ?? []).filter((slot) => slot.trading_engine_id === engine.id), engine.base_asset,
     Number(preparations.data?.find((row) => row.trading_engine_id === engine.id)?.monthly_target
-      ?? (engine.base_asset === "BTC" ? 7 : 2)), new Date().toISOString()));
+      ?? (engine.base_asset === "BTC" ? 7 : 2)), new Date().toISOString(), configuredEngineSlotCount(engine)));
   return { ...loaded, allEngines: inventory.engines, runs: runList, slots: rankedSlots,
     slotAccounts: accounts.data as SlotAccount[], totals: totals.data ?? [],
+    monthlyTargets: Object.fromEntries(loaded.engines.map((engine) => [engine.id,
+      Number(preparations.data?.find((row) => row.trading_engine_id === engine.id)?.monthly_target
+        ?? (engine.base_asset === "BTC" ? 7 : 2))])),
     free, exposure, availableForNewCapital, observedAt: snapshot.observed_at,
     executorIp: snapshot.executor_ip, openOrders: exchangeOwn.length };
 }
@@ -248,8 +254,9 @@ async function preview(scope: Scope, input: Draft) {
     openSlots: number; followingSlots: number; resolvedSlotNumbers: number[] } | null = null;
   let fxReference: Awaited<ReturnType<typeof verifyBrlUsdtConversion>> | null = null;
   if (input.kind === "MANUAL_GAIN") {
+    const selectedEngine = state.engines.find((engine) => engine.id === input.engineId);
     if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
-      || input.slotNumber! < 1 || input.slotNumber! > 25
+      || input.slotNumber! < 1 || !selectedEngine || input.slotNumber! > configuredEngineSlotCount(selectedEngine)
       || !Number.isInteger(input.gainUnits) || input.gainUnits! < 1 || input.gainUnits! > 25
       || !state.engines.some((engine) => engine.id === input.engineId))
       throw new Error("COINOPS_ADJUSTMENT_GAIN_INVALID");
@@ -276,7 +283,7 @@ async function preview(scope: Scope, input: Draft) {
         const region = resolveSelectiveContributionPresetRegion(preset,
           state.slots.filter((slot) => slot.trading_engine_id === input.engineId).map((slot) => ({
             slotNumber: slot.slot_number, operationalRank: slot.operational_rank, entryState: slot.entry_state,
-          })), input.presetAnchorSlot!);
+          })), input.presetAnchorSlot!, configuredEngineSlotCount(state.engines.find((engine) => engine.id === input.engineId)!));
         resolvedSlotNumbers = region.slotNumbers;
         if (input.selectedSlots?.length
           && JSON.stringify(input.selectedSlots) !== JSON.stringify(resolvedSlotNumbers))
@@ -287,11 +294,13 @@ async function preview(scope: Scope, input: Draft) {
       } else if (input.selectionMode && input.selectionMode !== "MANUAL") {
         throw new Error("COINOPS_ADJUSTMENT_SLOT_SELECTION_INVALID");
       }
-      allocations = allocateSelectedSlots(amount, input.engineId!, resolvedSlotNumbers, input.customAllocations)
+      allocations = allocateSelectedSlots(amount, input.engineId!, resolvedSlotNumbers, input.customAllocations,
+        configuredEngineSlotCount(state.engines.find((engine) => engine.id === input.engineId)!))
         .map((slot) => allocationInput(state, slot.engineId, slot.slotNumber, slot.amount, 0));
     } else if (input.slotNumber !== undefined) {
+      const selectedEngine = state.engines.find((engine) => engine.id === input.engineId);
       if (!isIdentity(input.engineId) || !Number.isInteger(input.slotNumber)
-        || input.slotNumber < 1 || input.slotNumber > 25
+        || input.slotNumber < 1 || !selectedEngine || input.slotNumber > configuredEngineSlotCount(selectedEngine)
         || !state.engines.some((engine) => engine.id === input.engineId))
         throw new Error("COINOPS_ADJUSTMENT_SLOT_INVALID");
       allocations = [allocationInput(state, input.engineId!, input.slotNumber, amount, 0)];
@@ -300,7 +309,8 @@ async function preview(scope: Scope, input: Draft) {
       if (shares.length < 1 || shares.length > 2
         || shares.some((share) => !state.engines.some((engine) => engine.id === share.engineId)))
         throw new Error("COINOPS_ADJUSTMENT_DISTRIBUTION_INVALID");
-      allocations = allocateBulkSlots(amount, shares).map((slot) =>
+      allocations = allocateBulkSlots(amount, shares.map((share) => ({ ...share,
+        slotCount: configuredEngineSlotCount(state.engines.find((engine) => engine.id === share.engineId)!) }))).map((slot) =>
         allocationInput(state, slot.engineId, slot.slotNumber, slot.amount, 0));
     }
     if (allocations.reduce((sum, row) => sum + Math.round(row.amount * 100), 0) !== Math.round(amount * 100))
@@ -321,7 +331,7 @@ async function preview(scope: Scope, input: Draft) {
       ? projectSelectiveSlotContribution(row) : { ...projectSlotAdjustment(row), allocationStatus: "APPLIED" as const };
     return { ...projected,
       balanceAfterApplication: Number((row.balanceBefore + row.amount).toFixed(8)),
-      target: state.engines.find((engine) => engine.id === row.engineId)?.base_asset === "BTC" ? 7 : 2 };
+      target: state.monthlyTargets[row.engineId] };
   });
   const payload = { accountId: input.accountId, quote: input.quote, kind: input.kind,
     amount, origin, originCurrency: input.originCurrency ?? input.quote,
@@ -373,11 +383,19 @@ async function verifyReplay(scope: Scope, input: Draft, existing: NonNullable<Aw
     .select("trading_engine_id,slot_number,amount_quote,gain_units")
     .eq("batch_id", existing.id).order("trading_engine_id").order("slot_number");
   if (recorded.error || !recorded.data) throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
+  const engineIds = [...new Set((input.shares ?? []).map((share) => share.engineId))];
+  const replayEngines = engineIds.length ? await scope.service.from("trading_engines")
+    .select("id,slot_count,config").eq("operator_id", scope.operator.id).eq("exchange_account_id", input.accountId)
+    .eq("environment", "REAL").in("id", engineIds) : { data: [], error: null };
+  if (replayEngines.error || replayEngines.data?.length !== engineIds.length)
+    throw new Error("COINOPS_ADJUSTMENT_LEDGER_UNAVAILABLE");
   const expected = input.kind === "MANUAL_GAIN"
     ? [{ engineId: input.engineId, slotNumber: input.slotNumber, amount: 0, gainUnits: input.gainUnits }]
     : input.slotNumber !== undefined
       ? [{ engineId: input.engineId, slotNumber: input.slotNumber, amount: input.amount, gainUnits: 0 }]
-      : allocateBulkSlots(exactCents(input.amount), input.shares ?? []).map((item) => ({ ...item, gainUnits: 0 }));
+      : allocateBulkSlots(exactCents(input.amount), (input.shares ?? []).map((share) => ({ ...share,
+        slotCount: configuredEngineSlotCount(replayEngines.data!.find((engine) => engine.id === share.engineId)!) })))
+        .map((item) => ({ ...item, gainUnits: 0 }));
   const sorted = expected.sort((a, b) => String(a.engineId).localeCompare(String(b.engineId))
     || Number(a.slotNumber) - Number(b.slotNumber));
   if (recorded.data.length !== sorted.length || recorded.data.some((item, index) =>
@@ -481,7 +499,7 @@ export async function GET() {
       scope.service.from("exchange_accounts").select("id,display_name,status,is_legacy_default")
         .eq("operator_id", scope.operator.id).eq("status", "ACTIVE").order("display_name"),
       paged((start, end) => scope.service.from("trading_engines")
-      .select("id,exchange_account_id,symbol,quote_asset,base_asset,status,hard_cap_quote,executor_shard_id,created_at")
+      .select("id,exchange_account_id,symbol,quote_asset,base_asset,status,hard_cap_quote,executor_shard_id,created_at,slot_count,config")
         .eq("operator_id", scope.operator.id).eq("environment", "REAL").order("id").range(start, end)),
       scope.service.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
         .eq("operator_id", scope.operator.id),

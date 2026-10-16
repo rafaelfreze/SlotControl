@@ -14,6 +14,7 @@ test("cent-exact split preserves the full native cap over engines and 25 slots",
   assert.equal(slots.reduce((sum, item) => sum + Math.round(item * 100), 0), 41901);
   assert.equal(slots[0], 16.77);
   assert.equal(slots[1], 16.76);
+  assert.deepEqual(equalEngineCapitals("1100.00", ["SOL"]), [1100]);
 });
 
 test("plan requires explicit account, same quote, exact sum and general profiles", () => {
@@ -39,4 +40,27 @@ test("N same-symbol plans have independent allocation and explicit monthly targe
   assert.equal(result.engines.length, 10);
   assert.deepEqual(result.engines.map((engine) => engine.monthlyTarget), Array.from({ length: 10 }, (_, i) => i + 1));
   assert.notEqual(result.engines[0].allocation, result.engines[1].allocation);
+});
+
+test("100 x R$11 plan preserves exact individual strategy and requires a canonical count", () => {
+  const engine = { asset: "SOL" as const, capital: "1100.00", perSlotQuote: "11.00", slotCount: 100,
+    gainPercent: "3", spacingPercent: "1", postAthPercent: "2", monthlyTarget: 3 };
+  const plan = { accountId, requestId, quote: "BRL" as const, capital: "1100.00", engines: [engine] };
+  const result = validateEnginePlan(plan).engines[0];
+  assert.equal(result.slotCount, 100);
+  assert.equal(result.allocation.length, 100);
+  assert.ok(result.allocation.every((amount) => amount === 11));
+  assert.deepEqual([result.gain, result.spacing, result.postAth, result.monthlyTarget], [.03, .01, .02, 3]);
+  for (const slotCount of [0, 1, 100.1, 101, NaN])
+    assert.throws(() => validateEnginePlan({ ...plan, engines: [{ ...engine, slotCount }] }), /SLOT_COUNT_INVALID/);
+  assert.throws(() => validateEnginePlan({ ...plan, engines: [{ ...engine, perSlotQuote: "11.01" }] }), /SLOT_CAP_SUM_MISMATCH/);
+  assert.throws(() => validateEnginePlan({ ...plan, engines: [{ ...engine, slotCount: null as unknown as number }] }), /SLOT_COUNT_INVALID/);
+});
+
+test("25, 50, 75 and 100 same-symbol plans do not share physical allocation arrays", () => {
+  const result = validateEnginePlan({ accountId, requestId, quote: "BRL", capital: "2750.00",
+    engines: [25, 50, 75, 100].map((slotCount) => ({ asset: "SOL", capital: (slotCount * 11).toFixed(2),
+      slotCount, perSlotQuote: "11.00", gainPercent: "3", spacingPercent: "1", postAthPercent: "2", monthlyTarget: 3 })) });
+  assert.deepEqual(result.engines.map((engine) => engine.allocation.length), [25, 50, 75, 100]);
+  assert.equal(new Set(result.engines.map((engine) => engine.allocation)).size, 4);
 });

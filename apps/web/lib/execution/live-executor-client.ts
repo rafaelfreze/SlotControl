@@ -4,6 +4,7 @@ import { STRATEGY_VERSION } from "./strategy-engine.ts";
 import type { LiveConfig } from "./live-preparation.ts";
 import type { ExecutorEngineScope } from "./live-executor-transport.ts";
 import { resolveExecutorForEngine, withExecutorShard, type ExecutorEngineResolver } from "./executor-shards-server.ts";
+import { validateEngineSlotCount } from "./engine-slot-topology.ts";
 
 export function signedExecutorHeaders(secret: string, path: string, body: string, idempotencyKey: string,
   timestamp = Date.now(), nonce = randomBytes(18).toString("base64url")): Headers {
@@ -57,7 +58,7 @@ export async function requestExecutorDryRun(config: LiveConfig, portfolioCaps: {
   if (result.status !== "NO_WRITE" || result.strategy_version !== STRATEGY_VERSION
     || result.operator_id !== engine.operator_id || result.exchange_account_id !== engine.exchange_account_id
     || result.trading_engine_id !== engine.trading_engine_id || result.quote_asset !== engine.quote_asset
-    || result.symbol !== config.symbol || result.valid_slots !== 25
+    || result.symbol !== config.symbol || result.valid_slots !== validateEngineSlotCount(config.slot_count)
     || result.trading_enabled !== false || result.kill_switch !== true
     || target.shardId !== "executor-01" && result.executor_shard_id !== target.shardId)
     throw new Error("EXECUTOR_DRY_RUN_RESPONSE_UNSAFE");

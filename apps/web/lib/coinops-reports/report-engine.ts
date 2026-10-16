@@ -17,12 +17,13 @@ import { buildLivePerformanceEvidence } from "./live-performance-audit.ts";
 import { buildSlotPresentationAudit } from "./slot-presentation-audit.ts";
 import { buildEngineIsolationAudit } from "./engine-isolation-audit.ts";
 import { auditPausedEntryEvidence, pausedProtectionDetails } from "./paused-entry-audit.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "../execution/engine-slot-topology.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
 export type AuditFilters = { start: string; end: string; assets: ReportAsset[]; environments: ReportEnvironment[]; temporalWindow?: "SINCE_STRATEGY_4_1";
   exchangeAccountId?: string; tradingEngineId?: string; symbol?: string };
-export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string }; registry?: DomainRegistry };
+export type AuditInput = { sources: Record<string, AuditRow[]>; incompleteSources: string[]; warnings: string[]; generatedAt: string; scope: { tenantId: string; userId: string }; registry?: DomainRegistry; engineSlotCount?: number };
 export const REPORT_DATASET_KEYS = ["summary", "cycles", "slots", "operations", "orders", "events", "gains", "capital", "market", "reconciliation", "alerts", "rules", "checks", "testnet", "real", "decisions", "missed_temporal", "monthly_goals", "ath_regime", "live_preparation", "live_execution", "manual_adjustments", "contributions", "engine_isolation"] as const;
 export type AuditDatasets = Record<typeof REPORT_DATASET_KEYS[number], AuditRow[]>;
 export type AuditReport = { datasets: AuditDatasets; warnings: string[]; incompleteSources: string[] };
@@ -767,7 +768,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       manual_gain_usdc: history.reduce((total, row) => total + number(row.manual_gain), 0),
       contributions_usdc: history.reduce((total, row) => total + number(row.contribution), 0),
       operations: completed.length, open_operations: openAtEnd.length,
-      cycles: hasLiveLedger ? ownLiveRuns.length : ownCycles.length, completed_cycles: hasLiveLedger ? ownLiveRuns.filter((row) => inPeriod(row.completed_at, filters)).length : ownCycles.filter((row) => inPeriod(row.completed_at, filters)).length, slots: hasLiveLedger ? 25 : ownCycles.length ? Math.max(...ownCycles.map((row) => number(row.slot_count))) : 0,
+      cycles: hasLiveLedger ? ownLiveRuns.length : ownCycles.length, completed_cycles: hasLiveLedger ? ownLiveRuns.filter((row) => inPeriod(row.completed_at, filters)).length : ownCycles.filter((row) => inPeriod(row.completed_at, filters)).length, slots: hasLiveLedger ? validateEngineSlotCount(input.engineSlotCount ?? DEFAULT_ENGINE_SLOT_COUNT) : ownCycles.length ? Math.max(...ownCycles.map((row) => number(row.slot_count))) : 0,
       buys: hasLiveLedger ? filledLiveOrdersInPeriod.filter((row) => row.side === "BUY").length : environment === "TESTNET" ? ownOrders.filter((row) => row.side === "BUY" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => ["BUY_TRIGGERED", "INITIAL_POSITION_OPENED"].includes(str(row.event_type))).length,
       take_profits: hasLiveLedger ? filledLiveOrdersInPeriod.filter((row) => row.side === "SELL" && row.purpose === "TP").length : environment === "TESTNET" ? ownOrders.filter((row) => row.side === "SELL" && row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length : ownEvents.filter((row) => row.event_type === "TP_TRIGGERED").length,
       orders_open: hasLiveLedger ? ownLiveOrders.filter((row) => activeOrder(row.status)).length : ownOrders.filter((row) => activeOrder(row.status_at_period_end)).length, orders_filled: hasLiveLedger ? ownLiveOrders.filter((row) => row.status === "FILLED").length : ownOrders.filter((row) => row.status_at_period_end === "FILLED" && inPeriod(row.filled_at, filters)).length, orders_cancelled: hasLiveLedger ? ownLiveOrders.filter((row) => row.status === "CANCELED").length : ownOrders.filter((row) => ["CANCELED", "CANCELLED"].includes(str(row.status_at_period_end)) && inPeriod(row.canceled_at, filters)).length,
@@ -843,7 +844,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   if (preparation) {
     datasets.live_preparation = preparation.rows.filter((row) => filters.assets.includes(row.asset as ReportAsset));
   }
-  datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital });
+  datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital, engineSlotCount: input.engineSlotCount });
   datasets.checks.push(...auditPausedEntryEvidence(liveExecution, incompleteSources));
   if (preparation) {
     datasets.checks.push({ code: "LIVE_PREPARATION_NATIVE_GATE",

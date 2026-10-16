@@ -1,9 +1,11 @@
 import { distributeLiveCapital } from "./live-capital-distribution.ts";
 import { isIdentity } from "./operator-context.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "./engine-slot-topology.ts";
 
 export type EnginePlanInput = { accountId: string; requestId: string; quote: "BRL" | "USDT" | "USDC";
   capital: string; engines: Array<{ asset: "BTC" | "SOL"; capital: string;
-    gainPercent: string; spacingPercent: string; postAthPercent: string; monthlyTarget?: number }> };
+    gainPercent: string; spacingPercent: string; postAthPercent: string; monthlyTarget?: number;
+    slotCount?: number; perSlotQuote?: string }> };
 
 function cents(value: unknown): number {
   if (typeof value !== "string" || !/^(?:0|[1-9]\d{0,8})(?:\.\d{1,2})?$/.test(value))
@@ -32,9 +34,12 @@ export function validateEnginePlan(input: EnginePlanInput) {
   const capitalCents = cents(input.capital);
   const engines = input.engines.map((item) => {
     const engineCents = cents(item.capital);
-    const allocation = distributeLiveCapital(engineCents / 100);
+    const slotCount = validateEngineSlotCount(item.slotCount === undefined ? DEFAULT_ENGINE_SLOT_COUNT : item.slotCount);
+    if (item.perSlotQuote !== undefined && cents(item.perSlotQuote) * slotCount !== engineCents)
+      throw new Error("COINOPS_PLAN_SLOT_CAP_SUM_MISMATCH");
+    const allocation = distributeLiveCapital(engineCents / 100, slotCount);
     return { asset: item.asset, symbol: `${item.asset}${input.quote}`,
-      capital: engineCents / 100, allocation,
+      capital: engineCents / 100, slotCount, allocation,
       gain: rate(item.gainPercent), spacing: rate(item.spacingPercent),
       postAth: rate(item.postAthPercent), monthlyTarget: item.monthlyTarget ?? (item.asset === "BTC" ? 7 : 2) };
   });
@@ -50,5 +55,6 @@ export function validateEnginePlan(input: EnginePlanInput) {
 export function equalEngineCapitals(total: string, assets: readonly ("BTC" | "SOL")[]) {
   if (!assets.length || assets.length > 2 || new Set(assets).size !== assets.length)
     throw new Error("COINOPS_PLAN_MARKET_INVALID");
+  if (assets.length === 1) return [cents(total) / 100];
   return distributeLiveCapital(cents(total) / 100, assets.length);
 }

@@ -387,14 +387,14 @@ for (const width of [390, 1440]) test(`multi-engine append existente, mesmo SOLB
       is_legacy_default: true, credentialValidated: true, environment: "REAL", executor_shard_id: "executor-02" }],
     engines: ["executor-02", "executor-03"].map((shard, index) => ({ id: `20000000-0000-4000-8000-00000000000${index + 1}`,
       exchange_account_id: ACCOUNT_A, symbol: "SOLBRL", quote_asset: "BRL", executor_shard_id: shard,
-      environment: "REAL", status: "ACTIVE", kill_switch: false, hard_cap_quote: 100, created_at: `2026-10-0${index + 1}T12:00:00Z`,
+      environment: "REAL", status: "ACTIVE", kill_switch: false, hard_cap_quote: 100, slot_count: 25, created_at: `2026-10-0${index + 1}T12:00:00Z`,
       operational: true, ready: false, evidence, run: { id: `run-${index}`, status: "ACTIVE", last_error: null,
         last_reconciled_at: AUTOMATION_FIXTURE_NOW }, profile: null })) },
     options: [{ shardId: "executor-02", ip: "203.0.113.2", capacityCode: "CAPACITY_REQUIRED", credential: "VALIDATED" },
       { shardId: "executor-03", ip: "203.0.113.3", capacityCode: "CAPACITY_OK", credential: "VALIDATED" }],
     preview: { previewHash: "a".repeat(64), status: "PREVIEW_NO_ORDER", executorIp: "203.0.113.3", quote: "BRL",
       free: 300, allocatedCapital: 200, availableCapital: 100, capital: 100,
-      engines: [{ symbol: "SOLBRL", validSlots: 25, minimumCapital: 80, monthlyTarget: 2,
+      engines: [{ symbol: "SOLBRL", slotCount: 25, validSlots: 25, minimumCapital: 80, monthlyTarget: 2,
         firstEntry: 100, firstTp: 105.5, nextBuy: 97, currentPrice: 100, minNotional: 1 }] },
   };
   const audit = await mount(page, "live", width, 844, automationOperatorFixture(), null, null, null, engineFixture);
@@ -418,6 +418,89 @@ for (const width of [390, 1440]) test(`multi-engine append existente, mesmo SOLB
   expect(audit.browserErrors).toEqual([]); expect(audit.requests).toEqual([]);
   await dialog.getByRole("button", { name: "Fechar novo motor", exact: true }).click();
   await expect(dialog.getByLabel("Preview do motor adicional")).toHaveCount(0);
+});
+
+for (const width of [390, 1440]) test(`100 slots visual isolado: R$11, estratégia individual e preview invalidável ${width}px`, async ({ page }, testInfo) => {
+  const engineFixture = {
+    inventory: { accounts: [{ id: ACCOUNT_A, display_name: "Rafael Demo", status: "ACTIVE", kill_switch: false,
+      is_legacy_default: true, credentialValidated: true, environment: "REAL", executor_shard_id: "executor-02" }],
+      engines: [{ id: "20000000-0000-4000-8000-000000000001", exchange_account_id: ACCOUNT_A,
+        symbol: "SOLBRL", quote_asset: "BRL", executor_shard_id: "executor-02", environment: "REAL",
+        status: "ACTIVE", kill_switch: false, hard_cap_quote: 275, slot_count: 25, operational: true, ready: false,
+        evidence: { physicalSlots: 25, open: 1, residentTp: 1, nextBuy: 1, recent: true, clean: true },
+        run: { id: "existing-run", status: "ACTIVE", last_error: null, last_reconciled_at: AUTOMATION_FIXTURE_NOW }, profile: null }] },
+    options: [{ shardId: "executor-03", ip: "203.0.113.3", capacityCode: "CAPACITY_OK", credential: "VALIDATED" }],
+    preview: { previewHash: "b".repeat(64), status: "PREVIEW_NO_ORDER", executorIp: "203.0.113.3", quote: "BRL",
+      free: 1375, allocatedCapital: 275, availableCapital: 1100, capital: 1100,
+      engines: [{ symbol: "SOLBRL", slotCount: 100, validSlots: 100, minimumCapital: 1090, monthlyTarget: 3,
+        firstEntry: 530, firstTp: 545.9, nextBuy: 524.7, currentPrice: 530, minNotional: 10 }] },
+  };
+  const audit = await mount(page, "live", width, 844, automationOperatorFixture(), null, null, null, engineFixture);
+  await page.getByRole("button", { name: "Estratégia", exact: true }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Conta Binance para motores").selectOption(ACCOUNT_A);
+  await dialog.getByRole("button", { name: "+ Adicionar motor", exact: true }).click();
+  await expect(dialog.getByLabel("Quantidade de slots")).toHaveValue("25");
+  await dialog.getByLabel("Quantidade de slots").fill("100");
+  await dialog.getByLabel("Capital por slot (opcional)").fill("11");
+  await expect(dialog.getByLabel("Capital adicional do novo motor")).toHaveValue("1100.00");
+  await expect(dialog.getByLabel("Executor do novo motor")).toHaveValue("");
+  await dialog.getByLabel("Gain %", { exact: true }).fill("3");
+  await dialog.getByLabel("Queda normal %", { exact: true }).fill("1");
+  await dialog.getByLabel("Queda pós-ATH %", { exact: true }).fill("2");
+  await dialog.getByLabel("Meta por slot/mês", { exact: true }).fill("3");
+  await dialog.getByRole("button", { name: "Atualizar capacidade · sem ordens", exact: true }).click();
+  await expect(dialog.getByLabel("Executor do novo motor")).toHaveValue("executor-03");
+  await dialog.getByRole("button", { name: "Pré-visualizar novo motor · sem ordens", exact: true }).click();
+  const preview = dialog.getByLabel("Preview do motor adicional");
+  await expect(preview).toContainText("100 slots · 100/100 executáveis");
+  await expect(preview).toContainText("meta 3/slot/mês");
+  await expect(dialog.getByLabel("Queda normal %", { exact: true })).toHaveValue("1");
+  await expect(dialog.getByLabel("Queda pós-ATH %", { exact: true })).toHaveValue("2");
+  await expect(dialog.getByLabel("Gain %", { exact: true })).toHaveValue("3");
+  expect((await geometry(page)).overflow).toBeLessThanOrEqual(1);
+  expect(await dialog.locator(".px-drawer-body").evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+  await screenshot(page, testInfo, `engine-100-preview-${width}`);
+  await dialog.getByLabel("Quantidade de slots").fill("99");
+  await expect(preview).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Confirmar e preparar motor INACTIVE", exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel("Capital adicional do novo motor")).toHaveValue("1089.00");
+  await expect(dialog.getByLabel("Executor do novo motor")).toHaveValue("");
+  const commands = await page.evaluate(() => (window as unknown as { __fixtureEngineCommands: Array<{
+    action: string; slotCount?: number; shardId?: string; engines?: Array<Record<string, unknown>> }> }).__fixtureEngineCommands);
+  expect(commands.map((command) => command.action)).toEqual(["APPEND_OPTIONS", "APPEND_OPTIONS", "APPEND_PREVIEW"]);
+  expect(commands[1].slotCount).toBe(100);
+  expect(commands[2].shardId).toBe("executor-03");
+  expect(commands[2].engines).toEqual([{ asset: "SOL", capital: "1100.00", perSlotQuote: "11",
+    slotCount: 100, gainPercent: "3", spacingPercent: "1", postAthPercent: "2", monthlyTarget: 3 }]);
+  expect(commands.some((command) => command.action === "APPEND_PROVISION")).toBe(false);
+  await noSideEffects(page, audit);
+});
+
+test("100 slots sem certificação mostra motivo real e não habilita preview ou criação", async ({ page }, testInfo) => {
+  const fixture = { inventory: { accounts: [{ id: ACCOUNT_A, display_name: "Rafael Demo", status: "ACTIVE",
+    kill_switch: false, is_legacy_default: true, credentialValidated: true, environment: "REAL",
+    executor_shard_id: "executor-02" }], engines: [] }, options: [{ shardId: "executor-03",
+    ip: "203.0.113.3", capacityCode: "CAPACITY_UNKNOWN", capacityReason: "SLOT_WORKLOAD_UNCERTIFIED",
+    credential: "VALIDATED", projectedPercent: 10 }], preview: null };
+  const audit = await mount(page, "live", 390, 844, automationOperatorFixture(), null, null, null, fixture);
+  await page.getByRole("button", { name: "Estratégia", exact: true }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Conta Binance para motores").selectOption(ACCOUNT_A);
+  await dialog.getByRole("button", { name: "+ Adicionar motor", exact: true }).click();
+  await dialog.getByLabel("Quantidade de slots").fill("100");
+  await dialog.getByLabel("Capital por slot (opcional)").fill("11");
+  await dialog.getByRole("button", { name: "Atualizar capacidade · sem ordens", exact: true }).click();
+  await expect(dialog).toContainText("A carga de 100 slots ainda não está certificada");
+  await expect(dialog).toContainText("Isso não significa que o executor esteja lotado");
+  await expect(dialog.getByLabel("Executor do novo motor").locator('option[value="executor-03"]')).toHaveAttribute("disabled", "");
+  await expect(dialog.getByRole("button", { name: "Pré-visualizar novo motor · sem ordens", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Confirmar e preparar motor INACTIVE", exact: true })).toHaveCount(0);
+  expect((await geometry(page)).overflow).toBeLessThanOrEqual(1);
+  await screenshot(page, testInfo, "engine-100-uncertified-390");
+  const commands = await page.evaluate(() => (window as unknown as { __fixtureEngineCommands: Array<{ action: string }> }).__fixtureEngineCommands);
+  expect(commands.map((command) => command.action)).toEqual(["APPEND_OPTIONS", "APPEND_OPTIONS"]);
+  await noSideEffects(page, audit);
 });
 
 for (const width of [320, 360, 375, 390, 430, 1280]) {

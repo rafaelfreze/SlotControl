@@ -35,7 +35,74 @@ test("additional credential setup never replaces the account bootstrap or fabric
     operation: "REVALIDATE", admissionCode: "CAPACITY_REQUIRED", installedEngine: true }).credentialRef, "legacy-binance-production");
   assert.throws(() => assertExecutorConnectionCandidate(operator, legacy, { ...input, shardId: "executor-01",
     installedEngine: true }), /CONNECTION_SHARD_DENIED/);
-  assert.throws(() => assertExecutorConnectionCandidate(operator, account, { ...input, operation: "REVALIDATE" }), /CONNECTION_SHARD_DENIED/);
+  assert.deepEqual(assertExecutorConnectionCandidate(operator, account, { ...input, operation: "REVALIDATE" }),
+    { shardId: "executor-03", credentialRef: `account_${account.id.replaceAll("-", "")}` });
+  for (const admissionCode of ["CAPACITY_REQUIRED", "CAPACITY_UNKNOWN", "READ_ONLY_REVALIDATION"])
+    assert.throws(() => assertExecutorConnectionCandidate(operator, account,
+      { ...input, operation: "REVALIDATE", admissionCode }), /CONNECTION_SHARD_DENIED/);
+  for (const prior of [{ installedEngine: true }, { connectionRef: `account_${account.id.replaceAll("-", "")}` }])
+    assert.equal(assertExecutorConnectionCandidate(operator, account,
+      { ...input, operation: "REVALIDATE", admissionCode: "CAPACITY_REQUIRED", ...prior }).shardId, "executor-03");
+});
+
+test("already-installed credential discovery checks admission but existing revalidation never depends on it", async () => {
+  const operatorId = "00000000-0000-4000-8000-000000000001";
+  const accountId = "00000000-0000-4000-8000-000000000002";
+  const ref = `account_${accountId.replaceAll("-", "")}`;
+  const requests: Array<{ name: string; args: Record<string, unknown> }> = [];
+  let connection: { credential_ref: string } | null = null, installed = false, enabled = true;
+  let admissionCode = "CAPACITY_OK", admissionError = false, databaseIp = target.ip;
+  const service = { from(table: string) {
+    const chain = { select: () => chain, eq: () => chain, limit: () => chain,
+      then: (fulfilled: (value: unknown) => unknown) => Promise.resolve(reply()).then(fulfilled),
+      single: async () => reply(), maybeSingle: async () => reply() };
+    const reply = () => ({ error: null, data: table === "operators"
+      ? { id: operatorId, tenant_id: "tenant", status: "ACTIVE" }
+      : table === "exchange_accounts" ? { id: accountId, operator_id: operatorId,
+        status: "ACTIVE", is_legacy_default: false, executor_shard_id: "executor-01" }
+      : table === "account_executor_connections" ? connection
+      : table === "trading_engines" ? installed ? [{ id: "installed-engine" }] : []
+      : { id: "executor-02", egress_ipv4: databaseIp, enabled } });
+    return chain;
+  }, async rpc(name: string, args: Record<string, unknown>) {
+    requests.push({ name, args });
+    return { error: admissionError ? { message: "fixture unavailable" } : null, data: { code: admissionCode } };
+  } };
+  const dependencies: Record<string, unknown> = { "node:net": { isIP },
+    "./executor-binding-read.ts": { boundedExecutorBindingRead, completeExecutorBindingFacts, observeExecutorBindingRecord },
+    "../supabase/env": { getCoinOpsServiceTenantId: () => "tenant", getSupabaseDataSchema: () => "coinops" },
+    "../supabase/service-role": { createServiceRoleClient: () => service } };
+  const source = readFileSync(new URL("./executor-shards-server.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2022 } }).outputText;
+  const exports: Record<string, unknown> = {};
+  new Function("require", "exports", "process", compiled)((name: string) => {
+    assert.ok(name in dependencies, `Unexpected resolver dependency: ${name}`); return dependencies[name];
+  }, exports, { env: environment });
+  const resolve = exports.resolveExecutorForConnectionCandidate as (operator: string, account: string,
+    shard: string, operation: "CONNECT" | "REVALIDATE") => Promise<typeof target & { credentialRef: string }>;
+  const discover = () => resolve(operatorId, accountId, "executor-02", "REVALIDATE");
+  assert.equal((await discover()).credentialRef, ref);
+  assert.deepEqual(requests, [{ name: "preview_executor_admission",
+    args: { p_shard_id: "executor-02", p_environment: "REAL", p_engines: 1 } }]);
+  for (const code of ["CAPACITY_REQUIRED", "CAPACITY_UNKNOWN"]) {
+    admissionCode = code;
+    await assert.rejects(discover(), /CONNECTION_SHARD_DENIED/);
+  }
+  admissionError = true;
+  await assert.rejects(discover(), /CONNECTION_SHARD_DENIED/);
+  const before = requests.length;
+  connection = { credential_ref: ref };
+  assert.equal((await discover()).credentialRef, ref);
+  connection = null; installed = true;
+  assert.equal((await discover()).credentialRef, ref);
+  assert.equal(requests.length, before, "existing validation ignores admission errors and does not probe capacity");
+  connection = { credential_ref: "foreign-vault-reference" };
+  await assert.rejects(discover(), /CONNECTION_SHARD_DENIED/);
+  connection = null; databaseIp = "203.0.113.99";
+  await assert.rejects(discover(), /SHARD_IP_MISMATCH/);
+  databaseIp = target.ip; enabled = false;
+  await assert.rejects(discover(), /CONNECTION_SHARD_DENIED/);
 });
 
 test("new-engine target requires its own validated credential/IP without removing the old connection", () => {

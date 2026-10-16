@@ -1,8 +1,9 @@
 import type { AuditDatasets, AuditFilters } from "./report-engine.ts";
 import type { AuditRow } from "./trigger-audit.ts";
 import { auditNextBuyCapitalRefresh } from "./next-buy-capital-refresh-audit.ts";
+import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet, validateEngineSlotCount } from "../execution/engine-slot-topology.ts";
 
-type CheckContext = { source: Record<string, AuditRow[]>; incompleteSources: string[]; generatedAt: string; filters: AuditFilters; allOperations: AuditRow[]; allCapital: AuditRow[] };
+type CheckContext = { source: Record<string, AuditRow[]>; incompleteSources: string[]; generatedAt: string; filters: AuditFilters; allOperations: AuditRow[]; allCapital: AuditRow[]; engineSlotCount?: number };
 const n = (value: unknown) => Number(value ?? 0);
 const s = (value: unknown) => String(value ?? "");
 const sum = (rows: AuditRow[], key: string) => rows.reduce((total, row) => total + n(row[key]), 0);
@@ -158,11 +159,12 @@ export function buildAuditChecks(datasets: AuditDatasets, context: CheckContext)
       const orders = datasets.live_execution.filter((row) => row.row_type === "ORDER" && row.run_id === runId);
       const activeBuys = orders.filter((row) => row.side === "BUY" && active(row.status));
       const ownedIds = orders.map((row) => s(row.client_order_id));
-      add("PRODUCTION_LIVE_LEDGER", slots.length !== 25 || activeBuys.length > 1
+      const slotCount = validateEngineSlotCount(context.engineSlotCount ?? run.slot_count ?? DEFAULT_ENGINE_SLOT_COUNT);
+      add("PRODUCTION_LIVE_LEDGER", !hasCompletePhysicalSlotSet(slots.map((row) => n(row.slot_number ?? row.physical_slot_number)), slotCount) || activeBuys.length > 1
         || duplicates(orders, (row) => s(row.client_order_id)) ? "FAIL" : "PASS",
-      "Ciclo LIVE com 25 slots físicos, no máximo uma BUY ativa e IDs próprios únicos; reconciliação Binance é verificada separadamente pelo monitor.",
+      `Ciclo LIVE com ${slotCount} slots físicos canônicos, no máximo uma BUY ativa e IDs próprios únicos; reconciliação Binance é verificada separadamente pelo monitor.`,
       { environment: "REAL", asset: run.asset, cycle_id: runId,
-        slot_count: slots.length, active_buy_count: activeBuys.length,
+        slot_count: slots.length, expected_slot_count: slotCount, active_buy_count: activeBuys.length,
         own_order_count: ownedIds.length, evidence_scope: "PERSISTED_LIVE_LEDGER" });
     }
     const violations = datasets.real.filter((row) => row.row_type === "PRODUCTION_WRITE_GUARD_VIOLATION");

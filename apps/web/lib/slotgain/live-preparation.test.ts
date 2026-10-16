@@ -63,6 +63,23 @@ test("25 BRL slots account for buy lot, fee-reduced TP lot, notional, ladder and
   assert.equal(btc.dryRun.initial.target_notional, 17.88); // BRL quote, not USDC.
 });
 
+test("25/50/100 physical SOLBRL slots use exact per-engine capital and filters in both regimes", () => {
+  for (const count of [25, 50, 100]) for (const regime of ["NORMAL", "POST_ATH"] as const) {
+    const capital = count * 11;
+    const cfg = { ...config("SOL"), slot_count: count, gain_rate: .03, monthly_target: 3,
+      normal_spacing_rate: .01, post_ath_spacing_rate: .02, regime,
+      configured_live_capital_brl: capital, max_order_notional_brl: 11, max_total_exposure_brl: capital };
+    const result = buildLiveSizing(parseLiveRules(raw("SOL")), 529.4, cfg, capital, observedAt,
+      Date.parse(observedAt), { engineCap: capital, accountCap: capital, orderCap: 11, quoteAsset: "BRL" });
+    assert.equal(result.slots.length, count); assert.equal(result.validSlots, count);
+    assert.equal(result.dryRun.planned, count - 2);
+    assert.ok(result.slots.every(slot => slot.capitalBrl === 11
+      && slot.sellQuantityAfterFee * slot.tpPriceBrl + 1e-8 >= result.rules.minNotional));
+    assert.equal(result.dryRun.nextBuy.action_type, "ARM_NEXT_BUY");
+    if (regime === "POST_ATH") assert.equal(result.slots.filter(slot => slot.postAthGroup === "PRIMARY").length, 15);
+  }
+});
+
 test("config and live gate fail closed on stale price, insufficient BRL and excess caps", () => {
   assert.throws(() => buildLiveSizing(parseLiveRules(raw("BTC")), 437365, config("BTC"), 716.75,
     observedAt, Date.parse(observedAt) + 121_000), /MARKET_STALE/);

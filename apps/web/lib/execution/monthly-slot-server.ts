@@ -6,6 +6,7 @@ import { monthlyPeriodKey, physicalSlotIdentity, rankMonthlySlots, type MonthlyS
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRows } from "./live-ledger-read";
 import { LiveReadUnavailable } from "./live-read-error";
+import { configuredEngineSlotCount } from "./engine-slot-topology";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Scope = { product_id: string; tenant_id: string; user_id: string; asset: V1Asset; config_id?: string;
@@ -19,10 +20,11 @@ type TotalRow = { slot_number: number; physical_slot_id: string; lifetime_gain_c
  * fails closed before a new entry can be dispatched to either adapter. */
 export async function loadMonthlySlotStatuses(service: Service, environment: "SHADOW" | "TESTNET" | "REAL",
   scope: Scope, slots: readonly SlotSnapshot[], observedAt = new Date().toISOString()): Promise<MonthlySlotStatus[]> {
-  if (slots.length !== 25) throw new Error("COINOPS_MONTHLY_SLOT_COUNT_INVALID");
-  assertPhysicalLedger([...slots]);
   const engine = await resolveOperatorEngine(service, scope, { environment, asset: scope.asset,
     operator_id: scope.operator_id, exchange_account_id: scope.exchange_account_id, trading_engine_id: scope.trading_engine_id });
+  const slotCount = configuredEngineSlotCount(engine);
+  if (slots.length !== slotCount) throw new Error("COINOPS_MONTHLY_SLOT_COUNT_INVALID");
+  assertPhysicalLedger([...slots], slotCount);
   const totalsQuery = () => service.from("robot_v1_slot_gain_totals")
     .select("slot_number,physical_slot_id,lifetime_gain_count,monthly_gain_count,period_key,market_gain_count,manual_gain_count,monthly_market_gain_count,monthly_manual_gain_count")
     .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
@@ -34,8 +36,8 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
     // Discard partial target/totals on a transient error; never replay a trade.
     const snapshot = await boundedLedgerRead(async (deadline, attempt) => {
       const [target, gains] = await Promise.allSettled([
-        observeLedgerRows<{ monthly_target: number }>("monthly_target",
-          service.from("robot_v1_live_preparations").select("monthly_target")
+        observeLedgerRows<{ monthly_target: number; slot_count?: number }>("monthly_target",
+          service.from("robot_v1_live_preparations").select("monthly_target,slot_count")
             .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
             .eq("operator_id", engine.operator_id).eq("exchange_account_id", engine.exchange_account_id)
             .eq("trading_engine_id", engine.trading_engine_id).limit(2).abortSignal(deadline), deadline, attempt),
@@ -48,7 +50,8 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
       if (target.status === "rejected") throw target.reason;
       if (gains.status === "rejected") throw gains.reason;
       if (target.value.length !== 1 || !Number.isInteger(target.value[0].monthly_target)
-        || target.value[0].monthly_target <= 0) throw new Error("COINOPS_MONTHLY_TARGET_UNAVAILABLE");
+        || target.value[0].monthly_target <= 0 || configuredEngineSlotCount(target.value[0]) !== slotCount)
+        throw new Error("COINOPS_MONTHLY_TARGET_UNAVAILABLE");
       return { target: target.value[0].monthly_target, totals: gains.value };
     });
     totals = snapshot.totals;
@@ -60,12 +63,12 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
   }
   const byNumber = new Map(totals.map((row) => [row.slot_number, row]));
   if (byNumber.size !== totals.length || totals.some(row => !Number.isInteger(row.slot_number)
-    || row.slot_number < 1 || row.slot_number > 25)) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_AMBIGUOUS");
+    || row.slot_number < 1 || row.slot_number > slotCount)) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_AMBIGUOUS");
   const periodKey = monthlyPeriodKey(observedAt);
   return rankMonthlySlots(scope.asset, observedAt, slots.map((slot) => {
     const physicalSlotId = physicalSlotIdentity(environment, { productId: scope.product_id, tenantId: scope.tenant_id,
       userId: scope.user_id, asset: scope.asset, configId: scope.config_id,
-      tradingEngineId: engine.trading_engine_id, legacyCompatible: engine.legacy_compatible }, slot.slot_number);
+      tradingEngineId: engine.trading_engine_id, legacyCompatible: engine.legacy_compatible, slotCount }, slot.slot_number);
     const row = byNumber.get(slot.slot_number);
     if (row && (row.physical_slot_id !== physicalSlotId || row.period_key !== periodKey))
       throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_AMBIGUOUS");
@@ -78,5 +81,5 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
       marketGainCount: Number(row?.market_gain_count ?? 0), manualGainCount: Number(row?.manual_gain_count ?? 0),
       monthlyMarketGainCount: Number(row?.monthly_market_gain_count ?? 0),
       monthlyManualGainCount: Number(row?.monthly_manual_gain_count ?? 0) };
-  }), configuredTarget ?? (scope.asset === "BTC" ? 7 : 2));
+  }), configuredTarget ?? (scope.asset === "BTC" ? 7 : 2), slotCount);
 }

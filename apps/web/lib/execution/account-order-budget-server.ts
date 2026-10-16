@@ -9,6 +9,7 @@ import type { ExecutorEngineScope } from "./live-executor-transport.ts";
 import type { AccountBudgetReservation } from "./account-order-budget-permit.ts";
 import type { AccountOrderBudget } from "./account-order-budget.ts";
 import { resolveExecutorForEngine } from "./executor-shards-server.ts";
+import { validateEngineSlotCount } from "./engine-slot-topology.ts";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 const code = "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN";
@@ -229,12 +230,16 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
 }
 
 export async function previewAccountOrderBudget(service: Service, operatorId: string, accountId: string,
-  newSymbols: readonly string[], existingSymbols: readonly string[] = []) {
+  newSymbols: readonly string[], existingSymbols: readonly string[] = [], newSlotCounts?: readonly number[]) {
   if ([...newSymbols, ...existingSymbols].some((symbol) => !/^(BTC|SOL)(BRL|USDT)$/.test(symbol))) throw new Error(code);
-  const resident = Object.fromEntries(existingSymbols.map((symbol) => [symbol, 0]));
-  const counts = newSymbols.reduce<Record<string, number>>((result, symbol) => {
-    result[symbol] = (result[symbol] ?? 0) + 1; return result;
-  }, resident);
+  if (newSlotCounts && newSlotCounts.length !== newSymbols.length) throw new Error(code);
+  const counts: Record<string, number | number[]> = Object.fromEntries(existingSymbols.map(symbol => [symbol, newSlotCounts ? [] : 0]));
+  newSymbols.forEach((symbol, index) => {
+    if (newSlotCounts) {
+      const previous = counts[symbol];
+      counts[symbol] = [...(Array.isArray(previous) ? previous : []), validateEngineSlotCount(newSlotCounts[index])];
+    } else counts[symbol] = Number(counts[symbol] ?? 0) + 1;
+  });
   const result = await service.rpc("preview_account_order_budget", { p_operator_id: operatorId,
     p_account_id: accountId, p_new_orders: 3 * newSymbols.length, p_symbol_counts: counts });
   if (result.error || !result.data || !["PASS", "ACCOUNT_ORDER_BUDGET_UNKNOWN", "ACCOUNT_ORDER_CAPACITY_REQUIRED"].includes(result.data.code))

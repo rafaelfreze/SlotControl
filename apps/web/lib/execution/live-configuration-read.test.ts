@@ -1,4 +1,5 @@
 import test from "node:test";
+import * as slotTopology from "./engine-slot-topology.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -56,6 +57,7 @@ function fixture(options: { engine?: string; resource?: string; status?: number;
   const compiled = ts.transpileModule(readFileSync(new URL("./robot-v1-live-server.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const deps: Record<string, unknown> = { "./live-ledger-read": reads, "./live-read-error": errors,
+    "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-exposure-read": { readLiveExposure },
     "./strategy-engine": { STRATEGY_VERSION: "fixture" },
