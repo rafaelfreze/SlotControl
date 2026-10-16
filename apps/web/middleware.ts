@@ -77,14 +77,14 @@ export async function middleware(request: NextRequest) {
     const { data: viewer, error } = await supabase.from("viewer_access")
       .select("status,exchange_account_id").eq("user_id", user.id).maybeSingle();
     const allowed = pathname === "/primeiros-passos" || pathname === "/meu-coinops" || pathname === "/assinatura" || pathname === "/redefinir-senha"
-      || pathname === "/recuperar-senha" || pathname === "/auth/callback";
+      || pathname === "/recuperar-senha" || pathname === "/auth/callback" || pathname === "/auth/email-ownership/request";
     const viewerRead = pathname === "/api/coinops-viewer-state" && request.method === "GET";
     const viewerBilling = pathname === "/api/assinatura" && request.method === "POST";
     if (error || !viewer || viewer.status !== "ACTIVE") {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_ACCESS_DISABLED" }, { status: 403 });
       if (pathname !== "/acesso-suspenso" && pathname !== "/redefinir-senha")
         return NextResponse.redirect(new URL("/acesso-suspenso", request.url));
-    } else if (!viewer.exchange_account_id && !["/primeiros-passos", "/redefinir-senha", "/recuperar-senha", "/auth/callback", "/assinatura", "/api/assinatura"].includes(pathname)) {
+    } else if (!viewer.exchange_account_id && !["/primeiros-passos", "/redefinir-senha", "/recuperar-senha", "/auth/callback", "/auth/email-ownership/request", "/assinatura", "/api/assinatura"].includes(pathname)) {
       if (pathname.startsWith("/api/")) return NextResponse.json({ error: "VIEWER_SETUP_REQUIRED" }, { status: 403 });
       return NextResponse.redirect(new URL("/primeiros-passos", request.url));
     } else if ((pathname === "/meu-coinops" || viewerRead) && getSupabaseDataSchema() === "coinops") {

@@ -1,3 +1,5 @@
+import { EmailOwnershipBanner } from "@/components/auth/email-ownership-banner";
+import { emailOwnershipPending } from "@/lib/auth/email-ownership";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { isRetiredTestnetView, isTestnetEnabled } from "@/lib/execution/testnet-policy";
@@ -397,8 +399,8 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   timing.stage("panels");
   timing.finish();
   const renewal = await renewalPromise;
-  return <PremiumAutomation renewalNotice={renewal.notice} view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
+  return <><EmailOwnershipBanner pending={emailOwnershipPending(user,"coinops")}/><PremiumAutomation renewalNotice={renewal.notice} view={view} userLabel={user.user_metadata?.full_name || user.email || "Usuário"}
     data={{ ...presentation, snapshotAt: new Date().toISOString(), deferredHealth: true, unavailableModules }} strategyPanel={null} adjustmentsPanel={null}
     strategyPanels={strategyPanels} adjustmentPanels={adjustmentPanels}
-    initialAdjustments={Boolean(initialManualTarget && searchParams?.engine)} />;
+    initialAdjustments={Boolean(initialManualTarget && searchParams?.engine)} /></>;
 }

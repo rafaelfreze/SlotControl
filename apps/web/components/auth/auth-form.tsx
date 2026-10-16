@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 
-import { getCoinOpsAuthCallback, getCoinOpsPasswordRedirect } from "@/lib/auth-email-url";
+import { getCoinOpsPasswordRedirect } from "@/lib/auth-email-url";
 import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
 import { friendlyAuthError, MIN_PASSWORD_LENGTH, validateNewPassword } from "@/lib/auth/password-policy";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/browser";
@@ -68,26 +68,12 @@ export function AuthForm({ mode, redirectTo }: AuthFormProps) {
           return;
         }
         if (companyName.length < 2 || ownerName.length < 2 || !/^\+55[1-9][0-9](9[0-9]{8}|[2-9][0-9]{7})$/.test(whatsapp)) { setError("Confira empresa, nome do dono e WhatsApp com DDD."); return; }
-        const { data, error: signupError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              onplay_product: "coinops", company_name: companyName, owner_name: ownerName, whatsapp
-            },
-            emailRedirectTo: getCoinOpsAuthCallback(AUTHENTICATED_HOME)
-          }
-        });
-
-        if (signupError) {
-          setError(friendlyAuthError(signupError, "signup"));
-          return;
-        }
-
-        if (!data.session) {
-          setMessage("Conta criada. Confira seu email para confirmar o acesso, se essa opcao estiver ativa.");
-          return;
-        }
+        const response=await fetch("/auth/signup",{method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({email,password,company:companyName,owner:ownerName,whatsapp})});
+        const result=await response.json();
+        if(!response.ok){setError(result.error??"Não foi possível criar a conta.");return;}
+        window.location.assign("/primeiros-passos");
+        return;
       } else {
         const { error: loginError } = await supabase.auth.signInWithPassword({
           email,

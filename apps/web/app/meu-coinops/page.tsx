@@ -1,3 +1,5 @@
+import { EmailOwnershipBanner } from "@/components/auth/email-ownership-banner";
+import { emailOwnershipPending } from "@/lib/auth/email-ownership";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -160,7 +162,7 @@ export default async function MeuCoinOps() {
       realized: group.reduce((sum, row) => sum + row.realized, 0),
       openPnl: group.reduce((sum, row) => sum + row.openPnl, 0) };
   });
-  return <main className="viewer-app">
+  return <main className="viewer-app"><EmailOwnershipBanner pending={emailOwnershipPending(user,"coinops")}/>
     <div className="viewer-shell"><header className="viewer-header"><div className="viewer-brand"><span className="viewer-mark" aria-hidden="true"><i /></span><span><strong>CoinOps</strong><small>Meu CoinOps · {account.data.display_name}</small></span></div><div className="viewer-account"><span className="viewer-initial" aria-hidden="true">{firstName.charAt(0).toUpperCase()}</span><span>{account.data.display_name}</span><Link href="/assinatura">Assinatura</Link><Link href="/redefinir-senha">Trocar senha</Link><ViewerSignOut /></div></header>
     <BillingRenewalNotice notice={renewal.notice}/>
     <section className="viewer-hero"><div><h1>Bom dia, {firstName}!</h1><p>{allHealthy ? "Seu robô está operando normalmente." : "Confira o estado da sua operação abaixo."}</p></div>

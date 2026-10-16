@@ -1,3 +1,5 @@
+import { EmailOwnershipBanner } from "@/components/auth/email-ownership-banner";
+import { emailOwnershipPending } from "@/lib/auth/email-ownership";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
@@ -14,7 +16,7 @@ export default async function ViewerFirstSteps() {
   if(binding.error||!binding.data||binding.data.status!=="ACTIVE") redirect("/acesso-suspenso");
   if(binding.data.exchange_account_id) redirect("/meu-coinops");
   return <main className="page-shell auth-shell"><section className="auth-card">
-    <CoinOpsBrand subtitle="Primeiros passos" /><h1>Bem-vindo ao CoinOps</h1>
+    <EmailOwnershipBanner pending={emailOwnershipPending(user,"coinops")}/><CoinOpsBrand subtitle="Primeiros passos" /><h1>Bem-vindo ao CoinOps</h1>
     <p>{binding.data.company_name} · {binding.data.owner_name}</p>
     <p role="status">Cadastro pronto. Aguardando vínculo da sua conta pelo administrador.</p>
     <ol className="auth-form"><li><strong>Prepare sua conta Binance.</strong> Confira seus dados e a segurança da conta na própria Binance.</li>

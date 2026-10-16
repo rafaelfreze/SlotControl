@@ -1,12 +1,13 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { normalizeViewerWhatsApp, type ViewerIntent } from "./policy.ts";
+import { pendingOwnership } from "../../../lib/auth/email-ownership.ts";
 
 export async function createPasswordViewerIdentity(service: Pick<SupabaseClient, "auth">, input: ViewerIntent, actorId: string, operatorId: string, centralMarker?: { request_id: string; product_key: string; fingerprint: string }, report?: (stage: "identity_create" | "identity_reconcile_read", error: unknown) => void) {
   const email = input.email!.trim().toLowerCase();
   const marker = { request_id: input.requestId, actor_id: actorId, operator_id: operatorId };
   const created = await service.auth.admin.createUser({ email, password: input.password!, email_confirm: true,
     user_metadata: { onplay_product: "coinops", company_name: input.companyName!.trim(), owner_name: input.ownerName!.trim(), whatsapp: normalizeViewerWhatsApp(input.whatsapp) },
-    app_metadata: { ...(centralMarker ? { onplay_billing_provision: centralMarker } : {}), coinops_role: "VIEWER", coinops_provision: marker,
+    app_metadata: { onplay_email_ownership:pendingOwnership("coinops",email), ...(centralMarker ? { onplay_billing_provision: centralMarker } : {}), coinops_role: "VIEWER", coinops_provision: marker,
       ...(/^onplay-qa-[a-z0-9-]+@example\.test$/i.test(email) && input.companyName!.trim().toUpperCase().startsWith("QA ONPLAY ")
         ? { onplay_qa: { product: "coinops", run_id: "20261014-signup", exclude_billing: true, exclude_analytics: true, allow_publication: false } } : {}) } });
   if (!created.error && created.data.user) return created.data.user;
