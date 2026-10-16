@@ -1,4 +1,4 @@
-import { liveEngineOrderPrefix, LIVE_TERMINAL_ORDER_STATUSES } from "../execution/robot-v1-live-cycle.ts";
+import { liveClientOrderId, liveEngineOrderPrefix, LIVE_TERMINAL_ORDER_STATUSES } from "../execution/robot-v1-live-cycle.ts";
 import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
 
 export type FastRun = {
@@ -8,6 +8,7 @@ export type FastRun = {
   created_at?: string;
   activated_at?: string;
   operator_id?: string; slot_count?: number;
+  quote_asset?: string; reconciliation_checkpoint?: unknown;
 };
 
 export type FastEngine = { id: string; exchange_account_id: string; symbol: string;
@@ -17,10 +18,13 @@ export type FastAccount = { id: string; executor_shard_id: string; status: strin
   kill_switch: boolean; operator_id?: string };
 export type FastSlot = { run_id: string; id: string; entry_state: string;
   position_quantity: number | string; updated_at: string; slot_number?: number;
+  operation_sequence?: number;
   operator_id?: string; trading_engine_id?: string; exchange_account_id?: string };
 export type FastOrder = { run_id: string; slot_id: string; side: string; status: string;
   exchange_order_id: string | null; id?: string; client_order_id?: string;
   executed_quantity?: number | string; trades_reconciled?: boolean;
+  operation_sequence?: number; revision?: number; purpose?: string;
+  requested_quantity?: number | string | null; price?: number | string | null;
   operator_id?: string; trading_engine_id?: string; exchange_account_id?: string };
 export type FastPreparation = { trading_engine_id: string; exchange_account_id: string;
   operator_id: string; symbol: string; live_enabled: boolean; kill_switch: boolean; slot_count?: number };
@@ -32,6 +36,87 @@ export type FastFinding = { state: "HEALTHY" | "RECONCILING" | "RECOVERING" | "B
 export type FastConfigUpdate = { status: string; updated_at: string };
 
 const ACTIVE_ORDERS = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
+
+/** A fenced database checkpoint means unfinished normal work, never HEALTHY
+ * or permission to trade. Current ownership/positions remain independently
+ * checked; a checkpoint cannot conceal a new financial error. */
+function largeProgressFinding(run: FastRun, engine: FastEngine, account: FastAccount,
+  shardId: string, slots: FastSlot[], orders: FastOrder[], now: number): FastFinding | null {
+  const raw = run.reconciliation_checkpoint;
+  if (raw === null || raw === undefined || run.status !== "ACTIVE") return null;
+  const cp = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const observed = typeof cp.observed_at === "string" ? Date.parse(cp.observed_at) : NaN;
+  // A completed full reconciliation supersedes its historical checkpoint.
+  if (Number.isFinite(observed) && Date.parse(run.last_reconciled_at ?? "") > observed) return null;
+  const count = configuredEngineSlotCount(engine), started = typeof cp.started_at === "string" ? Date.parse(cp.started_at) : NaN;
+  const invalid = () => ({ state: "BLOCKED" as const, code: "WATCHDOG_RECONCILIATION_CHECKPOINT_INVALID", recoverable: false });
+  if (count <= 25 || cp.contract !== "LARGE_ENGINE_PROGRESS_V1" || cp.run_id !== run.id
+    || !run.operator_id || cp.operator_id !== run.operator_id || engine.operator_id !== run.operator_id
+    || account.operator_id !== run.operator_id || cp.exchange_account_id !== run.exchange_account_id
+    || cp.trading_engine_id !== run.trading_engine_id || cp.executor_shard_id !== shardId
+    || cp.symbol !== run.symbol || !run.quote_asset || cp.quote_asset !== run.quote_asset || cp.slot_count !== count
+    || !["CREDIT_SLOTS", "RECYCLE_SLOTS"].includes(String(cp.phase))
+    || !Number.isFinite(observed) || !Number.isFinite(started) || observed < started
+    || observed > now + 10_000 || started > now + 10_000
+    || typeof cp.quantity_step !== "number" || !Number.isFinite(cp.quantity_step) || cp.quantity_step <= 0 || cp.quantity_step > 1
+    || [cp.settled_orders, cp.credited_gains, cp.operation_total].some(value =>
+      !Number.isSafeInteger(value) || Number(value) < 0)) return invalid();
+  if (!hasCompletePhysicalSlotSet(slots.map(slot => slot.slot_number!), count)
+    || new Set(slots.map(slot => slot.id)).size !== count) return invalid();
+  const owns = (row: { operator_id?: string; trading_engine_id?: string; exchange_account_id?: string }) =>
+    row.operator_id === run.operator_id && row.trading_engine_id === run.trading_engine_id
+      && row.exchange_account_id === run.exchange_account_id;
+  if (!engine.base_asset || typeof engine.legacy_compatible !== "boolean") return invalid();
+  const prefix = liveEngineOrderPrefix({ exchange_account_id: engine.exchange_account_id,
+    trading_engine_id: engine.id, base_asset: engine.base_asset, legacy_compatible: engine.legacy_compatible });
+  const slotIds = new Set(slots.map(slot => slot.id));
+  if (slots.some(slot => !owns(slot)
+    || !Number.isInteger(slot.operation_sequence) || slot.operation_sequence! < 1
+    || !Number.isFinite(Number(slot.position_quantity)) || Number(slot.position_quantity) < 0)
+    || orders.some(order => !owns(order) || !order.id || !slotIds.has(order.slot_id)
+      || !order.client_order_id?.startsWith(prefix)) || new Set(orders.map(order => order.id)).size !== orders.length)
+    return { state: "BLOCKED", code: "WATCHDOG_OWNERSHIP_MISMATCH", recoverable: false };
+  if (orders.some(order => ["UNKNOWN", "SUBMITTING", "PENDING_CANCEL"].includes(order.status)))
+    return { state: "BLOCKED", code: "WATCHDOG_ORDER_OUTCOME_UNKNOWN", recoverable: false };
+  if (orders.some(order => !Number.isFinite(Number(order.executed_quantity)) || Number(order.executed_quantity) < 0
+    || Number(order.executed_quantity) > 0 && order.trades_reconciled !== true))
+    return { state: "BLOCKED", code: "WATCHDOG_FILL_UNRECONCILED", recoverable: false };
+  if (orders.filter(order => order.side === "BUY" && ACTIVE_ORDERS.has(order.status)).length > 1)
+    return { state: "BLOCKED", code: "WATCHDOG_DUPLICATE_BUY", recoverable: false };
+  for (const order of orders) {
+    const slot = slots.find(item => item.id === order.slot_id)!;
+    try {
+      if (!["BUY", "SELL"].includes(order.side) || !Number.isInteger(order.operation_sequence)
+        || order.operation_sequence! < 1 || order.operation_sequence! > slot.operation_sequence!
+        || order.client_order_id !== liveClientOrderId(run.id, engine.base_asset as "BTC" | "SOL", slot.slot_number!,
+          order.operation_sequence!, order.side as "BUY" | "SELL", order.revision!, {
+            exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id,
+            base_asset: engine.base_asset, legacy_compatible: engine.legacy_compatible, slot_count: count,
+          }))
+        return invalid();
+    } catch { return invalid(); }
+    if (ACTIVE_ORDERS.has(order.status) && order.operation_sequence !== slot.operation_sequence) return invalid();
+    if (order.side === "SELL" && ACTIVE_ORDERS.has(order.status)) {
+      const quantity = Number(order.requested_quantity), executed = Number(order.executed_quantity), price = Number(order.price);
+      const expected = Math.floor((Number(slot.position_quantity) + 1e-12) / cp.quantity_step) * cp.quantity_step;
+      if (order.purpose !== "TP" || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price <= 0
+        || quantity < executed || Math.abs(quantity - executed - expected) > 1e-10)
+        return { state: "DEGRADED", code: "WATCHDOG_TP_QUANTITY_MISMATCH", recoverable: false };
+    }
+  }
+  const step = cp.quantity_step as number;
+  for (const slot of slots.filter(item => Number(item.position_quantity) >= step)) {
+    const tps = orders.filter(order => order.slot_id === slot.id && order.side === "SELL"
+      && ["NEW", "PARTIALLY_FILLED"].includes(order.status) && order.exchange_order_id);
+    if (tps.length !== 1) return { state: "DEGRADED", code: tps.length ? "WATCHDOG_DUPLICATE_TP" : "WATCHDOG_TP_MISSING",
+      recoverable: tps.length === 0 };
+  }
+  if (engine.strategy_config_pending)
+    return { state: "BLOCKED", code: "WATCHDOG_CONFIG_UPDATE_BLOCKED", recoverable: false };
+  if (now - observed > 150_000 || now - started > 15 * 60_000)
+    return { state: "STALE", code: "WATCHDOG_RECONCILIATION_PROGRESS_STALE", recoverable: true };
+  return { state: "RECONCILING", code: null, recoverable: false };
+}
 
 /** Ignore another account/engine/cycle and the watchdog's own derived alerts.
  * An engine-wide critical without a run reference is conservatively applicable. */
@@ -113,6 +198,8 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
       || (Number(order.executed_quantity) > 0 && order.trades_reconciled !== true)))
       return { state: "BLOCKED", code: "WATCHDOG_FILL_UNRECONCILED", recoverable: false };
   }
+  const progress = largeProgressFinding(run, engine, account, shardId, slots, orders, now);
+  if (progress) return progress;
   if (run.lease_until && Date.parse(run.lease_until) > now)
     return { state: "RECONCILING", code: null, recoverable: false };
   // A newly activated empty run has not missed a cron yet. Give the normal

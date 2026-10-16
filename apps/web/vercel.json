@@ -23,7 +23,7 @@
     },
     "app/api/cron/live-execution/route.ts": {
       "regions": ["gru1"],
-      "maxDuration": 60
+      "maxDuration": 300
     },
     "app/api/cron/live-monitor/route.ts": {
       "regions": ["gru1"],

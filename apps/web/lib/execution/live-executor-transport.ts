@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ExecutorHttpError, observationFailure, retryableObservation } from "./live-read-error.ts";
+import { reserveLiveObservationRetry } from "./live-observation-retry-budget.ts";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
 import type { EngineContext } from "./operator-context.ts";
@@ -114,7 +115,7 @@ export async function proveLiveExecutorUnsentOrder(engine: ExecutorEngineScope, 
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
 async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades",
-  input: (key: string) => Record<string, unknown>, fetcher: typeof fetch = fetch,
+  input: (key: string) => Record<string, unknown>, engine: ExecutorEngineScope, fetcher: typeof fetch = fetch,
   resolver: ExecutorEngineResolver = resolveExecutorForEngine): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -122,7 +123,8 @@ async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-or
       return await request<T>(path, input(key), key, fetcher, resolver);
     } catch (error) {
       if (!retryableObservation(error)) throw error;
-      if (attempt === 3) throw observationFailure(error, path, attempt + 1);
+      if (attempt === 3 || !reserveLiveObservationRetry(engine))
+        throw observationFailure(error, path, attempt + 1);
       // Rolling executor restarts may interrupt a GET. Retry observations only;
       // create/cancel requests must still resolve through persisted ownership.
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
@@ -135,7 +137,7 @@ export async function readLiveExecutorHealth(engine: ExecutorEngineScope, fetche
   // A single failed observation (e.g. transient Binance read/egress timeout) must not
   // irreversibly kill-switch an otherwise protected engine. Only GET-equivalent reads retry.
   return readWithRetry<import("./live-executor-health").LiveExecutorHealth>("/v1/health",
-    (key) => executorContext(engine, key, key), fetcher, resolver);
+    (key) => executorContext(engine, key, key), engine, fetcher, resolver);
 }
 export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher?: typeof fetch,
   resolver?: ExecutorEngineResolver) {
@@ -143,11 +145,12 @@ export async function readLiveExecutorState(engine: ExecutorEngineScope, fetcher
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const state = await readWithRetry<LiveExecutorState>("/v1/state",
-        (key) => executorContext(engine, key, key), fetcher, resolver);
+        (key) => executorContext(engine, key, key), engine, fetcher, resolver);
       if (!validState(state, engine)) throw new Error("EXECUTOR_STATE_INVALID");
       return state;
     } catch (error) {
-      if (attempt === 0 && error instanceof Error && error.message === "EXECUTOR_STATE_INVALID") continue;
+      if (attempt === 0 && error instanceof Error && error.message === "EXECUTOR_STATE_INVALID"
+        && reserveLiveObservationRetry(engine)) continue;
       throw error;
     }
   }
@@ -170,8 +173,11 @@ export async function readLiveExecutorOrder(engine: ExecutorEngineScope, clientO
   orderId?: string | null, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
   for (let confirmation = 0; ; confirmation++) {
     const result = await readWithRetry<{ order: LiveOrder | null }>("/v1/query-order",
-      (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), fetcher, resolver);
+      (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), engine, fetcher, resolver);
     if (result.order || !orderId || confirmation === 2) return result;
+    // Successful absence is still an inconclusive acknowledged order, not a
+    // transient network error. Exhaustion returns that fact to fail closed.
+    if (!reserveLiveObservationRetry(engine)) return result;
     // Confirm temporary invisibility only for an already acknowledged exact ID.
     // Persistent absence still reaches the existing fail-closed ownership gate.
     await new Promise(resolve => setTimeout(resolve, 250 * (confirmation + 1)));
@@ -180,7 +186,7 @@ export async function readLiveExecutorOrder(engine: ExecutorEngineScope, clientO
 export async function readLiveExecutorTrades(engine: ExecutorEngineScope, clientOrderId: string,
   orderId: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
   return readWithRetry<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/trades",
-    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), fetcher, resolver);
+    (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), engine, fetcher, resolver);
 }
 export async function createLiveExecutorOrder(input: Record<string, unknown> & { clientOrderId: string }, engine: ExecutorEngineScope,
   decisionId: string,

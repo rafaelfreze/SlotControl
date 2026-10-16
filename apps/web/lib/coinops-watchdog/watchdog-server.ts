@@ -96,7 +96,7 @@ export async function runServerWatchdog() {
     service.from("executor_shards").select("id,enabled").eq("enabled", true).order("id"),
     service.from("executor_capacity_samples").select("shard_id,heartbeat_at,observed_at,scheduler_backlog"),
     service.from("robot_v1_live_runs")
-      .select("id,product_id,tenant_id,user_id,operator_id,asset,trading_engine_id,exchange_account_id,status,symbol,last_reconciled_at,last_error,lease_until,created_at,slot_count")
+      .select("id,product_id,tenant_id,user_id,operator_id,asset,trading_engine_id,exchange_account_id,status,symbol,quote_asset,last_reconciled_at,last_error,lease_until,created_at,slot_count,reconciliation_checkpoint")
       .eq("tenant_id", tenantId).in("status", ["ACTIVE", "PAUSED"]),
     service.from("watchdog_incidents")
       .select("incident_id,shard_id,engine_id,incident_key,opened_at,last_recovery_attempt_at")
@@ -129,11 +129,11 @@ export async function runServerWatchdog() {
       service.from("trading_engines").select("id,operator_id,exchange_account_id,environment,base_asset,legacy_compatible,symbol,status,kill_switch,strategy_config_pending,executor_shard_id,slot_count,config")
         .in("id", ids(runs.map((run) => run.trading_engine_id))),
       completeWatchdogRows<FastSlot>((start, end, signal) => service.from("robot_v1_live_slots")
-        .select("run_id,id,slot_number,operator_id,trading_engine_id,exchange_account_id,entry_state,position_quantity,updated_at", { count: "exact" })
+        .select("run_id,id,slot_number,operation_sequence,operator_id,trading_engine_id,exchange_account_id,entry_state,position_quantity,updated_at", { count: "exact" })
         .eq("tenant_id", tenantId).in("run_id", runs.map((run) => run.id))
         .order("id").range(start, end).abortSignal(signal)),
       completeWatchdogRows<FastOrder>((start, end, signal) => service.from("robot_v1_live_orders")
-        .select("id,run_id,slot_id,operator_id,trading_engine_id,exchange_account_id,client_order_id,side,status,exchange_order_id,executed_quantity,trades_reconciled", { count: "exact" })
+        .select("id,run_id,slot_id,operator_id,trading_engine_id,exchange_account_id,client_order_id,side,purpose,status,exchange_order_id,executed_quantity,trades_reconciled,requested_quantity,price,operation_sequence,revision", { count: "exact" })
         .eq("tenant_id", tenantId).in("run_id", runs.map((run) => run.id))
         .or("status.in.(PREPARED,NEW,PARTIALLY_FILLED,UNKNOWN,SUBMITTING,PENDING_CANCEL),and(executed_quantity.gt.0,trades_reconciled.eq.false),and(executed_quantity.gt.0,trades_reconciled.is.null)")
         .order("id").range(start, end).abortSignal(signal)),

@@ -22,12 +22,18 @@ async function allowedEngines(service: Service, scope: Scope, environment: Envir
     && registry.accounts.some((account) => account.id === engine.exchange_account_id && account.is_legacy_default)).map((engine) => engine.id);
 }
 
-async function query(service: Service, scope: Scope, environment: Environment, id: string) {
-  const engines = await allowedEngines(service, scope, environment);
+function queryForEngines(service: Service, scope: Scope, environment: Environment, id: string, engines: string[]) {
   if (!engines.length) throw new Error("COINOPS_STRATEGY_DECISION_SCOPE_DENIED");
-  return service.from("robot_v1_strategy_decisions").select("decision_id,created_at,result")
+  let read = service.from("robot_v1_strategy_decisions").select("decision_id,created_at,result")
     .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
-    .eq("environment", environment).in("trading_engine_id", engines).eq("decision_id", id).single();
+    .eq("environment", environment).in("trading_engine_id", engines).eq("decision_id", id);
+  if (scope.operator_id !== undefined) read = read.eq("operator_id", scope.operator_id);
+  if (scope.exchange_account_id !== undefined) read = read.eq("exchange_account_id", scope.exchange_account_id);
+  return read.single();
+}
+
+async function query(service: Service, scope: Scope, environment: Environment, id: string) {
+  return queryForEngines(service, scope, environment, id, await allowedEngines(service, scope, environment));
 }
 
 /** Durable intent precedes every adapter dispatch. Retry retains the original
@@ -76,14 +82,25 @@ export async function dispatchStrategyDecision(service: Service, scope: Scope, e
 }
 
 export async function completeStrategyDecision(service: Service, scope: Scope, environment: Environment, id: string, observed: Record<string, unknown>, exchangeAck = false) {
-  const saved = await query(service, scope, environment, id);
+  // Resolve authorization freshly once for THIS completion, not once per TP
+  // sub-read. The exact same scope still fences both the read and update; no
+  // caller flag, invocation cache or authorization survives this operation.
+  const engines = await allowedEngines(service, scope, environment);
+  const saved = await queryForEngines(service, scope, environment, id, engines);
   if (saved.error || !saved.data) throw new Error("COINOPS_STRATEGY_DECISION_READ_FAILED");
   const now = new Date();
-  await update(service, scope, environment, id, {
+  let mutation = service.from("robot_v1_strategy_decisions").update({
     result: "COMPLETED", completed_at: now.toISOString(), error: null,
     ...(exchangeAck ? { exchange_ack_at: now.toISOString() } : {}),
     observed_next_state: observed, latency_ms: Math.max(0, now.getTime() - Date.parse(saved.data.created_at)),
-  });
+  }).eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
+    .eq("environment", environment).in("trading_engine_id", engines).eq("decision_id", id).neq("result", "COMPLETED");
+  if (scope.operator_id !== undefined) mutation = mutation.eq("operator_id", scope.operator_id);
+  if (scope.exchange_account_id !== undefined) mutation = mutation.eq("exchange_account_id", scope.exchange_account_id);
+  // Another reconciler may have completed after our read. Its timestamps,
+  // observed result and latency remain immutable: a zero-row CAS is replay.
+  const { error } = await mutation;
+  if (error) throw new Error("COINOPS_STRATEGY_DECISION_UPDATE_FAILED");
 }
 
 export async function failStrategyDecision(service: Service, scope: Scope, environment: Environment, id: string, error: string) {

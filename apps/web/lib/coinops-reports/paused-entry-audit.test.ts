@@ -65,7 +65,7 @@ test("pause protection detail allowlist preserves counters and rejects credentia
 });
 
 test("v24 exports pause contract, proof CSV/JSON and gain after pause without reset or hiding critical alerts", () => {
-  assert.equal(REPORT_VERSION, 25);
+  assert.equal(REPORT_VERSION, 26);
   const input: AuditInput = { sources: { robot_v1_live_runs: [{ ...scope, id: "run-A", asset: "SOL", symbol: "SOLBRL",
     status: "PAUSED", created_at: at, last_reconciled_at: at }], robot_v1_live_events: [
     { ...scope, id: "pause", run_id: "run-A", event_type: "LIVE_PAUSED", observed_at: at, details: { ...proof, credential: "private" } },
@@ -98,7 +98,7 @@ test("v24 exports pause contract, proof CSV/JSON and gain after pause without re
   assert.deepEqual(report.datasets.live_execution.find((row) => row.id === "reconcile")?.details,
     { ...proof, next: "ENTRIES_PAUSED", source: "LIVE_CONTROL" });
   const pack = buildReportPackage(report, filters, input.generatedAt, "fixture-sha");
-  assert.equal(pack.manifest.report_version, 25);
+  assert.equal(pack.manifest.report_version, 26);
   const json = pack.files.find((file) => file.name === "AUDITORIA_COMPLETA.json")!.content;
   const csv = pack.files.find((file) => file.name === "LIVE_EXECUTION.csv")!.content;
   for (const output of [json, csv]) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import * as slotTopology from "./engine-slot-topology.ts";
+import * as observationRetryBudget from "./live-observation-retry-budget.ts";
 import ts from "typescript";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
@@ -169,6 +170,7 @@ function fixture(options: Options = {}) {
     - rows.filter(row => row.side === "SELL").reduce((n, row) => n + Number(row.executed_quantity)
       + (active.has(row.status) ? Number(row.requested_quantity) - Number(row.executed_quantity) : 0), 0));
   const dependencies: Record<string, unknown> = {
+    "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "node:crypto": { randomUUID: () => "lease" },

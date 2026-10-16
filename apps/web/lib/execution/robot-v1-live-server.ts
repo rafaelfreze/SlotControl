@@ -46,6 +46,7 @@ import { mayAttestUnsentEntry } from "./live-unsent-entry-recovery";
 import { liveQuoteBalanceCheck } from "./live-quote-balance";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance";
 import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "./engine-slot-topology";
+import { withLiveObservationRetryBudget } from "./live-observation-retry-budget";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Symbol = string;
@@ -63,7 +64,8 @@ type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; s
   config_version: number; config_snapshot: Record<string, unknown>; strategy_version: string;
   ath_transition_key: string | null; ath_period_key: string | null;
   last_error: string | null; lease_owner: string | null; lease_until: string | null;
-  last_reconciled_at: string | null; previous_run_id: string | null };
+  last_reconciled_at: string | null; previous_run_id: string | null;
+  reconciliation_checkpoint?: Record<string, unknown> | null };
 type Slot = Scope & LedgerScope & { id: string; run_id: string; slot_number: number; entry_state: string;
   target_buy_price: number | string; entry_reference_price: number | string;
   operation_sequence: number; entry_origin: "GRID" | "REENTRY";
@@ -270,7 +272,8 @@ async function claim(service: Service, runId: string): Promise<Run | null> {
 
 async function release(service: Service, run: Run, error: string | null, reconciled = true) {
   const result = await service.from("robot_v1_live_runs").update({ lease_owner: null,
-    lease_until: null, ...(reconciled ? { last_reconciled_at: new Date().toISOString() } : {}), last_error: error })
+    lease_until: null, ...(reconciled ? { last_reconciled_at: new Date().toISOString(),
+      ...(run.reconciliation_checkpoint ? { reconciliation_checkpoint: null } : {}) } : {}), last_error: error })
     .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("lease_owner", run.lease_owner);
   if (result.error) throw new Error("COINOPS_LIVE_LEASE_RELEASE_FAILED");
 }
@@ -446,7 +449,52 @@ function assertLiveResidentPrices(run: Run, ledger: Ledger, state: LiveExecutorS
   }
 }
 
-async function reconcileOrder(service: Service, run: Run, order: Order) {
+type ReconciliationFeeValuation = { scope_key: string;
+  quote: { symbol: string; price: number; observedAt: string } | null; refresh?: Promise<void> };
+const RECONCILIATION_FEE_QUOTE_MAX_AGE_MS = 60_000;
+function reconciliationFeeScope(run: Run) {
+  return JSON.stringify([run.id, run.operator_id, run.exchange_account_id,
+    run.trading_engine_id, run.symbol, run.quote_asset, run.engine?.executor_shard_id ?? null]);
+}
+/** Invocation-local fee conversion only. Never retain balances, open orders,
+ * filters or a state snapshot that could authorize a later exchange write. */
+function createReconciliationFeeValuation(run: Run, state: LiveExecutorState): ReconciliationFeeValuation {
+  const quote = state.bnb_quote_price ?? state.bnb_brl_price;
+  return { scope_key: reconciliationFeeScope(run), quote: quote ? { ...quote } : null };
+}
+async function readReconciliationFeeValuation(run: Run, trades: LiveTrade[], context: ReconciliationFeeValuation) {
+  if (context.scope_key !== reconciliationFeeScope(run))
+    throw new Error("COINOPS_LIVE_FEE_VALUATION_SCOPE_MISMATCH");
+  // The canonical SQL requires a quote for every BNB-denominated fee row,
+  // including a zero commission. Other assets cannot invent a BNB valuation.
+  if (!trades.some(trade => trade.commissionAsset === "BNB")) return null;
+  const fresh = () => {
+    const quote = context.quote, now = Date.now(), observedAt = Date.parse(quote?.observedAt ?? "");
+    return quote?.symbol === `BNB${run.quote_asset}` && Number.isFinite(quote.price) && quote.price > 0
+      && Number.isFinite(observedAt) && observedAt >= now - RECONCILIATION_FEE_QUOTE_MAX_AGE_MS
+      && observedAt <= now + 5_000;
+  };
+  if (!fresh()) {
+    // Refresh through the same scoped, authenticated observation. This does
+    // not retry the sync RPC or relax its own independent freshness guard.
+    // Independent ACKed TP observations share one in-flight quote refresh.
+    context.refresh ??= (async () => {
+      const state = await readLiveExecutorState(run);
+      const quote = state.bnb_quote_price ?? state.bnb_brl_price;
+      context.quote = quote ? { ...quote } : null;
+    })();
+    const refresh = context.refresh;
+    try { await refresh; }
+    finally { if (context.refresh === refresh) context.refresh = undefined; }
+  }
+  if (!fresh()) throw new Error("COINOPS_LIVE_BNB_FEE_PRICE_STALE");
+  return context.quote;
+}
+
+async function reconcileOrder(service: Service, run: Run, order: Order,
+  feeValuation?: ReconciliationFeeValuation) {
+  if (feeValuation && feeValuation.scope_key !== reconciliationFeeScope(run))
+    throw new Error("COINOPS_LIVE_FEE_VALUATION_SCOPE_MISMATCH");
   if (order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)) return order;
   let observed = (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
   if (observed && unchangedUnfilledResidentOrder(order, observed, run.symbol)) return order;
@@ -576,14 +624,16 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
     || observed.side !== order.side) throw new Error("COINOPS_LIVE_ORDER_OWNERSHIP_MISMATCH");
   const withTrades = await readLiveExecutorTrades(run, order.client_order_id, observed.orderId);
   if (!withTrades.order || !withTrades.trades) throw new Error("COINOPS_LIVE_ORDER_TRADES_UNAVAILABLE");
-  const state = await readLiveExecutorState(run);
+  const feeQuote = feeValuation
+    ? await readReconciliationFeeValuation(run, withTrades.trades, feeValuation)
+    : (await readLiveExecutorState(run)).bnb_brl_price;
   await renewLease(service, run);
   const synced = await service.rpc("sync_robot_v1_live_order", {
     p_order_id: order.id, p_exchange_order_id: observed.orderId,
     p_status: withTrades.order.status, p_executed_quantity: withTrades.order.executedQuantity,
     p_cumulative_quote: withTrades.order.cumulativeQuoteQuantity,
-    p_trades: withTrades.trades, p_bnb_brl_price: state.bnb_brl_price?.price ?? null,
-    p_bnb_brl_observed_at: state.bnb_brl_price?.observedAt ?? null,
+    p_trades: withTrades.trades, p_bnb_brl_price: feeQuote?.price ?? null,
+    p_bnb_brl_observed_at: feeQuote?.observedAt ?? null,
     p_lease_owner: run.lease_owner,
   });
   const saved = (Array.isArray(synced.data) ? synced.data[0] : synced.data) as Order | null;
@@ -597,6 +647,29 @@ async function reconcileOrder(service: Service, run: Run, order: Order) {
       { exchange_order_id: order.exchange_order_id, status: order.status,
         executed_quantity: amount(order.executed_quantity) }, true);
   return order;
+}
+
+/** Observe/sync independent, already-acknowledged SELLs concurrently. These
+ * rows cannot enter reconcileOrder's PREPARED/create path. Stop scheduling on
+ * failure and drain all in-flight SQL before releasing the single run lease. */
+async function reconcileAcknowledgedSellOrders(service: Service, run: Run, orders: Order[],
+  feeValuation: ReconciliationFeeValuation) {
+  const acknowledged = orders.filter(order => order.side === "SELL" && order.exchange_order_id !== null
+    && order.status !== "PREPARED"
+    && !(order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)));
+  if (new Set(acknowledged.map(order => order.id)).size !== acknowledged.length)
+    throw new Error("COINOPS_LIVE_DUPLICATE_ORDER_ID");
+  let next = 0, failed = false, failure: unknown;
+  await Promise.all(Array.from({ length: Math.min(4, acknowledged.length) }, async () => {
+    while (!failed) {
+      const index = next++;
+      if (index >= acknowledged.length) return;
+      try { await reconcileOrder(service, run, acknowledged[index], feeValuation); }
+      catch (error) { if (!failed) { failed = true; failure = error; } }
+    }
+  }));
+  if (failed) throw failure;
+  return new Set(acknowledged.map(order => order.id));
 }
 
 function symbolFilters(state: LiveExecutorState): ExchangeSymbolInfo {
@@ -703,7 +776,7 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
 }
 
 async function creditClosedSlots(service: Service, run: Run, ledger: Ledger,
-  state: LiveExecutorState) {
+  state: { filters: Pick<LiveExecutorState["filters"], "quantityStep"> }, yieldAfterCompletedSlot?: () => Promise<boolean>) {
   for (const slot of ledger.slots.filter((item) => item.entry_state === "OPEN")) {
     const orders = operationOrders(ledger.orders, slot);
     const tp = orders.find((item) => item.side === "SELL" && item.status === "FILLED"
@@ -723,10 +796,13 @@ async function creditClosedSlots(service: Service, run: Run, ledger: Ledger,
     await flowOwner(service, run, "GAIN", tp.client_order_id, slot.slot_number);
     Object.assign(ledger.accounts.find((item) => item.slot_number === slot.slot_number)!, account);
     await updateSlot(service, run, slot, { entry_state: "CLOSED" });
+    if (await yieldAfterCompletedSlot?.()) return true;
   }
+  return false;
 }
 
-async function recycleClosedSlots(service: Service, run: Run, ledger: Ledger) {
+async function recycleClosedSlots(service: Service, run: Run, ledger: Ledger,
+  yieldAfterCompletedSlot?: () => Promise<boolean>) {
   const statuses = await monthly(service, run, ledger.slots, ledger.accounts);
   const candidates = ledger.slots.map((slot) => {
     const account = ledger.accounts.find((item) => item.slot_number === slot.slot_number)!;
@@ -751,7 +827,9 @@ async function recycleClosedSlots(service: Service, run: Run, ledger: Ledger) {
     const updated = candidates.find((item) => item.id === slot.id)!;
     updated.state = "PLANNED";
     updated.operationSequence = nextSequence;
+    if (await yieldAfterCompletedSlot?.()) return true;
   }
+  return false;
 }
 
 async function refreshRealAthProfile(service: Service, run: Run) {
@@ -1131,6 +1209,41 @@ async function assertAllPositionsProtected(run: Run, ledger: Ledger,
   await assertExchangeMatchesLedger(run, ledger.orders, state);
 }
 
+const LARGE_ENGINE_RECONCILIATION_SLICE_MS = 120_000;
+/** Yield only after exact exchange/ledger protection proof and complete
+ * financial operations. SQL independently fences the lease, derives monotonic
+ * progress and bounds its episode. The ledger remains the resumable cursor. */
+async function checkpointLargeEngineProgress(service: Service, run: Run, startedAt: number,
+  phase: "CREDIT_SLOTS" | "RECYCLE_SLOTS", concentratedSettlement = false) {
+  if (run.status === "PAUSED" || configuredEngineSlotCount(run.engine ?? run) <= 25
+    || !concentratedSettlement && Date.now() - startedAt < LARGE_ENGINE_RECONCILIATION_SLICE_MS) return false;
+  await renewLease(service, run);
+  const ledger = await runRows(service, run);
+  const state = await readLiveExecutorState(run);
+  await assertAllPositionsProtected(run, ledger, state);
+  if (ledger.orders.some(order => amount(order.executed_quantity) > 0 && !order.trades_reconciled))
+    throw new Error("COINOPS_LIVE_RECONCILIATION_PROGRESS_UNSETTLED");
+  await renewLease(service, run);
+  const recorded = await service.rpc("record_live_reconciliation_checkpoint", {
+    p_run_id: run.id, p_lease_owner: run.lease_owner, p_phase: phase,
+    p_quantity_step: state.filters.quantityStep,
+  });
+  if (recorded.error) {
+    const code = recorded.error.message.match(/\bCOINOPS_LIVE_LARGE_ENGINE_PROGRESS_(?:SCOPE_DENIED|LEASE_DENIED|UNSAFE|INVALID|STALE)\b/)?.[0];
+    throw new Error(code ?? "COINOPS_LIVE_LARGE_ENGINE_PROGRESS_UNSAFE");
+  }
+  const checkpoint = recorded.data as Record<string, unknown> | null;
+  if (checkpoint?.contract !== "LARGE_ENGINE_PROGRESS_V1"
+    || checkpoint.run_id !== run.id || checkpoint.operator_id !== run.operator_id
+    || checkpoint.exchange_account_id !== run.exchange_account_id
+    || checkpoint.trading_engine_id !== run.trading_engine_id || checkpoint.symbol !== run.symbol
+    || checkpoint.quote_asset !== run.quote_asset || checkpoint.executor_shard_id !== run.engine?.executor_shard_id
+    || checkpoint.slot_count !== configuredEngineSlotCount(run.engine ?? run))
+    throw new Error("COINOPS_LIVE_LARGE_ENGINE_PROGRESS_UNSAFE");
+  run.reconciliation_checkpoint = checkpoint;
+  return true;
+}
+
 /** A deliberate pause is a BUY gate, not a stop of the protection worker.
  * Certification is engine-scoped and requires fresh exchange agreement; a
  * pending/ambiguous BUY or stale gate must never become a hidden healthy pause. */
@@ -1489,6 +1602,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
   const run = await claim(service, runId);
   if (!run) return { status: "BUSY_OR_INACTIVE" };
   run.execution_source = source;
+  const startedAt = Date.now();
   let errorCode: string | null = null;
   let reconciliationComplete = false;
   let stage = "LOAD_LEDGER";
@@ -1496,10 +1610,21 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     await validateRunEngine(service, run);
     if (run.symbol !== `${run.asset}${run.quote_asset}` || run.strategy_version !== STRATEGY_VERSION)
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
+    return await withLiveObservationRetryBudget(run, async () => {
     let ledger = await runRows(service, run);
     stage = "RECONCILE_ORDERS";
-    assertLiveResidentPrices(run, ledger, await readLiveExecutorState(run));
-    for (const order of ledger.orders) await reconcileOrder(service, run, order);
+    const reconciliationState = await readLiveExecutorState(run);
+    assertLiveResidentPrices(run, ledger, reconciliationState);
+    const feeValuation = configuredEngineSlotCount(run.engine ?? run) > 25
+      ? createReconciliationFeeValuation(run, reconciliationState) : undefined;
+    const settledSellsBefore = ledger.orders.filter(order => order.side === "SELL" && order.trades_reconciled
+      && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)).length;
+    const reconciledSellIds = feeValuation
+      ? await reconcileAcknowledgedSellOrders(service, run, ledger.orders, feeValuation) : new Set<string>();
+    for (const order of ledger.orders)
+      if (!reconciledSellIds.has(order.id)) await reconcileOrder(service, run, order, feeValuation);
+    const concentratedSettlement = Boolean(feeValuation && ledger.orders.filter(order => order.side === "SELL"
+      && order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)).length - settledSellsBefore > 25);
     ledger = await runRows(service, run);
     stage = "READ_STATE";
     let state = await readLiveExecutorState(run);
@@ -1507,8 +1632,20 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     stage = "PROTECT_TP";
     await ensureTakeProfits(service, run, ledger, state);
     stage = "CREDIT_SLOTS";
-    state = await readLiveExecutorState(run);
-    await creditClosedSlots(service, run, ledger, state);
+    const yieldForProgress = async (phase: "CREDIT_SLOTS" | "RECYCLE_SLOTS", concentratedSettlement = false) => {
+      const previousStage = stage;
+      stage = "RECONCILIATION_PROGRESS";
+      try { return await checkpointLargeEngineProgress(service, run, startedAt, phase, concentratedSettlement); }
+      finally { stage = previousStage; }
+    };
+    if (await yieldForProgress("CREDIT_SLOTS", concentratedSettlement))
+      return { status: "RETRY", code: "COINOPS_LIVE_RECONCILIATION_PROGRESS" };
+    // Credit consumes only the just-observed quantity step to classify the
+    // already-settled residual. It cannot authorize an order. Keep the legacy
+    // read unchanged; every subsequent entry/protection write still reads fresh.
+    if (!feeValuation) state = await readLiveExecutorState(run);
+    if (await creditClosedSlots(service, run, ledger, state, () => yieldForProgress("CREDIT_SLOTS")))
+      return { status: "RETRY", code: "COINOPS_LIVE_RECONCILIATION_PROGRESS" };
     const refreshed = await runRows(service, run);
     if (run.status === "PAUSED") {
       // Existing TP/fills/gains continue through the authoritative reconciler.
@@ -1527,7 +1664,8 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       return { status: "PAUSED", next: "ENTRIES_PAUSED" };
     }
     stage = "RECYCLE_SLOTS";
-    await recycleClosedSlots(service, run, refreshed);
+    if (await recycleClosedSlots(service, run, refreshed, () => yieldForProgress("RECYCLE_SLOTS")))
+      return { status: "RETRY", code: "COINOPS_LIVE_RECONCILIATION_PROGRESS" };
     const current = await runRows(service, run);
     stage = "ASSERT_PROTECTION";
     state = await readLiveExecutorState(run);
@@ -1591,7 +1729,8 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       .is("resolved_at", null);
     if (held.error) throw new Error("COINOPS_LIVE_TRANSIENT_ALERT_RESOLUTION_FAILED");
     reconciliationComplete = true;
-    return { status: "OK", next };
+    return { status: "OK", next } as LiveAdvanceResult;
+    });
   } catch (error) {
     if (error instanceof Error && error.message === "COINOPS_LIVE_FILLED_DURING_SNAPSHOT") {
       // The next official tick starts at RECONCILE_ORDERS and credits the fill

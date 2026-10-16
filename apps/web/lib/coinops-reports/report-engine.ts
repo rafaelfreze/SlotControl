@@ -18,6 +18,7 @@ import { buildSlotPresentationAudit } from "./slot-presentation-audit.ts";
 import { buildEngineIsolationAudit } from "./engine-isolation-audit.ts";
 import { auditPausedEntryEvidence, pausedProtectionDetails } from "./paused-entry-audit.ts";
 import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "../execution/engine-slot-topology.ts";
+import { largeEngineProgressAudit } from "./large-engine-progress-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
@@ -416,6 +417,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     parameter: "next_buy_applied_capital_refresh", value: "OWNED_UNFILLED_ENTRY_SAME_PRICE_ONLY", unit: "enum", version: 1,
     source: "robot_v1_live_events + robot_v1_live_orders", evidence_scope: "CURRENT_CODE_CONTRACT",
     notes: "Aporte aplicado pode redimensionar somente NEXT BUY própria sem fill via reconciliador oficial. OPEN e TP não são redimensionados; ausência de eventos não comprova execução histórica. Consulte NEXT_BUY_CAPITAL_REFRESH_AUDIT." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "large_engine_normal_reconciliation", value: "BOUNDED_NORMAL_PROGRESS_WITHOUT_WATCHDOG", unit: "enum", version: 1,
+    source: "robot_v1_live_runs.reconciliation_checkpoint + robot_v1_live_events:RECONCILIATION_PROGRESS", evidence_scope: "CURRENT_CODE_CONTRACT",
+    notes: "Somente N>25. Cotação BNB da moeda exata é local à invocação e expira em 60s; não guarda saldo/ordens nem autoriza POST. Três retries extras GET compartilhados, sem repetir create/cancel; retries internos do executor devem constar na certificação de carga. Trabalho grande retoma pelos checkpoints financeiros existentes, após prova integral de TP e lease/CAS. Checkpoint SQL deriva contadores monotônicos, não renova data sem progresso, preserva last_reconciled_at e tem teto de 15min; Watchdog classifica RECONCILING apenas com prova fresca até 150s e sem falha real. Não significa HEALTHY, autorização de ativação, gain ou ordem nova. Motores legados de 25 preservam o fluxo anterior." });
   const definitions = [...REPORT_RULE_CONTRACT, ...extensions];
   if (new Set(definitions.map((definition) => definition.parameter)).size !== definitions.length) throw new Error("COINOPS_REPORT_RULE_DUPLICATE");
   for (const config of configs) for (const definition of definitions) if (config[definition.field] !== undefined) rules.push({
@@ -619,7 +624,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
       liveExecution.push({ environment: "REAL", row_type: rowType, asset,
         symbol: asset ? `${asset}BRL` : null, source: `coinops.${table}`,
         evidence_basis: "PERSISTED_COINOPS_LIVE_LEDGER", snapshot_at: input.generatedAt,
-        ...own(row), ...(rowType === "EVENT" && (row.event_type === "LIVE_PAUSED"
+        ...own(row), ...(rowType === "RUN" ? { reconciliation_checkpoint: largeEngineProgressAudit(row.reconciliation_checkpoint) } : {}),
+        ...(rowType === "EVENT" && row.event_type === "RECONCILIATION_PROGRESS"
+          ? { details: largeEngineProgressAudit(row.details) } : {}),
+        ...(rowType === "EVENT" && (row.event_type === "LIVE_PAUSED"
           || row.event_type === "RECONCILED" && object(row.details).protection_verified !== undefined)
           ? { details: pausedProtectionDetails(row.details) } : {}),
         ...(rowType === "SLOT" ? slotPresentation.get(str(row.id)) ?? {} : {}) });
