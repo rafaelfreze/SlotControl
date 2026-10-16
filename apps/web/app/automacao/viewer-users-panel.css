@@ -1,0 +1,205 @@
+.px-access-admin {
+  min-width: 0;
+}
+.px-access-admin .px-button {
+  min-height: 44px;
+}
+.px-access-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.px-access-heading small {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #86a9cc;
+}
+.px-access-heading h2,
+.px-access-heading h3 {
+  margin: 6px 0;
+}
+.px-access-heading p {
+  font-size: 12px;
+  color: #8eabc5;
+}
+.px-access-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+.px-access-metrics article {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #293c50;
+  border-radius: 12px;
+  background: #101e2d;
+  display: grid;
+  gap: 8px;
+}
+.px-access-metrics span {
+  font-size: 11px;
+  color: #9eb3c6;
+}
+.px-access-metrics strong {
+  font-size: 24px;
+  color: #e9f2fa;
+}
+.px-access-search {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  font-size: 12px;
+}
+.px-access-search input {
+  width: 100%;
+  min-height: 44px;
+  min-width: 0;
+  border: 1px solid #344e67;
+  border-radius: 8px;
+  background: #0e1b29;
+  padding: 10px;
+  color: #e9f2fa;
+  font: inherit;
+}
+.px-access-list {
+  display: grid;
+  gap: 10px;
+}
+.px-access-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid #293c50;
+  border-radius: 12px;
+  background: #101e2d;
+  padding: 14px;
+  min-width: 0;
+}
+.px-access-card > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.px-access-card strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.px-access-card small {
+  font-size: 11px;
+  color: #9eb3c6;
+  overflow-wrap: anywhere;
+}
+.px-access-card button {
+  min-height: 44px;
+}
+.px-access-active,
+.px-access-inactive {
+  font-size: 11px;
+  border: 1px solid #335569;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #8edbc3;
+}
+.px-access-inactive {
+  color: #e2b88b;
+}
+.px-access-pagination {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  font-size: 12px;
+}
+.px-access-dialog {
+  color: #e8f1f9;
+  background: #101d2a;
+  border: 1px solid #38506a;
+  border-radius: 16px;
+  width: min(560px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px;
+  box-sizing: border-box;
+}
+.px-access-dialog::backdrop {
+  background: rgb(0 8 17 / 75%);
+}
+.px-access-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.px-access-dialog h3 {
+  font-size: 18px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.px-access-dialog p,
+.px-access-dialog small {
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.px-access-dialog .px-button {
+  min-height: 44px;
+}
+.px-access-dialog .px-account-actions,
+.px-access-destinations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-block: 14px;
+}
+.px-access-dialog .px-onboarding-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+.px-access-dialog label {
+  min-width: 0;
+}
+.px-access-dialog input,
+.px-access-dialog select {
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+}
+.px-access-dialog a {
+  text-decoration: none;
+  text-align: center;
+  justify-content: center;
+}
+@media (max-width: 600px) {
+  .px-access-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .px-access-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .px-access-card > div {
+    grid-column: 1/-1;
+  }
+  .px-access-dialog {
+    padding: 14px;
+  }
+  .px-access-search input,
+  .px-access-dialog input,
+  .px-access-dialog select {
+    font-size: 16px;
+  }
+  .px-access-dialog .px-onboarding-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
