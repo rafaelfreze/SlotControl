@@ -167,12 +167,19 @@ no ambiente de destino antes de operação remota.
 - As referências anteriores a provas de 25 slots descrevem motores legados;
   em consumidores generalizados, a prova passa a exigir exatamente 1..N pelo
   valor canônico do motor/run, preservando identidade e integridade financeira.
-- Relatórios novos usam contrato 26; snapshots históricos não são reescritos.
+- Relatórios novos usam contrato 27; snapshots históricos não são reescritos.
 - Motores N>25 usam cotação BNB local à invocação por até 60s somente para
   contabilizar taxas, três retries extras GET compartilhados e até quatro
   reconciliações de SELL já reconhecidas em paralelo. BUY, PREPARED, criação e
   cancelamento continuam seriais. Falha drena as operações em curso antes de
   liberar lease. Motores de 25 conservam leituras/retries/loop anteriores.
+- Observação de ordens N>25 usa o protocolo autenticado `order_observation_protocol=1`:
+  ordem própria e seus fills no mesmo contexto, totais coerentes e confirmação
+  GET limitada para fill/cancel concorrente. Ausência não é zero fill nem prova
+  de cancelamento. O protocolo não autoriza POST, cache de estado financeiro ou
+  adoção por conta/símbolo. Cotação BNB de uma leitura financeira obrigatória
+  pode alimentar somente o contexto de taxas, sem estender seus 60s; trade BNB
+  com comissão zero ainda exige cotação. Não exigir o protocolo de motores25.
 - Lotes grandes têm checkpoints cooperativos somente após reconciliação e
   proteção integral dos TPs, nunca atualização fictícia de last_reconciled_at.
   O RPC deriva progresso monotônico sob lease/CAS; repetição não renova horário.
@@ -345,7 +352,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 26`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, roteamento e isolamento por shard, evidência de atribuição/retry do trading e proteção da pausa intencional. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 27`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading e proteção da pausa intencional. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

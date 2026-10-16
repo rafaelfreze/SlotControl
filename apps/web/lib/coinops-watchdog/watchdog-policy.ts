@@ -25,6 +25,7 @@ export type FastOrder = { run_id: string; slot_id: string; side: string; status:
   executed_quantity?: number | string; trades_reconciled?: boolean;
   operation_sequence?: number; revision?: number; purpose?: string;
   requested_quantity?: number | string | null; price?: number | string | null;
+  cumulative_quote?: number | string; fee_base?: number | string; fee_quote?: number | string; fee_other?: unknown;
   operator_id?: string; trading_engine_id?: string; exchange_account_id?: string };
 export type FastPreparation = { trading_engine_id: string; exchange_account_id: string;
   operator_id: string; symbol: string; live_enabled: boolean; kill_switch: boolean; slot_count?: number };
@@ -37,11 +38,39 @@ export type FastConfigUpdate = { status: string; updated_at: string };
 
 const ACTIVE_ORDERS = new Set(["PREPARED", "NEW", "PARTIALLY_FILLED"]);
 
+/** The service-only SQL proof is tied to this exact checkpoint and current
+ * order/slot facts. A nonterminal partial is not falsely marked reconciled. */
+function accountedPartialTp(run: FastRun, cp: Record<string, unknown>, order: FastOrder,
+  slots: FastSlot[], raw: unknown): boolean {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || order.side !== "SELL"
+    || order.purpose !== "TP" || order.status !== "PARTIALLY_FILLED") return false;
+  const proof = raw as Record<string, unknown>;
+  const checkpoint = proof.checkpoint;
+  if (proof.contract !== "PARTIAL_TP_FILLS_PROOF_V1" || proof.run_id !== run.id
+    || !checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) return false;
+  const expected = checkpoint as Record<string, unknown>;
+  if (Object.keys(expected).length !== Object.keys(cp).length || Object.keys(cp).some(key => cp[key] !== expected[key])
+    || !Array.isArray(proof.orders) || !proof.orders.length || proof.orders.length > Number(cp.slot_count)) return false;
+  const records = proof.orders as Array<Record<string, unknown>>;
+  if (records.some(row => !row || typeof row !== "object" || Array.isArray(row))
+    || new Set(records.map(row => row.id)).size !== records.length) return false;
+  const row = records.find(item => item.id === order.id), slot = slots.find(item => item.id === order.slot_id);
+  if (!row || !slot || ["slot_id", "client_order_id", "exchange_order_id", "status", "side", "purpose", "operation_sequence"]
+    .some(key => row[key] !== order[key as keyof FastOrder])) return false;
+  for (const [a, b, tolerance] of [[row.executed_quantity, order.executed_quantity, 1e-12],
+    [row.cumulative_quote, order.cumulative_quote, 1e-8], [row.fee_base, order.fee_base, 1e-12],
+    [row.fee_quote, order.fee_quote, 1e-8], [row.slot_position_quantity, slot.position_quantity, 1e-12]]) {
+    if (a === null || a === undefined || b === null || b === undefined || !Number.isFinite(Number(a))
+      || !Number.isFinite(Number(b)) || Math.abs(Number(a) - Number(b)) > Number(tolerance)) return false;
+  }
+  return JSON.stringify(row.fee_other) === JSON.stringify(order.fee_other);
+}
+
 /** A fenced database checkpoint means unfinished normal work, never HEALTHY
  * or permission to trade. Current ownership/positions remain independently
  * checked; a checkpoint cannot conceal a new financial error. */
 function largeProgressFinding(run: FastRun, engine: FastEngine, account: FastAccount,
-  shardId: string, slots: FastSlot[], orders: FastOrder[], now: number): FastFinding | null {
+  shardId: string, slots: FastSlot[], orders: FastOrder[], now: number, partialTpProof?: unknown): FastFinding | null {
   const raw = run.reconciliation_checkpoint;
   if (raw === null || raw === undefined || run.status !== "ACTIVE") return null;
   const cp = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
@@ -78,8 +107,14 @@ function largeProgressFinding(run: FastRun, engine: FastEngine, account: FastAcc
     return { state: "BLOCKED", code: "WATCHDOG_OWNERSHIP_MISMATCH", recoverable: false };
   if (orders.some(order => ["UNKNOWN", "SUBMITTING", "PENDING_CANCEL"].includes(order.status)))
     return { state: "BLOCKED", code: "WATCHDOG_ORDER_OUTCOME_UNKNOWN", recoverable: false };
-  if (orders.some(order => !Number.isFinite(Number(order.executed_quantity)) || Number(order.executed_quantity) < 0
-    || Number(order.executed_quantity) > 0 && order.trades_reconciled !== true))
+  if (orders.some(order => !Number.isFinite(Number(order.executed_quantity)) || Number(order.executed_quantity) < 0))
+    return { state: "BLOCKED", code: "WATCHDOG_FILL_UNRECONCILED", recoverable: false };
+  const unaccounted = orders.filter(order => Number(order.executed_quantity) > 0 && order.trades_reconciled !== true);
+  if (unaccounted.length && unaccounted.every(order => order.side === "SELL" && order.purpose === "TP" && order.status === "PARTIALLY_FILLED")
+    && partialTpProof && typeof partialTpProof === "object"
+    && (partialTpProof as Record<string, unknown>).contract === "PARTIAL_TP_PROOF_UNAVAILABLE")
+    return { state: "BLOCKED", code: "WATCHDOG_PARTIAL_TP_PROOF_UNAVAILABLE", recoverable: false };
+  if (unaccounted.some(order => !accountedPartialTp(run, cp, order, slots, partialTpProof)))
     return { state: "BLOCKED", code: "WATCHDOG_FILL_UNRECONCILED", recoverable: false };
   if (orders.filter(order => order.side === "BUY" && ACTIVE_ORDERS.has(order.status)).length > 1)
     return { state: "BLOCKED", code: "WATCHDOG_DUPLICATE_BUY", recoverable: false };
@@ -138,7 +173,7 @@ export function criticalAlertsForRun(run: FastRun, alerts: FastAlert[]): FastAle
 export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null;
   account: FastAccount | null; shardId: string; slots: FastSlot[];
   orders: FastOrder[]; alerts?: FastAlert[]; configUpdate?: FastConfigUpdate | null;
-  preparation?: FastPreparation | null; now: number }): FastFinding {
+  preparation?: FastPreparation | null; partialTpProof?: unknown; now: number }): FastFinding {
   const { run, engine, account, shardId, slots, orders, now } = input;
   let slotCount: number;
   try {
@@ -198,7 +233,7 @@ export function evaluateFastRun(input: { run: FastRun; engine: FastEngine | null
       || (Number(order.executed_quantity) > 0 && order.trades_reconciled !== true)))
       return { state: "BLOCKED", code: "WATCHDOG_FILL_UNRECONCILED", recoverable: false };
   }
-  const progress = largeProgressFinding(run, engine, account, shardId, slots, orders, now);
+  const progress = largeProgressFinding(run, engine, account, shardId, slots, orders, now, input.partialTpProof);
   if (progress) return progress;
   if (run.lease_until && Date.parse(run.lease_until) > now)
     return { state: "RECONCILING", code: null, recoverable: false };

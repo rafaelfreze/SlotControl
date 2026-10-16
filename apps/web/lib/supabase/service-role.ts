@@ -2,6 +2,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "./env";
 import { fetchOperationalData } from "./no-store-fetch";
+import { WORKLOAD_CODE_SHA256 } from "./workload-fingerprint.generated";
 
 export function createServiceRoleClient(requestTimeoutMs?: number) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -20,8 +21,9 @@ export function createServiceRoleClient(requestTimeoutMs?: number) {
     },
     global: {
       fetch: requestTimeoutMs ? (input, init) => fetchOperationalData(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs) }) : fetchOperationalData,
-      ...(dataSchema === "coinops" && coinOpsServiceTenantId
-        ? { headers: { "x-coinops-tenant-id": coinOpsServiceTenantId } }
+      ...(dataSchema === "coinops"
+        ? { headers: { "x-coinops-workload-sha256": WORKLOAD_CODE_SHA256,
+          ...(coinOpsServiceTenantId ? { "x-coinops-tenant-id": coinOpsServiceTenantId } : {}) } }
         : {})
     },
     auth: {

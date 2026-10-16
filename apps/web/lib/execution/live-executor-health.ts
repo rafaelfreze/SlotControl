@@ -1,6 +1,7 @@
 import { readLiveExecutorHealth, type ExecutorEngineScope } from "./live-executor-transport.ts";
 import { parseExecutorValidatedVersions, resolveExecutorForEngine, resolveExecutorValidatedVersion,
   type ExecutorEngineResolver } from "./executor-shards-server.ts";
+import { configuredEngineSlotCount } from "./engine-slot-topology.ts";
 
 export type LiveExecutorHealth = {
   healthy: boolean;
@@ -21,6 +22,7 @@ export type LiveExecutorHealth = {
   latency_ms: number;
   isolation_contract?: string;
   account_order_budget_protocol?: number;
+  order_observation_protocol?: number;
   account_order_budget_enforced?: boolean;
   unsent_recovery_protocol?: number;
 };
@@ -63,6 +65,7 @@ export async function loadLiveExecutorStatus(
       && (!engine || health.version === actualVersion)
       && health.environment === (engine ? "REAL" : "BINANCE_PRODUCTION_PREPARED")
       && health.binance_connectivity === "OK"
+      && (!engine || configuredEngineSlotCount(engine.engine ?? engine) <= 25 || health.order_observation_protocol === 1)
       && health.account_permission === "SPOT_RESTRICTED"
       && health.egress_ipv4 === expectedIp && health.egress_ipv4_verified === true
       && typeof health.clock_drift_ms === "number" && Math.abs(health.clock_drift_ms) <= 2_000;

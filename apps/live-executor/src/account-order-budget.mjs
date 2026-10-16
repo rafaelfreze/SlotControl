@@ -3,6 +3,14 @@ import { createHash } from "node:crypto";
 
 const INTERVAL = { SECOND: 1000, MINUTE: 60_000, HOUR: 3_600_000, DAY: 86_400_000 };
 const fail = () => { throw new ExecutorRejection("EXECUTOR_ACCOUNT_ORDER_BUDGET_UNKNOWN", 503); };
+/** Complete facts from an expired counter window are scheduling evidence only.
+ * They can never be recorded as a fresh budget or authorize an exchange write. */
+export class AccountOrderBudgetWindowExpired extends ExecutorRejection {
+  constructor(observation) {
+    super("EXECUTOR_ACCOUNT_ORDER_BUDGET_WINDOW_EXPIRED", 409);
+    this.observation = structuredClone(observation);
+  }
+}
 const integer = (value, minimum = 0) => Number.isSafeInteger(value) && value >= minimum;
 const SYMBOL_FILTERS = new Set(["PRICE_FILTER", "PERCENT_PRICE", "PERCENT_PRICE_BY_SIDE", "LOT_SIZE",
   "MIN_NOTIONAL", "NOTIONAL", "ICEBERG_PARTS", "MARKET_LOT_SIZE", "MAX_NUM_ORDERS",
@@ -28,8 +36,7 @@ export async function readAccountOrderBudget(transport, symbols) {
     if (row.rateLimitType !== "ORDERS" || !INTERVAL[row.interval]
       || !integer(row.intervalNum, 1) || !integer(row.limit, 1) || !integer(row.count)) fail();
     const intervalMs = INTERVAL[row.interval] * row.intervalNum;
-    if (!integer(intervalMs, 1) || Math.floor(serverTime / intervalMs)
-      !== Math.floor((transport.now() + transport.offset) / intervalMs)) fail();
+    if (!integer(intervalMs, 1)) fail();
     return { intervalMs, limit: row.limit, count: row.count };
   });
   if (new Set(intervals.map((row) => row.intervalMs)).size !== intervals.length) fail();
@@ -72,12 +79,14 @@ export async function readAccountOrderBudget(transport, symbols) {
     : (await Promise.all(symbols.map((symbol) => transport.reads.getOpenOrders(symbol)))).flat();
   if (orders.some((order) => !order.id || !order.symbol || !["NEW", "PARTIALLY_FILLED"].includes(order.status))
     || new Set(orders.map((order) => `${order.symbol}:${order.id}`)).size !== orders.length) fail();
-  if (transport.now() - observedAt > 30_000 || Math.abs(transport.offset) > 2000
-    || intervals.some((row) => Math.floor(serverTime / row.intervalMs)
-      !== Math.floor((transport.now() + transport.offset) / row.intervalMs))) fail();
-  return { observedAt, serverTime, intervals, restrictions: [...restrictions].sort(),
+  if (transport.now() - observedAt > 30_000 || Math.abs(transport.offset) > 2000) fail();
+  const observation = { observedAt, serverTime, intervals, restrictions: [...restrictions].sort(),
     symbols: limits.map((row) => ({ ...row, openOrders: orders.filter((order) => order.symbol === row.symbol) })),
     exchangeOrders: global.length ? { limit: Math.min(...global.map((filter) => filter.maxNumOrders)), openOrders: orders } : null };
+  if (intervals.some((row) => Math.floor(serverTime / row.intervalMs)
+    !== Math.floor((transport.now() + transport.offset) / row.intervalMs)))
+    throw new AccountOrderBudgetWindowExpired(observation);
+  return observation;
 }
 
 /** Explicit authenticated preflight only. Coalesce identical account probes,

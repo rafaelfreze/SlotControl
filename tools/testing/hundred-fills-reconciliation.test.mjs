@@ -215,7 +215,7 @@ async function fixture({ slotCount = 100, slotCapital = 11, normalSpacingRate = 
   };
   const bridge=async(input,init)=>{
     const path=new URL(input).pathname,body=JSON.parse(init.body),t=transport(engine);
-    assert.ok(["/v1/state","/v1/query-order","/v1/trades"].includes(path),"bridge never permits create/cancel");
+    assert.ok(["/v1/state","/v1/query-order","/v1/trades","/v1/observe-order"].includes(path),"bridge never permits create/cancel");
     assert.equal(body.executor_shard_id,"executor-03");
     const counted=path!=="/v1/state";
     if(counted){metrics.observationsInFlight++;metrics.peakObservationsInFlight=Math.max(metrics.peakObservationsInFlight,metrics.observationsInFlight);}
@@ -223,6 +223,7 @@ async function fixture({ slotCount = 100, slotCapital = 11, normalSpacingRate = 
       let payload;
       if(path==="/v1/state")payload=await state();
       if(path==="/v1/query-order")payload={order:await t.queryOrder(body.symbol,body.clientOrderId,body.orderId)};
+      if(path==="/v1/observe-order")payload=await t.observeOwnedOrder(body.symbol,body.clientOrderId,body.orderId);
       if(path==="/v1/trades"){
         const order=await t.queryOrder(body.symbol,body.clientOrderId,body.orderId);
         payload={order,trades:await t.ownedTrades(body.symbol,body.clientOrderId,body.orderId)};
@@ -289,6 +290,7 @@ async function fixture({ slotCount = 100, slotCapital = 11, normalSpacingRate = 
       readLiveExecutorState:state,
       readLiveExecutorOrder:async(run,client,exchangeId)=>webTransport.readLiveExecutorOrder(run,client,exchangeId,bridge,resolver),
       readLiveExecutorTrades:async(run,client,exchangeId)=>webTransport.readLiveExecutorTrades(run,client,exchangeId,bridge,resolver),
+      readLiveExecutorOrderObservation:async(run,client,exchangeId)=>webTransport.readLiveExecutorOrderObservation(run,client,exchangeId,bridge,resolver),
       createLiveExecutorOrder:()=>assert.fail("No new order expected in observation/settlement phase"),
       cancelLiveExecutorOrder:()=>assert.fail("No cancellation expected in observation/settlement phase"),
     }};
@@ -380,7 +382,7 @@ test("three intermittent503s share invocation retry pool and100fills converge wi
 
 test("fourth distinct503 drains inflight workers; next invocation resumes remaining fills safely",async t=>{
   const f=await fixture({transientQuerySlots:[1,11,21,31]});t.after(()=>f.db.close());
-  await assert.rejects(reconcilePhase(f),error=>error instanceof readErrors.LiveReadUnavailable&&error.path==="/v1/query-order");
+  await assert.rejects(reconcilePhase(f),error=>error instanceof readErrors.LiveReadUnavailable&&error.path==="/v1/observe-order");
   const sqlAfterReject=f.metrics.sql,requestsAfterReject=f.requests.length;
   await new Promise(resolve=>setTimeout(resolve,40));
   assert.equal(f.metrics.sql,sqlAfterReject,"no late DB mutation after worker failure drains");

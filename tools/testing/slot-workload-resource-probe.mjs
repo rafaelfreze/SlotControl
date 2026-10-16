@@ -33,9 +33,10 @@ export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedE
         legacy_ownership:false,slot_count:slots,executor_shard_id:"executor-03"};
       const prefix=`C2-${createHash("sha256").update(`${engine.exchange_account_id}|${engine.trading_engine_id}`).digest("hex").slice(0,10)}-`;
       const orders=[];
+      const quantity=slots===50?".044":".022",quoteQuantity=slots===50?"22.66":"11.33";
       for(let slot=1;slot<=slots;slot++){
         const order={symbol:"SOLBRL",clientOrderId:`${prefix}${slot}-S-${createHash("sha256").update(`${index}|${slot}`).digest("hex").slice(0,14)}`,
-          orderId:index*10000+slot,side:"SELL",status:"FILLED",executedQty:".022",cummulativeQuoteQty:"11.33",price:"515",origQty:".022"};
+          orderId:index*10000+slot,side:"SELL",status:"FILLED",executedQty:quantity,cummulativeQuoteQty:quoteQuantity,price:"515",origQty:quantity};
         byOrder.set(String(order.orderId),order);orders.push(order);
       }
       engines.push({engine,orders});
@@ -65,7 +66,7 @@ export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedE
         if(url.pathname==="/api/v3/openOrders")return Response.json([]);
         const order=byOrder.get(url.searchParams.get("orderId"));check(order,"unknown order");
         if(url.pathname==="/api/v3/order")return Response.json(order);
-        if(url.pathname==="/api/v3/myTrades")return Response.json([{id:order.orderId,orderId:order.orderId,qty:".022",quoteQty:"11.33",
+        if(url.pathname==="/api/v3/myTrades")return Response.json([{id:order.orderId,orderId:order.orderId,qty:order.executedQty,quoteQty:order.cummulativeQuoteQty,
           commission:".00000001",commissionAsset:"BNB",isBuyer:false,time:now}]);
         throw new Error("OFFLINE_PROBE:unhandled path");
       }finally{active--;activeByPhase.set(phase,activeByPhase.get(phase)-1);}
@@ -90,11 +91,18 @@ export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedE
       await Promise.all(Array.from({length:engineConcurrency},async()=>{
         while(next<item.orders.length){
           const order=item.orders[next++],first=transport(item.engine);
-          const observed=await first.queryOrder("SOLBRL",order.clientOrderId,String(order.orderId));
+          let observed,trades;
+          if(item.engine.slot_count>25){
+            check(typeof first.observeOwnedOrder==="function","order observation protocol unavailable");
+            ({order:observed,trades}=await first.observeOwnedOrder("SOLBRL",order.clientOrderId,String(order.orderId)));
+          }else{
+            observed=await first.queryOrder("SOLBRL",order.clientOrderId,String(order.orderId));
+            const second=transport(item.engine),confirmed=await second.queryOrder("SOLBRL",order.clientOrderId,String(order.orderId));
+            trades=await second.ownedTrades("SOLBRL",order.clientOrderId,confirmed.orderId);
+          }
           check(observed.status==="FILLED","not terminal");
-          const second=transport(item.engine),confirmed=await second.queryOrder("SOLBRL",order.clientOrderId,String(order.orderId));
-          const trades=await second.ownedTrades("SOLBRL",order.clientOrderId,confirmed.orderId);
-          check(trades.length===1&&trades[0].quantity===.022,"trade ownership");closed++;
+          check(trades.length===1&&trades[0].quantity===Number(order.executedQty)
+            &&trades[0].quoteQuantity===Number(order.cummulativeQuoteQty),"trade ownership/totals");closed++;
           closedByEngine.set(engineId,(closedByEngine.get(engineId)??0)+1);
         }
       }));
@@ -109,6 +117,9 @@ export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedE
     for(const item of engines)check(closedByEngine.get(item.engine.trading_engine_id)===item.engine.slot_count,"sibling starvation");
     const cpu=process.cpuUsage(cpuBefore),rssAfter=process.memoryUsage().rss;
     results.push({slot_count:count,sibling_slot_counts:[25,25],synthetic_engines:3,reconciled_tp_observations:closed,
+      observation_protocol:count>25?"ENGINE_ORDER_OBSERVATION_V1":"LEGACY_QUERY_TRADES",
+      sibling_observation_protocols:["LEGACY_QUERY_TRADES","LEGACY_QUERY_TRADES"],
+      target_slot_capital_brl:count===50?22:11,
       wall_ms:Number((performance.now()-started).toFixed(3)),cpu_user_ms:cpu.user/1000,cpu_system_ms:cpu.system/1000,
       rss_before_bytes:rssBefore,rss_after_bytes:rssAfter,process_peak_rss_bytes:process.resourceUsage().maxRSS*1024,
       max_inflight_gets:peak,state_peak_inflight_gets:peakByPhase.get("STATE"),acknowledged_sell_peak_inflight_gets:peakByPhase.get("ACKNOWLEDGED_SELL"),
@@ -140,7 +151,7 @@ export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedE
   check(queuePeak.get("executor-03")===4,"canonical shard cap not exercised");
   check(JSON.stringify(queueOutput)===JSON.stringify(queueRows.map(row=>row.id)),"scheduler output misaligned");
   const resourceEnd=process.resourceUsage();
-  return {contract:"COINOPS_OFFLINE_TRANSPORT_RESOURCE_V2",scope:"TRANSPORT_ONLY_NOT_FULL_STRATEGY_ENGINE",
+  return {contract:"COINOPS_OFFLINE_TRANSPORT_RESOURCE_V3",scope:"TRANSPORT_ONLY_NOT_FULL_STRATEGY_ENGINE",
     external_network_calls:0,environment_or_vault_reads:0,filesystem_writes:0,
     elapsed_ms:Number((performance.now()-wallStart).toFixed(3)),cpu_user_ms:(resourceEnd.userCPUTime-resourceStart.userCPUTime)/1000,
     cpu_system_ms:(resourceEnd.systemCPUTime-resourceStart.systemCPUTime)/1000,process_peak_rss_bytes:resourceEnd.maxRSS*1024,

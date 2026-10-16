@@ -158,20 +158,32 @@ export async function collectAccountOrderBudget(service: Service, operatorId: st
         environment: "REAL", credential_ref: target.credentialRef, symbols, request_id: requestId }, target));
       const response = await fetcher(`${target.base}${path}`, { method: "POST", cache: "no-store", body,
         headers: signedExecutorHeaders(target.secret, path, body, key), signal: AbortSignal.timeout(Math.min(20_000, remaining)) });
+      let observed: BudgetObservation;
+      let nativeExpiredWindow = false;
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
-        retryable = response.status === 503 && failure?.error === "EXECUTOR_ACCOUNT_ORDER_BUDGET_UNKNOWN";
-        throw new Error(code);
-      }
-      const observed = await response.json() as BudgetObservation;
+        if (response.status === 409 && failure?.error === "EXECUTOR_ACCOUNT_ORDER_BUDGET_WINDOW_EXPIRED") {
+          observed = failure.observation as BudgetObservation;
+          nativeExpiredWindow = true;
+        } else {
+          retryable = response.status === 503 && failure?.error === "EXECUTOR_ACCOUNT_ORDER_BUDGET_UNKNOWN";
+          throw new Error(code);
+        }
+      } else observed = await response.json() as BudgetObservation;
       const identity = { operatorId, accountId, shardId, ip: target.ip,
         credentialRef: target.credentialRef, versions, symbols, engines, ledger };
       // Validate ALL ownership/payload fields at observation time first, so
       // an expired window is retryable without masking a malformed sample.
-      const inspected = projectAccountBudgetObservation(observed, identity, observed.observedAt);
+      const inspected = projectAccountBudgetObservation(observed, identity, observed?.observedAt);
       const windowEnd = Math.min(...inspected.intervals.map(row =>
         (Math.floor(inspected.serverTime / row.intervalMs) + 1) * row.intervalMs
           - (inspected.serverTime - inspected.observedAt)));
+      // A typed native crossing carries the ORIGINAL complete observation,
+      // not a reset or a fresh sample. Verify every ownership/payload field
+      // first, then require this same window to have actually expired. Never
+      // persist this response or trust an unproved scheduling hint.
+      if (nativeExpiredWindow && !(Date.now() >= windowEnd && Date.now() - inspected.observedAt <= 30_000))
+        throw new Error(code);
       if (Date.now() >= windowEnd && Date.now() - inspected.observedAt <= 30_000) {
         retryable = true;
         retryObservation = inspected;

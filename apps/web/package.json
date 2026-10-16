@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "prebuild": "node ../../tools/operations/financial-workload-fingerprint.mjs --check",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint --no-cache",

@@ -25,7 +25,7 @@ function fixture() {
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const helpers: Row = {};
   new Function("require", "exports", "Date", `${compiled}\nObject.assign(exports, {
-    createReconciliationFeeValuation, readReconciliationFeeValuation });`)(
+    createReconciliationFeeValuation, observeReconciliationFeeValuation, readReconciliationFeeValuation });`)(
     (name: string) => deps[name] ?? {}, helpers, Clock);
   return { run, quote, helpers, reads: () => reads, advance: (ms: number) => { clock += ms; },
     setState: (state: Row) => { nextState = state; } };
@@ -108,4 +108,41 @@ test("USDT valuation retains its own BNBUSDT quote and cannot consume BNBBRL", a
   const actual = await f.helpers.readReconciliationFeeValuation(f.run, [bnbTrade], context);
   assert.equal(actual.symbol, "BNBUSDT");
   assert.equal(f.reads(), 0);
+});
+
+test("a new large-engine creation retains only the quote from its mandatory fresh pre-dispatch observation", async () => {
+  const f = fixture(), context = f.helpers.createReconciliationFeeValuation(f.run);
+  assert.equal(context.quote, null);
+  const state = { bnb_quote_price: f.quote(), balances: [{ asset: "BRL", free: 1100 }],
+    filters: { minNotional: 10 }, open_orders: ["not-cached"] };
+  f.helpers.observeReconciliationFeeValuation(f.run, state, context);
+  state.bnb_quote_price.price = 1;
+  assert.deepEqual(Object.keys(context).sort(), ["quote", "scope_key"]);
+  assert.equal((await f.helpers.readReconciliationFeeValuation(f.run, [bnbTrade], context)).price, 4000);
+  assert.equal(f.reads(), 0, "the existing fresh quote removes an economic-only full snapshot");
+  f.advance(60_001); f.setState({ bnb_quote_price: f.quote() });
+  await f.helpers.readReconciliationFeeValuation(f.run, [bnbTrade], context);
+  assert.equal(f.reads(), 1, "neither seeding nor creation extends quote freshness");
+});
+
+test("a newly acknowledged empty-trades TP needs no quote while zero BNB commission still does", async () => {
+  const f = fixture(), context = f.helpers.createReconciliationFeeValuation(f.run);
+  assert.equal(await f.helpers.readReconciliationFeeValuation(f.run, [], context), null);
+  assert.equal(f.reads(), 0);
+  const actual = await f.helpers.readReconciliationFeeValuation(f.run,
+    [{ commissionAsset: "BNB", commission: 0 }], context);
+  assert.equal(actual.price, 4000);
+  assert.equal(f.reads(), 1);
+});
+
+test("seeding a quote cannot cross account, engine, run or executor ownership", () => {
+  const f = fixture(), context = f.helpers.createReconciliationFeeValuation(f.run);
+  for (const field of ["exchange_account_id", "trading_engine_id", "id", "shard"]) {
+    const foreign = structuredClone(f.run);
+    if (field === "shard") foreign.engine.executor_shard_id = "executor-01";
+    else foreign[field] = "foreign";
+    assert.throws(() => f.helpers.observeReconciliationFeeValuation(foreign,
+      { bnb_quote_price: f.quote() }, context), /FEE_VALUATION_SCOPE_MISMATCH/);
+    assert.equal(context.quote, null);
+  }
 });

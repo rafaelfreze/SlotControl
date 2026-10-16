@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BinanceLiveTransport } from "../src/binance-live.mjs";
-import { readAccountOrderBudget, createAccountOrderBudgetReader } from "../src/account-order-budget.mjs";
+import { readAccountOrderBudget, createAccountOrderBudgetReader, AccountOrderBudgetWindowExpired } from "../src/account-order-budget.mjs";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -35,7 +36,7 @@ function fixture({ count = 2, global = false, accountGlobal = false, accountSymb
     if (parsed.pathname === "/api/v3/openOrders") return Response.json([]);
     throw new Error("unexpected route");
   };
-  return { calls, transport: new BinanceLiveTransport({ apiKey: "synthetic", apiSecret: "synthetic", fetcher, now: () => clock }) };
+  return { calls, now: () => clock, transport: new BinanceLiveTransport({ apiKey: "synthetic", apiSecret: "synthetic", fetcher, now: () => clock }) };
 }
 test("account-global signed ORDERS counter and real filters are observed without writes/history", async () => {
   const { transport, calls } = fixture();
@@ -70,12 +71,30 @@ test("global exchange filter demands complete current open orders, never a parti
   assert.equal(calls.filter((call) => call.path === "/api/v3/openOrders").length, 1);
   assert.equal(calls.find((call) => call.path === "/api/v3/openOrders").query.has("symbol"), false);
 });
-test("missing counters, malformed evidence and interval jitter fail closed without a fabricated reset", async () => {
-  for (const input of [{ malformed: true }, { crossBoundary: true }, { count: -1 }]) {
+test("missing counters and malformed evidence fail closed without a fabricated reset", async () => {
+  for (const input of [{ malformed: true }, { count: -1 }]) {
     const { transport, calls } = fixture(input);
     await assert.rejects(readAccountOrderBudget(transport, ["SOLBRL"]), /BUDGET_UNKNOWN/);
     assert.ok(calls.every((call) => call.method === "GET"));
   }
+});
+
+test("expired native window carries complete original facts only after all filters and orders were read", async () => {
+  const { transport, calls } = fixture({ crossBoundary: true, global: true });
+  await assert.rejects(readAccountOrderBudget(transport, ["SOLBRL", "BTCBRL"]), error => {
+    assert.ok(error instanceof AccountOrderBudgetWindowExpired);
+    assert.equal(error.status, 409); assert.equal(error.code, "EXECUTOR_ACCOUNT_ORDER_BUDGET_WINDOW_EXPIRED");
+    assert.equal(error.observation.observedAt, NOW); assert.equal(error.observation.serverTime, NOW);
+    assert.deepEqual(error.observation.intervals, [{ intervalMs: 10000, limit: 50, count: 2 }]);
+    assert.deepEqual(error.observation.symbols.map(row => row.symbol), ["SOLBRL", "BTCBRL"]);
+    assert.equal(error.observation.symbols[0].maxOrders, 150);
+    assert.equal(error.observation.exchangeOrders.limit, 1000);
+    assert.ok(!JSON.stringify(error.observation).includes("synthetic"));
+    return true;
+  });
+  assert.equal(calls.filter(row => row.path === "/api/v3/myFilters").length, 2);
+  assert.equal(calls.filter(row => row.path === "/api/v3/openOrders").length, 1);
+  assert.ok(calls.every(row => row.method === "GET"));
 });
 
 const scope = { operator_id: "d508bb3e-5a1d-4579-bd7a-de171c118d25",
@@ -166,4 +185,45 @@ test("signed budget endpoint binds its installed account/IP, coalesces probes an
     await new Promise((done) => server.close(done));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("signed expired-window409 binds complete facts to the authenticated account and leaks no credential", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coinops-expired-window-"));
+  const secret = "fictional-budget-authentication-secret-1234567890";
+  const f = fixture({ crossBoundary: true });
+  const handler = createExecutorHandler({ secret, stateDirectory: directory,
+    registry: { ...registryFixture(), legacy_account_id: ACCOUNT_A }, credentialEnvironment,
+    expectedEgressIp: "203.0.113.10", now: f.now, logger: () => {},
+    fetcher: (url, init) => new URL(url).host === "api.ipify.org" ? Promise.resolve(Response.json({ ip: "203.0.113.10" }))
+      : f.transport.fetcher(url, init) });
+  async function send(patch = {}) {
+    const request_id = randomUUID(), nonce = randomUUID().replaceAll("-", ""), path = "/v1/admin/order-budget", timestamp = f.now();
+    const body = JSON.stringify({ operator_id: OPERATOR, exchange_account_id: ACCOUNT_A,
+      environment: "REAL", executor_shard_id: "executor-01", credential_ref: "legacy-binance-production",
+      symbols: ["SOLBRL", "BTCBRL"], request_id, ...patch });
+    const request = Object.assign(Readable.from([Buffer.from(body)]), { method: "POST", url: path,
+      headers: { "content-type": "application/json", "x-coinops-timestamp": String(timestamp),
+        "x-coinops-nonce": nonce, "x-coinops-body-sha256": sha256(body),
+        "x-coinops-signature": requestSignature(secret, "POST", path, timestamp, nonce, body),
+        "x-coinops-idempotency-key": `ORDER_BUDGET:${request_id}` } });
+    const result = {};
+    await handler(request, { writeHead: status => { result.status = status; }, end: value => { result.body = JSON.parse(value); } });
+    return result;
+  }
+  try {
+    const result = await send(); assert.equal(result.status, 409);
+    assert.equal(result.body.error, "EXECUTOR_ACCOUNT_ORDER_BUDGET_WINDOW_EXPIRED");
+    assert.equal(result.body.observation.operator_id, OPERATOR);
+    assert.equal(result.body.observation.exchange_account_id, ACCOUNT_A);
+    assert.equal(result.body.observation.executor_shard_id, "executor-01");
+    assert.equal(result.body.observation.executor_ip, "203.0.113.10");
+    assert.equal(result.body.observation.observedAt, NOW); assert.equal(result.body.observation.serverTime, NOW);
+    assert.equal(result.body.observation.symbols.length, 2);
+    assert.ok(!JSON.stringify(result.body).includes("fictional-key-A"));
+    assert.ok(!JSON.stringify(result.body).includes("fictional-secret-A"));
+    const callsBefore = f.calls.length;
+    assert.equal((await send({ exchange_account_id: randomUUID() })).status, 403);
+    assert.equal(f.calls.length, callsBefore);
+    assert.deepEqual((await readdir(directory)).sort(), ["nonces"]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

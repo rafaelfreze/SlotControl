@@ -9,14 +9,14 @@ import { artifactDigest, buildRecordSQL, canonicalJSON, certifySlotWorkload, cre
 // All PASS values below are synthetic unit/SQL fixtures, never a workload or
 // Production certificate. No authenticated CLI, SSH, env, vault or network runs.
 const manifest = readManifest();
-const webSha = "a".repeat(40), policy = "capacity-v3-20260930";
+const webSha = "a".repeat(40), workloadHash = "e".repeat(64), policy = "capacity-v3-20260930";
 const now = Date.parse("2026-10-16T20:00:00.000Z");
 function artifact(changes = {}) {
   const result = { contract: "SLOT_WORKLOAD_EVIDENCE_V1", environment: "REAL", shard_id: "executor-03",
     slot_count: 50, capacity_units: 4, upper_bound_weight_per_minute: 3400,
     scenarios: Object.fromEntries(REQUIRED_SCENARIOS.map(key => [key, "PASS"])),
     target_sha: manifest.target_sha, runtime_sha256: manifest.runtime_sha256, node_version: manifest.node_version,
-    web_sha: webSha, policy_version: policy, observed_at: new Date(now).toISOString(),
+    web_sha: webSha, web_workload_sha256: workloadHash, policy_version: policy, observed_at: new Date(now).toISOString(),
     results: { fixture: "SYNTHETIC_NOT_FOR_RECORDING", tests: 7 }, ...changes };
   result.evidence_sha256 = artifactDigest(result); return result;
 }
@@ -56,10 +56,11 @@ function fakeCLI(first = snapshot(), second = structuredClone(first)) {
   return { reads, writes, verifyProject() { reads.push("PROJECT"); }, query(sql, field) {
     if (field === "snapshot") { reads.push(sql); return structuredClone(count++ ? second : first); }
     writes.push(sql); return { status: "SLOT_WORKLOAD_PROFILE_RECORDED", shard_id: "executor-03", slot_count: 50,
-      evidence_sha256: artifact().evidence_sha256 };
+      evidence_sha256: artifact().evidence_sha256, web_workload_sha256: workloadHash };
   } };
 }
 const sourceVerifier = () => ({ status: "FLEET_CODE_PASS", cached_main_sha: webSha, head_sha: webSha,
+  web_workload_sha256: workloadHash,
   files: [{ path: "apps/live-executor/src/server.mjs", sha256: "d".repeat(64) }] });
 const options = cli => ({ artifact: artifact(), manifest, cli, sourceVerifier, probe: proof,
   keyPath: "fixture-key-path-never-read", now: () => now });
@@ -69,7 +70,12 @@ test("artifact hash covers every attached result; exact count, all7scenarios and
   assert.equal(canonicalJSON({ z: [2, 1], a: { b: true, a: null } }), '{"a":{"a":null,"b":true},"z":[2,1]}');
   for (const changes of [{ slot_count: 25 }, { slot_count: 101 }, { capacity_units: 3 }, { capacity_units: 4.5 },
     { upper_bound_weight_per_minute: 3601 }, { scenarios: {} }, { environment: "TESTNET" },
-    { observed_at: new Date(now + 10_001).toISOString() }]) assert.throws(() => validateArtifact(artifact(changes), now), /EVIDENCE_INVALID/);
+    { web_workload_sha256: undefined }, { observed_at: new Date(now + 10_001).toISOString() }]) {
+    if (changes.web_workload_sha256 === undefined && Object.hasOwn(changes, "web_workload_sha256")) {
+      const missing = artifact(); delete missing.web_workload_sha256; missing.evidence_sha256 = artifactDigest(missing);
+      assert.throws(() => validateArtifact(missing, now), /EVIDENCE_INVALID/);
+    } else assert.throws(() => validateArtifact(artifact(changes), now), /EVIDENCE_INVALID/);
+  }
   const tampered = artifact(); tampered.results.tests++;
   assert.throws(() => validateArtifact(tampered, now), /EVIDENCE_INVALID/);
   for (const key of REQUIRED_SCENARIOS) {
@@ -119,6 +125,8 @@ test("same-release merge replaces only the exact count, retaining every other pr
   assert.equal((sql.match(/outcome:=coinops\.certify_executor_admission\(/g) ?? []).length, 1);
   assert.match(sql, /actual IS DISTINCT FROM expected/); assert.match(sql, /SHARE ROW EXCLUSIVE MODE/);
   assert.match(sql, /private\.coinops_slot_workload_profile\('executor-03','REAL',50\)/);
+  assert.match(sql, /set_config\('request.headers'/);
+  assert.match(sql, /profile->>'web_workload_sha256' IS DISTINCT FROM/);
   assert.doesNotMatch(sql, /UPDATE coinops\.(?:trading_engines|robot_v1)|DELETE FROM|INSERT INTO coinops\.robot_v1/i);
   const fresh = { p_target_sha: manifest.target_sha, p_runtime_sha256: manifest.runtime_sha256,
     p_node_version: manifest.node_version, p_policy_version: policy,
@@ -148,6 +156,7 @@ test("unverified fleet/current-main mismatch/unknown write response never retry 
     probe: shard => ({ ...proof(shard), code_loaded_evidence: "UNKNOWN" }) }), /FLEET_UNVERIFIED/);
   assert.equal(cli.writes.length, 0);
   await assert.rejects(certifySlotWorkload({ ...options(fakeCLI()), sourceVerifier: () => ({ ...sourceVerifier(), cached_main_sha: "f".repeat(40) }) }), /SOURCE_MISMATCH/);
+  await assert.rejects(certifySlotWorkload({ ...options(fakeCLI()), sourceVerifier: () => ({ ...sourceVerifier(), web_workload_sha256: "f".repeat(64) }) }), /SOURCE_MISMATCH/);
   const uncertain = fakeCLI(), original = uncertain.query;
   uncertain.query = (sql, field) => { if (field === "receipt") { uncertain.writes.push(sql); throw new Error("SLOT_WORKLOAD_CLI_JSON_INVALID"); } return original(sql, field); };
   await assert.rejects(certifySlotWorkload({ ...options(uncertain), record: true }), /OUTCOME_UNKNOWN_READ_BACK/);
@@ -171,8 +180,11 @@ test("actual PostgreSQL transaction uses official RPC once, retains profiles, CA
       create function coinops.executor_capacity_policy() returns jsonb language sql as $$select '{"version":"${policy}","incremental_weight":900,"binance_limit":6000,"admission_ratio":0.65}'::jsonb$$;`);
     const original = readFileSync(new URL("../../supabase/migrations/20260929212150_coinops_canonical_admission_policy.sql", import.meta.url), "utf8");
     await db.exec(original.slice(original.indexOf("create function coinops.certify_executor_admission("), original.indexOf("revoke all on function coinops.certify_executor_admission(")));
-    const variable = readFileSync(new URL("../../supabase/migrations/20261016161550_configurable_live_engine_slots.sql", import.meta.url), "utf8");
-    await db.exec(variable.slice(variable.indexOf("create or replace function private.coinops_slot_workload_profile("), variable.indexOf("revoke all on function private.coinops_slot_workload_profile(")));
+    const variable = readFileSync(new URL("../../supabase/migrations/20261016192533_bind_slot_workload_web_fingerprint.sql", import.meta.url), "utf8");
+    await db.exec("create role anon; create role authenticated; create role service_role;");
+    await db.exec(variable);
+    for (const [role, allowed] of [["anon", false], ["authenticated", false], ["service_role", true]])
+      assert.equal((await db.query("select has_function_privilege($1,'private.coinops_slot_workload_profile(text,text,integer)','EXECUTE') allowed", [role])).rows[0].allowed, allowed);
     const value = controls();
     const literal = value => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
     for (const row of value.registry) await db.query(`insert into coinops.executor_shards values($1,$2,$3,6000,.65,900,now())`, [row.id, row.egress_ipv4, row.enabled]);
@@ -190,6 +202,16 @@ test("actual PostgreSQL transaction uses official RPC once, retains profiles, CA
         runtime_sha256: manifest.runtime_sha256, node_version: manifest.node_version, observed_at: new Date().toISOString() })) };
     const merged = mergeCertificate(cert, before, artifact());
     await db.exec(buildRecordSQL(before, merged, artifact()));
+    // CLI's request-local header must not leak to later sessions. These reads
+    // emulate actual PostgREST headers; legacy25 remains header-independent.
+    const profile = async (count, headers) => {
+      await db.query("select set_config('request.headers',$1,false)", [headers]);
+      return (await db.query("select private.coinops_slot_workload_profile('executor-03','REAL',$1) v", [count])).rows[0].v;
+    };
+    assert.equal((await profile(50, JSON.stringify({ "x-coinops-workload-sha256": workloadHash }))).code, "SLOT_WORKLOAD_CERTIFIED");
+    for (const headers of ["", "{}", "not-json", JSON.stringify({ "x-coinops-workload-sha256": "f".repeat(64) })])
+      assert.equal((await profile(50, headers)).code, "SLOT_WORKLOAD_UNCERTIFIED");
+    assert.equal((await profile(25, "not-json")).basis, "LEGACY_25_SLOT_PROFILE");
     const saved = await read();
     for (const row of saved.attestations) {
       const previous = before.attestations.find(old => old.shard_id === row.shard_id);

@@ -62,7 +62,7 @@ test("50 slots: three intermittent503s converge; fourth drains workers and safel
   for(const transientQuerySlots of [[1,25,50],[1,11,21,31]]){
     const f=await createHundredFillFixture({...options,transientQuerySlots});t.after(()=>f.db.close());
     if(transientQuerySlots.length===4){
-      await assert.rejects(reconcilePhase(f),error=>error instanceof LiveReadUnavailable&&error.path==="/v1/query-order");
+      await assert.rejects(reconcilePhase(f),error=>error instanceof LiveReadUnavailable&&error.path==="/v1/observe-order");
       const before={sql:f.metrics.sql,requests:f.requests.length};
       await new Promise(resolve=>setTimeout(resolve,40));
       assert.equal(f.metrics.sql,before.sql);assert.equal(f.requests.length,before.requests);

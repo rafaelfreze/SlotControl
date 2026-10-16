@@ -123,3 +123,32 @@ test("authenticated shard health accepts both exact rolling releases but never c
   assert.equal((await read("old-shard02")).gate, "ATTENTION");
   assert.equal((await read("new-shard02")).gate, "LIVE_EXECUTOR_ACTIVE");
 });
+
+test("large-engine health requires observer capability without another GET or weakening legacy25", async () => {
+  const scope = { operator_id: "fixture-operator", exchange_account_id: "fixture-account",
+    trading_engine_id: "fixture-engine", symbol: "SOLBRL", quote_asset: "BRL" };
+  const target = { shardId: "executor-03", ip: "203.0.113.3", base: "https://203.0.113.3",
+    secret: "fixture-health-secret-32-characters", validatedVersion: "test" };
+  for (const topology of [{ slot_count: 50 }, { slot_count: 100 }, { config: { slot_count: 50 } },
+    { engine: { slot_count: 50, config: { slot_count: 50 } } }]) {
+    for (const protocol of [undefined, 0, 2, "1", 1]) {
+      let calls = 0;
+      const fetcher = (async () => { calls++; return Response.json({ ...scope, ...healthy,
+        environment: "REAL", executor_shard_id: target.shardId, egress_ipv4: target.ip,
+        trading_enabled: true, kill_switch: false, order_observation_protocol: protocol }); }) as typeof fetch;
+      assert.equal((await loadLiveExecutorStatus(undefined, undefined, fetcher, undefined,
+        { ...scope, ...topology }, async () => target)).gate, protocol === 1 ? "LIVE_EXECUTOR_ACTIVE" : "ATTENTION");
+      assert.equal(calls, 1);
+    }
+  }
+  for (const topology of [{}, { slot_count: 25 }, { config: { slot_count: 25 } }]) {
+    assert.equal((await loadLiveExecutorStatus(undefined, undefined, (async () => Response.json({ ...scope,
+      ...healthy, environment: "REAL", executor_shard_id: target.shardId, egress_ipv4: target.ip,
+      trading_enabled: true, kill_switch: false })) as typeof fetch, undefined,
+    { ...scope, ...topology }, async () => target)).gate, "LIVE_EXECUTOR_ACTIVE");
+  }
+  assert.equal((await loadLiveExecutorStatus(undefined, undefined, (async () => Response.json({ ...scope,
+    ...healthy, environment: "REAL", executor_shard_id: target.shardId, egress_ipv4: target.ip,
+    trading_enabled: true, kill_switch: false, order_observation_protocol: 1 })) as typeof fetch, undefined,
+  { ...scope, slot_count: 50, config: { slot_count: 25 } }, async () => target)).gate, "ATTENTION");
+});

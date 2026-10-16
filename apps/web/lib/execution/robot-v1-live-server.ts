@@ -5,7 +5,7 @@ import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysic
 import { planAthLadder } from "./ath-ladder";
 import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
 import { buildLiveSizing, parseLiveRules, type LiveConfig, type RawLiveSymbol } from "./live-preparation";
-import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades,
+import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades, readLiveExecutorOrderObservation,
   createLiveExecutorOrder, cancelLiveExecutorOrder, proveLiveExecutorUnsentOrder, type LiveOrder,
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
@@ -458,9 +458,17 @@ function reconciliationFeeScope(run: Run) {
 }
 /** Invocation-local fee conversion only. Never retain balances, open orders,
  * filters or a state snapshot that could authorize a later exchange write. */
-function createReconciliationFeeValuation(run: Run, state: LiveExecutorState): ReconciliationFeeValuation {
-  const quote = state.bnb_quote_price ?? state.bnb_brl_price;
+function createReconciliationFeeValuation(run: Run, state?: LiveExecutorState): ReconciliationFeeValuation {
+  const quote = state?.bnb_quote_price ?? state?.bnb_brl_price;
   return { scope_key: reconciliationFeeScope(run), quote: quote ? { ...quote } : null };
+}
+function observeReconciliationFeeValuation(run: Run, state: LiveExecutorState, context: ReconciliationFeeValuation) {
+  if (context.scope_key !== reconciliationFeeScope(run))
+    throw new Error("COINOPS_LIVE_FEE_VALUATION_SCOPE_MISMATCH");
+  // Capture only a quote from a mandatory fresh financial observation. The
+  // context never retains that observation or authorizes another dispatch.
+  const quote = state.bnb_quote_price ?? state.bnb_brl_price;
+  context.quote = quote ? { ...quote } : null;
 }
 async function readReconciliationFeeValuation(run: Run, trades: LiveTrade[], context: ReconciliationFeeValuation) {
   if (context.scope_key !== reconciliationFeeScope(run))
@@ -496,7 +504,19 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
   if (feeValuation && feeValuation.scope_key !== reconciliationFeeScope(run))
     throw new Error("COINOPS_LIVE_FEE_VALUATION_SCOPE_MISMATCH");
   if (order.trades_reconciled && LIVE_TERMINAL_ORDER_STATUSES.has(order.status)) return order;
-  let observed = (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
+  // Creation/protection callers do not always have the phase-wide context.
+  // For large engines they still need only a BNB quote, and no quote at all
+  // when an acknowledged NEW TP has no trades. Preserve the legacy25 path.
+  if (!feeValuation && configuredEngineSlotCount(run.engine ?? run) > 25)
+    feeValuation = createReconciliationFeeValuation(run);
+  // A coherent, owned order+fills observation avoids querying the same exact
+  // order again in a second HTTP context. No financial snapshot is cached.
+  // Legacy25 remains on its previous query/trades protocol.
+  const coherentObservation = configuredEngineSlotCount(run.engine ?? run) > 25;
+  const orderObservation = coherentObservation
+    ? await readLiveExecutorOrderObservation(run, order.client_order_id, order.exchange_order_id) : null;
+  let observed = orderObservation ? orderObservation.order
+    : (await readLiveExecutorOrder(run, order.client_order_id, order.exchange_order_id)).order;
   if (observed && unchangedUnfilledResidentOrder(order, observed, run.symbol)) return order;
   if (!observed) {
     if (order.status !== "PREPARED") throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
@@ -539,6 +559,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
     if (order.side === "SELL" && !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_TP_EXECUTOR_UNAVAILABLE");
     const state = await readLiveExecutorState(run);
+    if (feeValuation) observeReconciliationFeeValuation(run, state, feeValuation);
     const rows = await runRows(service, run);
     assertLiveOrderPrice(run, rows, order, state.filters.priceTick);
     const expectedOwnedOpenIds = await assertExchangeMatchesLedger(run, rows.orders, state,
@@ -622,8 +643,14 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
   }
   if (observed.clientOrderId !== order.client_order_id || observed.symbol !== run.symbol
     || observed.side !== order.side) throw new Error("COINOPS_LIVE_ORDER_OWNERSHIP_MISMATCH");
-  const withTrades = await readLiveExecutorTrades(run, order.client_order_id, observed.orderId);
+  const withTrades = coherentObservation
+    ? orderObservation?.order ? orderObservation
+      : await readLiveExecutorOrderObservation(run, order.client_order_id, observed.orderId)
+    : await readLiveExecutorTrades(run, order.client_order_id, observed.orderId);
   if (!withTrades.order || !withTrades.trades) throw new Error("COINOPS_LIVE_ORDER_TRADES_UNAVAILABLE");
+  if (withTrades.order.orderId !== observed.orderId || withTrades.order.clientOrderId !== order.client_order_id
+    || withTrades.order.symbol !== run.symbol || withTrades.order.side !== order.side)
+    throw new Error("COINOPS_LIVE_ORDER_OWNERSHIP_MISMATCH");
   const feeQuote = feeValuation
     ? await readReconciliationFeeValuation(run, withTrades.trades, feeValuation)
     : (await readLiveExecutorState(run)).bnb_brl_price;
@@ -684,7 +711,8 @@ function operationOrders(orders: Order[], slot: Slot) {
     && order.operation_sequence === slot.operation_sequence);
 }
 
-async function cancelOwnedEntry(service: Service, run: Run, order: Order, onlyUnfilled = false) {
+async function cancelOwnedEntry(service: Service, run: Run, order: Order, onlyUnfilled = false,
+  feeValuation?: ReconciliationFeeValuation) {
   if (order.side !== "BUY" || !order.exchange_order_id
     || !["NEW", "PARTIALLY_FILLED"].includes(order.status))
     throw new Error("COINOPS_LIVE_BUY_NOT_CANCELABLE");
@@ -698,10 +726,10 @@ async function cancelOwnedEntry(service: Service, run: Run, order: Order, onlyUn
     if (!onlyUnfilled) throw error;
     // A timeout is not a failed cancellation. Read the SAME order; never send
     // another cancel/create based on the error alone.
-    await reconcileOrder(service, run, order);
+    await reconcileOrder(service, run, order, feeValuation);
     if (order.status !== "CANCELED" && amount(order.executed_quantity) === 0) throw error;
   }
-  await reconcileOrder(service, run, order);
+  await reconcileOrder(service, run, order, feeValuation);
   if (onlyUnfilled && amount(order.executed_quantity) > 0) return false;
   if (order.status !== "CANCELED") throw new Error("COINOPS_LIVE_BUY_CANCEL_UNRECONCILED");
   return amount(order.executed_quantity) === 0 && amount(order.cumulative_quote) === 0 && order.trades_reconciled;
@@ -728,7 +756,7 @@ async function retireNeverSubmittedEntry(service: Service, run: Run, order: Orde
 }
 
 async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
-  state: LiveExecutorState) {
+  state: LiveExecutorState, feeValuation?: ReconciliationFeeValuation) {
   const filters = symbolFilters(state);
   // One complete immutable-gain observation per protection phase, not one per TP.
   let statuses: Awaited<ReturnType<typeof monthly>> | undefined;
@@ -737,7 +765,7 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
     let buys = orders.filter((item) => item.side === "BUY" && amount(item.executed_quantity) > 0);
     if (!buys.length) continue;
     for (const buy of buys.filter((item) => item.status === "PARTIALLY_FILLED"))
-      await cancelOwnedEntry(service, run, buy);
+      await cancelOwnedEntry(service, run, buy, false, feeValuation);
     orders = operationOrders(ledger.orders, slot);
     buys = orders.filter((item) => item.side === "BUY" && amount(item.executed_quantity) > 0);
     if (buys.some((item) => LIVE_ACTIVE_ORDER_STATUSES.has(item.status)))
@@ -771,7 +799,7 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
     const order = await prepareOrder(service, run, slot, tp, "SELL", "TP", revision,
       uncovered, null, price);
     ledger.orders.push(order);
-    await reconcileOrder(service, run, order);
+    await reconcileOrder(service, run, order, feeValuation);
   }
 }
 
@@ -1221,7 +1249,12 @@ async function checkpointLargeEngineProgress(service: Service, run: Run, started
   const ledger = await runRows(service, run);
   const state = await readLiveExecutorState(run);
   await assertAllPositionsProtected(run, ledger, state);
-  if (ledger.orders.some(order => amount(order.executed_quantity) > 0 && !order.trades_reconciled))
+  // The canonical sync keeps PARTIALLY_FILLED non-terminal. Its resident TP
+  // may still have a completely accounted executed portion; only SQL can
+  // prove those immutable fill rows/sums and exact ownership. Never promote
+  // the terminal flag or treat a partial BUY as a safe checkpoint.
+  if (ledger.orders.some(order => amount(order.executed_quantity) > 0 && !order.trades_reconciled
+    && !(order.side === "SELL" && order.purpose === "TP" && order.status === "PARTIALLY_FILLED")))
     throw new Error("COINOPS_LIVE_RECONCILIATION_PROGRESS_UNSETTLED");
   await renewLease(service, run);
   const recorded = await service.rpc("record_live_reconciliation_checkpoint", {
@@ -1612,6 +1645,13 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       throw new Error("COINOPS_LIVE_RUN_IDENTITY_INVALID");
     return await withLiveObservationRetryBudget(run, async () => {
     let ledger = await runRows(service, run);
+    // Logical slots are not concurrent BUYs. A large engine protects the
+    // entry it just observed before spending another entry/retry envelope.
+    // Ledger facts (not a process-local flag) remain the crash-safe cursor.
+    const entryQuantitiesBefore = new Map(ledger.orders.filter(order => order.side === "BUY")
+      .map(order => [order.id, amount(order.executed_quantity)]));
+    const acknowledgedTpIdsBefore = new Set(ledger.orders.filter(order => order.side === "SELL"
+      && order.exchange_order_id !== null && order.status !== "PREPARED").map(order => order.id));
     stage = "RECONCILE_ORDERS";
     const reconciliationState = await readLiveExecutorState(run);
     assertLiveResidentPrices(run, ledger, reconciliationState);
@@ -1630,7 +1670,12 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     let state = await readLiveExecutorState(run);
     assertLiveResidentPrices(run, ledger, state);
     stage = "PROTECT_TP";
-    await ensureTakeProfits(service, run, ledger, state);
+    await ensureTakeProfits(service, run, ledger, state, feeValuation);
+    const entryProtectedThisPass = Boolean(feeValuation && (
+      ledger.orders.some(order => order.side === "BUY"
+        && amount(order.executed_quantity) > (entryQuantitiesBefore.get(order.id) ?? 0))
+      || ledger.orders.some(order => order.side === "SELL" && order.exchange_order_id !== null
+        && order.status !== "PREPARED" && !acknowledgedTpIdsBefore.has(order.id))));
     stage = "CREDIT_SLOTS";
     const yieldForProgress = async (phase: "CREDIT_SLOTS" | "RECYCLE_SLOTS", concentratedSettlement = false) => {
       const previousStage = stage;
@@ -1638,7 +1683,12 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       try { return await checkpointLargeEngineProgress(service, run, startedAt, phase, concentratedSettlement); }
       finally { stage = previousStage; }
     };
-    if (await yieldForProgress("CREDIT_SLOTS", concentratedSettlement))
+    // This is a normal, persisted reconciliation boundary, not a pause or a
+    // completed/fresh reconciliation. It cannot continue immediately into a
+    // second BUY: the next normal invocation resumes the same ledger under a
+    // fresh lease. The checkpoint independently proves every resident TP and
+    // settled fill before yielding; ambiguity still fails closed.
+    if (await yieldForProgress("CREDIT_SLOTS", concentratedSettlement || entryProtectedThisPass))
       return { status: "RETRY", code: "COINOPS_LIVE_RECONCILIATION_PROGRESS" };
     // Credit consumes only the just-observed quantity step to classify the
     // already-settled residual. It cannot authorize an order. Keep the legacy
@@ -1689,9 +1739,17 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       stage = "ASSERT_NEW_POSITION";
       const after = await runRows(service, run);
       state = await readLiveExecutorState(run);
-      await ensureTakeProfits(service, run, after, state);
+      await ensureTakeProfits(service, run, after, state, feeValuation);
       state = await readLiveExecutorState(run);
       await assertAllPositionsProtected(run, after, state);
+      // In a new large-engine cycle, INITIAL_SUBMITTED would otherwise cause
+      // the continuation coordinator to enter again immediately and submit a
+      // second BUY in the same outer call. End only after its TP/ledger proof;
+      // the next normal lease resumes the unchanged canonical strategy.
+      if (feeValuation && after.orders.some(order => order.side === "BUY"
+        && amount(order.executed_quantity) > (entryQuantitiesBefore.get(order.id) ?? 0))
+        && await yieldForProgress("CREDIT_SLOTS", true))
+        return { status: "RETRY", code: "COINOPS_LIVE_RECONCILIATION_PROGRESS" };
     }
     const finalLedger = await runRows(service, run);
     stage = "CONFIRM_CAPITAL_REFRESH";

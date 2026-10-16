@@ -5,6 +5,7 @@ import { shardedEngineMap } from "@/lib/execution/sharded-engine-map";
 import { criticalAlertsForRun, evaluateFastRun, type FastAccount, type FastAlert, type FastEngine, type FastOrder,
   type FastRun, type FastSlot, type FastPreparation } from "./watchdog-policy";
 import { completeWatchdogRows } from "./watchdog-read";
+import { readPartialTpCheckpointProof } from "./partial-tp-proof";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type ScopedRun = FastRun & { product_id: string; tenant_id: string; user_id: string;
@@ -133,7 +134,7 @@ export async function runServerWatchdog() {
         .eq("tenant_id", tenantId).in("run_id", runs.map((run) => run.id))
         .order("id").range(start, end).abortSignal(signal)),
       completeWatchdogRows<FastOrder>((start, end, signal) => service.from("robot_v1_live_orders")
-        .select("id,run_id,slot_id,operator_id,trading_engine_id,exchange_account_id,client_order_id,side,purpose,status,exchange_order_id,executed_quantity,trades_reconciled,requested_quantity,price,operation_sequence,revision", { count: "exact" })
+        .select("id,run_id,slot_id,operator_id,trading_engine_id,exchange_account_id,client_order_id,side,purpose,status,exchange_order_id,executed_quantity,trades_reconciled,requested_quantity,price,operation_sequence,revision,cumulative_quote,fee_base,fee_quote,fee_other", { count: "exact" })
         .eq("tenant_id", tenantId).in("run_id", runs.map((run) => run.id))
         .or("status.in.(PREPARED,NEW,PARTIALLY_FILLED,UNKNOWN,SUBMITTING,PENDING_CANCEL),and(executed_quantity.gt.0,trades_reconciled.eq.false),and(executed_quantity.gt.0,trades_reconciled.is.null)")
         .order("id").range(start, end).abortSignal(signal)),
@@ -159,6 +160,13 @@ export async function runServerWatchdog() {
   const groupedOrders = new Map<string, FastOrder[]>();
   for (const slot of slots) groupedSlots.set(slot.run_id, [...(groupedSlots.get(slot.run_id) ?? []), slot]);
   for (const order of orders) groupedOrders.set(order.run_id, [...(groupedOrders.get(order.run_id) ?? []), order]);
+  const partialProofs = new Map<string, unknown>();
+  await Promise.all(runs.map(async run => {
+    const proof = await readPartialTpCheckpointProof((runId, checkpoint, signal) => service.rpc(
+      "prove_partial_tp_checkpoint_fills", { p_run_id: runId, p_expected_checkpoint: checkpoint }, { get: true })
+      .abortSignal(signal), run, engines.get(run.trading_engine_id)?.slot_count ?? 25, groupedOrders.get(run.id) ?? []);
+    if (proof) partialProofs.set(run.id, proof);
+  }));
   const open = (openResult.data ?? []) as Incident[];
   const activeWatchdogAlerts = new Set((alertsResult.data ?? [])
     .filter((item) => item.alert_key.startsWith("WATCHDOG:"))
@@ -174,7 +182,7 @@ export async function runServerWatchdog() {
       engine: engines.get(run.trading_engine_id) ?? null, account, shardId,
       slots: groupedSlots.get(run.id) ?? [], orders: groupedOrders.get(run.id) ?? [], alerts,
       configUpdate: updates.get(run.trading_engine_id) ?? null,
-      preparation: preparations.get(run.trading_engine_id) ?? null, now }) };
+      preparation: preparations.get(run.trading_engine_id) ?? null, partialTpProof: partialProofs.get(run.id), now }) };
   });
   if (findings.some((item) => item.shardId === "unassigned"))
     throw new Error("COINOPS_WATCHDOG_OWNERSHIP_UNKNOWN");

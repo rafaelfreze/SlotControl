@@ -4,10 +4,9 @@
  * never reads dotenv, tokens, vaults, credentials or financial runtime state.
  * Usage: node tools/operations/certify-slot-workload.mjs --verify --evidence reviewed.json --ssh-key <existing-key-path>
  * --record is a separate, explicit operation; an uncertain result requires readback, never a blind retry.
- * IMPORTANT: the existing SQL slot-profile gate does NOT compare web_sha. This
- * CLI binds an artifact to current main at registration only. A relevant web
- * financial/observation change MUST be re-certified before new admission; old
- * persisted profiles are NOT automatically invalidated by a later web deploy. */
+ * Nonlegacy profiles bind the deterministic financial source fingerprint, not
+ * the whole web commit. The SQL readback requires the fingerprint-aware guard;
+ * relevant source changes require re-certification, docs-only changes do not. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
@@ -17,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { discoverRuntimeFiles, evaluateFleetParity, officialGitSource, readManifest, sshEvidence }
   from "../../apps/live-executor/deploy/fleet-parity.mjs";
 import { certificateForFleet } from "../../apps/live-executor/deploy/capacity-preflight.mjs";
+import { GENERATED_FILE, verifyFinancialWorkloadManifest } from "./financial-workload-fingerprint.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const REF = "otdfpmsegjxpqrzisfmi", ORGANIZATION = "pzgqtvaitaawqgaabxve";
@@ -51,7 +51,8 @@ export function validateArtifact(artifact, now = Date.now()) {
     || !Number.isFinite(artifact.upper_bound_weight_per_minute) || artifact.upper_bound_weight_per_minute <= 0
     || artifact.upper_bound_weight_per_minute > artifact.capacity_units * 900
     || !SHA.test(artifact.web_sha ?? "") || !SHA.test(artifact.target_sha ?? "")
-    || !HASH.test(artifact.runtime_sha256 ?? "") || !/^v24\.\d+\.\d+$/.test(artifact.node_version ?? "")
+    || !HASH.test(artifact.runtime_sha256 ?? "") || !HASH.test(artifact.web_workload_sha256 ?? "")
+    || !/^v24\.\d+\.\d+$/.test(artifact.node_version ?? "")
     || typeof artifact.policy_version !== "string" || !artifact.policy_version
     || !object(artifact.scenarios) || REQUIRED_SCENARIOS.some(key => artifact.scenarios[key] !== "PASS")
     || typeof artifact.observed_at !== "string" || !Number.isFinite(Date.parse(artifact.observed_at))
@@ -152,13 +153,16 @@ export function verifyRuntimeSource(manifest, repo = ROOT) {
     return Buffer.from(readFileSync(file, "utf8").replace(/\r\n/g, "\n"));
   });
   if (runtime.runtime_sha256 !== manifest.runtime_sha256) fail("SLOT_WORKLOAD_RUNTIME_FINGERPRINT_MISMATCH");
-  const paths = [...runtime.files.map(row => row.path), MANIFEST];
+  const financial = verifyFinancialWorkloadManifest({ repo });
+  const paths = [...new Set([...runtime.files.map(row => row.path), MANIFEST,
+    ...financial.files.map(row => row.path), GENERATED_FILE])];
   const tracked = git(repo, ["ls-files", "--stage", "--", ...paths]).trim().split(/\r?\n/);
   if (tracked.length !== paths.length || tracked.some(line => !/^100(?:644|755) [a-f0-9]{40} 0\t/.test(line)))
     fail("SLOT_WORKLOAD_LOCAL_SOURCE_INVALID");
   git(repo, ["diff", "--exit-code", manifest.target_sha, source.cached_main_sha, "--", ...runtime.files.map(row => row.path)]);
   git(repo, ["diff", "--exit-code", "HEAD", "--", ...paths]);
-  return { ...source, ...runtime, status: "FLEET_CODE_PASS", target_sha: manifest.target_sha, compared_sha: source.cached_main_sha };
+  return { ...source, ...runtime, web_workload_sha256: financial.web_workload_sha256,
+    workload_file_count: financial.file_count, status: "FLEET_CODE_PASS", target_sha: manifest.target_sha, compared_sha: source.cached_main_sha };
 }
 
 const registrySQL = `(select coalesce(jsonb_agg(jsonb_build_object('id',id,'egress_ipv4',egress_ipv4::text,
@@ -226,7 +230,8 @@ export function mergeCertificate(certificate, controls, artifact) {
         node_version: artifact.node_version, web_sha: artifact.web_sha,
         profiles: [...preserved, { slot_count: artifact.slot_count, status: "PASS", capacity_units: artifact.capacity_units,
           upper_bound_weight_per_minute: artifact.upper_bound_weight_per_minute,
-          evidence_sha256: artifact.evidence_sha256, web_sha: artifact.web_sha, observed_at: artifact.observed_at,
+          evidence_sha256: artifact.evidence_sha256, web_sha: artifact.web_sha,
+          web_workload_sha256: artifact.web_workload_sha256, observed_at: artifact.observed_at,
           scenarios: artifact.scenarios }].sort((a, b) => a.slot_count - b.slot_count) };
     }
     return merged;
@@ -245,6 +250,7 @@ DO $slot_workload_record$
 DECLARE expected jsonb:=${sqlJSON(controls)}; cert jsonb:=${sqlJSON(certificate)};
  actual jsonb; outcome text; profile jsonb;
 BEGIN
+ PERFORM pg_catalog.set_config('request.headers',${sqlJSON({ "x-coinops-workload-sha256": artifact.web_workload_sha256 })}::text,true);
  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('coinops-admission-certification',0));
  LOCK TABLE coinops.executor_shards IN SHARE MODE;
  LOCK TABLE coinops.executor_admission_attestations,coinops.executor_admission_release IN SHARE ROW EXCLUSIVE MODE;
@@ -262,10 +268,12 @@ BEGIN
   OR profile->'capacity_units' IS DISTINCT FROM '${artifact.capacity_units}'::jsonb
   OR profile->'upper_bound_weight_per_minute' IS DISTINCT FROM '${artifact.upper_bound_weight_per_minute}'::jsonb
   OR profile->>'evidence_sha256' IS DISTINCT FROM '${artifact.evidence_sha256}'
+  OR profile->>'web_workload_sha256' IS DISTINCT FROM '${artifact.web_workload_sha256}'
   THEN RAISE EXCEPTION 'SLOT_WORKLOAD_RECORD_READBACK_FAILED'; END IF;
 END $slot_workload_record$;
 SELECT jsonb_build_object('status','SLOT_WORKLOAD_PROFILE_RECORDED','shard_id','${artifact.shard_id}',
- 'slot_count',${artifact.slot_count},'evidence_sha256','${artifact.evidence_sha256}') as receipt;
+ 'slot_count',${artifact.slot_count},'evidence_sha256','${artifact.evidence_sha256}',
+ 'web_workload_sha256','${artifact.web_workload_sha256}') as receipt;
 COMMIT;`;
 }
 
@@ -276,7 +284,8 @@ export async function certifySlotWorkload({ artifact, record = false, repo = ROO
   const source = sourceVerifier(manifest, repo);
   if (source.status !== "FLEET_CODE_PASS" || artifact.web_sha !== source.cached_main_sha
     || artifact.target_sha !== manifest.target_sha || artifact.runtime_sha256 !== manifest.runtime_sha256
-    || artifact.node_version !== manifest.node_version) fail("SLOT_WORKLOAD_EVIDENCE_SOURCE_MISMATCH");
+    || artifact.node_version !== manifest.node_version || artifact.web_workload_sha256 !== source.web_workload_sha256)
+    fail("SLOT_WORKLOAD_EVIDENCE_SOURCE_MISMATCH");
   cli.verifyProject();
   const controls = validateSnapshot(cli.query(SNAPSHOT_SQL, "snapshot"), manifest, now());
   if (artifact.policy_version !== controls.policy.version) fail("SLOT_WORKLOAD_EVIDENCE_SOURCE_MISMATCH");
@@ -294,14 +303,16 @@ export async function certifySlotWorkload({ artifact, record = false, repo = ROO
   const summary = { product: "CoinOps", project_ref: REF, schema: "coinops", shard_id: artifact.shard_id,
     slot_count: artifact.slot_count, capacity_units: artifact.capacity_units,
     upper_bound_weight_per_minute: artifact.upper_bound_weight_per_minute, evidence_sha256: artifact.evidence_sha256,
-    web_sha: artifact.web_sha, target_sha: manifest.target_sha, runtime_sha256: manifest.runtime_sha256,
+    web_sha: artifact.web_sha, web_workload_sha256: artifact.web_workload_sha256,
+    target_sha: manifest.target_sha, runtime_sha256: manifest.runtime_sha256,
     fleet: fleet.status, runtime_source: source.status, runtime_file_count: source.files.length,
     enabled_shards: enabled.length, changes_trading: false, admission_or_activation: false,
-    sql_has_automatic_web_sha_gate: false, recertify_after_relevant_web_change: true };
+    required_sql_workload_fingerprint_guard: true, recertify_after_relevant_web_change: true };
   if (!record) return { status: "SLOT_WORKLOAD_VERIFIED_NOT_RECORDED", ...summary };
   // Recheck current main/runtime after the SSH observations, before the only write.
   const finalSource = sourceVerifier(manifest, repo);
-  if (finalSource.status !== "FLEET_CODE_PASS" || finalSource.cached_main_sha !== source.cached_main_sha)
+  if (finalSource.status !== "FLEET_CODE_PASS" || finalSource.cached_main_sha !== source.cached_main_sha
+    || finalSource.web_workload_sha256 !== artifact.web_workload_sha256)
     fail("SLOT_WORKLOAD_EVIDENCE_SOURCE_MISMATCH");
   let receipt;
   try { receipt = cli.query(buildRecordSQL(after, certificate, artifact), "receipt"); }
@@ -311,7 +322,8 @@ export async function certifySlotWorkload({ artifact, record = false, repo = ROO
     throw error;
   }
   if (receipt?.status !== "SLOT_WORKLOAD_PROFILE_RECORDED" || receipt.shard_id !== artifact.shard_id
-    || receipt.slot_count !== artifact.slot_count || receipt.evidence_sha256 !== artifact.evidence_sha256)
+    || receipt.slot_count !== artifact.slot_count || receipt.evidence_sha256 !== artifact.evidence_sha256
+    || receipt.web_workload_sha256 !== artifact.web_workload_sha256)
     fail("SLOT_WORKLOAD_RECORD_OUTCOME_UNKNOWN_READ_BACK");
   return { status: receipt.status, ...summary };
 }

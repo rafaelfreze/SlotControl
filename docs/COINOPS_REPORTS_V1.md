@@ -1,6 +1,20 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v24: pausa intencional de novas BUY, sem interromper TP/fills/gains
+Contrato atual v27: publica `large_engine_owned_observation_protocol` com
+`CURRENT_CODE_CONTRACT`, sem inferir execução histórica ou capacidade. Somente
+N>25 usa `/v1/observe-order` GET-only para observar ordem/fills coerentes com
+ownership exato; quantidade, nocional e lado devem concordar. Resposta ausente,
+fill/cancel ambíguo e divergência continuam fail-closed. Diagnósticos transitórios
+tipados preservam `details.read_path=/v1/observe-order`, tentativas e HTTP nos
+alertas/eventos já exportados; não há novo dataset, polling ou coleta de custo.
+Cotação BNB com TTL60s é apenas para fees, nunca cache de autorização de saldo,
+ordens, filtros ou permissões. Motores25 conservam o protocolo anterior.
+Preserva v26: topologia por engine e progresso cooperativo monotônico, sem
+fabricar `last_reconciled_at`, e Watchdog RECONCILING limitado/protegido.
+Certificação de capacidade exata, fleet parity e admissão continuam separadas
+do protocolo funcional; regra presente não significa PASS de carga.
+
+Preserva v24: pausa intencional de novas BUY, sem interromper TP/fills/gains
 das posições antigas. Exporta `intentional_entry_pause_protection` e
 `paused_account_home_visibility`. `LIVE_PAUSED` e `RECONCILED` continuam em
 `LIVE_EXECUTION.csv`/JSON com allowlist de proteção. Pausa não é reset, não

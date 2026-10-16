@@ -8,7 +8,8 @@ import { resolveExecutorForEngine, withExecutorShard, type ExecutorEngineResolve
 import { accountBudgetPermitHeaders, type AccountBudgetReservation } from "./account-order-budget-permit.ts";
 import { AccountOrderNotSubmitted, signAccountOrderUnsentProof, verifyAccountOrderUnsentProof } from "./account-order-unsent-proof.ts";
 
-export type ExecutorEngineScope = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "symbol" | "quote_asset">;
+export type ExecutorEngineScope = Pick<EngineContext, "operator_id" | "exchange_account_id" | "trading_engine_id" | "symbol" | "quote_asset">
+  & { slot_count?: unknown; config?: unknown; engine?: { slot_count?: unknown; config?: unknown } };
 export type ExecutorContext = ExecutorEngineScope & { environment: "REAL"; decision_id: string; idempotency_key: string };
 export function executorContext(engine: ExecutorEngineScope, decisionId: string, key: string): ExecutorContext {
   return { operator_id: engine.operator_id, exchange_account_id: engine.exchange_account_id,
@@ -114,7 +115,7 @@ export async function proveLiveExecutorUnsentOrder(engine: ExecutorEngineScope, 
 }
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;
-async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades",
+async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-order" | "/v1/trades" | "/v1/observe-order",
   input: (key: string) => Record<string, unknown>, engine: ExecutorEngineScope, fetcher: typeof fetch = fetch,
   resolver: ExecutorEngineResolver = resolveExecutorForEngine): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -187,6 +188,53 @@ export async function readLiveExecutorTrades(engine: ExecutorEngineScope, client
   orderId: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
   return readWithRetry<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/trades",
     (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId }), engine, fetcher, resolver);
+}
+
+/** One fresh engine-scoped read of a coherent order/fill snapshot. Only a
+ * certified large-engine caller selects this versioned executor capability;
+ * this helper never submits/cancels, caches financial state or falls back to
+ * another shard. A missing ACK remains missing, never a zero-fill proof. */
+export async function readLiveExecutorOrderObservation(engine: ExecutorEngineScope, clientOrderId: string,
+  orderId?: string | null, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
+  for (let confirmation = 0; ; confirmation++) {
+    const result = await readWithRetry<{ order: LiveOrder | null; trades: LiveTrade[] | null }>("/v1/observe-order",
+      (key) => ({ ...executorContext(engine, key, key), clientOrderId, orderId: orderId ?? null }), engine, fetcher, resolver);
+    if (result.order === null ? result.trades !== null : !validOrderObservation(result, engine, clientOrderId, orderId))
+      throw new Error("EXECUTOR_ORDER_OBSERVATION_RESPONSE_INVALID");
+    if (result.order || !orderId || confirmation === 2) return result;
+    if (!reserveLiveObservationRetry(engine)) return result;
+    await new Promise(resolve => setTimeout(resolve, 250 * (confirmation + 1)));
+  }
+}
+
+function validOrderObservation(value: { order: LiveOrder | null; trades: LiveTrade[] | null },
+  engine: ExecutorEngineScope, clientOrderId: string, orderId?: string | null) {
+  const order = value.order, trades = value.trades;
+  if (!order || order.clientOrderId !== clientOrderId || order.symbol !== engine.symbol
+    || typeof order.orderId !== "string" || !/^\d+$/.test(order.orderId) || orderId && order.orderId !== orderId
+    || !["BUY", "SELL"].includes(order.side)
+    || !["NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"].includes(order.status)
+    || ![order.executedQuantity, order.cumulativeQuoteQuantity, order.price].every(value => Number.isFinite(value) && value >= 0)
+    || order.executedQuantity === 0 && order.cumulativeQuoteQuantity !== 0
+    || order.executedQuantity > 0 && order.cumulativeQuoteQuantity <= 0
+    || order.status === "NEW" && order.executedQuantity !== 0
+    || ["PARTIALLY_FILLED", "FILLED"].includes(order.status) && order.executedQuantity <= 0
+    || !Array.isArray(trades) || trades.length >= 1000) return false;
+  const seen = new Set<string>();
+  let quantity = 0, quote = 0;
+  for (const trade of trades) {
+    if (typeof trade.id !== "string" || !/^\d+$/.test(trade.id) || seen.has(trade.id)
+      || !Number.isFinite(trade.quantity) || trade.quantity <= 0
+      || !Number.isFinite(trade.quoteQuantity) || trade.quoteQuantity <= 0
+      || !Number.isFinite(trade.commission) || trade.commission < 0
+      || typeof trade.commissionAsset !== "string" || !trade.commissionAsset
+      || trade.isBuyer !== (order.side === "BUY") || typeof trade.filledAt !== "string"
+      || !Number.isFinite(Date.parse(trade.filledAt))) return false;
+    seen.add(trade.id); quantity += trade.quantity; quote += trade.quoteQuantity;
+  }
+  return Number.isFinite(quantity) && Number.isFinite(quote)
+    && Math.abs(quantity - order.executedQuantity) <= 1e-12
+    && Math.abs(quote - order.cumulativeQuoteQuantity) <= 1e-8;
 }
 export async function createLiveExecutorOrder(input: Record<string, unknown> & { clientOrderId: string }, engine: ExecutorEngineScope,
   decisionId: string,

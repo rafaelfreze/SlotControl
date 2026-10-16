@@ -5,7 +5,7 @@ import { largeEngineProgressAudit } from "./large-engine-progress-audit.ts";
 import { REPORT_VERSION } from "./filters.ts";
 
 test("v26 exports unfinished durable progress without credential/lease data or fabricated freshness", () => {
-  assert.equal(REPORT_VERSION, 26);
+  assert.equal(REPORT_VERSION, 27);
   const observed = "2026-10-16T18:00:00Z", last = "2026-10-16T17:54:00Z";
   const cp = { contract: "LARGE_ENGINE_PROGRESS_V1", run_id: "run", phase: "CREDIT_SLOTS", slot_count: 100,
     observed_at: observed, started_at: "2026-10-16T17:55:00Z", settled_orders: 100,
@@ -23,4 +23,6 @@ test("v26 exports unfinished durable progress without credential/lease data or f
   const rule = report.datasets.rules.find(item => item.parameter === "large_engine_normal_reconciliation")!;
   assert.match(String(rule.notes), /não renova data sem progresso/);
   assert.match(String(rule.notes), /não autoriza POST|nem autoriza POST/);
+  assert.match(String(rule.notes), /PARTIALLY_FILLED.*prova SQL exata/);
+  assert.match(String(rule.notes), /trades_reconciled não é alterada/);
 });

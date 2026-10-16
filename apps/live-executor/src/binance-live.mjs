@@ -183,6 +183,49 @@ export class BinanceLiveTransport {
   async ownedTrades(symbol, clientOrderId, orderId) {
     const owned = await this.queryOrder(symbol, clientOrderId, orderId);
     if (!owned || owned.orderId !== String(orderId)) throw new ExecutorRejection("EXECUTOR_ORDER_NOT_FOUND", 503);
+    return this.#tradesForObservedOrder(symbol, owned);
+  }
+
+  /** Fresh engine-owned order and its exact fills in one read-only context.
+   * Binance does not provide a transaction across these endpoints: require
+   * matching totals, confirming once if a fill raced the first observation.
+   * No snapshot, absence, or successful GET authorizes a financial dispatch. */
+  async observeOwnedOrder(symbol, clientOrderId, orderId = null) {
+    const observed = await this.queryOrder(symbol, clientOrderId, orderId);
+    if (!observed) return { order: null, trades: null };
+    const valid = (order) => {
+      if (!ACTIVE.has(order.status) && !TERMINAL.has(order.status)
+        || order.executedQuantity === 0 && order.cumulativeQuoteQuantity !== 0
+        || order.executedQuantity > 0 && order.cumulativeQuoteQuantity <= 0
+        || order.status === "NEW" && order.executedQuantity !== 0
+        || ["PARTIALLY_FILLED", "FILLED"].includes(order.status) && order.executedQuantity <= 0)
+        throw new ExecutorRejection("EXECUTOR_ORDER_RESPONSE_INVALID", 503);
+    };
+    valid(observed);
+    // The existing unchanged-unfilled resident shortcut already trusts this
+    // exact fresh order observation. No trade history exists for zero fills.
+    if (observed.executedQuantity === 0) return { order: observed, trades: [] };
+    const trades = await this.#tradesForObservedOrder(symbol, observed);
+    const quantity = trades.reduce((sum, trade) => sum + trade.quantity, 0);
+    const quote = trades.reduce((sum, trade) => sum + trade.quoteQuantity, 0);
+    if (!Number.isFinite(quantity) || !Number.isFinite(quote))
+      throw new ExecutorRejection("EXECUTOR_TRADE_INVALID", 503);
+    const agrees = (order) => Math.abs(quantity - order.executedQuantity) <= 1e-12
+      && Math.abs(quote - order.cumulativeQuoteQuantity) <= 1e-8;
+    if (agrees(observed)) return { order: observed, trades };
+    const confirmed = await this.queryOrder(symbol, clientOrderId, observed.orderId);
+    if (!confirmed) throw new ExecutorRejection("EXECUTOR_ORDER_OBSERVATION_INCOMPLETE", 503);
+    valid(confirmed);
+    if (confirmed.executedQuantity < observed.executedQuantity
+      || confirmed.cumulativeQuoteQuantity < observed.cumulativeQuoteQuantity
+      || TERMINAL.has(observed.status) && confirmed.status !== observed.status)
+      throw new ExecutorRejection("EXECUTOR_ORDER_RESPONSE_INVALID", 503);
+    if (!agrees(confirmed)) throw new ExecutorRejection("EXECUTOR_ORDER_OBSERVATION_INCOMPLETE", 503);
+    return { order: confirmed, trades };
+  }
+
+  async #tradesForObservedOrder(symbol, owned) {
+    const orderId = owned.orderId;
     // REST myTrades accepts symbol+orderId, but not orderId+fromId. An order
     // with 1000 fills is deliberately held for manual reconciliation rather
     // than silently accepting an incomplete page.

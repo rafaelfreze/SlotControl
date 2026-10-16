@@ -58,6 +58,11 @@ test("a checkpoint cannot hide critical financial alerts, a missing TP or an unc
       { ...f.engine, trading_engine_id: f.engine.id }), requested_quantity: .03, price: 515, purpose: "TP", operation_sequence: 1, revision: 1,
     executed_quantity: .01, trades_reconciled: false });
   assert.equal(evaluateFastRun(f).code, "WATCHDOG_FILL_UNRECONCILED");
+  const unavailable = { contract: "PARTIAL_TP_PROOF_UNAVAILABLE" };
+  assert.deepEqual(evaluateFastRun({ ...f, partialTpProof: unavailable }), {
+    state: "BLOCKED", code: "WATCHDOG_PARTIAL_TP_PROOF_UNAVAILABLE", recoverable: false });
+  const invalidBuy = { ...f.orders[0], side: "BUY", purpose: "ENTRY" };
+  assert.equal(evaluateFastRun({ ...f, orders: [invalidBuy], partialTpProof: unavailable }).code, "WATCHDOG_FILL_UNRECONCILED");
   f.orders[0].trades_reconciled = true;
   assert.equal(evaluateFastRun(f).state, "RECONCILING");
   f.slots[0].position_quantity = .03;
@@ -82,4 +87,28 @@ test("a later full reconciliation supersedes its checkpoint, while 25-slot engin
   const g = fixture(); g.run.slot_count = 25; g.engine.slot_count = 25; g.slots = g.slots.slice(0, 25);
   g.run.reconciliation_checkpoint = null; g.run.last_reconciled_at = new Date(now - 30_000).toISOString();
   assert.equal(evaluateFastRun(g).state, "HEALTHY");
+});
+
+test("an exact SQL partial-TP proof permits progress without claiming terminal reconciliation", () => {
+  const f = fixture(); f.engine.slot_count = 50; f.run.slot_count = 50; f.checkpoint.slot_count = 50; f.slots = f.slots.slice(0, 50);
+  f.slots[0].position_quantity = .034;
+  const order: FastOrder = { id: "partial-tp", run_id: f.run.id, slot_id: f.slots[0].id, side: "SELL", purpose: "TP",
+    status: "PARTIALLY_FILLED", exchange_order_id: "123", operator_id: f.run.operator_id,
+    exchange_account_id: f.account.id, trading_engine_id: f.engine.id, operation_sequence: 1, revision: 1,
+    client_order_id: liveClientOrderId(f.run.id, "SOL", 1, 1, "SELL", 1, { ...f.engine, trading_engine_id: f.engine.id }),
+    executed_quantity: .01, cumulative_quote: 5.15, requested_quantity: .044, price: 515,
+    fee_base: 0, fee_quote: 0, fee_other: [{ asset: "BNB", amount: .00000001 }], trades_reconciled: false };
+  f.orders.push(order);
+  const partialTpProof = { contract: "PARTIAL_TP_FILLS_PROOF_V1", run_id: f.run.id,
+    checkpoint: { ...f.checkpoint }, orders: [{ ...order, slot_position_quantity: .034 }] };
+  assert.equal(evaluateFastRun(f).code, "WATCHDOG_FILL_UNRECONCILED");
+  assert.equal(evaluateFastRun({ ...f, partialTpProof }).state, "RECONCILING");
+  assert.equal(order.trades_reconciled, false);
+  const mutations: Array<(p: typeof partialTpProof) => void> = [p => { p.run_id = "foreign"; }, p => { p.checkpoint.observed_at = new Date(now).toISOString(); },
+    p => { p.orders[0].executed_quantity = .011; }, p => { p.orders[0].slot_position_quantity = .033; },
+    p => { p.orders[0].fee_quote = .01; }, p => { p.orders[0].status = "FILLED"; }];
+  for (const mutate of mutations) {
+    const proof = structuredClone(partialTpProof); mutate(proof);
+    assert.equal(evaluateFastRun({ ...f, partialTpProof: proof }).state, "BLOCKED");
+  }
 });

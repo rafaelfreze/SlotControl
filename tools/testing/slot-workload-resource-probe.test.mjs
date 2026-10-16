@@ -5,10 +5,10 @@ import { shardedEngineMap } from "../../apps/web/lib/execution/sharded-engine-ma
 import { renderSlotWorkloadResourceProbe,runSlotWorkloadResourceProbe } from "./slot-workload-resource-probe.mjs";
 
 test("transport-only probe uses canonical shard scheduler and real per-engine4+1+1 order concurrency",async()=>{
-  const result=await runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap);
+  const result=await runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap,[25,50,100]);
   assert.equal(result.external_network_calls,0);assert.equal(result.environment_or_vault_reads,0);assert.equal(result.filesystem_writes,0);
   assert.equal(result.scope,"TRANSPORT_ONLY_NOT_FULL_STRATEGY_ENGINE");
-  assert.deepEqual(result.scenarios.map(row=>row.slot_count),[25,100]);
+  assert.deepEqual(result.scenarios.map(row=>row.slot_count),[25,50,100]);
   for(const row of result.scenarios){
     assert.equal(row.posts_or_deletes,0);assert.equal(row.foreign_engine_rejected,true);
     assert.equal(row.acknowledged_sell_peak_inflight_gets,row.slot_count>25?6:3);
@@ -16,7 +16,9 @@ test("transport-only probe uses canonical shard scheduler and real per-engine4+1
     assert.equal(row.engines_peak_by_shard["executor-03"],3);
     assert.ok(row.max_inflight_gets>=row.acknowledged_sell_peak_inflight_gets);
     assert.ok(row.state_peak_inflight_gets>0);assert.equal(row.reconciled_tp_observations,row.slot_count+50);
-    assert.equal(row.request_weight,162+(row.slot_count+50)*19);
+    assert.equal(row.request_weight,162+50*19+row.slot_count*(row.slot_count>25?10:19));
+    assert.equal(row.observation_protocol,row.slot_count>25?"ENGINE_ORDER_OBSERVATION_V1":"LEGACY_QUERY_TRADES");
+    assert.deepEqual(row.sibling_observation_protocols,["LEGACY_QUERY_TRADES","LEGACY_QUERY_TRADES"]);
     assert.ok(row.process_peak_rss_bytes>0);assert.ok(row.cpu_user_ms>=0);assert.ok(row.fixture_json_bytes>0);
   }
   assert.equal(result.queue_callbacks.implementation,"CANONICAL_SHARDED_ENGINE_MAP");
@@ -44,7 +46,10 @@ test("exact50 workload is selected explicitly; invalid counts cannot generate or
   assert.deepEqual(result.scenarios.map(row=>row.slot_count),[50]);
   assert.equal(result.scenarios[0].reconciled_tp_observations,100);
   assert.equal(result.scenarios[0].acknowledged_sell_peak_inflight_gets,6);
-  assert.equal(result.scenarios[0].request_weight,2062);
+  assert.equal(result.scenarios[0].request_weight,1612);
+  assert.equal(result.scenarios[0].private_weight,1540);
+  assert.equal(result.scenarios[0].public_weight,72);
+  assert.equal(result.scenarios[0].target_slot_capital_brl,22);
   for(const counts of [[],[1],[101],[50,50],[25,50,75,100],["50"]]){
     assert.throws(()=>renderSlotWorkloadResourceProbe("file:///opt/coinops/releases/test/apps/live-executor/src/binance-live.mjs",counts),/slot counts invalid/);
     await assert.rejects(runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap,counts),/slot counts invalid/);

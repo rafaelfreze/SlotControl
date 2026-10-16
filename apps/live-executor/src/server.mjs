@@ -19,7 +19,7 @@ import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/executio
 import { forwardTestnetRequest } from "./testnet-transport.mjs";
 import { createCapacityTelemetry } from "./capacity-telemetry.mjs";
 import { isTestnetEnabled } from "../../web/lib/execution/testnet-policy.ts";
-import { createAccountOrderBudgetReader } from "./account-order-budget.mjs";
+import { createAccountOrderBudgetReader, AccountOrderBudgetWindowExpired } from "./account-order-budget.mjs";
 import { accountOrderPolicyEnabled, enableAccountOrderPolicy, ACCOUNT_ORDER_POLICY } from "./account-order-policy.mjs";
 import { verifyAccountBudgetPermit } from "../../web/lib/execution/account-order-budget-permit.ts";
 import { signAccountOrderUnsentProof } from "../../web/lib/execution/account-order-unsent-proof.ts";
@@ -109,6 +109,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       caps: EXECUTOR_CAPS, latency_ms: now() - started };
     value.isolation_contract = ACCOUNT_ORDER_POLICY;
     value.account_order_budget_protocol = 1;
+    value.order_observation_protocol = 1;
     cachedHealth = { at: now(), value };
     return value;
   }
@@ -131,6 +132,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
       : path === "/v1/create-order" ? "CREATE_ORDER" : path === "/v1/cancel-order" ? "CANCEL_ORDER"
       : path === "/v1/state" ? "READ_STATE" : path === "/v1/query-order" ? "QUERY_ORDER"
       : path === "/v1/trades" ? "READ_TRADES"
+      : path === "/v1/observe-order" ? "OBSERVE_ORDER"
       : path === "/v1/prove-unsent-order" ? "UNSENT_ORDER_ATTESTATION"
       : path === "/v1/reconciliation" ? "READ_RECONCILIATION" : "DENIED";
     let outcome = "DENIED", status = 403, decisionId = null, symbol = null, keyHash = null, scope = null, legacyClient = false;
@@ -148,7 +150,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         return;
       }
       if (request.method !== "POST" || !["/v1/health", "/v1/capacity", "/v1/dry-run", "/v1/state", "/v1/query-order",
-        "/v1/trades", "/v1/prove-unsent-order", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
+        "/v1/trades", "/v1/observe-order", "/v1/prove-unsent-order", "/v1/reconciliation", "/v1/create-order", "/v1/cancel-order",
         "/v1/admin/credentials", "/v1/admin/registry", "/v1/admin/snapshot", "/v1/admin/order-budget", "/v1/admin/account-policy", "/v1/admin/promote",
         "/v1/admin/capital", "/v1/admin/account-cap", "/v1/admin/registry-append", "/v1/testnet/transport"].includes(path))
         throw new ExecutorRejection("EXECUTOR_ROUTE_DENIED", 404);
@@ -245,9 +247,17 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
         }
         if (!expectedEgressIp || await observeEgressIp(fetcher) !== expectedEgressIp)
           throw new ExecutorRejection("EXECUTOR_ACCOUNT_ORDER_BUDGET_SCOPE_DENIED", 503);
-        const snapshot = await readOrderBudget(input, new BinanceLiveTransport({ ...credential, fetcher, now }), input.symbols);
         scope = { operator_id: input.operator_id, exchange_account_id: input.exchange_account_id,
           environment: "REAL", executor_shard_id: shardId };
+        let snapshot;
+        try { snapshot = await readOrderBudget(input, new BinanceLiveTransport({ ...credential, fetcher, now }), input.symbols); }
+        catch (error) {
+          if (!(error instanceof AccountOrderBudgetWindowExpired)) throw error;
+          status = 409; outcome = error.code;
+          writeJson(response, status, { error: error.code, observation: { ...error.observation, ...scope,
+            executor_ip: expectedEgressIp, credential_ref: input.credential_ref, executor_version: version } });
+          return;
+        }
         status = 200; outcome = "READ_ONLY_ACCOUNT_ORDER_BUDGET";
         writeJson(response, 200, { ...snapshot, ...scope, executor_ip: expectedEgressIp,
           credential_ref: input.credential_ref, executor_version: version });
@@ -478,6 +488,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           clock_drift_ms: market.driftMs, binance_connectivity: "OK", account_permission: permission,
           egress_ipv4: ip, egress_ipv4_verified: ip === expectedEgressIp,
           isolation_contract: ACCOUNT_ORDER_POLICY, account_order_budget_protocol: 1,
+          order_observation_protocol: 1,
           account_order_budget_enforced: accountBudgetEnabled, unsent_recovery_protocol: 1,
           trading_enabled: flags.tradingEnabled, kill_switch: flags.killSwitch, latency_ms: now() - started };
         engineHealthCache.set(engine.trading_engine_id, { at: now(), value });
@@ -505,6 +516,14 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
             execution_caps: { engine: engine.hard_cap_quote,
               account: engine.account_cap_quote, max_order: engine.max_order_quote },
             open_orders: snapshot.openOrders, observed_at: new Date(now()).toISOString() });
+          return;
+        }
+        if (path === "/v1/observe-order") {
+          if (!Number.isInteger(engine.slot_count) || engine.slot_count <= 25)
+            throw new ExecutorRejection("EXECUTOR_ORDER_OBSERVATION_SCOPE_DENIED", 403);
+          const observed = await transport.observeOwnedOrder(symbol, input.clientOrderId, input.orderId ?? null);
+          outcome = "READ_ONLY"; status = 200;
+          writeJson(response, 200, { ...scope, ...observed });
           return;
         }
         if (path === "/v1/query-order" || path === "/v1/trades") {

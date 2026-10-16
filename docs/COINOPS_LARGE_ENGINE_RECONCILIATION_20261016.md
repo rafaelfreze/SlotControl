@@ -2,8 +2,10 @@
 
 Produto CoinOps / OnPlay Platform `otdfpmsegjxpqrzisfmi`, schema `coinops`.
 Este documento descreve código/testes, não certifica por si só Production ou
-autoriza uma ativação. A proposta é Thyely/SOLBRL/100×R$11/Executor03,
-gain3%, meta3, spacing1%/2%; nenhum motor anterior é redimensionado.
+autoriza uma ativação. A proposta vigente é Thyely/SOLBRL/50×R$22/Executor03,
+capitalR$1100, gain3%, meta3, spacing2%/3%; nenhum motor anterior é redimensionado.
+O pedido100×R$11/spacing1%/2% foi substituído pelo proprietário. Testes100 abaixo
+continuam como regressão/escala, nunca como parâmetro da nova operação.
 
 ## Causas comprovadas no caminho de 100 fills
 
@@ -40,6 +42,37 @@ esses problemas. As medidas abaixo não alteram preços, capital ou seleção.
   reentradas locais inventadas. NEXT BUY só é armada após concluir as fases.
 - Motores de 25 preservam snapshots por fill, retry e loop serial anteriores.
 
+## Observação coerente de ordens — otimização N>25
+
+O novo endpoint autenticado `/v1/observe-order` exige motor próprio com N>25,
+shard/conta/engine exatos e capability `order_observation_protocol=1` no health.
+Consulta a ordem uma vez e, quando executada, lê somente seus fills. Os totais
+de quantidade e cotação devem concordar. Se houve corrida entre as leituras,
+uma confirmação GET da mesma ordem pode estabelecer a coerência; divergência
+persistente usa erro transitório tipado de observação, nunca uma ordem repetida.
+Identidade inválida, colisão de trade e página incompleta permanecem fechadas.
+
+Uma ordem com execução zero pode retornar trades vazios, mas ausência retorna
+`order:null,trades:null`. ACK previamente conhecido ausente tem confirmações
+limitadas pelo orçamento GET antes de continuar desconhecido. Nenhum resultado
+deste endpoint, isoladamente, autoriza BUY, cancelamento ou resolução de claim.
+Após POST oficial, a mesma observação exata assenta o retorno antes do SQL sync.
+
+Em testes de componente: fill estável custa10weight em vez de19; confirmação
+de corrida14; observação de execução zero5. São inventários de componentes,
+não certificados de carga por minuto. Motores25 conservam o protocolo anterior.
+
+Criação/proteção N>25 também usa contexto local de taxa. O snapshot financeiro
+fresco obrigatório pré-POST pode fornecer somente sua cotação BNB; nenhum saldo,
+filtro, permissão ou ordem é retido para autorizar outro POST. TP NEW sem trades
+não precisa de cotação. Comissão denominada BNB, inclusive zero, continua exigindo
+cotação válida na moeda exata, com a mesma expiração60s e identidade completa.
+
+Certificação exige o fluxo ACTIVE integral com budgets compartilhados, relógio,
+retries, concorrência, checkpoints e sucessores. Não somar um subconjunto de
+componentes nem extrapolar50de25 para declarar upper bound. Regra e limites:
+`COINOPS_SLOT_WORKLOAD_CAPACITY_MODEL_20261016.md`.
+
 ## Checkpoint persistente e Watchdog
 
 Migration `20261016175026_large_engine_reconciliation_progress_checkpoint`:
@@ -63,6 +96,53 @@ fresco até150s e episódio até15min significa RECONCILING, nunca HEALTHY nem
 permissão para comprar. Perda de progresso volta a ser falha/stale local.
 Conclusão integral limpa o checkpoint, preservando eventos históricos.
 
+### TP parcialmente executado não significa fill desconhecido
+
+O sync canônico contabiliza cada fill imediatamente, mas conserva
+`trades_reconciled=false` até a ordem ser terminal. A migration local
+`20261016193756_prove_partial_tp_reconciliation_checkpoint` permite somente
+SELL PARTIALLY_FILLED com prova SQL exata: identidade dos fills imutáveis,
+somas de quantidade/quote/taxas canônicas, residual da operação e TP residente
+correto. Não muda essa flag, não credita gain antecipado e não amplia a exceção
+a BUY, estado desconhecido ou soma incompleta. Taxa em base que deixe o TP com
+quantidade excessiva continua falhando fechada.
+
+Watchdog solicita um único GET interno service-only por run checkpointado com
+TP parcial, nunca por fill. `prove_partial_tp_checkpoint_fills` deriva o conjunto
+atual no banco, exige o mesmo checkpoint fresco e retorna fatos exatos de
+ordem/posição/taxas. A policy compara esses fatos com sua leitura; corrida,
+falha/timeout, checkpoint diferente ou prova ausente não são confirmação.
+Timeout/erro de consulta é identificado como
+`WATCHDOG_PARTIAL_TP_PROOF_UNAVAILABLE`, permanecendo BLOCKED, sem resolver
+incidente financeiro. Negação SQL da prova e BUY/fill realmente incompletos
+continuam distintos (`WATCHDOG_FILL_UNRECONCILED`); indisponibilidade não é zero.
+Legado25 e caminhos sem parcial não fazem esse GET. Não há nova consulta Binance,
+cron ou dataset de observabilidade. Esta implementação local não comprova
+aplicação remota nem certificação de capacidade50/100.
+
+### Boundary após uma entrada protegida (motores maiores que25)
+
+Além do slice de120s e do burst de mais de25 TPs terminais, o reconciliador
+também encerra uma passagem depois de observar uma BUY com nova quantidade
+executada e proteger sua posição, ou reconhecer o TP que faltava após um crash.
+Compara fatos persistidos de BUY/TP, não um contador do processo. O boundary
+também se aplica após uma entrada criada em ARM_ENTRY: INITIAL_SUBMITTED não
+encadeia imediatamente outra BUY no mesmo episódio externo.
+
+Antes de retornar RETRY normal, o helper recarrega ledger e Binance, confirma
+ownership, quantidade residual e proteção integral e persiste o checkpoint sob
+lease. A próxima execução oficial continua o mesmo run/cursor; não é PAUSED,
+não cria uma segunda estratégia nem altera preço, spacing, meta ou gain.
+Uma NEXT BUY ainda não determinada será avaliada na próxima passagem normal.
+Isso reduz picos por passagem, mas **não constitui sozinho um rate limiter por
+IP nem uma prova de máximo por minuto**. A certificação continua independente.
+
+TP parcialmente preenchido permanece PARTIALLY_FILLED e não recebe a flag de
+terminal trades_reconciled. Somente a prova SQL dos fills imutáveis, suas somas,
+fees, ownership e posição residual pode permitir esse checkpoint; falha ou
+ausência dessa prova continua fechada. Não confundir fill parcial já contabilizado
+com a confirmação de que a ordem terminou.
+
 O sync financeiro existente recebe somente o endurecimento `lease_until <=
 clock_timestamp()` após o lock, para não usar a hora antiga de uma transação
 que aguardou outra na fila. Preços, taxas, créditos, RLS e ACLs são preservados.
@@ -76,7 +156,7 @@ reais, latência garantida de rede nem prova isolada de capacidade do hardware.
 Modelos de tempo devem declarar atraso e paralelismo, nunca apresentar tempo
 virtual ou soma de roundtrips como medição de Production.
 
-Relatórios contrato26 exportam checkpoint/evento sanitizado, sem lease token
+Relatórios contrato27 exportam checkpoint/evento sanitizado e o contrato de observação, sem lease token
 ou credencial e sem substituir o horário de reconciliação. Nenhum cron novo,
 infraestrutura paga ou chamada Binance por render é introduzido.
 
@@ -86,7 +166,7 @@ prova de que Production sofria timeout60 nem garante que todo cenário possível
 cabe em300s. O checkpoint120s é cooperativo; o orçamento integral do cron por
 shard também precisa caber no limite. A cadência não mudou.
 
-## Resultado da revisão de certificação
+## Evidência histórica anterior à otimização de observação
 
 Os testes funcionais não autorizam fabricar `SLOT_WORKLOAD_V1: PASS`.
 O inventário conservador revisado de um tick com100observações de fill,
@@ -106,4 +186,6 @@ certificado e o arredondamento conservador seguinte não cabe na política atual
 Não registrar perfil nem alterar headroom/limites para conseguir ativar.
 
 Publicação, SHA, admissão100 e ativação precisam de evidências próprias. Não
-reduzir headroom, inventar PASS, contornar filtros ou alterar R$11 para liberar.
+reduzir headroom, inventar PASS ou contornar filtros para liberar. O alvo atual
+de50×R$22 exige evidência própria; este inventário histórico100 não o reprova
+nem o certifica por herança.
