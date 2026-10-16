@@ -1681,4 +1681,3 @@ grant execute on function coinops.stage_operator_engine_plan(uuid,uuid,text,nume
 revoke all on function coinops.stage_operator_engine_plan(uuid,uuid,text,numeric,jsonb,uuid,text) from public,anon,authenticated;
 grant execute on function coinops.stage_operator_engine_plan(uuid,uuid,text,numeric,jsonb,uuid,text) to service_role;
 commit;
-
