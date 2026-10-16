@@ -173,8 +173,10 @@ export async function buildOperatorPresentation(client: Client, data: Props, reg
     && (selection.accountId === "ALL" || engine.exchange_account_id === selection.accountId)))
     throw new Error("COINOPS_ENGINE_SCOPE_DENIED");
   const engineData: Record<string, Props> = {};
-  const capsPromise = client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
-    .eq("operator_id", registry.operator.id);
+  // PostgREST builders are lazy; assimilate the thenable now so this independent
+  // RLS read overlaps the engine projection instead of adding a final round trip.
+  const capsPromise = Promise.resolve(client.from("account_quote_caps").select("exchange_account_id,quote_asset,hard_cap_quote")
+    .eq("operator_id", registry.operator.id));
   const homePreferencesPromise = readAccountHomePreferences(client, registry);
   const contexts = registry.engines.map((row) => resolveEngineContext(registry, {
     environment: row.environment, exchange_account_id: row.exchange_account_id, trading_engine_id: row.id,
