@@ -14,6 +14,13 @@ export const THYELY_SCOPE = Object.freeze({
   credential_ref: 'account_5580c0116ff144bdb56885932b424ceb', environment: 'REAL',
 });
 const IP = '167.71.37.166';
+export const THYELY_100_PLAN = Object.freeze({ slotCount: 100, perSlotQuote: 11, normalSpacing: .01, postAthSpacing: .02 });
+export const THYELY_50_PLAN = Object.freeze({ slotCount: 50, perSlotQuote: 22, normalSpacing: .02, postAthSpacing: .03 });
+function verifiedPlan(input) {
+  const plan = [THYELY_100_PLAN, THYELY_50_PLAN].find(known => Object.keys(known).every(key => known[key] === input?.[key]));
+  if (!plan) throw new Error('PREFLIGHT_SIZING_PLAN_DENIED');
+  return plan;
+}
 
 /** Additional deny-by-default transport fence, including reads made by the
  * canonical adapter. Redirects and credential-bearing alternate hosts fail.
@@ -157,7 +164,8 @@ export async function collectThyelyReadFacts({ transport, fetcher, expectedUidHa
       'Sizing is current-price evidence, not a future-price or fee guarantee.'] };
 }
 
-export function remoteReadProgram() {
+export function remoteReadProgram(input = THYELY_100_PLAN) {
+  const plan = verifiedPlan(input);
   return `import {loadEnvFile} from 'node:process';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,realpathSync} from 'node:fs';
@@ -189,6 +197,7 @@ try {
  const {BinanceLiveTransport}=await module('binance-live.mjs');
  const {buildLiveSizing,parseLiveRules}=await import(pathToFileURL(join(root,'apps/web/lib/execution/live-preparation.ts')).href);
  const scope=${JSON.stringify(THYELY_SCOPE)};
+ const previewPlan=${JSON.stringify(plan)};
  const directory=join(process.env.COINOPS_EXECUTOR_STATE_DIR,'credentials');
  const metadata=await credentialMetadata(directory,scope);
  if(metadata?.status!=='PASS'||!metadata.uidHash)throw new Error('PREFLIGHT_INSTALLED_IDENTITY_UNPROVEN');
@@ -196,8 +205,8 @@ try {
  try{
   const transport=new BinanceLiveTransport({...secret,fetcher:guarded});
   const size=(raw,price,observedAt)=>['NORMAL','POST_ATH'].map(regime=>{
-   const result=buildLiveSizing(parseLiveRules(raw),price,{asset:'SOL',symbol:'SOLBRL',quote_asset:'BRL',slot_count:100,gain_rate:.03,normal_spacing_rate:.01,post_ath_spacing_rate:.02,regime,monthly_target:3,configured_live_capital_brl:1100,max_order_notional_brl:11,max_total_exposure_brl:1100,config_version:1,live_enabled:false,updated_at:observedAt},1100,observedAt,Date.now(),{engineCap:1100,orderCap:11,accountCap:1100,quoteAsset:'BRL'});
-   return{regime,slot_count:100,valid_slots:result.validSlots,per_slot_quote:11,minimum_capital_quote:result.minimumCapitalBrl,recommended_per_slot_quote:result.recommendedSlotBrl,fee_policy:'CONSERVATIVE_0.2_PERCENT',failed_slots:result.slots.filter(row=>!row.valid).map(row=>row.physicalSlotNumber)};
+   const result=buildLiveSizing(parseLiveRules(raw),price,{asset:'SOL',symbol:'SOLBRL',quote_asset:'BRL',slot_count:previewPlan.slotCount,gain_rate:.03,normal_spacing_rate:previewPlan.normalSpacing,post_ath_spacing_rate:previewPlan.postAthSpacing,regime,monthly_target:3,configured_live_capital_brl:1100,max_order_notional_brl:previewPlan.perSlotQuote,max_total_exposure_brl:1100,config_version:1,live_enabled:false,updated_at:observedAt},1100,observedAt,Date.now(),{engineCap:1100,orderCap:previewPlan.perSlotQuote,accountCap:1100,quoteAsset:'BRL'});
+   return{regime,slot_count:previewPlan.slotCount,valid_slots:result.validSlots,per_slot_quote:previewPlan.perSlotQuote,minimum_capital_quote:result.minimumCapitalBrl,recommended_per_slot_quote:result.recommendedSlotBrl,fee_policy:'CONSERVATIVE_0.2_PERCENT',failed_slots:result.slots.filter(row=>!row.valid).map(row=>row.physicalSlotNumber)};
   });
   const result=await collectThyelyReadFacts({transport,fetcher:guarded,expectedUidHash:metadata.uidHash,hash:value=>createHash('sha256').update(value).digest('hex'),size});
   result.runtime={target_sha:root.split('/').pop(),node:process.version,service_user:service.User,nonroot:true};
@@ -208,15 +217,16 @@ try {
 }
 
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-export function preflightSshArguments() {
+export function preflightSshArguments(plan = THYELY_100_PLAN) {
   return ['-T', '-i', 'C:\\Users\\rafae\\.ssh\\coinops_executor_notebook_ed25519',
     '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10',
     `root@${IP}`, '/usr/local/bin/node', '--experimental-strip-types', '--input-type=module',
-    '-e', quote(remoteReadProgram())];
+    '-e', quote(remoteReadProgram(plan))];
 }
-export async function inspectThyelyPreflight() {
+export async function inspectThyelyPreflight(input = THYELY_100_PLAN) {
+  const plan = verifiedPlan(input);
   return new Promise((accept, reject) => {
-    const child = spawn('ssh.exe', preflightSshArguments(), { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn('ssh.exe', preflightSshArguments(plan), { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '', stderr = '', bytes = 0;
     const timer = setTimeout(() => child.kill(), 110000);
     child.stdout.on('data', chunk => { bytes += chunk.length; if (bytes > 262144) child.kill(); else stdout += chunk; });
@@ -230,17 +240,19 @@ export async function inspectThyelyPreflight() {
         const result = JSON.parse(stdout.trim());
         if (result.status !== 'READ_OBSERVATION_ONLY_NOT_ADMISSION' || result.account !== 'Thyely'
           || result.environment !== 'REAL' || result.executor_shard_id !== 'executor-03'
-          || result.executor_ip !== IP || result.financial_writes !== 0) throw new Error();
+          || result.executor_ip !== IP || result.financial_writes !== 0
+          || !Array.isArray(result.sizing) || result.sizing.length !== 2
+          || result.sizing.some(row => row.slot_count !== plan.slotCount || row.per_slot_quote !== plan.perSlotQuote)) throw new Error();
         accept(result);
       } catch { reject(new Error('PREFLIGHT_OUTPUT_NOT_CONFIRMED')); }
     });
   });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (process.argv.length !== 3 || process.argv[2] !== '--read-only-thyely-03') {
-    console.error('Explicit --read-only-thyely-03 is required. No action taken.'); process.exitCode = 2;
+  if (process.argv.length !== 3 || !['--read-only-thyely-03', '--read-only-thyely-03-50'].includes(process.argv[2])) {
+    console.error('Explicit --read-only-thyely-03 or --read-only-thyely-03-50 is required. No action taken.'); process.exitCode = 2;
   } else {
-    try { console.log(JSON.stringify(await inspectThyelyPreflight(), null, 2)); }
+    try { console.log(JSON.stringify(await inspectThyelyPreflight(process.argv[2].endsWith('-50') ? THYELY_50_PLAN : THYELY_100_PLAN), null, 2)); }
     catch (error) { console.error(/^PREFLIGHT_[A-Z_]+$/.test(error?.message ?? '') ? error.message : 'PREFLIGHT_NOT_CONFIRMED'); process.exitCode = 1; }
   }
 }

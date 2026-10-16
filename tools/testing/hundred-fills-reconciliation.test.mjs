@@ -53,8 +53,20 @@ function requestWeight(url) {
   assert.fail(`Unexpected exchange request ${url.pathname}`);
 }
 
-async function fixture({ fillCount = 100, crashAfterSync = null, crashAfterCredit = null, transientQuerySlots = [], clockFollowsModel = true,
+async function fixture({ slotCount = 100, slotCapital = 11, normalSpacingRate = .01, postAthSpacingRate = .02,
+  gainRate = .03, monthlyTarget = null, fillCount = slotCount, crashAfterSync = null, crashAfterCredit = null, transientQuerySlots = [], clockFollowsModel = true,
   progressCheckpoint = false, sqlLatencyMs = 150, exchangeLatencyMs = 150, pacedLatencyScale = null } = {}) {
+  topology.validateEngineSlotCount(slotCount);
+  assert.ok(Number.isInteger(fillCount)&&fillCount>=0&&fillCount<=slotCount,"fill count must fit the exact topology");
+  assert.ok(Number.isFinite(slotCapital)&&slotCapital>0&&Math.round(slotCapital*100)===slotCapital*100,"slot capital must be positive cents");
+  for(const rate of [normalSpacingRate,postAthSpacingRate,gainRate])assert.ok(Number.isFinite(rate)&&rate>0&&rate<1);
+  assert.ok(monthlyTarget===null||Number.isSafeInteger(monthlyTarget)&&monthlyTarget>0);
+  const targetCapital=slotCount*slotCapital,quantity=slotCapital/500,sellPrice=500*(1+gainRate),sellQuote=slotCapital*(1+gainRate);
+  const engine={...scope,id:id(4),environment:"REAL",base_asset:"SOL",legacy_compatible:false,
+    slot_count:slotCount,executor_shard_id:"executor-03",status:"ACTIVE",engine_kill_switch:false,
+    global_kill_switch:false,account_kill_switch:false,hard_cap_quote:targetCapital};
+  const configuration={slot_count:slotCount,normal_spacing_rate:normalSpacingRate,post_ath_spacing_rate:postAthSpacingRate,gain_rate:gainRate,
+    ...(monthlyTarget===null?{}:{monthly_target:monthlyTarget})};
   const db = new PGlite(), now = Date.now(), requests = [];
   // A logical-clock sensitivity fixture drives TTL assertions; it is not an
   // exact distributed scheduler or a Production latency measurement. The
@@ -109,17 +121,17 @@ async function fixture({ fillCount = 100, crashAfterSync = null, crashAfterCredi
       values('${id(1)}','${id(3)}','${id(90)}','${id(91)}','ACTIVE',false);
     insert into coinops.exchange_accounts(id,operator_id,display_name,status,kill_switch) values('${id(2)}','${id(1)}','Synthetic Thyely','ACTIVE',false);
     insert into coinops.trading_engines(id,operator_id,exchange_account_id,environment,symbol,base_asset,quote_asset,status,kill_switch,config,slot_count,executor_shard_id)
-      values('${id(4)}','${id(1)}','${id(2)}','REAL','SOLBRL','SOL','BRL','ACTIVE',false,'{"slot_count":100}',100,'executor-03'),
+      values('${id(4)}','${id(1)}','${id(2)}','REAL','SOLBRL','SOL','BRL','ACTIVE',false,'${JSON.stringify(configuration)}',${slotCount},'executor-03'),
       ('${id(5)}','${id(1)}','${id(2)}','REAL','SOLBRL','SOL','BRL','ACTIVE',false,'{"slot_count":25}',25,'executor-01');
-    insert into coinops.robot_v1_live_preparations(product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,asset,symbol,quote_asset,slot_count)
-      values('${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(4)}','SOL','SOLBRL','BRL',100);
+    insert into coinops.robot_v1_live_preparations(product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,asset,symbol,quote_asset,slot_count,monthly_target)
+      values('${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(4)}','SOL','SOLBRL','BRL',${slotCount},${monthlyTarget??"null"});
     insert into coinops.robot_v1_live_runs(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,asset,symbol,quote_asset,status,
       anchor_price,slot_notional_brl,gain_rate,entry_spacing,entry_regime,config_version,config_snapshot,strategy_version,lease_owner,lease_until)
-      values('${id(6)}','${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(4)}','SOL','SOLBRL','BRL','ACTIVE',500,11,.03,.01,'NORMAL',1,'{"slot_count":100}','4.3.1','${id(7)}',now()+interval '5 minutes');
+      values('${id(6)}','${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(4)}','SOL','SOLBRL','BRL','ACTIVE',500,${slotCapital},${gainRate},${normalSpacingRate},'NORMAL',1,'${JSON.stringify(configuration)}','4.3.1','${id(7)}',now()+interval '5 minutes');
     insert into coinops.robot_v1_live_slots(id,run_id,product_id,tenant_id,user_id,slot_number,entry_state,position_quantity,position_committed_brl,target_buy_price,entry_reference_price,operational_rank)
-      select ('00000000-0000-4000-8001-'||lpad(n::text,12,'0'))::uuid,'${id(6)}','${id(90)}','${id(91)}','${id(3)}',n,'OPEN',.022,11,500,500,n from generate_series(1,100)n;
+      select ('00000000-0000-4000-8001-'||lpad(n::text,12,'0'))::uuid,'${id(6)}','${id(90)}','${id(91)}','${id(3)}',n,'OPEN',${quantity},${slotCapital},500,500,n from generate_series(1,${slotCount})n;
     insert into coinops.robot_v1_live_slot_accounts(product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,asset,slot_number,balance_brl,contribution_brl)
-      select '${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(4)}','SOL',n,11,11 from generate_series(1,100)n;
+      select '${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(4)}','SOL',n,${slotCapital},${slotCapital} from generate_series(1,${slotCount})n;
     insert into coinops.robot_v1_live_slot_accounts(product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,asset,slot_number,balance_brl,contribution_brl)
       select '${id(90)}','${id(91)}','${id(3)}','${id(1)}','${id(2)}','${id(5)}','SOL',n,11,11 from generate_series(1,25)n;`);
   const exchange = new Map();
@@ -131,25 +143,25 @@ async function fixture({ fillCount = 100, crashAfterSync = null, crashAfterCredi
       await query(`insert into coinops.robot_v1_live_orders(id,run_id,slot_id,product_id,tenant_id,user_id,slot_number,operation_sequence,
         side,purpose,revision,client_order_id,exchange_order_id,status,requested_quantity,price,executed_quantity,cumulative_quote,
         trades_reconciled,submission_guarded_at,config_snapshot)
-        values($1,$2,$3,$4,$5,$6,$7,1,$8,$9,1,$10,$11,$12,.022,$13,$14,$15,$16,now(),'{"gain_rate":0.03,"entry_spacing":0.01}')`,
+        values($1,$2,$3,$4,$5,$6,$7,1,$8,$9,1,$10,$11,$12,${quantity},$13,$14,$15,$16,now(),'${JSON.stringify({gain_rate:gainRate,entry_spacing:normalSpacingRate})}')`,
       [orderId,id(6),slot.id,id(90),id(91),id(3),slot.slot_number,side,side === "BUY" ? "ENTRY" : "TP",client,exId,
-        side === "BUY" ? "FILLED" : "NEW",side === "BUY" ? 500 : 515,side === "BUY" ? .022 : 0,side === "BUY" ? 11 : 0,side === "BUY"]);
+        side === "BUY" ? "FILLED" : "NEW",side === "BUY" ? 500 : sellPrice,side === "BUY" ? quantity : 0,side === "BUY" ? slotCapital : 0,side === "BUY"]);
       if (side === "BUY") await query(`insert into coinops.robot_v1_live_fills(order_id,product_id,tenant_id,user_id,symbol,exchange_trade_id,
-        quantity,quote_quantity,commission,commission_asset,commission_brl,filled_at) values($1,$2,$3,$4,'SOLBRL',$5,.022,11,0,'BRL',0,$6)`,
+        quantity,quote_quantity,commission,commission_asset,commission_brl,filled_at) values($1,$2,$3,$4,'SOLBRL',$5,${quantity},${slotCapital},0,'BRL',0,$6)`,
       [orderId,id(90),id(91),id(3),exId,new Date(now).toISOString()]);
       const filled = side === "BUY" || slot.slot_number <= fillCount;
       exchange.set(exId, { symbol: "SOLBRL", clientOrderId: client, orderId: Number(exId), side,
-        status: filled ? "FILLED" : "NEW", executedQty: filled ? ".022" : "0",
-        cummulativeQuoteQty: filled ? side === "BUY" ? "11" : "11.33" : "0", price: side === "BUY" ? "500" : "515", origQty: ".022" });
+        status: filled ? "FILLED" : "NEW", executedQty: filled ? String(quantity) : "0",
+        cummulativeQuoteQty: filled ? String(side === "BUY" ? slotCapital : sellQuote) : "0", price: String(side === "BUY" ? 500 : sellPrice), origQty: String(quantity) });
     }
   }
   await query(`update coinops.robot_v1_live_orders set strategy_decision_id='offline-decision-'||client_order_id`);
-  await query(`update coinops.trading_engines set hard_cap_quote=case when id='${id(4)}' then 1100 else 275 end`);
+  await query(`update coinops.trading_engines set hard_cap_quote=case when id='${id(4)}' then ${targetCapital} else 275 end`);
   await query(`update coinops.trading_engines set order_owner_prefix=$1 where id='${id(4)}'`,[cycle.liveEngineOrderPrefix(engine)]);
   await query(`insert into coinops.executor_shards(id,enabled) values('executor-03',true),('executor-01',true)`);
   await query(`update coinops.robot_v1_live_preparations set live_enabled=true,kill_switch=false,
-    max_order_notional_brl=1100,max_total_exposure_brl=1100,configured_live_capital_brl=1100 where trading_engine_id='${id(4)}'`);
-  await query(`insert into coinops.account_quote_caps(operator_id,exchange_account_id,quote_asset,hard_cap_quote) values('${id(1)}','${id(2)}','BRL',1375)`);
+    max_order_notional_brl=${targetCapital},max_total_exposure_brl=${targetCapital},configured_live_capital_brl=${targetCapital} where trading_engine_id='${id(4)}'`);
+  await query(`insert into coinops.account_quote_caps(operator_id,exchange_account_id,quote_asset,hard_cap_quote) values('${id(1)}','${id(2)}','BRL',${targetCapital+275})`);
   await query(`insert into coinops.robot_v1_strategy_decisions(product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
     environment,asset,decision_id,strategy_version,cycle_id,slot_id,operation_sequence,action_type,result)
     select product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,'REAL','SOL',strategy_decision_id,'4.3.1',run_id,slot_id,1,
@@ -167,26 +179,26 @@ async function fixture({ fillCount = 100, crashAfterSync = null, crashAfterCredi
     await Promise.resolve();
     if(recording)metrics.modeledLatencyMs=pacedLatencyScale ? modeledElapsed() : Math.max(metrics.modeledLatencyMs,started+exchangeLatencyMs);
     assert.equal(init.method ?? "GET", "GET", "phase cannot submit/cancel any exchange order");
-    requests.push({ path: url.pathname, host: url.hostname, weight: requestWeight(url) });
+    requests.push({ path: url.pathname, host: url.hostname, weight: requestWeight(url),observedAt:clockNow(),method:init.method??"GET" });
     if (failNext === url.pathname) { failNext = null; return Response.json({ code: -1000, msg: "simulated503" }, { status: 503 }); }
     if(url.pathname==="/api/v3/order"&&failedQueries.has(url.searchParams.get("orderId"))){
       failedQueries.delete(url.searchParams.get("orderId"));return Response.json({code:-1000,msg:"simulated intermittent503"},{status:503});
     }
     if (url.pathname === "/api/v3/time") return Response.json({ serverTime: clockNow() });
     if (url.pathname === "/api/v3/account") return Response.json({ canTrade: true,
-      balances: [{asset:"BRL",free:"1100",locked:"0"},{asset:"SOL",free:"0",locked:"0"},{asset:"BNB",free:".005",locked:"0"}] });
+      balances: [{asset:"BRL",free:String(targetCapital),locked:"0"},{asset:"SOL",free:"0",locked:"0"},{asset:"BNB",free:".005",locked:"0"}] });
     if (url.pathname === "/sapi/v1/account/apiRestrictions") return Response.json({ ipRestrict: true, enableReading: true,
       enableSpotAndMarginTrading: true, enableWithdrawals: false, enableInternalTransfer: false, permitsUniversalTransfer: false,
       enableMargin:false, enableFutures:false, enableVanillaOptions:false, enablePortfolioMarginTrading:false, enableFixApiTrade:false });
     if (url.pathname === "/api/v3/exchangeInfo") return Response.json({ symbols: [{ symbol:"SOLBRL",baseAsset:"SOL",quoteAsset:"BRL",
       filters:[{filterType:"LOT_SIZE",minQty:".001",maxQty:"100000",stepSize:".001"},{filterType:"PRICE_FILTER",minPrice:".1",maxPrice:"10000000",tickSize:".1"},{filterType:"NOTIONAL",minNotional:"10"}] }] });
     if (url.pathname === "/api/v3/ticker/price") return Response.json({ symbol:url.searchParams.get("symbol"),price:"500" });
-    if (url.pathname === "/api/v3/openOrders") return Response.json([...exchange.values()].filter(row => row.status === "NEW"));
+    if (url.pathname === "/api/v3/openOrders") return Response.json([...exchange.values()].filter(row => ["NEW","PARTIALLY_FILLED"].includes(row.status)));
     const order = exchange.get(url.searchParams.get("orderId")) ?? [...exchange.values()].find(row => row.clientOrderId === url.searchParams.get("origClientOrderId"));
     if (url.pathname === "/api/v3/order") return order ? Response.json(order) : Response.json({code:-2013,msg:"Order does not exist"},{status:400});
-    if (url.pathname === "/api/v3/myTrades") return Response.json(order.status === "FILLED" ? [{id:Number(order.orderId),orderId:order.orderId,
+    if (url.pathname === "/api/v3/myTrades") return Response.json(order.trades??(Number(order.executedQty)>0 ? [{id:Number(order.orderId),orderId:order.orderId,
       qty:order.executedQty,quoteQty:order.cummulativeQuoteQty,commission:order.side === "SELL" ? ".00000001" : "0",
-      commissionAsset:"BNB",isBuyer:order.side === "BUY",time:now}] : []);
+      commissionAsset:"BNB",isBuyer:order.side === "BUY",time:now}] : []));
     assert.fail(url.pathname);
   };
   const transport = selected => new BinanceLiveTransport({ apiKey:"offline-key",apiSecret:"offline-secret",fetcher,engine:selected ?? engine,
@@ -290,7 +302,7 @@ async function fixture({ fillCount = 100, crashAfterSync = null, crashAfterCredi
     name=>deps[name]??{},exported,ModeledDate);
   const run={...(await query(`select * from coinops.robot_v1_live_runs where id='${id(6)}'`))[0],engine};
   pacedStarted=performance.now();recording=true;
-  return {db,query,run,service,api:exported.test,state,requests,transport,metrics,clockNow,
+  return {db,query,run,engine,exchange,slotCount,slotCapital,service,api:exported.test,state,requests,transport,metrics,clockNow,
     fail:()=>{failNext="/api/v3/order";},
     beforeSibling:siblingBefore,
     totals:()=>({all:requests.reduce((n,r)=>n+r.weight,0),private:requests.filter(r=>r.host==="api.binance.com").reduce((n,r)=>n+r.weight,0),

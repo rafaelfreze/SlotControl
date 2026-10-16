@@ -38,3 +38,15 @@ test("remote program accepts only a local deployed public module and fences exte
 test("resource probe refuses an absent canonical scheduler instead of silently substituting a global pool",async()=>{
   await assert.rejects(runSlotWorkloadResourceProbe(BinanceLiveTransport),/canonical shard scheduler required/);
 });
+
+test("exact50 workload is selected explicitly; invalid counts cannot generate or run a certificate probe",async()=>{
+  const result=await runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap,[50]);
+  assert.deepEqual(result.scenarios.map(row=>row.slot_count),[50]);
+  assert.equal(result.scenarios[0].reconciled_tp_observations,100);
+  assert.equal(result.scenarios[0].acknowledged_sell_peak_inflight_gets,6);
+  assert.equal(result.scenarios[0].request_weight,2062);
+  for(const counts of [[],[1],[101],[50,50],[25,50,75,100],["50"]]){
+    assert.throws(()=>renderSlotWorkloadResourceProbe("file:///opt/coinops/releases/test/apps/live-executor/src/binance-live.mjs",counts),/slot counts invalid/);
+    await assert.rejects(runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap,counts),/slot counts invalid/);
+  }
+});

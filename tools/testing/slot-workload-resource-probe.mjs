@@ -2,13 +2,15 @@ import { createHash } from "node:crypto";
 
 /** Resource observation of the real deployed transport against an in-memory
  * exchange. No env, files, vault, live registry or real network is read. */
-export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap) {
+export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap,slotCounts=[25,100]) {
   const check=(condition,message)=>{if(!condition)throw new Error(`OFFLINE_PROBE:${message}`);};
   check(typeof shardedEngineMap==="function","canonical shard scheduler required");
+  check(Array.isArray(slotCounts)&&slotCounts.length>0&&slotCounts.length<=3
+    &&new Set(slotCounts).size===slotCounts.length&&slotCounts.every(count=>Number.isSafeInteger(count)&&count>=2&&count<=100),"slot counts invalid");
   const results=[];
   const resourceStart=process.resourceUsage();
   const wallStart=performance.now();
-  for(const count of [25,100]){
+  for(const count of slotCounts){
     const started=performance.now(),cpuBefore=process.cpuUsage(),rssBefore=process.memoryUsage().rss;
     const requests=[],byOrder=new Map(),engines=[];
     let active=0,peak=0,post=0,closed=0;
@@ -149,13 +151,16 @@ export async function runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedE
       "Queue proof is canonical scheduler callbacks, not the complete LIVE cron","Not a Binance/IP throughput measurement"]};
 }
 
-export function renderSlotWorkloadResourceProbe(transportModuleUrl) {
+export function renderSlotWorkloadResourceProbe(transportModuleUrl,slotCounts=[25,100]) {
   const url=new URL(transportModuleUrl);
   if(url.protocol!=="file:"||!url.pathname.endsWith("/apps/live-executor/src/binance-live.mjs"))throw new Error("OFFLINE_PROBE:public deployed transport required");
+  if(!Array.isArray(slotCounts)||slotCounts.length<1||slotCounts.length>3
+    ||new Set(slotCounts).size!==slotCounts.length||!slotCounts.every(count=>Number.isSafeInteger(count)&&count>=2&&count<=100))
+    throw new Error("OFFLINE_PROBE:slot counts invalid");
   return `import { createHash } from "node:crypto";\n`+
     `globalThis.fetch=async()=>{throw new Error("OFFLINE_PROBE:external fetch forbidden")};\n`+
     `const {BinanceLiveTransport}=await import(${JSON.stringify(url.href)});\n`+
     `const {shardedEngineMap}=await import(${JSON.stringify(new URL("../../web/lib/execution/sharded-engine-map.ts",url).href)});\n`+
     `${runSlotWorkloadResourceProbe.toString()}\n`+
-    `console.log(JSON.stringify(await runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap)));\n`;
+    `console.log(JSON.stringify(await runSlotWorkloadResourceProbe(BinanceLiveTransport,shardedEngineMap,${JSON.stringify(slotCounts)})));\n`;
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import * as strategy from '../../apps/web/lib/execution/strategy-engine.ts';
 import * as topology from '../../apps/web/lib/execution/engine-slot-topology.ts';
 import * as cycle from '../../apps/web/lib/execution/robot-v1-live-cycle.ts';
@@ -70,6 +71,7 @@ function sqlClient(f) {
 }
 
 async function continuation(f) {
+  const count = f.slotCount ?? 100, configuration = f.run.config_snapshot;
   const client = sqlClient(f);
   await client.query('create unique index test_strategy_decision_identity on coinops.robot_v1_strategy_decisions(trading_engine_id,decision_id)');
   const decisions = compile(source('apps/web/lib/execution/strategy-decision-server.ts'), {
@@ -83,8 +85,10 @@ async function continuation(f) {
     const account = accounts.find(account => account.slot_number === slot.slot_number);
     return { physicalSlotNumber: slot.slot_number, physicalSlotId: slot.id, lifetimeGainCount: Number(account.gain_count),
       monthlyGainCount: Number(account.gain_count), balanceUsdc: Number(account.balance_brl), entryState: slot.entry_state };
-  }), 3, 100);
-  const profile = { gain_rate: .03, normal_spacing_rate: .01, post_ath_spacing_rate: .02,
+  }), 3, count);
+  const profile = { gain_rate: Number(configuration.gain_rate ?? .03),
+    normal_spacing_rate: Number(configuration.normal_spacing_rate ?? .01),
+    post_ath_spacing_rate: Number(configuration.post_ath_spacing_rate ?? .02),
     regime: 'NORMAL', config_version: 1, transition_key: null, ath_price: 500, ath_source: 'OFFLINE_FIXTURE' };
   const glue = [section('const amount =', 'const athScope ='), section('const context =', '\n\nfunction assertScope'),
     section('function candidate(', '\nasync function monthly('), section('async function updateSlot(', '\nasync function updateOrder('),
@@ -112,6 +116,9 @@ async function continuation(f) {
   return { client, helpers, monthly };
 }
 
+export { continuation as createCycleContinuation };
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
 test('100 settled gains use actual restart helper and SQL: one successor with100 slots, then canonical BUY/TP/NEXT prepared and synced once', async t => {
   const f = await createHundredFillFixture({ fillCount: 100, clockFollowsModel: false, sqlLatencyMs: 0, exchangeLatencyMs: 0 });
   t.after(() => f.db.close());
@@ -241,3 +248,4 @@ test('75 fills with25 positions preserve those TPs, recycle75 locally once and c
   assert.deepEqual(await client.query("select * from coinops.robot_v1_live_orders where side='SELL' and slot_number>75 order by slot_number"), original);
   assert.equal((await client.query("select count(*)::int n from coinops.robot_v1_live_runs where previous_run_id=$1", [f.run.id]))[0].n, 0);
 });
+}

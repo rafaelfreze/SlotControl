@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { collectThyelyReadFacts, preflightSshArguments, readOnlyFetcher, remoteReadProgram } from './inspect-thyely-100-preflight.mjs';
+import { collectThyelyReadFacts, preflightSshArguments, readOnlyFetcher, remoteReadProgram, THYELY_50_PLAN } from './inspect-thyely-100-preflight.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const uid = '11223344';
@@ -99,6 +99,20 @@ test('SSH uses mandatory known host keys and generated program drops privileges 
   assert(!program.includes('refreshCredential'));
   assert(!program.includes("signed('POST'"));
   assert(!program.includes("signed('DELETE'"));
+  const parsed = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: program, encoding: 'utf8' });
+  assert.equal(parsed.status, 0, parsed.stderr);
+});
+
+test('the new exact50x22 preview preserves gain3, target3, spacing2/3 and all read-only fences', () => {
+  const program = remoteReadProgram(THYELY_50_PLAN);
+  assert(program.includes('"slotCount":50,"perSlotQuote":22,"normalSpacing":0.02,"postAthSpacing":0.03'));
+  assert(program.includes('gain_rate:.03'));
+  assert(program.includes('monthly_target:3'));
+  assert(program.includes('configured_live_capital_brl:1100'));
+  assert(program.includes('financial_writes: 0'));
+  assert(program.indexOf('process.setuid(service.User)') < program.indexOf('await loadCredential('));
+  assert.throws(() => remoteReadProgram({ ...THYELY_50_PLAN, perSlotQuote: 11 }), /SIZING_PLAN_DENIED/);
+  assert.throws(() => remoteReadProgram({ ...THYELY_50_PLAN, normalSpacing: .01 }), /SIZING_PLAN_DENIED/);
   const parsed = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: program, encoding: 'utf8' });
   assert.equal(parsed.status, 0, parsed.stderr);
 });
