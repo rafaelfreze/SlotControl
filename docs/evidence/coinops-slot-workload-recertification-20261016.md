@@ -80,3 +80,17 @@ Não houve teste de ordem REAL, cancelamento artificial, movimentação de saldo
 criação de motor, alteração econômica dos16 motores existentes ou novo executor
 para obter esses resultados.100 slots continuam suportados pelo código, porém
 sem certificado operacional — resultado informativo independente do plano50.
+
+## Checkpoint de entrega
+
+- Código `c9c18356a0949f6c18f0b0b9d0b52fbe700b3992`; fingerprint financeiro
+  `42bddbc53c9c21b19c33e594dd85275234aacfb78a2e04016ec8586e8bf49c4e`/108arquivos.
+- Build/lint/typecheck aprovados; kernel50/10019/19. Pipeline completo15/16
+  inicialmente; a única expectativa incorreta deHOLD do candidato offline25 foi
+  corrigida e o reteste afetado1/1 passou, sem editar runtime para satisfazer o teste.
+  Repetição natural60s1/1 funcional: rollingAPI3189/público956/agregado4145.
+- As duas migrations foram aplicadas pela CLI oficial ao alvo confirmado.
+  Corpos das quatro funções, ACL/INVOKER/search_path e histórico remoto conferidos;
+  `functions_pass=true`, `migrations_pass=true`, legado25 certificado inalterado.
+- Nenhum perfil50/100 foi registrado. Deploy/rollout e reconciliação final ainda
+  dependem de evidência posterior; este checkpoint não os presume.
