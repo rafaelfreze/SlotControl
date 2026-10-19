@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded CoinOps authentication nonce maintenance
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=5s
+Unit=coinops-nonce-retention.service
+
+[Install]
+WantedBy=timers.target

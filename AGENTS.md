@@ -208,6 +208,8 @@ no ambiente de destino antes de operação remota.
 - Nenhum clique em Gain, Open, confirmação de redistribuição ou outra ação financeira serve como smoke.
 - Logs devem ser estruturados, sanitizados e sem token, secret, PII ou payload financeiro desnecessário. Não adicione plataforma paga sem lacuna comprovada.
 
+- Cache antirreplay do executor tem retenção própria e não é ledger de idempotência financeira. A manutenção isolada remove somente arquivos de nonce privados, regulares e de link único, com timestamp autenticado e mtime vencidos há pelo menos uma hora, sob flock exclusivo comprovado. Nunca expirar `.pending`, resultados de dispatch, journal, vault, registry ou claims financeiros. Disco com bytes livres pode estar sem inodes; saúde pública HTTP 200 não prova que requisições autenticadas funcionam. Falha de armazenamento exige diagnóstico do shard e recuperação financeira pelo reconciliador oficial, nunca limpeza manual de gates. Ver `docs/COINOPS_NONCE_RETENTION_20261019.md`.
+
 - Feed histórico do painel é leitura opcional e não derruba posições/ordens
   verificadas. Eventos usam operator/account/engine/run exatos no índice atual;
   core GET-only limitado e falha isolada por motor. Error boundary exige RSC

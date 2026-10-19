@@ -7,8 +7,10 @@ fail() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 script_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$script_directory/runtime-preflight.sh"
 [[ ${EUID} -eq 0 ]] || fail 'ROOT_REQUIRED'
-[[ $# -eq 2 ]] || fail 'Usage: deploy-shard.sh executor-02 FULL_REVIEWED_MAIN_SHA'
+[[ $# -ge 2 && $# -le 3 ]] || fail 'Usage: deploy-shard.sh executor-02 FULL_REVIEWED_MAIN_SHA [MAINTENANCE_MAIN_SHA]'
 shard=$1; revision=$2
+maintenance_revision=${3:-$revision}
+[[ $maintenance_revision =~ ^[a-f0-9]{40}$ ]] || fail 'FULL_MAINTENANCE_MAIN_SHA_REQUIRED'
 [[ $shard =~ ^executor-[0-9]{2,4}$ && $shard != executor-01 && $shard != executor-00 ]] || fail 'EXECUTOR01_FORBIDDEN'
 [[ $revision =~ ^[a-f0-9]{40}$ ]] || fail 'FULL_COMMIT_SHA_REQUIRED'
 /usr/local/bin/node "$script_directory/fleet-parity.mjs" --check-target "$revision" || fail 'FLEET_RELEASE_TARGET_REQUIRED'
@@ -85,6 +87,7 @@ health_matches() {
 [[ ! -e /opt/coinops/current.next && ! -L /opt/coinops/current.next ]] || fail 'INTERRUPTED_SWITCH_REQUIRES_INSPECTION'
 if [[ $previous == "$release" && $old_version == "$revision" ]] \
   && systemctl is-active --quiet coinops-live-executor && health_matches "$revision"; then
+  bash "$script_directory/install-nonce-retention.sh" "$maintenance_revision" || fail 'NONCE_MAINTENANCE_INSTALL_FAILED'
   printf 'ALREADY_DEPLOYED shard=%s sha=%s (no restart); FLEET_PARITY_REQUIRED before closing rollout\n' "$shard" "$revision"; exit 0
 fi
 set_version "$revision"
@@ -106,5 +109,6 @@ if [[ $healthy != true ]]; then
   fi
   exit 1
 fi
+bash "$script_directory/install-nonce-retention.sh" "$maintenance_revision" || fail 'NONCE_MAINTENANCE_INSTALL_FAILED'
 printf 'DEPLOY_HEALTHY shard=%s sha=%s ip=%s\n' "$shard" "$revision" "$ipv4"
 printf 'FLEET_PARITY_REQUIRED: run fleet-parity.mjs --verify from reviewed main before closing this rollout.\n'

@@ -69,6 +69,8 @@ asset_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 install -m 644 "$asset_dir/coinops-shard-executor.service" /etc/systemd/system/coinops-live-executor.service
 install -m 644 "$asset_dir/certbot-renew.service" /etc/systemd/system/coinops-certbot-renew.service
 install -m 644 "$asset_dir/certbot-renew.timer" /etc/systemd/system/coinops-certbot-renew.timer
+install -m 644 "$asset_dir/coinops-nonce-retention.service" /etc/systemd/system/coinops-nonce-retention.service
+install -m 644 "$asset_dir/coinops-nonce-retention.timer" /etc/systemd/system/coinops-nonce-retention.timer
 install -m 644 "$asset_dir/sshd-coinops.conf" /etc/ssh/sshd_config.d/00-coinops.conf
 sshd -t
 systemctl reload ssh
@@ -92,4 +94,5 @@ systemctl enable coinops-live-executor
 systemctl enable --now coinops-certbot-renew.timer
 printf 'BOOTSTRAP_COMPLETE shard=%s ip=%s runtime=Node%s; verify registry and deploy a reviewed main SHA next.\n' "$shard" "$ipv4" "$node_version"
 printf 'NEW_SHARD_NOT_READY: deploy the common fleet-release.json target and require FLEET_PARITY_PASS before onboarding.\n'
+printf 'NONCE_MAINTENANCE_NOT_STARTED: first successful deploy installs reviewed maintenance code and enables its isolated timer; no credentials/runtime state are copied.\n'
 printf 'ADMISSION_BLOCKED_UNTIL_CERTIFIED: run capacity-preflight.mjs --record from the authorized control plane; SQL verifies policy, runtime, telemetry and Watchdog before admission.\n'
