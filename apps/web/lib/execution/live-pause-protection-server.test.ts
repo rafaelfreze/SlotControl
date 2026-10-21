@@ -11,6 +11,7 @@ import { continueLiveAdvance } from "./live-cycle-continuation.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { AccountOrderNotSubmitted } from "./account-order-unsent-proof.ts";
+import * as liveAudit from "./live-audit-event.ts";
 
 type Row = Record<string, any>;
 type Options = { status?: string; lastTpFill?: boolean; remainingOpen?: boolean; missingTp?: boolean;
@@ -170,6 +171,7 @@ function fixture(options: Options = {}) {
     - rows.filter(row => row.side === "SELL").reduce((n, row) => n + Number(row.executed_quantity)
       + (active.has(row.status) ? Number(row.requested_quantity) - Number(row.executed_quantity) : 0), 0));
   const dependencies: Record<string, unknown> = {
+    "./live-audit-event": liveAudit,
     "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
@@ -210,6 +212,8 @@ function fixture(options: Options = {}) {
       readLiveExecutorOrder: async (_run: Row, clientId: string) => ({ order: exchangeOrders.has(clientId)
         ? observed(exchangeOrders.get(clientId)!) : null }),
       readLiveExecutorTrades: async (_run: Row, clientId: string) => ({ order: observed(exchangeOrders.get(clientId)!), trades: [] }),
+      readLiveExecutorOrderObservation: async (_run: Row, clientId: string) => ({
+        order: exchangeOrders.has(clientId) ? observed(exchangeOrders.get(clientId)!) : null, trades: [] }),
       cancelLiveExecutorOrder: async (input: Row, selected: Row) => {
         assert.equal(selected.trading_engine_id, "engine-a"); calls.push("cancel-own-buy");
         if (options.cancelUnknown) throw new Error("EXECUTOR_HTTP_503");

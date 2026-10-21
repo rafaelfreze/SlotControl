@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
   isRegistryStateReadRecovery, isExposureStateReadRecovery, isAccountBudgetAlertRecovery,
-  isCapitalAuditReadRecovery, operatorRecoveryAlert } from "./live-read-recovery.ts";
+  isCapitalAuditReadRecovery, operatorRecoveryAlert, isAuditEventRecovery,
+  assertAuditEventRecoveryEvidence, type AuditRecoveryEvent } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);
@@ -400,4 +401,88 @@ test("new capital audit exhaustion requires its exact GET path and stage; hard r
   for (const code of ["COINOPS_LIVE_LEDGER_READ_FAILED", "COINOPS_LIVE_CAPITAL_AUDIT_INCOMPLETE",
     "COINOPS_LIVE_EVENT_PERSIST_FAILED"])
     assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, { ...alert.details, root_code: code }), false);
+});
+
+const auditCode = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
+const auditDetails = { stage: "AUDIT_EVENT", root_code: auditCode };
+const typedAuditDetails = { ...auditDetails, audit_phase: "WRITE", audit_reason: "TRANSIENT_EXHAUSTED",
+  audit_event_type: "RECONCILED", audit_event_key: "RECONCILED:2026-10-21T13:28",
+  audit_attempts: 2, audit_http_status: 503, audit_provider_code: null };
+
+test("audit eligibility is the exact final metadata site, never a gain, order or unidentified provider retry", () => {
+  for (const details of [auditDetails, typedAuditDetails, { ...typedAuditDetails,
+    audit_phase: "READBACK", audit_reason: "READBACK_UNAVAILABLE", audit_http_status: null }]) {
+    assert.equal(isAuditEventRecovery(auditCode, details), true);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", auditCode, details), true);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", auditCode, details), false);
+    assert.equal(mayRecoverReadOutage("PAUSED", "OK", auditCode, details), false);
+  }
+  for (const details of [undefined, {}, { ...auditDetails, stage: "ARM_ENTRY" },
+    { ...auditDetails, stage: "CREDIT_SLOTS" }, { ...auditDetails, stage: "POST_ORDER" },
+    { ...auditDetails, root_code: "COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN" },
+    { ...auditDetails, http_status: 403 }, { ...auditDetails, provider_code: "42501" },
+    { ...typedAuditDetails, audit_reason: "HARD_PROVIDER" },
+    { ...typedAuditDetails, audit_reason: "READBACK_MISMATCH" },
+    { ...typedAuditDetails, audit_reason: "PAYLOAD_INVALID" },
+    { ...typedAuditDetails, audit_reason: "UNKNOWN" }, { ...typedAuditDetails, audit_phase: "POST_ORDER" },
+    { ...typedAuditDetails, audit_phase: "WRITE", audit_reason: "READBACK_UNAVAILABLE" },
+    { ...typedAuditDetails, audit_event_type: "GAIN_CREDITED" },
+    { ...typedAuditDetails, audit_event_type: "BUY_SUBMITTED" },
+    { ...typedAuditDetails, audit_event_key: undefined }, { ...typedAuditDetails, audit_event_key: "POST/order" },
+    { ...typedAuditDetails, audit_attempts: 0 }, { ...typedAuditDetails, audit_attempts: 3 },
+    { ...typedAuditDetails, audit_http_status: 403 }, { ...typedAuditDetails, audit_http_status: "503" },
+    { ...typedAuditDetails, audit_provider_code: "42501" },
+    { ...typedAuditDetails, audit_provider_code: "42P01" },
+    { ...typedAuditDetails, audit_provider_code: "PGRST204" },
+    { ...typedAuditDetails, audit_provider_code: "UNKNOWN" }]) {
+    assert.equal(isAuditEventRecovery(auditCode, details), false, JSON.stringify(details));
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", auditCode, details), false);
+  }
+  for (const code of ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
+    "COINOPS_LIVE_EXECUTOR_READ_STALE", "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY"])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, typedAuditDetails), false,
+      "an outer read wrapper must not broaden audit eligibility");
+});
+
+test("audit recovery binds every typed metadata field to the same sole incident CAS", () => {
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: auditCode,
+    first_seen_at: "2026-10-21T13:28:00Z", last_seen_at: "2026-10-21T13:28:00Z", details: typedAuditDetails };
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert], alert), alert);
+  for (const [key, value] of Object.entries({ audit_phase: "READBACK", audit_reason: "READBACK_UNAVAILABLE",
+    audit_event_type: "RESET_RECOVERED", audit_attempts: 1, audit_http_status: null, audit_provider_code: "PGRST002",
+    audit_event_key: "RECONCILED:2026-10-21T13:29" })) {
+    const changed = { ...alert, details: { ...alert.details, [key]: value } };
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [changed], alert), /INCIDENT_CHANGED/);
+    assert.throws(() => operatorRecoveryAlert("ACTIVE", "run-a", [changed], alert), /INCIDENT_CHANGED/);
+  }
+  assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert, alert]), /INCIDENT_CHANGED/);
+});
+
+test("audit recovery requires fresh later exact-engine RECONCILED proof, never historical repair or another engine", () => {
+  const now = Date.parse("2026-10-21T13:40:30Z");
+  const incident = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: auditCode,
+    first_seen_at: "2026-10-21T13:28:00Z", last_seen_at: "2026-10-21T13:28:00Z", details: auditDetails };
+  const run = { id: "run-a", product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
+    exchange_account_id: "account-a", trading_engine_id: "engine-a", quote_asset: "USDT",
+    last_reconciled_at: "2026-10-21T13:40:21Z", strategy_version: "fixture-v1" };
+  const event: AuditRecoveryEvent = { ...run, run_id: run.id, event_key: "RECONCILED:2026-10-21T13:40",
+    event_type: "RECONCILED", slot_number: null, observed_at: "2026-10-21T13:40:20Z",
+    details: { next: "KILL_SWITCH", strategy_version: "fixture-v1" } };
+  assert.deepEqual(assertAuditEventRecoveryEvidence(incident, run, event, now), event);
+  for (const change of [{ run_id: "run-b" }, { product_id: "other" }, { tenant_id: "other" },
+    { user_id: "other" }, { operator_id: "other" }, { exchange_account_id: "account-b" },
+    { trading_engine_id: "engine-b" }, { quote_asset: "BRL" }, { event_type: "GAIN_CREDITED" },
+    { slot_number: 1 }, { observed_at: incident.last_seen_at },
+    { observed_at: "2026-10-21T13:28:01Z" }, { observed_at: "2026-10-21T13:40:22Z" },
+    { observed_at: "2026-10-21T13:41:00Z" }, { observed_at: "invalid" },
+    { event_key: "RECONCILED:2026-10-21T13:28" }, { event_key: "RECONCILED:2026-10-21T13:41" },
+    { details: { next: "NEXT_BUY_ARMED", strategy_version: "fixture-v1" } },
+    { details: { next: "KILL_SWITCH", strategy_version: "foreign-version" } }])
+    assert.throws(() => assertAuditEventRecoveryEvidence(incident, run, { ...event, ...change }, now), /AUDIT_RECOVERY_UNPROVEN/);
+  assert.throws(() => assertAuditEventRecoveryEvidence(incident, run, null, now), /AUDIT_RECOVERY_UNPROVEN/);
+  for (const last_reconciled_at of [null, "invalid", "2026-10-21T13:40:19Z", "2026-10-21T13:40:31Z"])
+    assert.throws(() => assertAuditEventRecoveryEvidence(incident, { ...run, last_reconciled_at }, event, now), /AUDIT_RECOVERY_UNPROVEN/);
+  assert.throws(() => assertAuditEventRecoveryEvidence(incident, run, event, now + 151_000), /AUDIT_RECOVERY_UNPROVEN/);
+  for (const first_seen_at of [undefined, "invalid", "2026-10-21T13:28:02Z"])
+    assert.throws(() => assertAuditEventRecoveryEvidence({ ...incident, first_seen_at }, run, event, now), /AUDIT_RECOVERY_UNPROVEN/);
 });

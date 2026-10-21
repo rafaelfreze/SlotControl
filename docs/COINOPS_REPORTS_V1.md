@@ -1,6 +1,42 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v27: publica `large_engine_owned_observation_protocol` com
+Contrato atual v28: publica `final_audit_event_persistence` e
+`audit_event_guarded_recovery` como `CURRENT_CODE_CONTRACT`, sem certificar
+execução histórica, causa upstream ou recuperação pela mera presença da regra.
+A persistência final usa identidade operator/account/engine/run/shard/chave
+exata, payload capturado imutável e observed_at já persistido preservado: até
+dois conjuntos de escrita/readback, com orçamento de 5s por conjunto, escrita
+limitada a 2,5s e intervalo de 250ms; a renovação de lease participa do orçamento.
+Happy path tem um upsert sem GET adicional. Há GET de readback antes de qualquer
+repetição após ACK incerto. O readback
+deve confrontar integralmente o mesmo registro; divergência, falta de prova,
+permissão/schema ou ambiguidade permanecem fail-closed. Isso não é retry de
+gain, reconciliação financeira, BUY/TP/NEXT BUY, create/cancel ou decisão.
+
+Recuperação guardada qualifica somente `COINOPS_LIVE_EVENT_PERSIST_FAILED`
+no estágio `AUDIT_EVENT` e root exato, após novo `RECONCILED` fresco e
+persistido depois da falha no mesmo escopo. Exige prova integral de ledger,
+slots, ordens próprias/TP/NEXT BUY, mensal, caps, configuração, proteção e health,
+além de decisões financeiras assentadas e zero dispatch pendente comprovados
+duas vezes, antes/depois das provas, sob lease e CAS do incidente inalterado.
+A observação tem no máximo 150s, sucede first_seen/last_seen do incidente e
+antecede last_reconciled_at em até 120s; a chave do minuto real admite até 65s
+após seu início e 1s de skew. `next=KILL_SWITCH` e `strategy_version` exata
+mantêm entradas protegidas durante a prova. Metadados `audit_*` presentes
+participam do CAS; novo erro tipado exige tipo RECONCILED/RESET_RECOVERED e
+reason/HTTP/provider estritamente transitórios. Legado sem metadados não vira
+transitório por inferência: apenas a prova financeira atual pode qualificá-lo.
+Não recria evento histórico ausente, fabrica freshness nem libera outro
+engine. O relatório exporta somente evidência persistida: nunca executa recovery
+ou consulta/cancela ordens para produzir um PASS. Histórico sem diagnóstico do
+provider conserva `UNKNOWN`/null; nunca recebe 503 ou outra causa presumida.
+Os detalhes tipados futuros conservam `audit_phase`, `audit_reason`,
+`audit_event_type`, `audit_event_key`, `audit_attempts`, `audit_http_status` e
+`audit_provider_code`, quando conhecidos, em `LIVE_EXECUTION.csv`/JSON. O pacote continua com 27
+arquivos, sem dataset, polling ou coleta extra. Snapshots anteriores conservam
+sua versão original e não são reescritos.
+
+Preserva v27: publica `large_engine_owned_observation_protocol` com
 `CURRENT_CODE_CONTRACT`, sem inferir execução histórica ou capacidade. Somente
 N>25 usa `/v1/observe-order` GET-only para observar ordem/fills coerentes com
 ownership exato; quantidade, nocional e lado devem concordar. Resposta ausente,
@@ -59,7 +95,7 @@ os eventos `ACCOUNT_ORDER_NOT_SUBMITTED` sem tratar não envio como fill.
 Procedimento: `COINOPS_UNSENT_ENTRY_RECOVERY.md`.
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 24`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 28`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento

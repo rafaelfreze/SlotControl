@@ -10,8 +10,11 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades, r
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, type ReadRecoveryAlert } from "./live-read-recovery";
+  isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery,
+  assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS,
+  type ReadRecoveryAlert, type AuditRecoveryEvent } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
+import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
@@ -211,10 +214,9 @@ async function runRows(service: Service, run: Run) {
 
 async function event(service: Service, run: Run, key: string, type: string,
   slotNumber: number | null, details: Record<string, unknown> = {}) {
-  const result = await service.from("robot_v1_live_events").upsert({ run_id: run.id, ...owned(run),
+  await appendLiveAuditEvent(service, { run_id: run.id, ...owned(run),
     event_key: key, event_type: type, slot_number: slotNumber, details },
-  { onConflict: "run_id,event_key", ignoreDuplicates: true });
-  if (result.error) throw new Error("COINOPS_LIVE_EVENT_PERSIST_FAILED");
+  run.lease_owner ? { renewLease: () => renewLease(service, run) } : {});
 }
 
 async function flowOwner(service: Service, run: Run, kind: "GAIN" | "FILL", clientId: string,
@@ -1843,6 +1845,11 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       ...(error instanceof AccountBudgetAlertResolutionError ? {
         metadata_path: error.path, metadata_attempts: error.attempts, http_status: error.httpStatus,
         ...(error.providerCode ? { provider_code: error.providerCode } : {}),
+      } : {}), ...(error instanceof LiveAuditEventPersistError ? {
+        audit_phase: error.phase, audit_reason: error.reason, audit_event_type: error.eventType,
+        audit_attempts: error.attempts, audit_http_status: error.httpStatus,
+        audit_provider_code: error.providerCode,
+        ...(error.eventKey ? { audit_event_key: error.eventKey } : {}),
       } : {}) });
     throw new Error(errorCode);
   } finally {
@@ -2127,6 +2134,22 @@ async function assertSettledOperatorRecovery(service: Service, run: Run, ledger:
     || decisions.data.length || dispatch.data.length) throw new Error("COINOPS_LIVE_OPERATOR_RECOVERY_UNSETTLED");
 }
 
+async function assertFreshAuditRecovery(service: Service, run: Run, incident: ReadRecoveryAlert) {
+  const after = Math.max(Date.parse(incident.first_seen_at ?? ""), Date.parse(incident.last_seen_at));
+  if (!Number.isFinite(after)) throw new Error("COINOPS_LIVE_AUDIT_RECOVERY_UNPROVEN");
+  const result = await service.from("robot_v1_live_events")
+    .select("product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,quote_asset,run_id,event_key,event_type,slot_number,observed_at,details")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("quote_asset", run.quote_asset)
+    .eq("run_id", run.id).eq("event_type", "RECONCILED")
+    .gt("observed_at", new Date(after).toISOString()).lte("observed_at", new Date().toISOString())
+    .order("observed_at", { ascending: false }).limit(1)
+    .abortSignal(AbortSignal.timeout(5_000)).maybeSingle();
+  if (result.error) throw new Error("COINOPS_LIVE_AUDIT_RECOVERY_PROOF_UNAVAILABLE");
+  assertAuditEventRecoveryEvidence(incident, run, result.data as AuditRecoveryEvent | null);
+}
+
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
   source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
@@ -2150,6 +2173,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       && isAccountBudgetAlertRecovery(recoveryIncident.code, recoveryIncident.details));
     const capitalAuditRecovery = Boolean(recoveryIncident
       && isCapitalAuditReadRecovery(recoveryIncident.code, recoveryIncident.details));
+    const auditEventRecovery = Boolean(recoveryIncident
+      && isAuditEventRecovery(recoveryIncident.code, recoveryIncident.details));
     await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
@@ -2163,6 +2188,10 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       || run.engine!.status !== "ACTIVE")
       throw new Error("COINOPS_LIVE_PARENT_KILL_SWITCH");
     const ledger = await runRows(service, run);
+    if (auditEventRecovery) {
+      await assertSettledOperatorRecovery(service, run, ledger);
+      await assertFreshAuditRecovery(service, run, recoveryIncident!);
+    }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
     if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery)
@@ -2194,13 +2223,14 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     // works. This reread is observation-only: pending plans may reflect a
     // legitimate fill/cancel race and never authorize an order or audit write.
     if (capitalAuditRecovery) await readCapitalRefreshEvents(service, run);
+    if (auditEventRecovery) await assertFreshAuditRecovery(service, run, recoveryIncident!);
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.
     if (source === "VERIFIED_READ_RECOVERY")
       await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery)
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);
@@ -2237,7 +2267,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     // All captured diagnostic identity participates in the final CAS, for
     // both automatic read recovery and explicit operator control.
     if (recoveryIncident) {
-      for (const key of ["stage", "root_code", "read_path", "metadata_path"] as const)
+      for (const key of READ_RECOVERY_DIAGNOSTIC_KEYS)
         alertUpdate = recoveryIncident.details?.[key] === undefined || recoveryIncident.details[key] === null
           ? alertUpdate.is(`details->>${key}`, null)
           : alertUpdate.eq(`details->>${key}`, recoveryIncident.details[key]);

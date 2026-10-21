@@ -8,7 +8,7 @@ const generatedAt = "2026-10-16T19:30:00Z";
 const filters = { start: "2026-10-16T00:00:00Z", end: "2026-10-17T00:00:00Z",
   assets: ["SOL"] as ["SOL"], environments: ["REAL"] as ["REAL"] };
 test("v27 records the owned observation protocol without inventing capacity, history or an authorization cache", () => {
-  assert.equal(REPORT_VERSION, 27);
+  assert.equal(REPORT_VERSION, 28);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [], generatedAt,
     scope: { tenantId: "fixture", userId: "fixture" } }, filters);
   const rule = report.datasets.rules.find(row => row.parameter === "large_engine_owned_observation_protocol")!;
@@ -36,7 +36,7 @@ test("v27 preserves the new transient read path and legacy25 evidence in existin
   assert.equal(exported.slot_count, 25); assert.equal(exported.last_reconciled_at, last);
   assert.deepEqual(exported.config_snapshot, before.config_snapshot); assert.deepEqual(run, before);
   const pack = buildReportPackage(report, filters, generatedAt, "fixture-sha");
-  assert.equal(pack.manifest.report_version, 27);
-  assert.equal(pack.manifest.schema_version, "coinops/robot-v1/reports-v27-owned-order-observation");
+  assert.equal(pack.manifest.report_version, 28);
+  assert.equal(pack.manifest.schema_version, "coinops/robot-v1/reports-v28-final-audit-event-recovery");
   assert.equal(pack.manifest.financial_writes_from_export, 0);
 });

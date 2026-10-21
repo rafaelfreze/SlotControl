@@ -4,18 +4,20 @@ import test from "node:test";
 import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery } from "./live-read-recovery.ts";
+  operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery,
+  assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
+import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
 
-function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; missingTp?: boolean;
+function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boolean; missingTp?: boolean;
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
   ledgerDenied?: boolean; monthlyFailure?: boolean; configPending?: boolean; bulkStatus?: string;
   lateBulk?: boolean; bulkDenied?: boolean; configCasLost?: boolean;
@@ -32,13 +34,16 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   exposureCountMissing?: boolean; readPathAddedAtCas?: boolean;
   budgetMetadataRecovery?: boolean; budgetAlertDeferred?: boolean;
   capitalAuditRecovery?: boolean; capitalAuditReadDenied?: boolean; capitalAuditIncomplete?: boolean;
-  capitalAuditPendingPlan?: boolean } = {}) {
+  capitalAuditPendingPlan?: boolean; auditEventRecovery?: boolean; auditProofDenied?: boolean;
+  auditProofMissing?: boolean; auditEventChanges?: Record<string, unknown>;
+  auditEventLateChanges?: Record<string, unknown> } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
+  const now = Date.now();
   const run = { ...scope, id: "run-a", asset: "SOL", status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
-    last_error: null, last_reconciled_at: new Date().toISOString(), lease_owner: "lease" };
+    last_error: null, last_reconciled_at: new Date(now - (options.auditEventRecovery ? 1_000 : 0)).toISOString(), lease_owner: "lease" };
   const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
     environment: "REAL", executor_shard_id: "executor-02", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
@@ -68,7 +73,9 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   let bulkReads = 0;
   let operatorIntentReads = 0;
   let operatorDispatchReads = 0;
-  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery;
+  let auditProofReads = 0;
+  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery
+    || options.auditEventRecovery;
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
@@ -156,6 +163,20 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       else if (table === "account_quote_caps") data = { ...scope, hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") {
         if (!mutation) {
+          if (filters.event_type === "RECONCILED") {
+            calls.push("audit-checkpoint-read"); auditProofReads++;
+            for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id", "quote_asset"])
+              assert.equal(filters[key], scope[key as keyof typeof scope]);
+            assert.equal(filters.run_id, run.id);
+            assert.ok(filters.observed_after && filters.observed_before);
+            if (options.auditProofDenied) return { data: null, error: { code: "42501" }, status: 403 };
+            data = options.auditProofMissing ? null : { ...scope, run_id: run.id,
+              event_key: `RECONCILED:${new Date(now - 2_000).toISOString().slice(0, 16)}`,
+              event_type: "RECONCILED", slot_number: null, observed_at: new Date(now - 2_000).toISOString(),
+              details: { next: "KILL_SWITCH", strategy_version: run.strategy_version },
+              ...options.auditEventChanges, ...(auditProofReads > 1 ? options.auditEventLateChanges : {}) };
+            return { data, error: null };
+          }
           calls.push("capital-audit-read");
           for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id"])
             assert.equal(filters[key], scope[key as keyof typeof scope]);
@@ -184,8 +205,9 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
       }, eq: (key: string, value: unknown) => { filters[key] = value; return chain; },
       is: (key: string, value: unknown) => { filters[key] = value; return chain; },
       in: (key: string, value: unknown) => { filters[key] = value; return chain; },
-      gte: () => chain, lte: () => chain, limit: () => chain,
-      or: (value: string) => { filters.or = value; return chain; }, gt: () => chain, order: () => chain, abortSignal: () => chain,
+      gte: () => chain, lte: (key: string, value: unknown) => { if (key === "observed_at") filters.observed_before = value; return chain; }, limit: () => chain,
+      or: (value: string) => { filters.or = value; return chain; },
+      gt: (key: string, value: unknown) => { if (key === "observed_at") filters.observed_after = value; return chain; }, order: () => chain, abortSignal: () => chain,
       range: (start: number, end: number) => { page = [start, end]; return chain; },
       update: (data: Record<string, unknown>) => { mutation = data; return chain; },
       upsert: (data: Record<string, unknown>) => { mutation = data; return chain; },
@@ -197,13 +219,15 @@ function fixture(options: { alerts?: Array<typeof known[]>; healthy?: boolean; m
   const dependencies: Record<string, unknown> = {
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
+    "./live-audit-event": { appendLiveAuditEvent, LiveAuditEventPersistError },
     "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-      operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery },
+      operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery,
+      assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
     "./operator-context-server": { resolveOperatorEngine: async () => {
@@ -738,4 +762,79 @@ test("capital audit recovery rereads the GET and proves settled decisions twice 
     await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
     assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
   }
+});
+
+test("final audit legacy recovery proves a new current scoped checkpoint and settled finance twice before exact CAS", async () => {
+  const code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
+  const incident = { ...known, code, first_seen_at: new Date(Date.now() - 60_000).toISOString(),
+    last_seen_at: new Date(Date.now() - 60_000).toISOString(), details: { stage: "AUDIT_EVENT", root_code: code } };
+  const safe = fixture({ alerts: [[incident]], auditEventRecovery: true, caixetaLayout: true });
+  const ordersBefore = structuredClone(safe.orders), slotsBefore = structuredClone(safe.slots);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.deepEqual(safe.calls, ["lease-claimed", "alert-read", "health",
+    "operator-intent-read", "operator-dispatch-read", "audit-checkpoint-read", "exchange-state",
+    "audit-checkpoint-read", "alert-read", "operator-intent-read", "operator-dispatch-read"]);
+  const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  assert.equal(clear.filters.code, code);
+  assert.equal(clear.filters.first_seen_at, incident.first_seen_at);
+  assert.equal(clear.filters.last_seen_at, incident.last_seen_at);
+  for (const key of READ_RECOVERY_DIAGNOSTIC_KEYS)
+    assert.equal(clear.filters[`details->>${key}`], incident.details[key as keyof typeof incident.details] ?? null);
+  assert.ok(safe.writes.every(write => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(write.table)));
+  assert.ok(safe.writes.filter(write => write.table === "robot_v1_live_events")
+    .every(write => write.data.event_type === "LIVE_RESUMED"), "never manufacture the missing historical minute");
+  assert.deepEqual(safe.orders, ordersBefore); assert.deepEqual(safe.slots, slotsBefore);
+  assert.ok(safe.writes.filter(write => write.table === "trading_engines")
+    .every(write => write.filters.id === "engine-a" && write.filters.exchange_account_id === "account-a"));
+});
+
+test("audit recovery never opens entries on stale/foreign/missing proof, hard reads, unsettled finance or changed incident", async () => {
+  const code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
+  const incident = { ...known, code, first_seen_at: new Date(Date.now() - 60_000).toISOString(),
+    last_seen_at: new Date(Date.now() - 60_000).toISOString(), details: { stage: "AUDIT_EVENT", root_code: code } };
+  for (const options of [{ auditProofMissing: true }, { auditProofDenied: true },
+    { auditEventChanges: { trading_engine_id: "engine-b" } }, { auditEventChanges: { run_id: "run-b" } },
+    { auditEventChanges: { event_type: "GAIN_CREDITED" } },
+    { auditEventChanges: { observed_at: new Date(Date.now() - 151_000).toISOString() } },
+    { auditEventChanges: { observed_at: new Date(Date.now() + 60_000).toISOString() } },
+    { auditEventChanges: { event_key: "RECONCILED:2026-10-21T13:28" } },
+    { auditEventLateChanges: { trading_engine_id: "engine-b" } },
+    { operatorUnsettledDecision: true }, { operatorPendingDispatch: true },
+    { operatorLateUnsettledDecision: true }, { operatorLatePendingDispatch: true },
+    { healthy: false }, { missingTp: true }, { configPending: true }, { lateBulk: true },
+    { monthlyFailure: true }, { missingSlot: true }, { ledgerDenied: true }, { exposureCap: 5 }]) {
+    const blocked = fixture({ alerts: [[incident]], auditEventRecovery: true, caixetaLayout: true, ...options });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false, JSON.stringify(options));
+    assert.equal(blocked.writes.some(write => write.data.resolved_at), false, JSON.stringify(options));
+  }
+  const changed = fixture({ alerts: [[incident], [{ ...incident, details: { ...incident.details,
+    stage: "POST_ORDER" } }]], auditEventRecovery: true, caixetaLayout: true });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
+});
+
+test("typed final audit recovery preserves its immutable diagnostic CAS and does not classify hard audit errors as recoverable", async () => {
+  const code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
+  const incident = { ...known, code, first_seen_at: new Date(Date.now() - 60_000).toISOString(),
+    last_seen_at: new Date(Date.now() - 60_000).toISOString(), details: { stage: "AUDIT_EVENT", root_code: code,
+      audit_phase: "WRITE", audit_reason: "TRANSIENT_EXHAUSTED", audit_event_type: "RECONCILED",
+      audit_event_key: "RECONCILED:2026-10-21T13:28", audit_attempts: 2, audit_http_status: 503, audit_provider_code: null } };
+  const safe = fixture({ alerts: [[incident]], auditEventRecovery: true });
+  assert.equal((await safe.run()).status, "RESUMED");
+  const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  for (const key of READ_RECOVERY_DIAGNOSTIC_KEYS)
+    assert.equal(clear.filters[`details->>${key}`], incident.details[key as keyof typeof incident.details] ?? null);
+  for (const detailChanges of [{ stage: "ARM_ENTRY" }, { stage: "CREDIT_SLOTS" }, { stage: "POST_ORDER" },
+    { audit_reason: "HARD_PROVIDER" }, { audit_reason: "READBACK_MISMATCH" },
+    { audit_reason: "UNKNOWN" }, { audit_event_type: "GAIN_CREDITED" }, { audit_http_status: 403 },
+    { audit_provider_code: "42501" }]) {
+    const blocked = fixture({ alerts: [[{ ...incident, details: { ...incident.details, ...detailChanges } }]], auditEventRecovery: true });
+    await assert.rejects(blocked.run(), /INCIDENT_CHANGED/);
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+  }
+  const changed = fixture({ alerts: [[incident], [{ ...incident, details: { ...incident.details,
+    audit_event_key: "RECONCILED:2026-10-21T13:29" } }]], auditEventRecovery: true });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
 });

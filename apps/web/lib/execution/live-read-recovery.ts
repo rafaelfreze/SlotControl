@@ -1,4 +1,74 @@
-export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown; metadata_path?: unknown };
+export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown; metadata_path?: unknown;
+  audit_phase?: unknown; audit_reason?: unknown; audit_event_type?: unknown; audit_attempts?: unknown;
+  audit_http_status?: unknown; audit_provider_code?: unknown; audit_event_key?: unknown;
+  http_status?: unknown; provider_code?: unknown };
+
+// Every captured audit diagnostic is bound into the final incident CAS too.
+// A changed provider/phase must not inherit a legacy or transient approval.
+export const READ_RECOVERY_DIAGNOSTIC_KEYS = ["stage", "root_code", "read_path", "metadata_path",
+  "audit_phase", "audit_reason", "audit_event_type", "audit_attempts", "audit_http_status",
+  "audit_provider_code", "audit_event_key"] as const;
+const AUDIT_DETAIL_KEYS = READ_RECOVERY_DIAGNOSTIC_KEYS.slice(4);
+const AUDIT_CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
+  "08000", "08003", "08006", "53300", "57014"]);
+
+/** The former audit wrapper discarded its provider error. That legacy site
+ * identifies a metadata append, not a transient failure or a safe financial
+ * write. Resume additionally requires a later fresh RECONCILED checkpoint,
+ * complete exchange/ledger protection and twice-settled dispatches under lease. */
+export function isAuditEventRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  if (code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || details?.root_code !== code
+    || details.stage !== "AUDIT_EVENT") return false;
+  if (AUDIT_DETAIL_KEYS.every(key => details[key] === undefined))
+    return details.http_status === undefined && details.provider_code === undefined;
+  if (!["RECONCILED", "RESET_RECOVERED"].includes(String(details.audit_event_type))
+    || !["WRITE", "READBACK"].includes(String(details.audit_phase))
+    || !["TRANSIENT_EXHAUSTED", "READBACK_UNAVAILABLE"].includes(String(details.audit_reason))
+    || details.audit_reason === "READBACK_UNAVAILABLE" && details.audit_phase !== "READBACK"
+    || !Number.isInteger(details.audit_attempts) || Number(details.audit_attempts) < 1
+    || Number(details.audit_attempts) > 2) return false;
+  if (typeof details.audit_event_key !== "string" || (details.audit_event_type === "RECONCILED"
+    ? !/^RECONCILED:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(details.audit_event_key)
+    : !/^RESET_RECOVERED:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(details.audit_event_key))) return false;
+  const status = details.audit_http_status, provider = details.audit_provider_code;
+  if (status !== null && (!Number.isInteger(status) || Number(status) < 0 || Number(status) > 599)) return false;
+  if (provider !== null && (typeof provider !== "string" || !AUDIT_CONNECTION_CODES.has(provider))) return false;
+  return provider === null && (status === null || [0, 502, 503, 504].includes(Number(status)))
+    || provider !== null && ([503, 504].includes(Number(status)) || provider === "57014" && status === 500);
+}
+
+type AuditRecoveryScope = { id: string; product_id: string; tenant_id: string; user_id: string;
+  operator_id: string; exchange_account_id: string; trading_engine_id: string; quote_asset: string;
+  last_reconciled_at: string | null; strategy_version: string };
+export type AuditRecoveryEvent = Omit<AuditRecoveryScope, "id" | "last_reconciled_at" | "strategy_version"> & {
+  run_id: string; event_key: string; event_type: string; slot_number: number | null;
+  observed_at: string; details: Record<string, unknown> };
+
+/** A new checkpoint proves the current audit path works; it never fills in
+ * the missing historical minute. All mutable financial facts still require
+ * independent current proof by the authoritative reconciler/resume flow. */
+export function assertAuditEventRecoveryEvidence(incident: ReadRecoveryAlert, run: AuditRecoveryScope,
+  event: AuditRecoveryEvent | null, now = Date.now()) {
+  const fail = (): never => { throw new Error("COINOPS_LIVE_AUDIT_RECOVERY_UNPROVEN"); };
+  const first = Date.parse(incident.first_seen_at ?? ""), last = Date.parse(incident.last_seen_at);
+  const reconciled = Date.parse(run.last_reconciled_at ?? ""), observed = Date.parse(event?.observed_at ?? "");
+  if (!isAuditEventRecovery(incident.code, incident.details)
+    || incident.alert_key !== `LIVE_RUN:${run.id}:CRITICAL` || !event
+    || ![now, first, last, reconciled, observed].every(Number.isFinite)
+    || first - last > 1_000 || Math.max(first, last) >= observed
+    || observed > reconciled || reconciled > now || now - observed > 150_000
+    || reconciled - observed > 120_000 || event.run_id !== run.id
+    || event.event_type !== "RECONCILED" || event.slot_number !== null
+    || event.details.strategy_version !== run.strategy_version || event.details.next !== "KILL_SWITCH") return fail();
+  for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
+    "trading_engine_id", "quote_asset"] as const) if (!run[key] || event[key] !== run[key]) return fail();
+  if (!/^RECONCILED:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(event.event_key)) return fail();
+  const minute = Date.parse(`${event.event_key.slice("RECONCILED:".length)}:00.000Z`);
+  // Only bounded DB/caller skew around the actual minute is allowed. An
+  // append made today with yesterday's missing key is not recovery evidence.
+  if (!Number.isFinite(minute) || minute > observed + 1_000 || observed - minute > 65_000) return fail();
+  return event;
+}
 
 const EXPOSURE_READ_PATHS = ["ledger/exposure_runs", "ledger/exposure_engines",
   "ledger/exposure_slots", "ledger/exposure_orders"];
@@ -79,11 +149,13 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
   alertCode: string | null, details?: ReadRecoveryDetails | null): boolean {
   return status === "ACTIVE" && reconciledStatus === "OK"
     && !NON_RECOVERABLE_READ_ROOTS.has(String(details?.root_code))
+    && (details?.root_code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || isAuditEventRecovery(alertCode, details))
     && (isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)
       || isExposureStateReadRecovery(alertCode, details)
       || isAccountBudgetAlertRecovery(alertCode, details)
       || isCapitalAuditReadRecovery(alertCode, details)
+      || isAuditEventRecovery(alertCode, details)
       || ["COINOPS_LIVE_RECONCILE_ORDERS_FAILED", "COINOPS_LIVE_READ_STATE_FAILED",
       "COINOPS_LIVE_EXECUTOR_READ_STALE",
       "COINOPS_LIVE_LEDGER_READ_STALE",
@@ -135,7 +207,7 @@ export function operatorRecoveryAlert(status: string, runId: string, alerts: Rea
     || alert.details?.stage !== expected.details?.stage
     || alert.details?.root_code !== expected.details?.root_code
     || alert.details?.read_path !== expected.details?.read_path
-    || alert.details?.metadata_path !== expected.details?.metadata_path)) return fail();
+    || READ_RECOVERY_DIAGNOSTIC_KEYS.some(key => alert.details?.[key] !== expected.details?.[key]))) return fail();
   return alert;
 }
 
@@ -175,10 +247,7 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
     || !Number.isFinite(Date.parse(alert.last_seen_at))
     || expected && (alert.code !== expected.code || alert.last_seen_at !== expected.last_seen_at
       || alert.first_seen_at !== expected.first_seen_at
-      || alert.details?.stage !== expected.details?.stage
-      || alert.details?.root_code !== expected.details?.root_code
-      || alert.details?.read_path !== expected.details?.read_path
-      || alert.details?.metadata_path !== expected.details?.metadata_path))
+      || READ_RECOVERY_DIAGNOSTIC_KEYS.some(key => alert.details?.[key] !== expected.details?.[key])))
     throw new Error("COINOPS_LIVE_RECOVERY_INCIDENT_CHANGED");
   return alert;
 }

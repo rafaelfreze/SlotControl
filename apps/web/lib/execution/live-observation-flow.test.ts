@@ -8,13 +8,16 @@ import * as readErrors from "./live-read-error.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 import { liveEngineOrderPrefix } from "./robot-v1-live-cycle.ts";
+import * as liveAudit from "./live-audit-event.ts";
 
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
 function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registryFailure=false,
-  metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean }) {
+  metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean;
+    auditFailure?: "once" | "committed" | "persistent" | "hard" }) {
   const writes:Array<{table:string,data:Record<string,unknown>,filters:Record<string,unknown>}>=[];
-  const effects = { arm: 0, reconcileOrder: 0, protect: 0, snapshot: 0 };
+  const effects = { arm: 0, reconcileOrder: 0, protect: 0, snapshot: 0, auditWrites: 0 };
+  let auditRow: Record<string, unknown> | null = null;
   const run={id:`run-${engineId}`,trading_engine_id:engineId,exchange_account_id:"same-account",operator_id:"operator",
     tenant_id:"tenant",product_id:"product",user_id:"user",asset:"SOL",symbol:"SOLBRL",quote_asset:"BRL",strategy_version:"fixture",lease_owner:"lease",
     engine: { trading_engine_id: engineId, exchange_account_id: "same-account", base_asset: "SOL",
@@ -31,6 +34,16 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     const filters:Record<string,unknown>={};let data:Record<string,unknown>|null=null;
     const result=()=>{
       if(data)writes.push({table,data,filters:{...filters}});
+      if (table === "robot_v1_live_events" && metadata?.auditFailure) {
+        if (data) {
+          effects.auditWrites++; auditRow = structuredClone(data);
+          if (metadata.auditFailure !== "once" || effects.auditWrites === 1)
+            return { data: null, error: { code: metadata.auditFailure === "hard" ? "42501" : "PGRST003",
+              message: "PRIVATE_AUDIT_PROVIDER_PAYLOAD" }, status: metadata.auditFailure === "hard" ? 403 : 503 };
+          return { data: null, error: null, status: 200 };
+        }
+        return { data: metadata.auditFailure === "committed" && auditRow ? [auditRow] : [], error: null, status: 200 };
+      }
       if (metadata && table === "robot_v1_live_alerts" && filters.alert_key === budgetAlert.alert_key) {
         if (!data) return { data: metadata.absent ? [] : [budgetAlert], error: null };
         if (metadata.writeFailure) return { data: null, error: { code: metadata.writeFailure === "permission"
@@ -56,6 +69,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     return chain;
   }};
   const deps:Record<string,unknown>={
+    "./live-audit-event": liveAudit,
     "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
     "./live-read-error":readErrors,
@@ -208,7 +222,8 @@ test("normal advance performs no empty budget-alert UPDATE when the exact metada
   assert.equal(f.writes.some(write => write.table === "robot_v1_live_alerts"
     && write.filters.alert_key === `LIVE_RUN:${f.run.id}:ACCOUNT_ORDER_BUDGET`), false);
   assert.equal(f.writes.some(write => write.data.kill_switch), false);
-  assert.equal(f.writes.find(write => write.table === "robot_v1_live_runs")!.data.last_error, null);
+  assert.equal(f.writes.find(write => write.table === "robot_v1_live_runs"
+    && write.data.lease_owner === null)!.data.last_error, null);
 });
 
 test("normal balance/fee/budget HOLD does not clear an existing budget warning or repeat financial work", async () => {
@@ -261,4 +276,40 @@ test("metadata permission failure is fail-closed and never converted into GET or
   assert.equal((critical.data.details as Record<string, unknown>).provider_code, "42501");
   assert.equal(f.writes.some(write => write.data.code === "COINOPS_LIVE_TRANSIENT_LEDGER_READ"), false);
   assert.equal(f.writes.some(write => write.data.kill_switch === false), false);
+});
+
+test("normal final audit transient or lost acknowledgement converges without replaying trading or invoking Watchdog", async () => {
+  for (const auditFailure of ["once", "committed"] as const) {
+    const f = fixture(new Error("unused"), undefined, "engine-b", false, { absent: true, auditFailure });
+    assert.equal((await f.execute()).status, "OK");
+    assert.equal(f.effects.arm, 1); assert.equal(f.effects.reconcileOrder, 1);
+    assert.equal(f.effects.auditWrites, auditFailure === "once" ? 2 : 1);
+    assert.equal(f.writes.some(write => write.data.kill_switch), false);
+    assert.equal(f.writes.some(write => write.table === "robot_v1_live_alerts" && write.data.severity === "CRITICAL"), false);
+    const auditWrites = f.writes.filter(write => write.table === "robot_v1_live_events");
+    assert.ok(auditWrites.every(write => write.data.event_key === auditWrites[0].data.event_key));
+    assert.equal(f.writes.find(write => write.table === "robot_v1_live_runs"
+      && write.data.lease_owner === null)!.data.last_error, null);
+  }
+});
+
+test("final audit exhaustion preserves sanitized exact metadata and engine-local financial gates", async () => {
+  for (const auditFailure of ["persistent", "hard"] as const) {
+    const f = fixture(new Error("unused"), undefined, "engine-b", false, { absent: true, auditFailure });
+    await assert.rejects(f.execute(), /COINOPS_LIVE_EVENT_PERSIST_FAILED/);
+    assert.equal(f.effects.arm, 1); assert.equal(f.effects.reconcileOrder, 1);
+    assert.equal(f.effects.auditWrites, auditFailure === "persistent" ? 2 : 1);
+    const alert = f.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.severity === "CRITICAL")!;
+    const details = alert.data.details as Record<string, unknown>;
+    assert.equal(details.stage, "AUDIT_EVENT"); assert.equal(details.root_code, "COINOPS_LIVE_EVENT_PERSIST_FAILED");
+    assert.equal(details.audit_phase, "WRITE"); assert.equal(details.audit_event_type, "RECONCILED");
+    assert.equal(details.audit_attempts, auditFailure === "persistent" ? 2 : 1);
+    assert.equal(details.audit_reason, auditFailure === "persistent" ? "TRANSIENT_EXHAUSTED" : "HARD_PROVIDER");
+    assert.equal(details.audit_http_status, auditFailure === "persistent" ? 503 : 403);
+    assert.equal(details.audit_provider_code, auditFailure === "persistent" ? "PGRST003" : "42501");
+    assert.match(String(details.audit_event_key), /^RECONCILED:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    assert.doesNotMatch(JSON.stringify(details), /PRIVATE_AUDIT_PROVIDER_PAYLOAD/);
+    assert.ok(f.writes.filter(write => write.table === "trading_engines")
+      .every(write => write.filters.id === "engine-b" && write.data.kill_switch === true));
+  }
 });

@@ -6,6 +6,7 @@ import { boundedLedgerRead, observeLedgerRows } from "./live-ledger-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { assertRowEngine } from "./operator-context.ts";
+import * as liveAudit from "./live-audit-event.ts";
 
 type Row = Record<string, unknown> & { id: string; details: Record<string, unknown> };
 const eventTypes = ["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"];
@@ -44,6 +45,7 @@ function fixture(options: { count?: number; engine?: string; failRead?: number; 
       for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id", "quote_asset"])
         assert.equal(filters[key], scope[key as keyof typeof scope]);
       assert.equal(filters.run_id, run.id);
+      if (filters.event_key) return { data: [], error: null, status: 200 };
       assert.deepEqual(filters.event_type, eventTypes);
       assert.deepEqual(order, ["observed_at", "id"]);
       assert.ok(signal instanceof AbortSignal);
@@ -61,6 +63,7 @@ function fixture(options: { count?: number; engine?: string; failRead?: number; 
       order: (key: string) => { order.push(key); return chain; },
       range: (start: number, end: number) => { range = [start, end]; return chain; },
       abortSignal: (value: AbortSignal) => { signal = value; return chain; },
+      limit: () => chain,
       upsert: (data: Record<string, unknown>, config: Record<string, unknown>) => {
         assert.deepEqual(config, { onConflict: "run_id,event_key", ignoreDuplicates: true });
         mutation = data; return chain;
@@ -70,6 +73,7 @@ function fixture(options: { count?: number; engine?: string; failRead?: number; 
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./live-audit-event": liveAudit,
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows },
     "./complete-ledger-read": { completeLedgerRead }, "./operator-context": { assertRowEngine },
   };
@@ -139,10 +143,13 @@ test("capital audit confirmation writes once only after every GET page converged
   assert.deepEqual(scenario.orders, ordersBefore);
 });
 
-test("capital audit write failure is never retried as a GET or a financial step", async () => {
+test("capital audit metadata alone retries the captured immutable row, never the financial step or paged audit", async () => {
   const scenario = fixture({ planned: true, writeFailure: true });
+  const ordersBefore = structuredClone(scenario.orders);
   await assert.rejects(scenario.confirm(), /COINOPS_LIVE_EVENT_PERSIST_FAILED/);
-  assert.equal(scenario.reads.length, 1); assert.equal(scenario.writes.length, 1);
+  assert.equal(scenario.reads.length, 1); assert.equal(scenario.writes.length, 2);
+  assert.deepEqual(scenario.writes[1], scenario.writes[0]);
+  assert.deepEqual(scenario.orders, ordersBefore);
 });
 
 test("normal flow marks the capital GET stage separately from entry/metadata order work", () => {

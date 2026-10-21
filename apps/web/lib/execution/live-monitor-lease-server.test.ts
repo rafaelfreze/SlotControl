@@ -10,6 +10,7 @@ import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysic
 import * as readErrors from "./live-read-error.ts";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race.ts";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant.ts";
+import * as liveAudit from "./live-audit-event.ts";
 
 type Row = Record<string, any>;
 type Write = { table: string; values: Row; filters: Row; affected: number };
@@ -126,6 +127,7 @@ function fixture(options: Options = {}) {
   const observedTp = { symbol: "SOLUSDT", side: "SELL" as const, orderId: "exchange-tp", id: "exchange-tp",
     clientOrderId: "owned:tp", status: "NEW", price: 11, originalQuantity: 1, executedQuantity: 0 };
   const dependencies: Record<string, unknown> = {
+    "./live-audit-event": liveAudit,
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "node:crypto": { randomUUID: () => "audit-lease" },
