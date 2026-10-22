@@ -7,21 +7,34 @@ import ts from "typescript";
 import * as readErrors from "./live-read-error.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
-import { liveEngineOrderPrefix } from "./robot-v1-live-cycle.ts";
+import { liveEngineOrderPrefix, LIVE_ACTIVE_ORDER_STATUSES } from "./robot-v1-live-cycle.ts";
 import * as liveAudit from "./live-audit-event.ts";
+import * as resetMilestone from "./live-reset-recovery.ts";
 
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
 function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registryFailure=false,
   metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean;
-    auditFailure?: "once" | "committed" | "persistent" | "hard" }) {
+    auditFailure?: "once" | "committed" | "persistent" | "hard";
+    reset?: { existing?: boolean; currentOpen?: number; changed?: Record<string, unknown>;
+      readFailure?: "once" | "persistent" | "hard"; loseLease?: boolean } }) {
   const writes:Array<{table:string,data:Record<string,unknown>,filters:Record<string,unknown>}>=[];
   const effects = { arm: 0, reconcileOrder: 0, protect: 0, snapshot: 0, auditWrites: 0 };
   let auditRow: Record<string, unknown> | null = null;
+  const previousRunId = "64b267d0-3897-4783-a07e-69c427472f81";
   const run={id:`run-${engineId}`,trading_engine_id:engineId,exchange_account_id:"same-account",operator_id:"operator",
     tenant_id:"tenant",product_id:"product",user_id:"user",asset:"SOL",symbol:"SOLBRL",quote_asset:"BRL",strategy_version:"fixture",lease_owner:"lease",
-    engine: { trading_engine_id: engineId, exchange_account_id: "same-account", base_asset: "SOL",
+    previous_run_id: metadata?.reset ? previousRunId : null, created_at: new Date(Date.now() - 86_400_000).toISOString(),
+    engine: { trading_engine_id: engineId, exchange_account_id: "same-account", base_asset: "SOL", status: "ACTIVE",
       legacy_compatible: false, executor_shard_id: "executor-03" } };
+  const scope = Object.fromEntries(["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
+    "trading_engine_id", "quote_asset"].map(key => [key, run[key as keyof typeof run]]));
+  let resetMilestoneRow: Record<string, unknown> | null = metadata?.reset?.existing ? { ...scope, run_id: run.id,
+    event_key: `RESET_RECOVERED:${previousRunId}`, event_type: "RESET_RECOVERED", slot_number: null,
+    observed_at: new Date(Date.now() - 3_600_000).toISOString(),
+    details: { previous_run_id: previousRunId, open_positions: 1, resident_buy_count: 1 },
+    ...metadata.reset.changed } : null;
+  let resetReads = 0;
   const order = { ...run, id: "resident-buy", run_id: run.id, slot_id: "slot-8", operation_sequence: 1,
     side: "BUY", status: "NEW", executed_quantity: 0, trades_reconciled: true,
     client_order_id: `${liveEngineOrderPrefix(run.engine)}8-B-fixture`, strategy_decision_id: "decision-8",
@@ -34,6 +47,20 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     const filters:Record<string,unknown>={};let data:Record<string,unknown>|null=null;
     const result=()=>{
       if(data)writes.push({table,data,filters:{...filters}});
+      if (table === "robot_v1_live_events" && metadata?.reset) {
+        if (!data && filters.event_key === `RESET_RECOVERED:${previousRunId}`) {
+          resetReads++;
+          if (metadata.reset.readFailure === "hard" || metadata.reset.readFailure === "persistent"
+            || metadata.reset.readFailure === "once" && resetReads === 1)
+            return { data: null, error: { code: metadata.reset.readFailure === "hard" ? "42501" : "PGRST003" },
+              status: metadata.reset.readFailure === "hard" ? 403 : 503 };
+          return { data: resetMilestoneRow ? [resetMilestoneRow] : [], error: null, status: 200 };
+        }
+        if (data?.event_type === "RESET_RECOVERED") {
+          resetMilestoneRow ??= { ...structuredClone(data), observed_at: new Date().toISOString() };
+          return { data: null, error: null, status: 201 };
+        }
+      }
       if (table === "robot_v1_live_events" && metadata?.auditFailure) {
         if (data) {
           effects.auditWrites++; auditRow = structuredClone(data);
@@ -59,7 +86,8 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
       if (metadata && table === "account_order_budget_reservations") return { data: [{ ...run,
         executor_shard_id: "executor-03", client_order_id: order.client_order_id,
         reserved_at: "2026-10-14T00:01:00Z", acknowledged_at: "2026-10-14T00:02:00Z" }], error: null };
-      if (metadata && table === "robot_v1_live_runs" && data?.lease_until) return { data: { id: run.id }, error: null };
+      if (metadata && table === "robot_v1_live_runs" && data?.lease_until)
+        return { data: metadata.reset?.loseLease && resetReads > 0 ? null : { id: run.id }, error: null };
       return {error:null,data:oldFirstSeen?{first_seen_at:oldFirstSeen}:null};
     };
     const chain={select:()=>chain,update:(v:Record<string,unknown>)=>{data=v;return chain;},upsert:(v:Record<string,unknown>)=>{data=v;return chain;},
@@ -69,7 +97,9 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     return chain;
   }};
   const deps:Record<string,unknown>={
+    "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES },
     "./live-audit-event": liveAudit,
+    "./live-reset-recovery": resetMilestone,
     "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
     "./live-read-error":readErrors,
@@ -89,7 +119,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
   const exports:Record<string,unknown>={};
   new Function("require","exports","fixtureRun","registryError","metadata","fixtureOrder","effects",compiled+`
     assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError)throw registryError;};
-    runRows=async()=>({slots:[],orders:metadata?[fixtureOrder]:[],accounts:[]}); assertLiveResidentPrices=()=>{};
+    runRows=async()=>({slots:metadata?.reset?Array.from({length:metadata.reset.currentOpen??5},()=>({position_quantity:1})):[],orders:metadata?[fixtureOrder]:[],accounts:[]}); assertLiveResidentPrices=()=>{};
     if (metadata) {
       reconcileOrder=async()=>{effects.reconcileOrder++;};
       ensureTakeProfits=async()=>{effects.protect++;}; creditClosedSlots=async()=>{};
@@ -224,6 +254,55 @@ test("normal advance performs no empty budget-alert UPDATE when the exact metada
   assert.equal(f.writes.some(write => write.data.kill_switch), false);
   assert.equal(f.writes.find(write => write.table === "robot_v1_live_runs"
     && write.data.lease_owner === null)!.data.last_error, null);
+});
+
+test("normal successor tick preserves its old reset milestone instead of replaying changing position counts", async () => {
+  const f = fixture(new Error("unused"), undefined, "engine-b", false,
+    { absent: true, reset: { existing: true, currentOpen: 5 } });
+  assert.equal((await f.execute()).status, "OK");
+  assert.equal(f.effects.arm, 1); assert.equal(f.effects.reconcileOrder, 1);
+  assert.equal(f.writes.some(write => write.table === "robot_v1_live_events" && write.data.event_type === "RESET_RECOVERED"), false);
+  assert.equal(f.writes.some(write => write.table === "robot_v1_live_alerts" && write.filters.code === "COINOPS_LIVE_RESET_FAILED"), false);
+  assert.equal(f.writes.some(write => write.data.kill_switch), false);
+});
+
+test("a missing reset milestone is recorded once and later ticks preserve the first immutable snapshot", async () => {
+  const f = fixture(new Error("unused"), undefined, "engine-b", false,
+    { absent: true, reset: { currentOpen: 5 } });
+  assert.equal((await f.execute()).status, "OK");
+  assert.equal((await f.execute()).status, "OK");
+  const events = f.writes.filter(write => write.table === "robot_v1_live_events" && write.data.event_type === "RESET_RECOVERED");
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0].data.details, { previous_run_id: f.run.previous_run_id, open_positions: 5, resident_buy_count: 1 });
+  const resolutions = f.writes.filter(write => write.table === "robot_v1_live_alerts" && write.filters.code === "COINOPS_LIVE_RESET_FAILED");
+  assert.equal(resolutions.length, 1);
+  for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id"])
+    assert.equal(resolutions[0].filters[key], f.run[key as keyof typeof f.run]);
+});
+
+test("reset milestone transient GET converges in the executor while persistent reads checkpoint and hard proof blocks locally", async () => {
+  const transient = fixture(new Error("unused"), undefined, "engine-b", false,
+    { absent: true, reset: { existing: true, readFailure: "once" } });
+  assert.equal((await transient.execute()).status, "OK");
+  assert.equal(transient.effects.arm, 1); assert.equal(transient.effects.reconcileOrder, 1);
+  assert.equal(transient.writes.some(write => write.data.kill_switch), false);
+  const stale = fixture(new Error("unused"), undefined, "engine-b", false,
+    { absent: true, reset: { existing: true, readFailure: "persistent" } });
+  assert.equal((await stale.execute()).status, "RETRY");
+  assert.equal(stale.writes.some(write => write.data.kill_switch), false);
+  const warning = stale.writes.find(write => write.data.code === "COINOPS_LIVE_TRANSIENT_LEDGER_READ")!;
+  assert.equal((warning.data.details as Record<string, unknown>).stage, "AUDIT_EVENT");
+  assert.equal((warning.data.details as Record<string, unknown>).read_path, "ledger/reset_recovery_milestone");
+  for (const reset of [{ existing: true, readFailure: "hard" as const },
+    { existing: true, changed: { trading_engine_id: "engine-a" } },
+    { existing: true, changed: { event_type: "RECONCILED" } }]) {
+    const bad = fixture(new Error("unused"), undefined, "engine-b", false, { absent: true, reset });
+    await assert.rejects(bad.execute());
+    assert.ok(bad.writes.filter(write => write.table === "trading_engines")
+      .every(write => write.filters.id === "engine-b"));
+    assert.equal(bad.writes.some(write => write.table === "robot_v1_live_events" && write.data.event_type === "RESET_RECOVERED"), false);
+    assert.ok(bad.writes.some(write => write.data.kill_switch === true));
+  }
 });
 
 test("normal balance/fee/budget HOLD does not clear an existing budget warning or repeat financial work", async () => {

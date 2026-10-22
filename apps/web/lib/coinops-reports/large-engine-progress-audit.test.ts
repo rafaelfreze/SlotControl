@@ -5,7 +5,7 @@ import { largeEngineProgressAudit } from "./large-engine-progress-audit.ts";
 import { REPORT_VERSION } from "./filters.ts";
 
 test("v26 exports unfinished durable progress without credential/lease data or fabricated freshness", () => {
-  assert.equal(REPORT_VERSION, 28);
+  assert.equal(REPORT_VERSION, 29);
   const observed = "2026-10-16T18:00:00Z", last = "2026-10-16T17:54:00Z";
   const cp = { contract: "LARGE_ENGINE_PROGRESS_V1", run_id: "run", phase: "CREDIT_SLOTS", slot_count: 100,
     observed_at: observed, started_at: "2026-10-16T17:55:00Z", settled_orders: 100,

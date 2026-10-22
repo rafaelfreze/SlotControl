@@ -1,6 +1,53 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v28: publica `final_audit_event_persistence` e
+Contrato atual v29: publica `reset_recovered_milestone_persistence`,
+`reset_recovered_mismatch_guarded_recovery` e
+`reset_recovery_milestone_observation` como `CURRENT_CODE_CONTRACT`.
+`RESET_RECOVERED:<previous_run_id>` é marco histórico imutável first-writer por
+successor run, não snapshot corrente. Um GET completo valida escopo exato,
+tipo, slot nulo, vínculo anterior e shape dos três detalhes
+`previous_run_id`, `open_positions` e `resident_buy_count`: contagem inteira
+de 1 até `slot_count`, uma BUY residente e `observed_at` entre a criação do
+successor e agora. Marco existente válido dispensa nova escrita; sua contagem
+antiga não é comparada à atual. Exemplo: uma posição no marco de 02/10 e cinco
+posições no estado atual são fatos de instantes distintos, não divergência
+financeira por si só. Nunca alterar o marco, renovar seu horário ou reemitir a
+contagem atual sobre a mesma chave. Ausente, usa o INSERT idempotente normal;
+o helper genérico continua exigindo igualdade integral no readback incerto.
+O GET usa a política compartilhada do ledger: dois conjuntos completos de até
+5s, intervalo de 250ms e lease preservada. Indisponibilidade transitória tipada
+usa checkpoint normal, sem confundir erro com ausência confirmada ou permitir
+INSERT alternativo. Exaustão stale só qualifica com código
+`COINOPS_LIVE_LEDGER_READ_STALE`, root
+`COINOPS_LIVE_LEDGER_READ_UNAVAILABLE`, `stage=AUDIT_EVENT` e
+`read_path=ledger/reset_recovery_milestone`. Esse ramo exige marco válido ou
+ausência comprovada por GET completo nos dois passes, além de lineage,
+RECONCILED fresco e finanças atuais comprovados antes/depois, lease e CAS.
+Ausência por erro, fonte incompleta ou leitura inconclusiva nunca é prova.
+Recovery não insere o marco ausente: a primeira emissão ocorre no próximo tick
+normal protegido, se aplicável. Se existente, admite marco posterior ao
+incidente de leitura. Não herda aprovação genérica de stale e não flexibiliza
+a colisão histórica abaixo, que continua exigindo marco válido anterior.
+
+Recuperação da colisão histórica é exceção estreita: código/root exatos
+`COINOPS_LIVE_EVENT_PERSIST_FAILED`, `stage=AUDIT_EVENT`, `audit_phase=READBACK`,
+`audit_reason=READBACK_MISMATCH`, `audit_event_type=RESET_RECOVERED`, chave com
+o UUID anterior exato, tentativas inteiras 1..2 e HTTP/provider explicitamente
+null. Exige marco válido anterior a first_seen/last_seen do incidente,
+predecessor COMPLETED com criação <= conclusão <= criação do successor,
+successor ACTIVE único com id/criação/reset_idempotency_key exatos e chave
+`RESET:<previous_run_id>:`. Exige também RECONCILED posterior fresco e todas as
+provas financeiras atuais, decisões/dispatches assentados duas vezes e CAS sob
+lease. Erro genérico, shape/identidade/lineage ambígua, fill pendente ou estado
+financeiro inconclusivo permanece BLOCKED_SAFE no engine afetado. Relatório
+não executa esse protocolo e não promove histórico divergente a PASS. Exporta
+o marco antigo, o snapshot atual, os detalhes tipados do alerta e eventual
+`LIVE_RESUMED` como fatos separados em CSV/JSON; não deduz recovery sem evento
+persistido. A regra não é autorização financeira nem certificação de runtime.
+O pacote mantém 27 arquivos e preserva snapshots v28/anteriores. Ver
+`COINOPS_RESET_MILESTONE_RECOVERY_20261022.md`.
+
+Preserva v28: publica `final_audit_event_persistence` e
 `audit_event_guarded_recovery` como `CURRENT_CODE_CONTRACT`, sem certificar
 execução histórica, causa upstream ou recuperação pela mera presença da regra.
 A persistência final usa identidade operator/account/engine/run/shard/chave
@@ -23,8 +70,10 @@ A observação tem no máximo 150s, sucede first_seen/last_seen do incidente e
 antecede last_reconciled_at em até 120s; a chave do minuto real admite até 65s
 após seu início e 1s de skew. `next=KILL_SWITCH` e `strategy_version` exata
 mantêm entradas protegidas durante a prova. Metadados `audit_*` presentes
-participam do CAS; novo erro tipado exige tipo RECONCILED/RESET_RECOVERED e
-reason/HTTP/provider estritamente transitórios. Legado sem metadados não vira
+participam do CAS; o ramo transitório tipado exige tipo RECONCILED/RESET_RECOVERED
+e reason/HTTP/provider estritamente transitórios. A única exceção a mismatch
+é o marco RESET_RECOVERED comprovado acima; mismatch genérico continua fechado.
+Legado sem metadados não vira
 transitório por inferência: apenas a prova financeira atual pode qualificá-lo.
 Não recria evento histórico ausente, fabrica freshness nem libera outro
 engine. O relatório exporta somente evidência persistida: nunca executa recovery
@@ -95,7 +144,7 @@ os eventos `ACCOUNT_ORDER_NOT_SUBMITTED` sem tratar não envio como fill.
 Procedimento: `COINOPS_UNSENT_ENTRY_RECOVERY.md`.
 
 O contrato efetivo em `apps/web/lib/coinops-reports/filters.ts` é agora
-`report_version = 28`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
+`report_version = 29`. A versão 16 acrescentou identidade e metadados de isolamento por engine/shard; publicação depende dos gates da release, não deste documento. A versão 14 registra meta mensal como piso: 25/25 atingidos voltam à fila elegível sem reset de gains; auditoria de entradas usa os 25 saldos assinados conhecidos no instante. O texto abaixo documenta a evolução histórica da versão 3;
 afirmações antigas de LIVE bloqueado não descrevem a operação atual.
 Na versão 13, `NEXT_BUY_CAPITAL_REFRESH_AUDIT` confronta somente a cadeia persistida
 de atualização da NEXT BUY por capital aplicado: plano, confirmação, cancelamento

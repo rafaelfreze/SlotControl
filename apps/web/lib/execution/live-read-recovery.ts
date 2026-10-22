@@ -12,6 +12,32 @@ const AUDIT_DETAIL_KEYS = READ_RECOVERY_DIAGNOSTIC_KEYS.slice(4);
 const AUDIT_CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
   "08000", "08003", "08006", "53300", "57014"]);
 
+/** Eligibility only for the old RESET_RECOVERED replay site. That milestone
+ * has one stable key but was previously reemitted with current position
+ * counts. A mismatch is never generally transient: the server must prove the
+ * existing immutable milestone, completed predecessor and sole successor
+ * twice, in addition to every normal financial/lease/CAS recovery guard. */
+export function isResetAuditReplayRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return code === "COINOPS_LIVE_EVENT_PERSIST_FAILED" && details?.root_code === code
+    && details.stage === "AUDIT_EVENT" && details.audit_phase === "READBACK"
+    && details.audit_reason === "READBACK_MISMATCH" && details.audit_event_type === "RESET_RECOVERED"
+    && typeof details.audit_event_key === "string"
+    && /^RESET_RECOVERED:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(details.audit_event_key)
+    && Number.isInteger(details.audit_attempts) && Number(details.audit_attempts) >= 1
+    && Number(details.audit_attempts) <= 2
+    // Mismatch diagnostics from the deployed immutable readback comparator
+    // carry no provider failure evidence; do not inherit hard/unknown errors.
+    && details.audit_http_status === null && details.audit_provider_code === null;
+}
+
+/** A new milestone GET uses the shared bounded ledger observation policy.
+ * Exhaustion may recover only through the same strong milestone/lineage and
+ * financial proofs, not by inheriting a generic stale-read approval. */
+export function isResetMilestoneReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return code === "COINOPS_LIVE_LEDGER_READ_STALE" && details?.root_code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE"
+    && details.stage === "AUDIT_EVENT" && details.read_path === "ledger/reset_recovery_milestone";
+}
+
 /** The former audit wrapper discarded its provider error. That legacy site
  * identifies a metadata append, not a transient failure or a safe financial
  * write. Resume additionally requires a later fresh RECONCILED checkpoint,
@@ -19,6 +45,7 @@ const AUDIT_CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGR
 export function isAuditEventRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
   if (code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || details?.root_code !== code
     || details.stage !== "AUDIT_EVENT") return false;
+  if (isResetAuditReplayRecovery(code, details)) return true;
   if (AUDIT_DETAIL_KEYS.every(key => details[key] === undefined))
     return details.http_status === undefined && details.provider_code === undefined;
   if (!["RECONCILED", "RESET_RECOVERED"].includes(String(details.audit_event_type))
@@ -52,7 +79,7 @@ export function assertAuditEventRecoveryEvidence(incident: ReadRecoveryAlert, ru
   const fail = (): never => { throw new Error("COINOPS_LIVE_AUDIT_RECOVERY_UNPROVEN"); };
   const first = Date.parse(incident.first_seen_at ?? ""), last = Date.parse(incident.last_seen_at);
   const reconciled = Date.parse(run.last_reconciled_at ?? ""), observed = Date.parse(event?.observed_at ?? "");
-  if (!isAuditEventRecovery(incident.code, incident.details)
+  if (!(isAuditEventRecovery(incident.code, incident.details) || isResetMilestoneReadRecovery(incident.code, incident.details))
     || incident.alert_key !== `LIVE_RUN:${run.id}:CRITICAL` || !event
     || ![now, first, last, reconciled, observed].every(Number.isFinite)
     || first - last > 1_000 || Math.max(first, last) >= observed
@@ -150,6 +177,7 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
   return status === "ACTIVE" && reconciledStatus === "OK"
     && !NON_RECOVERABLE_READ_ROOTS.has(String(details?.root_code))
     && (details?.root_code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || isAuditEventRecovery(alertCode, details))
+    && (details?.read_path !== "ledger/reset_recovery_milestone" || isResetMilestoneReadRecovery(alertCode, details))
     && (isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)
       || isExposureStateReadRecovery(alertCode, details)
@@ -228,7 +256,10 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
         || !["ledger/slots", "ledger/orders", "ledger/slot_accounts", "ledger/monthly_target",
           "ledger/monthly_gains", "ledger/bulk_checkpoint", "ledger/config_gate", "ledger/quote_cap",
           "ledger/preparation", "ledger/operator", ...EXPOSURE_READ_PATHS,
-          ...BUDGET_ALERT_READ_PATHS, CAPITAL_AUDIT_READ_PATH].includes(String(alert.details?.read_path)))
+          ...BUDGET_ALERT_READ_PATHS, CAPITAL_AUDIT_READ_PATH,
+          "ledger/reset_recovery_milestone"].includes(String(alert.details?.read_path)))
+    || alert.details?.read_path === "ledger/reset_recovery_milestone"
+      && !isResetMilestoneReadRecovery(alert.code, alert.details)
     || BUDGET_ALERT_READ_PATHS.includes(String(alert.details?.read_path))
       && !isAccountBudgetAlertRecovery(alert.code, alert.details)
     || alert.details?.read_path === CAPITAL_AUDIT_READ_PATH

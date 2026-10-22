@@ -5,6 +5,7 @@ type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "month
   | "bulk_checkpoint" | "config_gate" | "quote_cap" | "preparation" | "operator"
   | "exposure_runs" | "exposure_engines" | "exposure_slots" | "exposure_orders"
   | "capital_refresh_events"
+  | "reset_recovery_milestone" | "reset_recovery_lineage"
   | "account_budget_alert" | "account_budget_decision" | "account_budget_reservation";
 type Response<T> = { data: T[] | null; error: unknown; status?: number };
 const CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",

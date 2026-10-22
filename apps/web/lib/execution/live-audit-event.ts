@@ -24,8 +24,9 @@ const safeCode = (code: unknown) => typeof code === "string"
 const safeStatus = (status: unknown) => Number.isInteger(status) && Number(status) >= 0
   && Number(status) <= 599 ? Number(status) : null;
 
-/** Evidence contains only a fixed phase/reason and sanitized provider codes.
- * No payload, event key, path, provider message or response body is retained. */
+/** Evidence contains a fixed phase/reason, sanitized provider codes and only
+ * the two explicitly allowed audit-key shapes. No payload, arbitrary key,
+ * path, provider message or response body is retained. */
 export class LiveAuditEventPersistError extends Error {
   readonly code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
   readonly phase: Phase; readonly reason: Reason; readonly attempts: number;

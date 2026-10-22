@@ -4,7 +4,8 @@ import test from "node:test";
 import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery,
+  operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
+  isResetMilestoneReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -13,6 +14,7 @@ import * as readErrors from "./live-read-error.ts";
 import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event.ts";
+import * as resetMilestone from "./live-reset-recovery.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
@@ -36,14 +38,24 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   capitalAuditRecovery?: boolean; capitalAuditReadDenied?: boolean; capitalAuditIncomplete?: boolean;
   capitalAuditPendingPlan?: boolean; auditEventRecovery?: boolean; auditProofDenied?: boolean;
   auditProofMissing?: boolean; auditEventChanges?: Record<string, unknown>;
-  auditEventLateChanges?: Record<string, unknown> } = {}) {
+  auditEventLateChanges?: Record<string, unknown>; resetReplayRecovery?: boolean;
+  resetMilestoneChanges?: Record<string, unknown>; resetMilestoneLateChanges?: Record<string, unknown>;
+  resetMilestoneMissing?: boolean; resetMilestoneDenied?: boolean;
+  predecessorChanges?: Record<string, unknown>; successorChanges?: Record<string, unknown>;
+  secondSuccessor?: boolean; lineageDenied?: boolean; lineageLateChanges?: boolean;
+  lineageNeverSettles?: boolean; milestoneLeaseLost?: boolean } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
+  const eventScope = Object.fromEntries(["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
+    "trading_engine_id", "quote_asset"].map(key => [key, scope[key as keyof typeof scope]]));
   const now = Date.now();
   const run = { ...scope, id: "run-a", asset: "SOL", status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
-    last_error: null, last_reconciled_at: new Date(now - (options.auditEventRecovery ? 1_000 : 0)).toISOString(), lease_owner: "lease" };
+    last_error: null, last_reconciled_at: new Date(now - (options.auditEventRecovery ? 1_000 : 0)).toISOString(), lease_owner: "lease",
+    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25,
+    previous_run_id: options.resetReplayRecovery ? "64b267d0-3897-4783-a07e-69c427472f81" : null,
+    reset_idempotency_key: options.resetReplayRecovery ? "RESET:64b267d0-3897-4783-a07e-69c427472f81:owned:old-final-tp" : null };
   const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
     environment: "REAL", executor_shard_id: "executor-02", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
@@ -74,6 +86,8 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   let operatorIntentReads = 0;
   let operatorDispatchReads = 0;
   let auditProofReads = 0;
+  let resetMilestoneReads = 0;
+  let lineageReads = 0;
   const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery
     || options.auditEventRecovery;
   const service = { from(table: string) {
@@ -105,7 +119,23 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
       } else if (table === "robot_v1_live_alerts") data = options.casLost || options.readPathAddedAtCas
         && filters["details->>read_path"] === null ? [] : [{ id: "incident" }];
       else if (table === "robot_v1_live_runs") {
+        if (!mutation && options.resetReplayRecovery && (filters.id === run.previous_run_id || filters.previous_run_id)) {
+          for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id", "quote_asset"])
+            assert.equal(filters[key], scope[key as keyof typeof scope]);
+          lineageReads++; calls.push(filters.previous_run_id ? "successor-proof-read" : "predecessor-proof-read");
+          if (options.lineageDenied) return { data: null, error: { code: "42501" }, status: 403 };
+          if (options.lineageNeverSettles) return new Promise<never>(() => {});
+          data = filters.previous_run_id ? [{ ...run, ...options.successorChanges,
+            ...(options.lineageLateChanges && lineageReads > 2 ? { status: "PAUSED" } : {}) },
+            ...(options.secondSuccessor ? [{ ...run, id: "another-successor" }] : [])]
+            : [{ ...run, id: run.previous_run_id, status: "COMPLETED", previous_run_id: null,
+              created_at: new Date(now - 172_800_000).toISOString(), completed_at: run.created_at,
+              ...options.predecessorChanges }];
+          return { data, error: null };
+        }
         if (mutation?.lease_owner) calls.push("lease-claimed");
+        if (mutation?.lease_until && !mutation.lease_owner && options.milestoneLeaseLost && resetMilestoneReads > 0)
+          return { data: null, error: null };
         data = singular ? { ...run, ...mutation } : [{ ...run, ...mutation }];
       } else if (table === "operators") data = scope;
       else if (table === "robot_v1_live_preparations") data = { ...scope, id: "prep", live_enabled: true,
@@ -163,6 +193,18 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
       else if (table === "account_quote_caps") data = { ...scope, hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") {
         if (!mutation) {
+          if (filters.event_key === `RESET_RECOVERED:${run.previous_run_id}`) {
+            calls.push("reset-milestone-read"); resetMilestoneReads++;
+            for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id", "quote_asset"])
+              assert.equal(filters[key], scope[key as keyof typeof scope]);
+            assert.equal(filters.run_id, run.id);
+            if (options.resetMilestoneDenied) return { data: null, error: { code: "42501" }, status: 403 };
+            return { data: options.resetMilestoneMissing ? [] : [{ ...eventScope, run_id: run.id,
+              event_key: `RESET_RECOVERED:${run.previous_run_id}`, event_type: "RESET_RECOVERED", slot_number: null,
+              observed_at: new Date(now - 86_399_000).toISOString(),
+              details: { previous_run_id: run.previous_run_id, open_positions: 1, resident_buy_count: 1 },
+              ...options.resetMilestoneChanges, ...(resetMilestoneReads > 1 ? options.resetMilestoneLateChanges : {}) }], error: null, status: 200 };
+          }
           if (filters.event_type === "RECONCILED") {
             calls.push("audit-checkpoint-read"); auditProofReads++;
             for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id", "quote_asset"])
@@ -220,13 +262,15 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-audit-event": { appendLiveAuditEvent, LiveAuditEventPersistError },
+    "./live-reset-recovery": resetMilestone,
     "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-      operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery,
+      operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
+      isResetMilestoneReadRecovery,
       assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
@@ -837,4 +881,102 @@ test("typed final audit recovery preserves its immutable diagnostic CAS and does
     audit_event_key: "RECONCILED:2026-10-21T13:29" } }]], auditEventRecovery: true });
   await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
   assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
+});
+
+const resetReplayIncident = (): ReadRecoveryAlert => ({ ...known, code: "COINOPS_LIVE_EVENT_PERSIST_FAILED",
+  first_seen_at: new Date(Date.now() - 60_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(),
+  details: { stage: "AUDIT_EVENT", root_code: "COINOPS_LIVE_EVENT_PERSIST_FAILED", audit_phase: "READBACK",
+    audit_reason: "READBACK_MISMATCH", audit_event_type: "RESET_RECOVERED", audit_attempts: 1,
+    audit_http_status: null, audit_provider_code: null,
+    audit_event_key: "RESET_RECOVERED:64b267d0-3897-4783-a07e-69c427472f81" } });
+
+test("old reset milestone count remains immutable while current protected positions recover under twice-proved lineage and CAS", async () => {
+  const incident = resetReplayIncident();
+  const safe = fixture({ alerts: [[incident]], auditEventRecovery: true, resetReplayRecovery: true, caixetaLayout: true });
+  const beforeOrders = structuredClone(safe.orders), beforeSlots = structuredClone(safe.slots);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.equal(safe.calls.filter(value => value === "reset-milestone-read").length, 2);
+  assert.equal(safe.calls.filter(value => value === "predecessor-proof-read").length, 2);
+  assert.equal(safe.calls.filter(value => value === "successor-proof-read").length, 2);
+  assert.equal(safe.calls.filter(value => value === "audit-checkpoint-read").length, 2);
+  assert.equal(safe.calls.filter(value => value === "operator-intent-read").length, 2);
+  assert.equal(safe.calls.filter(value => value === "operator-dispatch-read").length, 2);
+  assert.ok(safe.writes.every(write => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(write.table)));
+  assert.ok(safe.writes.filter(write => write.table === "robot_v1_live_events").every(write => write.data.event_type === "LIVE_RESUMED"));
+  const clear = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
+  for (const key of READ_RECOVERY_DIAGNOSTIC_KEYS)
+    assert.equal(clear.filters[`details->>${key}`], incident.details?.[key] ?? null);
+  assert.deepEqual(safe.orders, beforeOrders); assert.deepEqual(safe.slots, beforeSlots);
+});
+
+test("reset replay recovery rejects false history, foreign scope, broken lineage, unsettled finance and lease loss", async () => {
+  const incident = resetReplayIncident();
+  for (const options of [{ resetMilestoneMissing: true }, { resetMilestoneDenied: true },
+    { resetMilestoneChanges: { trading_engine_id: "engine-b" } },
+    { resetMilestoneChanges: { event_type: "RECONCILED" } },
+    { resetMilestoneChanges: { details: { previous_run_id: "other", open_positions: 1, resident_buy_count: 1 } } },
+    { resetMilestoneChanges: { details: { previous_run_id: "64b267d0-3897-4783-a07e-69c427472f81", open_positions: 1, resident_buy_count: 1, added: true } } },
+    { resetMilestoneChanges: { observed_at: new Date(Date.now() + 60_000).toISOString() } },
+    { resetMilestoneChanges: { observed_at: incident.first_seen_at } },
+    { resetMilestoneLateChanges: { event_key: "RESET_RECOVERED:00000000-0000-4000-8000-000000000001" } },
+    { predecessorChanges: { status: "ACTIVE" } }, { predecessorChanges: { trading_engine_id: "engine-b" } },
+    { predecessorChanges: { completed_at: new Date(Date.now()).toISOString() } },
+    { successorChanges: { reset_idempotency_key: "different-key" } }, { successorChanges: { id: "other-run" } },
+    { secondSuccessor: true }, { lineageDenied: true }, { lineageLateChanges: true },
+    { operatorUnsettledDecision: true }, { operatorPendingDispatch: true },
+    { operatorLateUnsettledDecision: true }, { operatorLatePendingDispatch: true },
+    { milestoneLeaseLost: true }, { auditProofMissing: true }, { missingTp: true }, { configPending: true }]) {
+    const blocked = fixture({ alerts: [[incident]], auditEventRecovery: true, resetReplayRecovery: true, caixetaLayout: true, ...options });
+    await assert.rejects(blocked.run(), error => { assert.ok(error instanceof Error, JSON.stringify(options)); return true; });
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false, JSON.stringify(options));
+    assert.equal(blocked.writes.some(write => write.data.resolved_at), false, JSON.stringify(options));
+  }
+});
+
+test("reset replay recovery binds previous run and changing incident diagnostics before opening only this engine", async () => {
+  const incident = resetReplayIncident();
+  for (const changed of [{ ...incident, details: { ...incident.details,
+    audit_event_key: "RESET_RECOVERED:00000000-0000-4000-8000-000000000001" } },
+    { ...incident, details: { ...incident.details, audit_event_type: "RECONCILED" } }]) {
+    const blocked = fixture({ alerts: [[changed]], auditEventRecovery: true, resetReplayRecovery: true, caixetaLayout: true });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+  }
+  const changed = fixture({ alerts: [[incident], [{ ...incident, last_seen_at: new Date().toISOString() }]],
+    auditEventRecovery: true, resetReplayRecovery: true, caixetaLayout: true });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
+});
+
+test("a future milestone GET outage retains full reset lineage and financial recovery guards", async () => {
+  const incident = { ...resetReplayIncident(), code: "COINOPS_LIVE_LEDGER_READ_STALE", details: {
+    stage: "AUDIT_EVENT", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", read_path: "ledger/reset_recovery_milestone" } };
+  const safe = fixture({ alerts: [[incident]], auditEventRecovery: true, resetReplayRecovery: true, caixetaLayout: true });
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.equal(safe.calls.filter(value => value === "reset-milestone-read").length, 2);
+  const absent = fixture({ alerts: [[incident]], auditEventRecovery: true, resetReplayRecovery: true,
+    resetMilestoneMissing: true, caixetaLayout: true });
+  assert.equal((await absent.run()).status, "RESUMED", "confirmed empty GET is not a mismatch or authorization to manufacture history");
+  assert.ok(absent.writes.filter(write => write.table === "robot_v1_live_events").every(write => write.data.event_type === "LIVE_RESUMED"));
+  for (const options of [{ secondSuccessor: true }, { operatorPendingDispatch: true },
+    { operatorLateUnsettledDecision: true }, { missingTp: true }]) {
+    const blocked = fixture({ alerts: [[incident]], auditEventRecovery: true, resetReplayRecovery: true, caixetaLayout: true, ...options });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(write => write.data.kill_switch === false), false);
+  }
+});
+
+test("lineage observation enforces its real deadline even if the provider ignores AbortSignal", async () => {
+  const scenario = fixture({ alerts: [[resetReplayIncident()]], auditEventRecovery: true,
+    resetReplayRecovery: true, caixetaLayout: true, lineageNeverSettles: true });
+  const started = performance.now();
+  const keepAlive = setInterval(() => {}, 1_000);
+  try { await assert.rejects(scenario.run(), /COINOPS_LIVE_LEDGER_READ_UNAVAILABLE/); }
+  finally { clearInterval(keepAlive); }
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed >= 10_000 && elapsed < 15_000, `bounded two-set read took ${elapsed}ms`);
+  assert.equal(scenario.calls.filter(value => value === "predecessor-proof-read").length, 2);
+  assert.equal(scenario.calls.filter(value => value === "successor-proof-read").length, 2);
+  assert.equal(scenario.writes.some(write => write.data.kill_switch === false), false);
+  assert.equal(scenario.writes.some(write => write.data.resolved_at), false);
 });

@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
   isRegistryStateReadRecovery, isExposureStateReadRecovery, isAccountBudgetAlertRecovery,
-  isCapitalAuditReadRecovery, operatorRecoveryAlert, isAuditEventRecovery,
+  isCapitalAuditReadRecovery, operatorRecoveryAlert, isAuditEventRecovery, isResetAuditReplayRecovery,
+  isResetMilestoneReadRecovery,
   assertAuditEventRecoveryEvidence, type AuditRecoveryEvent } from "./live-read-recovery.ts";
 
 test("recovers only a successfully reconciled active read outage", () => {
@@ -408,6 +409,43 @@ const auditDetails = { stage: "AUDIT_EVENT", root_code: auditCode };
 const typedAuditDetails = { ...auditDetails, audit_phase: "WRITE", audit_reason: "TRANSIENT_EXHAUSTED",
   audit_event_type: "RECONCILED", audit_event_key: "RECONCILED:2026-10-21T13:28",
   audit_attempts: 2, audit_http_status: 503, audit_provider_code: null };
+
+test("reset replay mismatch eligibility is limited to its exact typed historical milestone site", () => {
+  const details = { ...auditDetails, audit_phase: "READBACK", audit_reason: "READBACK_MISMATCH",
+    audit_event_type: "RESET_RECOVERED", audit_event_key: "RESET_RECOVERED:64b267d0-3897-4783-a07e-69c427472f81",
+    audit_attempts: 1, audit_http_status: null, audit_provider_code: null };
+  for (const audit_attempts of [1, 2]) {
+    assert.equal(isResetAuditReplayRecovery(auditCode, { ...details, audit_attempts }), true);
+    assert.equal(isAuditEventRecovery(auditCode, { ...details, audit_attempts }), true);
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", auditCode, { ...details, audit_attempts }), true);
+  }
+  for (const change of [{ stage: "ARM_ENTRY" }, { root_code: "OTHER" }, { audit_phase: "WRITE" },
+    { audit_reason: "HARD_PROVIDER" }, { audit_reason: "UNKNOWN" }, { audit_event_type: "RECONCILED" },
+    { audit_event_type: "GAIN_CREDITED" }, { audit_event_key: "RESET_RECOVERED:invalid" },
+    { audit_event_key: "RECONCILED:2026-10-22T10:00" }, { audit_attempts: 0 }, { audit_attempts: 3 },
+    { audit_attempts: "1" }, { audit_http_status: 200 }, { audit_http_status: 503 },
+    { audit_http_status: undefined }, { audit_provider_code: "42501" }, { audit_provider_code: "PGRST003" },
+    { audit_provider_code: undefined }]) {
+    assert.equal(isResetAuditReplayRecovery(auditCode, { ...details, ...change }), false, JSON.stringify(change));
+    assert.equal(isAuditEventRecovery(auditCode, { ...details, ...change }), false, JSON.stringify(change));
+  }
+  assert.equal(isResetAuditReplayRecovery("COINOPS_LIVE_RECONCILE_ORDERS_FAILED", details), false);
+  assert.equal(mayRecoverReadOutage("PAUSED", "OK", auditCode, details), false);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", auditCode, details), false);
+});
+
+test("a milestone GET outage cannot inherit generic stale recovery at another stage or root", () => {
+  const code = "COINOPS_LIVE_LEDGER_READ_STALE";
+  const details = { stage: "AUDIT_EVENT", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE",
+    read_path: "ledger/reset_recovery_milestone" };
+  assert.equal(isResetMilestoneReadRecovery(code, details), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, details), true);
+  for (const change of [{ stage: "ARM_ENTRY" }, { stage: "POST_ORDER" },
+    { root_code: "COINOPS_LIVE_LEDGER_READ_FAILED" }, { root_code: "UNKNOWN" }])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, { ...details, ...change }), false);
+  assert.equal(isResetMilestoneReadRecovery("COINOPS_LIVE_RECONCILE_ORDERS_FAILED", details), false);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED", details), false);
+});
 
 test("audit eligibility is the exact final metadata site, never a gain, order or unidentified provider retry", () => {
   for (const details of [auditDetails, typedAuditDetails, { ...typedAuditDetails,

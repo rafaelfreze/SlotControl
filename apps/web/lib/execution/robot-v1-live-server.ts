@@ -10,11 +10,13 @@ import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades, r
   type LiveTrade, type LiveExecutorState } from "./live-executor-transport";
 import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
-  isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery,
+  isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
+  isResetMilestoneReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS,
   type ReadRecoveryAlert, type AuditRecoveryEvent } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event";
+import { readResetRecoveryMilestone } from "./live-reset-recovery";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
@@ -62,6 +64,7 @@ type Preparation = Scope & EngineScope & { asset: V1Asset; symbol: Symbol; slot_
   live_enabled: boolean; kill_switch: boolean; config_version: number };
 type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; status: string; slot_count?: number;
   execution_source?: string;
+  created_at: string; reset_idempotency_key: string | null;
   anchor_price: number | string; slot_notional_brl: number | string; gain_rate: number | string;
   entry_spacing: number | string; entry_regime: "NORMAL" | "POST_ATH";
   config_version: number; config_snapshot: Record<string, unknown>; strategy_version: string;
@@ -1763,23 +1766,31 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
       "RECONCILED", null, { source, next, strategy_version: STRATEGY_VERSION });
     if (run.previous_run_id && !entryBlocked(run)) {
-      const healed = await runRows(service, run);
-      const residentBuys = healed.orders.filter((order) => order.side === "BUY"
-        && LIVE_ACTIVE_ORDER_STATUSES.has(order.status));
-      if (healed.slots.some((slot) => amount(slot.position_quantity) > 0)
-        && residentBuys.length === 1
-        && !healed.orders.some((order) => amount(order.executed_quantity) > 0
-          && !order.trades_reconciled)) {
-        const resolved = await service.from("robot_v1_live_alerts")
-          .update({ resolved_at: new Date().toISOString() })
-          .eq("trading_engine_id", run.trading_engine_id)
-          .eq("exchange_account_id", run.exchange_account_id)
-          .eq("code", "COINOPS_LIVE_RESET_FAILED").is("resolved_at", null);
-        if (resolved.error) throw new Error("COINOPS_LIVE_RESET_ALERT_RESOLUTION_FAILED");
-        await event(service, run, `RESET_RECOVERED:${run.previous_run_id}`,
-          "RESET_RECOVERED", null, { previous_run_id: run.previous_run_id,
-            open_positions: healed.slots.filter((slot) => amount(slot.position_quantity) > 0).length,
-            resident_buy_count: residentBuys.length });
+      // RESET_RECOVERED is a first-writer historical milestone, not a
+      // snapshot of every later position count. Read it before loading the
+      // first-emission-only ledger or performing any metadata UPDATE.
+      const milestone = await readResetRecoveryMilestone(service, run, {
+        slotCount: configuredEngineSlotCount(run.engine!), renewLease: () => renewLease(service, run) });
+      if (!milestone) {
+        const healed = await runRows(service, run);
+        const residentBuys = healed.orders.filter((order) => order.side === "BUY"
+          && LIVE_ACTIVE_ORDER_STATUSES.has(order.status));
+        if (healed.slots.some((slot) => amount(slot.position_quantity) > 0)
+          && residentBuys.length === 1
+          && !healed.orders.some((order) => amount(order.executed_quantity) > 0
+            && !order.trades_reconciled)) {
+          const resolved = await service.from("robot_v1_live_alerts")
+            .update({ resolved_at: new Date().toISOString() })
+            .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+            .eq("operator_id", run.operator_id).eq("trading_engine_id", run.trading_engine_id)
+            .eq("exchange_account_id", run.exchange_account_id)
+            .eq("code", "COINOPS_LIVE_RESET_FAILED").is("resolved_at", null);
+          if (resolved.error) throw new Error("COINOPS_LIVE_RESET_ALERT_RESOLUTION_FAILED");
+          await event(service, run, `RESET_RECOVERED:${run.previous_run_id}`,
+            "RESET_RECOVERED", null, { previous_run_id: run.previous_run_id,
+              open_positions: healed.slots.filter((slot) => amount(slot.position_quantity) > 0).length,
+              resident_buy_count: residentBuys.length });
+        }
       }
     }
     const held = await service.from("robot_v1_live_alerts")
@@ -2150,6 +2161,75 @@ async function assertFreshAuditRecovery(service: Service, run: Run, incident: Re
   assertAuditEventRecoveryEvidence(incident, run, result.data as AuditRecoveryEvent | null);
 }
 
+/** A historical reset milestone can legitimately contain fewer positions
+ * than exist today. This proves that exact historical fact and its immutable
+ * run lineage, not that an arbitrary READBACK_MISMATCH was harmless. */
+async function assertResetAuditReplayRecovery(service: Service, run: Run, incident: ReadRecoveryAlert) {
+  const fail = (): never => { throw new Error("COINOPS_LIVE_RESET_AUDIT_RECOVERY_UNPROVEN"); };
+  const replay = isResetAuditReplayRecovery(incident.code, incident.details);
+  if (!(replay || isResetMilestoneReadRecovery(incident.code, incident.details)) || !run.previous_run_id
+    || replay && incident.details?.audit_event_key !== `RESET_RECOVERED:${run.previous_run_id}`
+    || typeof run.reset_idempotency_key !== "string"
+    || !run.reset_idempotency_key.startsWith(`RESET:${run.previous_run_id}:`)) return fail();
+  const milestone = await readResetRecoveryMilestone(service, run, {
+    slotCount: configuredEngineSlotCount(run.engine!), renewLease: () => renewLease(service, run) });
+  const first = Date.parse(incident.first_seen_at ?? ""), last = Date.parse(incident.last_seen_at);
+  // A failed GET can predate the first emission entirely. Successfully
+  // observed absence is safe only for that exact read outage, with the full
+  // lineage/current financial proof below; the normal engine records its
+  // first milestone later. A replay mismatch always needs the old exact row.
+  if (![first, last].every(Number.isFinite)
+    || replay && (!milestone || Date.parse(milestone.observed_at) >= Math.min(first, last))) return fail();
+  const columns = "id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,quote_asset,asset,symbol,status,slot_count,created_at,completed_at,previous_run_id,reset_idempotency_key";
+  const scopedRuns = () => {
+    let query = service.from("robot_v1_live_runs").select(columns);
+    for (const [key, value] of Object.entries(owned(run))) query = query.eq(key, value);
+    return query;
+  };
+  type ResetLineage = Pick<Run, "id" | keyof ReturnType<typeof owned> | "asset" | "symbol" | "status"
+    | "slot_count" | "created_at" | "previous_run_id" | "reset_idempotency_key"> & { completed_at: string | null };
+  const [predecessor, successors] = await boundedLedgerRead(async (deadline, attempt) => {
+    await renewLease(service, run);
+    const read = async (query: PromiseLike<{ data: ResetLineage[] | null; error: unknown; status?: number }>) => {
+      let abort: (() => void) | undefined;
+      try {
+        const observed = Promise.race([Promise.resolve(query), new Promise<never>((_resolve, reject) => {
+          abort = () => reject(new DOMException("Reset lineage deadline", "TimeoutError"));
+          deadline.addEventListener("abort", abort, { once: true });
+          if (deadline.aborted) abort();
+        })]);
+        return await observeLedgerRows<ResetLineage>("reset_recovery_lineage", observed, deadline, attempt);
+      } finally { if (abort) deadline.removeEventListener("abort", abort); }
+    };
+    const observed = await Promise.allSettled([
+      read(scopedRuns().eq("id", run.previous_run_id).limit(2).abortSignal(deadline)),
+      read(scopedRuns().eq("previous_run_id", run.previous_run_id).limit(2).abortSignal(deadline)),
+    ]);
+    // Drain both GETs and never mask a simultaneous hard ownership/schema
+    // failure with an otherwise retryable provider outage.
+    for (const result of observed) if (result.status === "rejected" && !(result.reason instanceof LiveReadUnavailable)) throw result.reason;
+    const [old, next] = observed;
+    if (old.status === "rejected") throw old.reason;
+    if (next.status === "rejected") throw next.reason;
+    return [old.value, next.value] as const;
+  });
+  if (predecessor.length !== 1 || successors.length !== 1) return fail();
+  const old = predecessor[0], successor = successors[0];
+  for (const candidate of [old, successor]) {
+    const scope = owned(run);
+    for (const key of Object.keys(scope) as Array<keyof typeof scope>) if (candidate[key] !== scope[key]) return fail();
+    if (candidate.asset !== run.asset || candidate.symbol !== run.symbol
+      || configuredEngineSlotCount(candidate) !== configuredEngineSlotCount(run.engine!)) return fail();
+  }
+  const created = Date.parse(run.created_at), previousCreated = Date.parse(old.created_at), completed = Date.parse(old.completed_at ?? "");
+  if (old.id !== run.previous_run_id || old.status !== "COMPLETED"
+    || successor.id !== run.id || successor.status !== "ACTIVE"
+    || successor.previous_run_id !== run.previous_run_id
+    || successor.reset_idempotency_key !== run.reset_idempotency_key || successor.created_at !== run.created_at
+    || ![created, previousCreated, completed].every(Number.isFinite)
+    || previousCreated > completed || completed > created) return fail();
+}
+
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
   source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
@@ -2173,8 +2253,11 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       && isAccountBudgetAlertRecovery(recoveryIncident.code, recoveryIncident.details));
     const capitalAuditRecovery = Boolean(recoveryIncident
       && isCapitalAuditReadRecovery(recoveryIncident.code, recoveryIncident.details));
-    const auditEventRecovery = Boolean(recoveryIncident
-      && isAuditEventRecovery(recoveryIncident.code, recoveryIncident.details));
+    const auditEventRecovery = Boolean(recoveryIncident && (isAuditEventRecovery(recoveryIncident.code, recoveryIncident.details)
+      || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));
+    const resetAuditReplayRecovery = Boolean(recoveryIncident
+      && (isResetAuditReplayRecovery(recoveryIncident.code, recoveryIncident.details)
+        || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));
     await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
@@ -2191,6 +2274,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (auditEventRecovery) {
       await assertSettledOperatorRecovery(service, run, ledger);
       await assertFreshAuditRecovery(service, run, recoveryIncident!);
+      if (resetAuditReplayRecovery) await assertResetAuditReplayRecovery(service, run, recoveryIncident!);
     }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
@@ -2223,7 +2307,10 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     // works. This reread is observation-only: pending plans may reflect a
     // legitimate fill/cancel race and never authorize an order or audit write.
     if (capitalAuditRecovery) await readCapitalRefreshEvents(service, run);
-    if (auditEventRecovery) await assertFreshAuditRecovery(service, run, recoveryIncident!);
+    if (auditEventRecovery) {
+      await assertFreshAuditRecovery(service, run, recoveryIncident!);
+      if (resetAuditReplayRecovery) await assertResetAuditReplayRecovery(service, run, recoveryIncident!);
+    }
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.
     if (source === "VERIFIED_READ_RECOVERY")
