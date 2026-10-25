@@ -114,7 +114,7 @@ export async function refreshExecutorCapacity() {
     throw new Error("COINOPS_CAPACITY_LEDGER_READ_FAILED");
   const ledger: CapacityLedger = { accounts: accounts.data ?? [], engines: engines.data ?? [],
     runs: runs.data ?? [], alerts: alerts.data ?? [] };
-  const results = await collectIndependentShards((shards.data ?? []).map((row) => row.id), async (shardId) => {
+  const results = await collectIndependentShards((shards.data ?? []).filter((row) => row.enabled).map((row) => row.id), async (shardId) => {
     const shard = shards.data!.find((row) => row.id === shardId)!;
     const sample = await executorCapacity(shardId, String(shard.egress_ipv4));
     if (!sample) {

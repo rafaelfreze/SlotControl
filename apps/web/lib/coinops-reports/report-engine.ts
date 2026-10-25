@@ -374,6 +374,9 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   }
   const rules: AuditRow[] = [];
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "controlled_engine_handoff", value: "LEASE_CAS_SOURCE_FENCE_AND_FRESH_EXACT_PROOF", version: 30,
+    source: "coinops.engine_handoffs", notes: "OFFBOARDED é gestão assumida pelo cliente, não ciclo concluído. Posições/TPs permanecem na exchange; leitura histórica não prova saldo, P&L ou proteção atuais. Migração preserva engine/run/slots/ordens e exige origem sem escrita, destino validado e Admission canônico; sem adoção por símbolo nem cópia de claims." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "reset_recovery_milestone_observation", value: "BOUNDED_LEDGER_GET_CHECKPOINT_AND_PROVEN_STALE_RECOVERY", unit: "enum", version: 1,
     source: "robot_v1_live_events:RESET_RECOVERED/RECONCILED + robot_v1_live_runs + robot_v1_live_alerts", evidence_scope: "CURRENT_CODE_CONTRACT",
     notes: "GET do marco ledger/reset_recovery_milestone usa a política compartilhada limitada: 2 conjuntos completos de até 5s com intervalo de 250ms, mantendo lease e sem retry financeiro. Falha transitória tipada gera checkpoint normal; leitura falha nunca significa ausência confirmada, nem autoriza INSERT substituto. Após exaustão stale, somente COINOPS_LIVE_LEDGER_READ_STALE com root_code COINOPS_LIVE_LEDGER_READ_UNAVAILABLE, stage AUDIT_EVENT e read_path ledger/reset_recovery_milestone exatos qualifica para provas adicionais. Marco válido ou ausência confirmada por GET completo nos dois passes, junto de lineage predecessor COMPLETED/successor único, RECONCILED fresco e estado financeiro integral, são provados antes e depois, sob lease e CAS do mesmo incidente. Ausência por erro, página incompleta ou dado inconclusivo nunca qualifica. Recuperação não insere o marco ausente; a primeira emissão fica para o próximo tick normal protegido. Nesse ramo de indisponibilidade de leitura o marco pode ser posterior ao incidente; isso não flexibiliza o ramo READBACK_MISMATCH, que exige marco anterior. Permissão/schema, shape inválida, estado financeiro ambíguo ou outra origem continuam fechados. Exporta somente metadados persistidos de leitura e checkpoint, não executa retry/recovery nem fabrica presença, ausência confirmada, horário ou sucesso." });
@@ -664,6 +667,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   appendLive("robot_v1_live_fills", "FILL", source("robot_v1_live_fills").filter((row) => liveOrderById.has(str(row.order_id))),
     (row) => runAsset(liveOrderById.get(str(row.order_id))!));
   appendLive("robot_v1_live_events", "EVENT", source("robot_v1_live_events").filter((row) => liveRunById.has(str(row.run_id))), runAsset);
+  appendLive("engine_handoffs", "HANDOFF", source("engine_handoffs").filter((row) => liveRunById.has(str(row.run_id))), runAsset);
   appendLive("robot_v1_live_slot_accounts", "ACCOUNT", source("robot_v1_live_slot_accounts"), (row) => str(row.asset) as ReportAsset);
   appendLive("robot_v1_live_alerts", "ALERT", source("robot_v1_live_alerts"), (row) => row.asset ? str(row.asset) as ReportAsset : null);
   const realRows: AuditRow[] = [];

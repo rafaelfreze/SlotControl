@@ -1,4 +1,4 @@
-import { assertDomainRegistry, resolveEngineContext, type DomainRegistry, type EngineContext } from "../execution/operator-context.ts";
+import { assertDomainRegistry, resolveReportEngineContext, type DomainRegistry, type EngineContext } from "../execution/operator-context.ts";
 import type { AuditFilters, AuditInput, AuditReport, ReportRuleDefinition } from "./report-engine.ts";
 import type { AuditRow } from "./trigger-audit.ts";
 import { configuredEngineSlotCount, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
@@ -92,6 +92,15 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     summary.free_capital = current && balance !== null && summary.committed_capital !== null ? Number((balance - Number(summary.committed_capital)).toFixed(8)) : null;
     summary.capital_basis = "NATIVE_ENGINE_LEDGER_CURRENT_SNAPSHOT; HISTORICAL_CAPITAL_WITHOUT_SNAPSHOT_UNAVAILABLE";
     summary.capital_snapshot_at = input.generatedAt;
+    const offboarded = runs.find(run => run.status === "OFFBOARDED");
+    if (offboarded) {
+      summary.mode = "CLIENT_MANAGED_ARCHIVE";
+      summary.health = "ENCERRADO — GESTÃO DO CLIENTE";
+      summary.capital_end = null; summary.committed_capital = null; summary.free_capital = null;
+      summary.open_pnl = null; summary.total_result = null;
+      summary.capital_basis = "HISTORICAL_HANDOFF_SNAPSHOT; NOT_CURRENT_BINANCE_STATE";
+      summary.monitoring_ended = true;
+    }
     // Period performance is derived from immutable credits + identified TP fills,
     // never the current lifetime account snapshot. Incomplete evidence stays null.
     if (report.incompleteSources.some((source) => /^(live_performance:|robot_v1_live_(events|orders|fills)(:|$))/.test(source))) summary.realized_pnl = null;
@@ -104,6 +113,11 @@ function enrich(report: AuditReport, sources: Record<string, AuditRow[]>, contex
     summary.operational_next_buy = current ? ownSlots.filter((slot) => slot.entry_state === "ARMED").length : null;
     summary.operational_planned = current ? ownSlots.filter((slot) => slot.entry_state === "PLANNED").length : null;
     summary.last_reconciliation = summary.last_execution;
+    if (offboarded) {
+      summary.open_operations = null; summary.operational_open = null;
+      summary.operational_next_buy = null; summary.operational_planned = null;
+      summary.capital_snapshot_at = null;
+    }
   }
 }
 
@@ -113,7 +127,7 @@ export function buildScopedEngineReports(input: AuditInput, filters: AuditFilter
   if (registry.operator.tenant_id !== input.scope.tenantId || registry.operator.user_id !== input.scope.userId)
     throw new Error("COINOPS_REPORT_SCOPE_MISMATCH");
   const reports = selectedReportEngines(registry, filters).map((engine) => {
-    const context = resolveEngineContext(registry, { environment: engine.environment,
+    const context = resolveReportEngineContext(registry, { environment: engine.environment,
       exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.id });
     const sources = engineSources(input, context);
     const report = build({ ...input, sources, registry: undefined, engineSlotCount: configuredEngineSlotCount(context) }, { ...filters,

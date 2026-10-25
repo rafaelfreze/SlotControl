@@ -330,6 +330,13 @@ no ambiente de destino antes de operação remota.
 
 ## Custos & Operação (FinOps ADMIN)
 
+- Handoff autorizado de 25/10/2026: somente Renato/Jenny podem passar a
+  OFFBOARDED com gestão dos clientes, sem cancelar TPs ou encerrar posições.
+  Somente os dois engines Samya podem migrar 03→02 pelo protocolo auditado sob
+  lease/CAS, origem cercada e parada, Admission e prova exata do destino. Não
+  usar UPDATE manual ou remover os guards de identidade. Relatório v30 distingue
+  histórico arquivado de estado atual. Ver `docs/COINOPS_CONTROLLED_HANDOFFS_20261025.md`.
+
 - Redução de custo comprovada em 05/10/2026: watchdog/LIVE/Capacity/push continuam
   a cada minuto. Não recriar supervisão Codex de 2h: a automação existente usa
   auditoria diária. Alertas de capacidade saudáveis não fazem UPDATE vazio;
@@ -362,7 +369,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 29`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading, proteção da pausa intencional, auditoria final imutável e marcos históricos de reset sem reemissão. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 30`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading, proteção da pausa intencional, auditoria final imutável e marcos históricos de reset sem reemissão. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

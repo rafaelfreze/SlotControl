@@ -13,7 +13,7 @@ const input = (sources: AuditInput["sources"] = {}): AuditInput => ({ sources,
   incompleteSources: [], warnings: [], generatedAt, scope: { tenantId: "fixture", userId: "fixture" } });
 
 test("v28 declares final-event-only bounded persistence and exact guarded recovery without authorizing finance", () => {
-  assert.equal(REPORT_VERSION, 29);
+  assert.equal(REPORT_VERSION, 30);
   const report = buildAuditReport(input(), filters);
   const persistence = report.datasets.rules.find(row => row.parameter === "final_audit_event_persistence")!;
   const recovery = report.datasets.rules.find(row => row.parameter === "audit_event_guarded_recovery")!;
@@ -55,8 +55,8 @@ test("v28 CSV/JSON preserve typed audit diagnostics and scoped identity without 
   const before = structuredClone(source);
   const report = buildAuditReport(source, filters);
   const pack = buildReportPackage(report, filters, generatedAt, "fixture-sha");
-  assert.equal(pack.manifest.report_version, 29);
-  assert.equal(pack.manifest.schema_version, "coinops/robot-v1/reports-v29-reset-recovery-milestone");
+  assert.equal(pack.manifest.report_version, 30);
+  assert.equal(pack.manifest.schema_version, "coinops/robot-v1/reports-v30-controlled-handoffs");
   assert.equal(pack.manifest.financial_writes_from_export, 0);
   assert.equal(pack.files.length, 27);
   const jsonText = pack.files.find(file => file.name === "AUDITORIA_COMPLETA.json")!.content;

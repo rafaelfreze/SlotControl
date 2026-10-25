@@ -39,9 +39,9 @@ async function registryRows<T>(stage: string, query: PromiseLike<{ data: T[] | n
 
 /** Accepts authenticated/RLS or service clients, but never discovers a user or
  * tenant from browser IDs. Callers supply their already authenticated scope. */
-export async function loadOperatorRegistry(client: Client, scope: OperatorScope): Promise<DomainRegistry> {
+export async function loadOperatorRegistry(client: Client, scope: OperatorScope, includeArchivedForAudit = false): Promise<DomainRegistry> {
   for (let attempt = 1; ; attempt++) {
-    try { return await readRegistryAttempt(client, scope, attempt); }
+    try { return await readRegistryAttempt(client, scope, attempt, includeArchivedForAudit); }
     catch (error) {
       if (!(error instanceof LiveReadUnavailable)
         || !["COINOPS_OPERATOR_REGISTRY_READ_TIMEOUT", "COINOPS_OPERATOR_REGISTRY_READ_UNAVAILABLE"]
@@ -51,7 +51,7 @@ export async function loadOperatorRegistry(client: Client, scope: OperatorScope)
   }
 }
 
-async function readRegistryAttempt(client: Client, scope: OperatorScope, attempt: number): Promise<DomainRegistry> {
+async function readRegistryAttempt(client: Client, scope: OperatorScope, attempt: number, includeArchivedForAudit: boolean): Promise<DomainRegistry> {
   const startedAt = Date.now();
   // One 5s deadline per complete attempt; never reuse a partial registry or a
   // cached permission. Exhaustion remains a typed, bounded read failure.
@@ -89,8 +89,8 @@ async function readRegistryAttempt(client: Client, scope: OperatorScope, attempt
   const [accounts, engines] = reads.map(result => (result as PromiseFulfilledResult<Record<string, unknown>[]>).value);
   // Disabled/revoked accounts remain in the ledger for audit, but must not
   // reappear in operational selectors or be resolved through a stale URL.
-  const registry = visibleOperatorRegistry({ operator, accounts,
-    engines } as unknown as DomainRegistry);
+  const rawRegistry = { operator, accounts, engines } as unknown as DomainRegistry;
+  const registry = includeArchivedForAudit ? rawRegistry : visibleOperatorRegistry(rawRegistry);
   assertDomainRegistry(registry, scope);
   return registry;
 }

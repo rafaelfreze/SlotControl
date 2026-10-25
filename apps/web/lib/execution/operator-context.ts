@@ -81,6 +81,16 @@ export function assertDomainRegistry(registry: DomainRegistry, scope: OperatorSc
 /** Legacy callers resolve only an explicitly designated account, never the
  * first account nor a fallback when a supplied ID is missing or inconsistent. */
 export function resolveEngineContext(registry: DomainRegistry, selection: EngineSelection): EngineContext {
+  return resolveRegistryEngine(registry, selection, false);
+}
+
+/** Metadata-only reporting can retain disabled identities. Never use this to
+ * authorize a trade, a reconciliation or an operational endpoint. */
+export function resolveReportEngineContext(registry: DomainRegistry, selection: EngineSelection): EngineContext {
+  return resolveRegistryEngine(registry, selection, true);
+}
+
+function resolveRegistryEngine(registry: DomainRegistry, selection: EngineSelection, auditOnly: boolean): EngineContext {
   assertDomainRegistry(registry, registry.operator);
   for (const id of [selection.operator_id, selection.exchange_account_id, selection.trading_engine_id])
     if (id !== undefined && !isIdentity(id)) throw new Error("COINOPS_ENGINE_SELECTION_INVALID");
@@ -96,7 +106,7 @@ export function resolveEngineContext(registry: DomainRegistry, selection: Engine
       : engine.legacy_compatible && registry.accounts.some((account) => account.id === engine.exchange_account_id && account.is_legacy_default)));
   if (matches.length !== 1) throw new Error("COINOPS_ENGINE_SCOPE_DENIED");
   const engine = matches[0]!, account = registry.accounts.find((item) => item.id === engine.exchange_account_id)!;
-  if (account.status === "DISABLED" || account.status === "REVOKED") throw new Error("COINOPS_ACCOUNT_DISABLED");
+  if (!auditOnly && (account.status === "DISABLED" || account.status === "REVOKED")) throw new Error("COINOPS_ACCOUNT_DISABLED");
   return { operator_id: registry.operator.id, exchange_account_id: account.id, trading_engine_id: engine.id,
     account_display_name: account.display_name, environment: engine.environment, symbol: engine.symbol,
     base_asset: engine.base_asset, quote_asset: engine.quote_asset, is_legacy_default: account.is_legacy_default,

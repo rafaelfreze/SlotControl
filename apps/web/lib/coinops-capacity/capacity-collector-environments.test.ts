@@ -10,7 +10,7 @@ import * as environmentTelemetry from "./environment-telemetry.ts";
 import * as testnetPolicy from "../execution/testnet-policy.ts";
 
 // Historical transport fixtures stay offline; the default exercises retirement.
-async function collect(testnetFailure = false, testnetAvailable = true, historicalTestnet = false) {
+async function collect(testnetFailure = false, testnetAvailable = true, historicalTestnet = false, disabledShard = false) {
   const reads: string[] = [];
   const writes: Array<{ table: string; value: Record<string, unknown> }> = [];
   const updates: Array<{ table: string; value: Record<string, unknown> }> = [];
@@ -22,7 +22,7 @@ async function collect(testnetFailure = false, testnetAvailable = true, historic
       let data: unknown = [];
       if (table === "operators") data = [{ id: "operator" }];
       if (table === "executor_shards") data = [{ id: "executor-02", egress_ipv4: "192.0.2.2",
-        enabled: true, binance_limit_per_min: 6000, admission_ratio: .65 }];
+        enabled: !disabledShard, binance_limit_per_min: 6000, admission_ratio: .65 }];
       if (table === "exchange_accounts") data = [{ id: "real-account", executor_shard_id: "executor-02" },
         { id: "testnet-account", executor_shard_id: "executor-02" }];
       if (table === "trading_engines") data = [{ id: filters.environment === "TESTNET" ? "testnet-engine" : "real-engine",
@@ -66,12 +66,18 @@ async function collect(testnetFailure = false, testnetAvailable = true, historic
   const compiled = ts.transpileModule(readFileSync(new URL("./capacity-server.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const loaded: Record<string, unknown> = {};
+  let fetches = 0;
   new Function("require", "exports", "fetch", compiled)((name: string) => {
     assert.ok(name in dependencies, `Unexpected dependency: ${name}`); return dependencies[name];
-  }, loaded, async () => ({ ok: true, json: async () => sample }));
+  }, loaded, async () => { fetches++; return { ok: true, json: async () => sample }; });
   await (loaded.refreshExecutorCapacity as () => Promise<unknown>)();
-  return { writes, updates, reads };
+  return { writes, updates, reads, fetches };
 }
+
+test("disabled retired shard is not polled or reclassified OFFLINE", async () => {
+  const result = await collect(false, false, false, true);
+  assert.equal(result.fetches, 0); assert.equal(result.writes.length, 0); assert.equal(result.updates.length, 0);
+});
 
 test("offline historical collector preserves independent Testnet evidence and vault coverage", async () => {
   const { writes, updates } = await collect(false, true, true);

@@ -23,6 +23,7 @@ const ENGINE_TABLES = new Set(["robot_v1_configs", "robot_v1_cycles", "robot_v1_
   "robot_v1_live_fills", "robot_v1_live_events", "robot_v1_ath_profiles", "robot_v1_ath_events", "robot_v1_manual_adjustments",
   "robot_v1_monthly_slot_gains", "robot_v1_strategy_decisions", "robot_v1_live_alerts", "robot_v1_real_prepared_slot_accounts"]);
 ENGINE_TABLES.add("robot_v1_live_adjustment_items");
+ENGINE_TABLES.add("engine_handoffs");
 
 function assertFilters(filters: ReportFilters) {
   const start = Date.parse(filters.start); const end = Date.parse(filters.end);
@@ -66,7 +67,7 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   assertFilters(filters);
   const { client, scope } = await authenticatedContext();
   const registry = await loadOperatorRegistry(client as unknown as ReturnType<typeof createServiceRoleClient>,
-    { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId });
+    { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId }, true);
   const reportEngines = selectedReportEngines(registry, filters);
   const engineIds = reportEngines.map((engine) => engine.id);
   const generatedAt = new Date().toISOString();
@@ -135,6 +136,8 @@ export async function loadRawReportSources(filters: ReportFilters): Promise<RawR
   tasks.push(() => load("robot_v1_ath_profiles", source("id,environment,asset,config_version,gain_rate,normal_spacing_rate,post_ath_spacing_rate,next_config_version,next_gain_rate,next_normal_spacing_rate,next_post_ath_spacing_rate,regime,ath_price,previous_ath,ath_observed_at,ath_source,ath_verified_at,ath_history_candle_count,ath_floor_reference,ath_floor_source,ath_floor_defined_at,transition_key,transition_observed_at,created_at,updated_at", ["environment", "asset"], { environmentColumn: true, assetColumn: "asset" })));
   if (withReal) {
     const selectedAccountIds = [...new Set(reportEngines.map((engine) => engine.exchange_account_id))];
+    tasks.push(() => load("engine_handoffs", source("id,environment,run_id,kind,source_shard_id,target_shard_id,phase,before_sha256,proof,created_at,committed_at",
+      ["created_at", "id"], { time: "created_at", until })));
     tasks.push(() => load("robot_v1_live_adjustment_batches", source("id,operator_id,exchange_account_id,request_id,kind,quote_asset,origin_currency,origin_amount,amount_quote,fx_rate,fx_observed_at,evidence,reason,reversal_of,created_at", ["created_at", "id"],
       { related: { column: "exchange_account_id", ids: selectedAccountIds }, time: "created_at", until })));
     tasks.push(() => load("robot_v1_live_adjustment_items", source("id,batch_id,symbol,slot_number,physical_slot_id,amount_quote,gain_units,balance_before,balance_after,monthly_before,monthly_after,lifetime_before,lifetime_after,open_at_time,position_committed_quote,operation_sequence,period_key,created_at", ["created_at", "id"],

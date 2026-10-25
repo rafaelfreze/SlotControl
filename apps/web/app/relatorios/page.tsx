@@ -20,7 +20,7 @@ export default async function ReportsPage({ searchParams }: { searchParams?: Rep
   const owned = await supabase.from("operators").select("product_id,tenant_id,user_id")
     .eq("tenant_id", tenant).eq("user_id", user.id).single();
   if (owned.error || !owned.data) throw new Error("COINOPS_REPORT_SCOPE_UNAVAILABLE");
-  const registry = await loadOperatorRegistry(supabase, owned.data);
+  const registry = await loadOperatorRegistry(supabase, owned.data, true);
   let initialSelection;
   try {
     initialSelection = resolveReportInitialSelection(registry, searchParams);
