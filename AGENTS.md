@@ -304,6 +304,10 @@ no ambiente de destino antes de operação remota.
   Validar UID global, permissões e whitelist/IP antes de registrar. A validação
   de credencial já instalada sem vínculo exige admissão e prova oficial; não
   ativa motor. Ver `docs/COINOPS_INSTALLED_CREDENTIAL_REVALIDATION_20261016.md`.
+- Exceção autorizada em 25/10/2026: Samya 03→02 pode reutilizar a mesma
+  credencial pelo mesmo relay cifrado, após whitelist e UID/permissões/IP
+  comprovados nos destinos. Somente ciphertext atravessa o notebook; não copiar
+  vault, HMAC, chave privada, journal ou claims. Isso não ativa nem migra motores.
 - Binance request weight é por IP; `ORDERS` e filtros de conta são compartilhados entre chaves/IPs. Admissão e dispatch multi-shard exigem amostra assinada recente, inventário completo e reserva serializada por conta, sem reset presumido, bypass, quota fixa de motores ou polling por render. Conservar orçamento para proteção/recovery. Motores do mesmo par exigem STP maker-preserving (`EXPIRE_TAKER`) em todos os transportes envolvidos: nunca usar EXPIRE_MAKER/BOTH para cancelar ordens de outro engine. Suporte publicado pela Binance, sozinho, não prova enforcement.
 - Ownership de BUY/TP/NEXT BUY/fill/cancel/recovery exige namespace determinístico do engine e identidade exata de ordem. `CANCELED`, account+symbol, orderId avulso ou flag do caller nunca são prova de ownership. Locks/leases/run/ledger/slots/strategy/ATH/meta/cap/recovery são por engine. Watchdog e falhas são do engine/shard afetado, nunca dos irmãos por compartilharem conta/símbolo.
 - Account UUID e identidade física Binance são fronteiras distintas: a mesma identidade Binance não pode ganhar outro dono em outro shard. Claims de identidade ficam server-side, sem UID/secret no frontend; falha de claim impede nova ativação.

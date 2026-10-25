@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-/** Explicitly authorized one-account operation; not a credential export API.
- * SSH host keys are mandatory. Secrets are encrypted on 01 to an ephemeral
- * public key generated in RAM on 03, and re-sealed by the official vault on 03.
+/** Explicitly authorized account/direction pairs; not a credential export API.
+ * SSH host keys are mandatory. Secrets are encrypted on the source to an
+ * ephemeral public key generated in destination RAM, then re-sealed locally.
  * This workstation handles ciphertext only. No orders, registry, DB, source
  * credential, private key, HMAC or other account are changed.
  */
@@ -14,13 +14,31 @@ export const SCOPE = Object.freeze({ operator_id: 'd508bb3e-5a1d-4579-bd7a-de171
   exchange_account_id: '5580c011-6ff1-44bd-b568-85932b424ceb',
   credential_ref: 'account_5580c0116ff144bdb56885932b424ceb', environment: 'REAL' });
 const SOURCE = '46.101.104.48', TARGET = '167.71.37.166';
+export const SAMYA_SCOPE = Object.freeze({ ...SCOPE,
+  exchange_account_id: '95c95966-b92e-4e22-ac03-32a3f1d0bc1b',
+  credential_ref: 'account_95c95966b92e4e22ac0332a3f1d0bc1b' });
+const THYELY = Object.freeze({ scope:SCOPE, account:'Thyely', source:'executor-01', sourceIp:SOURCE,
+  sourceRoot:'/opt/coinops/source/apps/live-executor', target:'executor-03', targetIp:TARGET,
+  targetRoot:'/opt/coinops/current/apps/live-executor' });
+export function samyaDirection(target) {
+  if (target!=='executor-02') throw new Error('REUSE_DIRECTION_DENIED');
+  return { scope:SAMYA_SCOPE, account:'Samya', source:'executor-03', sourceIp:TARGET,
+    sourceRoot:'/opt/coinops/current/apps/live-executor', target,
+    targetIp:'164.90.223.159', targetRoot:'/opt/coinops/current/apps/live-executor' };
+}
 
 export function envelopeAad(challenge) {
-  if (challenge?.version !== 1 || challenge.source !== 'executor-01' || challenge.target !== 'executor-03'
-    || challenge.source_ip !== '46.101.104.48' || challenge.target_ip !== '167.71.37.166'
+  // These are explicit owner-authorized exceptions, not a generic export API.
+  const thyely = challenge?.scope?.exchange_account_id === '5580c011-6ff1-44bd-b568-85932b424ceb'
+    && challenge.scope.credential_ref === 'account_5580c0116ff144bdb56885932b424ceb'
+    && challenge.source === 'executor-01' && challenge.source_ip === '46.101.104.48'
+    && challenge.target === 'executor-03' && challenge.target_ip === '167.71.37.166';
+  const samya = challenge?.scope?.exchange_account_id === '95c95966-b92e-4e22-ac03-32a3f1d0bc1b'
+    && challenge.scope.credential_ref === 'account_95c95966b92e4e22ac0332a3f1d0bc1b'
+    && challenge.source === 'executor-03' && challenge.source_ip === '167.71.37.166'
+    && challenge.target === 'executor-02' && challenge.target_ip === '164.90.223.159';
+  if (challenge?.version !== 1 || !thyely && !samya
     || challenge.scope?.operator_id !== 'd508bb3e-5a1d-4579-bd7a-de171c118d25'
-    || challenge.scope?.exchange_account_id !== '5580c011-6ff1-44bd-b568-85932b424ceb'
-    || challenge.scope?.credential_ref !== 'account_5580c0116ff144bdb56885932b424ceb'
     || challenge.scope?.environment !== 'REAL' || !/^[a-f0-9]{64}$/.test(challenge.nonce ?? '')
     || !Number.isSafeInteger(challenge.created_at) || Date.now() - challenge.created_at > 90000
     || challenge.created_at > Date.now() + 5000) throw new Error('REUSE_CHALLENGE_DENIED');
@@ -57,7 +75,7 @@ export function decryptEnvelope(challenge, privateKey, envelope) {
   } finally { key.fill(0); plaintext?.fill(0); }
 }
 
-function remotePrelude(shard, ip, codeRoot) {
+function remotePrelude(shard, ip, codeRoot, credentialScope = SCOPE) {
   return `import {loadEnvFile} from 'node:process';
 import {join} from 'node:path';
 import {createCipheriv,createDecipheriv,createHash,constants,privateDecrypt,publicEncrypt,randomBytes,generateKeyPairSync} from 'node:crypto';
@@ -65,9 +83,15 @@ import {credentialMetadata,loadCredential,inspectBinanceCredential,saveCredentia
 loadEnvFile('/etc/coinops/live-executor.env');
 if ((process.env.COINOPS_EXECUTOR_SHARD_ID || 'executor-01') !== ${JSON.stringify(shard)} || process.env.LIVE_EXECUTOR_EGRESS_IP !== ${JSON.stringify(ip)}) throw new Error('REUSE_HOST_DENIED');
 process.setgroups([]); process.setgid('coinops-executor'); process.setuid('coinops-executor');
-const scope=${JSON.stringify(SCOPE)};
+const scope=${JSON.stringify(credentialScope)};
 const directory=join(process.env.COINOPS_EXECUTOR_STATE_DIR,'credentials');
 const masterSecret=process.env.COINOPS_EXECUTOR_HMAC_SECRET;
+const validationFetch=async(url,options)=>{const response=await fetch(url,options);if(!response.ok){
+ const labels={'/api/v3/account':'ACCOUNT','/api/v3/time':'TIME','/sapi/v1/account/apiRestrictions':'RESTRICTIONS'};
+ const label=labels[new URL(url).pathname]||'EGRESS';let code=0;
+ try{const data=await response.clone().json();if(Number.isSafeInteger(data.code))code=Math.abs(data.code);}catch{}
+ throw new Error('REUSE_${shard.replaceAll('-','_').toUpperCase()}_'+label+'_HTTP_'+response.status+'_CODE_'+code);
+}return response;};
 const readInput=async()=>{let value='';for await(const chunk of process.stdin){value+=chunk;if(value.length>32768)throw new Error('REUSE_INPUT_DENIED');}return JSON.parse(value);};
 ${envelopeAad.toString()}
 ${encryptEnvelope.toString()}
@@ -75,15 +99,15 @@ ${decryptEnvelope.toString()}
 `;
 }
 
-export function sourceProgram() {
-  return remotePrelude('executor-01', SOURCE, '/opt/coinops/source/apps/live-executor') + `
+export function sourceProgram(direction = THYELY) {
+  return remotePrelude(direction.source, direction.sourceIp, direction.sourceRoot, direction.scope) + `
 try {
  const {challenge,public_key}=await readInput(); envelopeAad(challenge);
  const before=await credentialMetadata(directory,scope);
  if(!before?.uidHash||!before?.fingerprint)throw new Error('REUSE_SOURCE_IDENTITY_UNPROVEN');
  const secret=await loadCredential(directory,masterSecret,scope);
  try {
-  const observation=await inspectBinanceCredential({...secret,environment:'REAL',expectedEgressIp:${JSON.stringify(SOURCE)}});
+  const observation=await inspectBinanceCredential({...secret,environment:'REAL',expectedEgressIp:${JSON.stringify(direction.sourceIp)},fetcher:validationFetch});
   const after=await credentialMetadata(directory,scope);
   // Older vault documents have no credential_hash. Fresh authenticated GETs
   // prove it; the stored UID and key fingerprint must still match exactly.
@@ -95,22 +119,22 @@ try {
   const envelope=encryptEnvelope(challenge,public_key,{...secret,uid_hash:observation.uidHash,credential_hash:observation.credentialHash});
   process.stdout.write(JSON.stringify(envelope)+'\\n');
  } finally {secret.apiKey='';secret.apiSecret='';}
-} catch {process.stderr.write('REUSE_SOURCE_FAILED\\n');process.exitCode=1;}
+} catch(error) {const code=error.code||error.message;process.stderr.write((/^(REUSE|EXECUTOR)_[A-Z0-9_]+$/.test(code)?code:'REUSE_SOURCE_FAILED')+'\\n');process.exitCode=1;}
 `;
 }
 
-export function targetProgram() {
-  return remotePrelude('executor-03', TARGET, '/opt/coinops/current/apps/live-executor') + `
+export function targetProgram(direction = THYELY) {
+  return remotePrelude(direction.target, direction.targetIp, direction.targetRoot, direction.scope) + `
 try {
  const {publicKey,privateKey}=generateKeyPairSync('rsa',{modulusLength:3072});
- const challenge={version:1,source:'executor-01',target:'executor-03',source_ip:${JSON.stringify(SOURCE)},target_ip:${JSON.stringify(TARGET)},scope,nonce:randomBytes(32).toString('hex'),created_at:Date.now()};
+ const challenge={version:1,source:${JSON.stringify(direction.source)},target:${JSON.stringify(direction.target)},source_ip:${JSON.stringify(direction.sourceIp)},target_ip:${JSON.stringify(direction.targetIp)},scope,nonce:randomBytes(32).toString('hex'),created_at:Date.now()};
  process.stdout.write(JSON.stringify({type:'READY',challenge,public_key:publicKey.export({type:'spki',format:'pem'})})+'\\n');
  const payload=decryptEnvelope(challenge,privateKey,await readInput());
  try {
   const previous=await credentialMetadata(directory,scope);
   if(previous&&(previous.uidHash!==payload.uid_hash||previous.credentialHash!==payload.credential_hash))throw new Error('REUSE_TARGET_ALREADY_DIFFERENT');
-  const observation=await inspectBinanceCredential({apiKey:payload.apiKey,apiSecret:payload.apiSecret,environment:'REAL',expectedEgressIp:${JSON.stringify(TARGET)}});
-  if(observation.status!=='PASS'||observation.whitelistAccepted!==true||observation.executorIp!==${JSON.stringify(TARGET)}
+  const observation=await inspectBinanceCredential({apiKey:payload.apiKey,apiSecret:payload.apiSecret,environment:'REAL',expectedEgressIp:${JSON.stringify(direction.targetIp)},fetcher:validationFetch});
+  if(observation.status!=='PASS'||observation.whitelistAccepted!==true||observation.executorIp!==${JSON.stringify(direction.targetIp)}
    ||observation.uidHash!==payload.uid_hash||observation.credentialHash!==payload.credential_hash)throw new Error('REUSE_TARGET_VALIDATION_FAILED');
   await saveCredential({directory,masterSecret,scope,apiKey:payload.apiKey,apiSecret:payload.apiSecret,observation,replace:false});
   const installed=await credentialMetadata(directory,scope);
@@ -118,9 +142,9 @@ try {
   const readback=await loadCredential(directory,masterSecret,scope);
   try {if(readback.apiKey!==payload.apiKey||readback.apiSecret!==payload.apiSecret)throw new Error('REUSE_TARGET_PAYLOAD_READBACK_FAILED');}
   finally {readback.apiKey='';readback.apiSecret='';}
-  process.stdout.write(JSON.stringify({type:'RESULT',status:'PASS',account:'Thyely',environment:'REAL',source:'executor-01',target:'executor-03',executor_ip:${JSON.stringify(TARGET)},uid_match:true,credential_match:true,whitelist_accepted:true,credential_installed:true,source_unchanged:true,already_present:!!previous,validated_at:observation.validatedAt,orders_submitted:0})+'\\n');
+  process.stdout.write(JSON.stringify({type:'RESULT',status:'PASS',account:${JSON.stringify(direction.account)},environment:'REAL',source:${JSON.stringify(direction.source)},target:${JSON.stringify(direction.target)},executor_ip:${JSON.stringify(direction.targetIp)},uid_match:true,credential_match:true,whitelist_accepted:true,credential_installed:true,source_unchanged:true,already_present:!!previous,validated_at:observation.validatedAt,orders_submitted:0})+'\\n');
  } finally {payload.apiKey='';payload.apiSecret='';}
-} catch {process.stderr.write('REUSE_TARGET_FAILED\\n');process.exitCode=1;}
+} catch(error) {const code=error.code||error.message;process.stderr.write((/^(REUSE|EXECUTOR)_[A-Z0-9_]+$/.test(code)?code:'REUSE_TARGET_FAILED')+'\\n');process.exitCode=1;}
 `;
 }
 
@@ -130,12 +154,14 @@ function ssh(ip, program) {
     '-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10',`root@${ip}`,
     '/usr/local/bin/node','--input-type=module','-e',shellQuote(program)], { stdio: ['pipe','pipe','pipe'], windowsHide:true });
   child.stdin.on('error',()=>child.kill());
-  let output='',errorBytes=0;
-  child.stderr.on('data', chunk => { errorBytes+=chunk.length; if(errorBytes>8192)child.kill(); });
+  let output='',errorBytes=0,safeError='';
+  child.stderr.on('data', chunk => { errorBytes+=chunk.length;
+    const known=String(chunk).match(/^(?:REUSE|EXECUTOR)_[A-Z0-9_]+$/m); if(known)safeError=known[0];
+    if(errorBytes>8192)child.kill(); });
   child.stdout.on('data', chunk => { output+=chunk; if(output.length>65536)child.kill(); });
   const completed = new Promise((accept,reject) => {
     child.once('error',()=>reject(new Error('REUSE_SSH_UNAVAILABLE')));
-    child.once('close',code=>code===0?accept(output):reject(new Error('REUSE_REMOTE_FAILED_NO_SECRETS_LOGGED')));
+    child.once('close',code=>code===0?accept(output):reject(new Error(safeError||'REUSE_REMOTE_FAILED_NO_SECRETS_LOGGED')));
   });
   // Observe immediately: a target failure while waiting for READY must not
   // become an unhandled rejection. The caller still checks the same promise.
@@ -143,8 +169,8 @@ function ssh(ip, program) {
   return {child,completed,get output(){return output;}};
 }
 
-export async function reuseAuthorizedCredential() {
-  const target=ssh(TARGET,targetProgram());
+export async function reuseAuthorizedCredential(direction = THYELY) {
+  const target=ssh(direction.targetIp,targetProgram(direction));
   let source;
   const deadline=Date.now()+110000;
   const timer=setTimeout(()=>{source?.child.kill();target.child.kill();},110000);
@@ -156,7 +182,7 @@ export async function reuseAuthorizedCredential() {
     const ready=JSON.parse(target.output.split('\n')[0]);
     if(ready.type!=='READY')throw new Error('REUSE_TARGET_NOT_READY');
     envelopeAad(ready.challenge);
-    source=ssh(SOURCE,sourceProgram());
+    source=ssh(direction.sourceIp,sourceProgram(direction));
     source.child.stdin.end(JSON.stringify({challenge:ready.challenge,public_key:ready.public_key}));
     const ciphertext=JSON.parse((await source.completed).trim());
     if(ciphertext.version!==1||!ciphertext.ciphertext)throw new Error('REUSE_SOURCE_PROTOCOL_FAILED');
@@ -168,7 +194,8 @@ export async function reuseAuthorizedCredential() {
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
-  if(process.argv.length!==3||process.argv[2]!=='--apply-thyely-01-to-03'){
-    process.stderr.write('Explicit --apply-thyely-01-to-03 is required. No action taken.\n');process.exitCode=2;
-  } else {try{console.log(JSON.stringify(await reuseAuthorizedCredential()));}catch{console.error('REUSE_NOT_CONFIRMED: inspect sanitized metadata; do not retry blindly.');process.exitCode=1;}}
+  const flags=['--apply-thyely-01-to-03','--apply-samya-03-to-02'];
+  if(process.argv.length!==3||!flags.includes(process.argv[2])){
+    process.stderr.write('An explicit account/direction --apply flag is required. No action taken.\n');process.exitCode=2;
+  } else {try{console.log(JSON.stringify(await reuseAuthorizedCredential(process.argv[2]===flags[1]?samyaDirection('executor-02'):THYELY)));}catch{console.error('REUSE_NOT_CONFIRMED: inspect sanitized metadata; do not retry blindly.');process.exitCode=1;}}
 }
