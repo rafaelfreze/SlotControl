@@ -86,3 +86,31 @@ Native fixtures: fencing persistente/idempotente e irmãos intactos; static fall
 recusado; nenhuma cópia de claims/credencial nem transporte de escrita Binance.
 Relatórios: gestão pelo cliente, arquivos CSV/JSON e nenhuma leitura histórica
 convertida em caixa/P&L/proteção atuais. Nenhum teste cria ordens REAL.
+
+## Conclusão operacional — 25/10/2026
+
+- Admission `[25,25]` liberado na amostra `21:50:42Z`, após 600s contínuos;
+  thresholds, reserva e histerese não foram alterados. Uma tentativa ocupada
+  pelo cron abortou a transação inteira, sem handoff parcial.
+- Os dois motores Samya foram migrados atomicamente `03→02` às
+  `21:54:54.945379Z`; a origem ficou fenced, parada e desabilitada no boot.
+- Reconciliação normal confirmada no destino às `21:56:20Z/21:56:21Z`:
+  BTCUSDT 4 OPEN/4 TP/1 NEXT BUY; SOLUSDT 6 OPEN/6 TP/1 NEXT BUY;
+  25 slots por motor, identidades de ordens e estratégias preservadas.
+  Comparações de hash confirmaram os outros 12 engines e os irmãos do registry
+  do 02 inalterados. Nenhuma ordem foi criada/cancelada pelo cutover.
+- Catálogo 03 desabilitado e frota 01/02 recertificada com
+  `FLEET_PARITY_PASS` / `ADMISSION_PREFLIGHT_PASS`, sem rollout de runtime.
+- Após confirmação expressa para a exclusão irreversível, o painel autenticado
+  da DigitalOcean confirmou a remoção de `coinops-executor-03-fra1`, ID 605889779,
+  IP primário 167.71.37.166. Permaneceram os droplets 603174294/603936458
+  (CoinOps 01/02) e 605113759 (Fiscal). Evento administrativo imutável
+  `EXECUTOR_INFRASTRUCTURE_REMOVED` registra a evidência; histórico no Supabase
+  foi preservado. A tarifa eliminada era US$6/mês; consumo já acumulado não
+  foi estornado nem tratado como zero.
+- Estado final verificado: 7 engines em cada executor, todos HEALTHY,
+  0 bloqueados/stale e 0 alertas críticos ativos. Renato/Jenny permanecem
+  OFFBOARDED, sob gestão dos clientes, com 7 TPs entregues por conta.
+- A API visual de capacidade também exclui explicitamente shards disabled;
+  catálogo, amostras e alertas históricos não são apagados. Teste de regressão
+  preserva OFFLINE/CRITICAL de um shard que continua habilitado.

@@ -33,7 +33,8 @@ export async function GET() {
   try {
     const service = capacityScope();
     const [shards, samples, alerts, reservations, mutes, decisions] = await Promise.all([
-      service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio,incremental_engine_weight").order("id"),
+      service.from("executor_shards").select("id,egress_ipv4,enabled,binance_limit_per_min,admission_ratio,incremental_engine_weight")
+        .eq("enabled", true).order("id"),
       service.from("executor_capacity_samples").select("*"),
       service.from("executor_capacity_alerts").select("shard_id,code,severity,first_seen_at")
         .is("resolved_at", null),
@@ -47,7 +48,9 @@ export async function GET() {
       || !Array.isArray(decisions.data))
       throw new Error("COINOPS_CAPACITY_READ_FAILED");
     const mutedPairs = new Set((mutes.data ?? []).map((item) => `${auth.operatorId}:${item.shard_id}`));
-    return NextResponse.json({ shards: (shards.data ?? []).map((shard) => {
+    // Disabled rows remain in the historical catalog, not the operational fleet.
+    // Never turn an intentionally retired shard into an OFFLINE dashboard card.
+    return NextResponse.json({ shards: (shards.data ?? []).filter((shard) => shard.enabled === true).map((shard) => {
       const sample = (samples.data ?? []).find((item) => item.shard_id === shard.id) ?? null;
       const policy = { ...DEFAULT_CAPACITY_POLICY,
         binanceLimitPerMinute: Number(shard.binance_limit_per_min),
