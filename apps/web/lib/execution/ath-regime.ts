@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { MONTHLY_SLOT_TARGET, monthlyGoalsComplete } from "./monthly-slot-policy.ts";
+import { MONTHLY_SLOT_TARGET,monthlyGoalsComplete } from "./monthly-slot-policy.ts";
 import type { V1Asset } from "./robot-v1.ts";
 import type { HistoricalAth } from "./ath-market-source.ts";
 import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "./engine-slot-topology.ts";
@@ -132,17 +132,20 @@ export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[],
     ids.add(slot.physicalSlotId); numbers.add(slot.physicalSlotNumber);
   }
   const eligibleStates = new Set(["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"]);
-  const completed = monthlyGoalsComplete(asset, slots, monthlyTarget, slotCount);
+  const completed=monthlyGoalsComplete(asset,slots,monthlyTarget,slotCount);
   const eligible = slots.filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-    && (completed || slot.monthlyGainCount < monthlyTarget) && eligibleStates.has(slot.entryState));
+    && (completed||slot.monthlyGainCount<monthlyTarget)&&eligibleStates.has(slot.entryState));
   const byPhysicalId = (left: AthSlot, right: AthSlot) => left.physicalSlotId.localeCompare(right.physicalSlotId);
   const byHighestGain = (left: AthSlot, right: AthSlot) => right.lifetimeGainCount - left.lifetimeGainCount
     || byPhysicalId(left, right);
-  const selected = [...eligible].sort(byHighestGain).slice(0, 15);
+  const byGoal = (a:AthSlot,b:AthSlot)=>Number(a.monthlyGainCount!>=monthlyTarget)-Number(b.monthlyGainCount!>=monthlyTarget);
+  const selected = [...eligible].sort((a,b)=>byGoal(a,b)||byHighestGain(a,b)).slice(0, 15);
   const selectedIds = new Set(selected.map((slot) => slot.physicalSlotId));
-  const primary = selected.sort((left, right) => left.lifetimeGainCount - right.lifetimeGainCount
+  const primary = selected.sort((left, right) => byGoal(left,right)||right.monthlyGainCount! - left.monthlyGainCount!
+    || left.lifetimeGainCount - right.lifetimeGainCount
     || byPhysicalId(left, right));
-  const reserve = eligible.filter((slot) => !selectedIds.has(slot.physicalSlotId)).sort(byHighestGain);
+  const reserve = eligible.filter((slot) => !selectedIds.has(slot.physicalSlotId)).sort((left,right) =>
+    byGoal(left,right)||right.monthlyGainCount! - left.monthlyGainCount! || byHighestGain(left,right));
   const position = new Map<string, { group: PostAthGroup; groupRank: number; rank: number }>();
   primary.forEach((slot, index) => position.set(slot.physicalSlotId, { group: "PRIMARY", groupRank: index + 1, rank: index + 1 }));
   reserve.forEach((slot, index) => position.set(slot.physicalSlotId, { group: "RESERVE", groupRank: index + 1, rank: primary.length + index + 1 }));

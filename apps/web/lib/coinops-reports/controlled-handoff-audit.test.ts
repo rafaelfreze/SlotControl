@@ -20,6 +20,6 @@ test("offboarded account remains auditable but is never an operational permissio
  const summary=report.datasets.summary[0]!;assert.equal(summary.mode,"CLIENT_MANAGED_ARCHIVE");
  assert.equal(summary.health,"ENCERRADO — GESTÃO DO CLIENTE");assert.equal(summary.free_capital,null);assert.equal(summary.operational_open,null);
  assert.equal(report.datasets.live_execution.find(r=>r.row_type==="HANDOFF")?.kind,"CLIENT_MANAGED");
- assert.ok(report.datasets.rules.some(r=>r.parameter==="controlled_engine_handoff"));assert.equal(REPORT_VERSION,30);
- const pack=buildReportPackage(report,filters,now,"test");assert.equal(pack.manifest.report_version,30);
+ assert.ok(report.datasets.rules.some(r=>r.parameter==="controlled_engine_handoff"));assert.equal(REPORT_VERSION,31);
+ const pack=buildReportPackage(report,filters,now,"test");assert.equal(pack.manifest.report_version,31);
 });

@@ -34,7 +34,7 @@ export function projectCurrentLiveSlotRanks<T extends Slot>(slots: readonly T[],
   return slots.map((slot) => {
     const rank = byNumber.get(slot.slot_number)!.operationalRank;
     return { ...slot, grid_operational_rank: slot.grid_operational_rank !== undefined ? slot.grid_operational_rank : slot.operational_rank,
-      operational_rank: rank === null ? null : slot.post_ath_group
-        ? slot.operational_rank ?? rank : rank };
+      operational_rank: rank,monthly_entry_eligible:byNumber.get(slot.slot_number)!.eligibleForNewEntry,
+      monthly_blocked_reason:byNumber.get(slot.slot_number)!.blockedReason };
   });
 }

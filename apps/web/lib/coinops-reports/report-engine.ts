@@ -81,6 +81,21 @@ function safeDetails(value: unknown): AuditRow {
     typeof field === "string" && /bearer\s|(?:secret|password|api[_ -]?key|authorization)\s*[:=]|eyJ[A-Za-z0-9_-]+\./i.test(field) ? "[REDACTED]" : field
   ]));
 }
+function entryAllocationAudit(value: unknown): AuditRow | null {
+  const row=object(value);if(row.policy!=="MONTHLY_GAINS_V1")return null;
+  const out:AuditRow={};
+  for(const key of ["policy","plan_id","period","committed_at","old_client_order_id","desired_slot_id","symbol","quote_asset"])
+    if(typeof row[key]==="string"&&!/[\r\n]/.test(row[key] as string))out[key]=row[key];
+  if(Array.isArray(row.assignments)&&row.assignments.length<=100)out.assignments=row.assignments.map(value=>{
+    const a=object(value);return Object.fromEntries(["id","slotNumber","previousPrice","price","rank","sourceId","sourceOrigin"]
+      .filter(k=>typeof a[k]==="string"||typeof a[k]==="number"&&Number.isFinite(a[k] as number)).map(k=>[k,a[k]]));});
+  return out;
+}
+function entryPriceSourcesAudit(value:unknown) {
+  return Object.fromEntries(Object.entries(object(value)).slice(0,100).map(([id,row])=>[id,
+    Object.fromEntries(Object.entries(object(row)).filter(([k,v])=>["run_id","engine_id","slot_id","price","source_origin","plan_id"].includes(k)
+      && (typeof v==="string"||typeof v==="number"&&Number.isFinite(v))))]));
+}
 function selected(row: AuditRow, filters: AuditFilters) {
   return filters.environments.includes(str(row.environment) as ReportEnvironment) && (!assetOf(row) || filters.assets.includes(assetOf(row) as ReportAsset));
 }
@@ -374,6 +389,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   }
   const rules: AuditRow[] = [];
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter:"monthly_entry_priority",value:"MONTHLY_GAINS_V1",version:31,
+    notes:"Monthly gains DESC below target; lifetime/physical tie; individual goal holds until local first day, except evidenced N/N complete releases all without resetting gains. Regime membership preserved; permutation of uncommitted levels only after exact zero-fill cancel, lease and atomic CAS. Historical snapshots without policy retain legacy meaning.",
+    source:"robot_v1_live_runs.config_snapshot.entry_priority_checkpoint + ENTRY_PRIORITY_ALLOCATED" });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "controlled_engine_handoff", value: "LEASE_CAS_SOURCE_FENCE_AND_FRESH_EXACT_PROOF", version: 30,
     source: "coinops.engine_handoffs", notes: "OFFBOARDED é gestão assumida pelo cliente, não ciclo concluído. Posições/TPs permanecem na exchange; leitura histórica não prova saldo, P&L ou proteção atuais. Migração preserva engine/run/slots/ordens e exige origem sem escrita, destino validado e Admission canônico; sem adoção por símbolo nem cópia de claims." });
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
@@ -648,10 +667,16 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     for (const row of rows) {
       const asset = resolve(row);
       if (asset && !filters.assets.includes(asset)) continue;
+      const sourceRun=liveRunById.get(str(row.run_id));
       liveExecution.push({ environment: "REAL", row_type: rowType, asset,
-        symbol: asset ? `${asset}BRL` : null, source: `coinops.${table}`,
+        symbol:row.symbol??sourceRun?.symbol??(asset&&row.quote_asset?`${asset}${row.quote_asset}`:null), source: `coinops.${table}`,
         evidence_basis: "PERSISTED_COINOPS_LIVE_LEDGER", snapshot_at: input.generatedAt,
-        ...own(row), ...(rowType === "RUN" ? { reconciliation_checkpoint: largeEngineProgressAudit(row.reconciliation_checkpoint) } : {}),
+        ...own(row), ...(rowType === "RUN" ? { reconciliation_checkpoint: largeEngineProgressAudit(row.reconciliation_checkpoint),
+          entry_priority_policy:object(row.config_snapshot).entry_priority_policy ?? "LEGACY_PRICE_FIRST",
+          entry_priority_checkpoint:entryAllocationAudit(object(row.config_snapshot).entry_priority_checkpoint),
+          entry_price_sources:entryPriceSourcesAudit(object(row.config_snapshot).entry_price_sources) } : {}),
+        ...(rowType === "EVENT" && ["ENTRY_PRIORITY_ALLOCATED","ENTRY_PRIORITY_REALLOCATION_REQUESTED"].includes(str(row.event_type))
+          ? { details:entryAllocationAudit(row.details),entry_priority_evidence:"PERSISTED_SCOPED_ALLOCATION_NOT_AN_EXCHANGE_FILL" } : {}),
         ...(rowType === "EVENT" && row.event_type === "RECONCILIATION_PROGRESS"
           ? { details: largeEngineProgressAudit(row.details) } : {}),
         ...(rowType === "EVENT" && (row.event_type === "LIVE_PAUSED"

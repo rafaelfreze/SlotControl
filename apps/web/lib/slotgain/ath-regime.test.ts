@@ -34,24 +34,24 @@ test("25 gains 1..25 select 11..25, execute 11..25, then reserve 10..1", () => {
   assert.equal(queue[0]?.physicalSlotId, "slot-1");
 });
 
-test("monthly target, missing evidence and OPEN positions are excluded before top 15", () => {
+test("monthly target, missing evidence and OPEN are excluded before choosing PRIMARY", () => {
   const input = slots(); input[24]!.monthlyGainCount = 2; input[23]!.entryState = "OPEN";
   input[22]!.monthlyGainCount = null;
   const queue = buildPostAthQueue("SOL", input);
-  assert.equal(queue[24]?.postAthGroup, null);
+  assert.equal(queue[24]?.postAthGroup,null);
   assert.equal(queue[23]?.postAthGroup, null);
   assert.equal(queue[22]?.postAthGroup, null);
   assert.equal(queue[21]?.postAthGroup, "PRIMARY");
   assert.equal(queue.filter((slot) => slot.postAthGroup === "PRIMARY").length, 15);
-  assert.equal(queue.filter((slot) => slot.postAthGroup === "RESERVE").length, 7);
-  assert.equal(queue.filter((slot) => slot.eligible).length, 22);
+  assert.equal(queue.filter((slot) => slot.postAthGroup === "RESERVE").length,7);
+  assert.equal(queue.filter((slot) => slot.eligible).length,22);
 });
 
-test("fewer than 15 eligible never backfill a reached target", () => {
+test("fewer than 15 eligible never backfill a slot held by its monthly goal", () => {
   const input = slots(Array.from({ length: 25 }, (_, index) => index < 12 ? 0 : 2));
   const queue = buildPostAthQueue("SOL", input);
-  assert.equal(queue.filter((slot) => slot.postAthGroup === "PRIMARY").length, 12);
-  assert.equal(queue.filter((slot) => slot.postAthGroup === "RESERVE").length, 0);
+  assert.equal(queue.filter((slot) => slot.postAthGroup === "PRIMARY").length,12);
+  assert.equal(queue.filter((slot) => slot.postAthGroup === "RESERVE").length,0);
 });
 
 test("state machine requires fresh new high and an explicitly sourced floor", () => {
@@ -120,9 +120,9 @@ test("scenario B excludes monthly-met slots before selecting the 15 highest elig
     parameters: OFFICIAL_ATH_DEFAULTS.SOL, lifetimeGains: Array.from({ length: 25 }, (_, index) => index + 1),
     monthlyGains: monthly, prices: [105] });
   assert.deepEqual(result.primary, Array.from({ length: 15 }, (_, index) => index + 9));
-  assert.deepEqual(result.reserve, Array.from({ length: 8 }, (_, index) => 8 - index));
-  assert.equal(result.slots[24]?.postAthGroup, null);
-  assert.equal(result.slots[23]?.postAthGroup, null);
+  assert.deepEqual(result.reserve,Array.from({length:8},(_,index)=>8-index));
+  assert.equal(result.slots[24]?.postAthGroup,null);
+  assert.equal(result.slots[23]?.postAthGroup,null);
 });
 
 test("scenario G honors the custom .5/1/2 profile without an official-default override", () => {

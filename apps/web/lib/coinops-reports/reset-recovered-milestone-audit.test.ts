@@ -41,7 +41,7 @@ function sources(): AuditInput["sources"] {
 }
 
 test("v29 declares first-writer reset milestone and narrow typed recovery without weakening generic audit comparisons", () => {
-  assert.equal(REPORT_VERSION, 30);
+  assert.equal(REPORT_VERSION, 31);
   const report = buildAuditReport(input(), filters);
   const milestone = report.datasets.rules.find(row => row.parameter === "reset_recovered_milestone_persistence")!;
   const recovery = report.datasets.rules.find(row => row.parameter === "reset_recovered_mismatch_guarded_recovery")!;
@@ -77,7 +77,7 @@ test("v29 CSV/JSON keep historical milestone count one distinct from five curren
   const source = input(sources()), before = structuredClone(source);
   const report = buildAuditReport(source, filters);
   const pack = buildReportPackage(report, filters, generatedAt, "fixture-sha");
-  assert.equal(pack.manifest.report_version, 30);
+  assert.equal(pack.manifest.report_version, 31);
   assert.equal(pack.manifest.schema_version, "coinops/robot-v1/reports-v30-controlled-handoffs");
   assert.equal(pack.manifest.financial_writes_from_export, 0);
   assert.equal(pack.files.length, 27);

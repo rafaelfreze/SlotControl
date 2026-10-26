@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { assertV1ShadowParameters, type V1Asset, type V1ShadowParameters } from "./robot-v1.ts";
 import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet, validateEngineSlotCount } from "./engine-slot-topology.ts";
 import type { ExchangeSymbolInfo } from "./types.ts";
+import { ENTRY_PRIORITY_POLICY, compareMonthlyProgress } from "./monthly-slot-policy.ts";
 
 /** The same decision contract is consumed by the Shadow and Testnet adapters.
  * Transport, exchange credentials and execution environment never enter it. */
@@ -10,7 +11,8 @@ export const STRATEGY_VERSION = "4.3.1" as const;
 
 export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
-export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: string; slotCount?: number };
+export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: string; slotCount?: number;
+  entryPriorityPolicy?: typeof ENTRY_PRIORITY_POLICY };
 export type StrategyCandidate = {
   id: string;
   slotNumber: number;
@@ -23,8 +25,11 @@ export type StrategyCandidate = {
   /** Explicit policy result: a reached slot is eligible again only after all
    * 25 physical slots have reached this month's target. */
   monthlyEntryEligible?: boolean;
+  monthlyGainCount?: number;
+  lifetimeGainCount?: number;
   postAthGroup?: "PRIMARY" | "RESERVE" | null;
   entryOrigin?: "GRID" | "REENTRY";
+  levelOrigin?: "GRID" | "REENTRY";
   state: "PLANNED" | "ARMED" | "PARTIALLY_FILLED" | "OPEN" | "CLOSED" | "MISSED";
 };
 export type StrategyResidentBuy = { candidateId: string; executedQuantity: number;
@@ -51,6 +56,7 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 function assertContext(context: StrategyContext) {
   validateEngineSlotCount(context.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT);
   if (!["BTC", "SOL"].includes(context.asset) || !context.cycleId || !Number.isFinite(Date.parse(context.observedAt))
+    || context.entryPriorityPolicy !== undefined && context.entryPriorityPolicy !== ENTRY_PRIORITY_POLICY
     || context.quoteAsset !== undefined && !/^[A-Z0-9]{2,20}$/.test(context.quoteAsset)) {
     throw new Error("COINOPS_STRATEGY_CONTEXT_INVALID");
   }
@@ -80,6 +86,49 @@ function candidateBalance(candidate: StrategyCandidate) { return candidate.balan
 function monthlyEligible(candidate: StrategyCandidate) {
   return candidate.operationalRank !== null
     && (candidate.monthlyEntryEligible ?? !candidate.monthlyTargetReached);
+}
+
+function monthlyPriority(a: StrategyCandidate, b: StrategyCandidate) {
+  if (![a, b].every(s => Number.isInteger(s.monthlyGainCount) && s.monthlyGainCount! >= 0
+    && Number.isInteger(s.lifetimeGainCount) && s.lifetimeGainCount! >= s.monthlyGainCount!))
+    throw new Error("COINOPS_MONTHLY_PRIORITY_EVIDENCE_INVALID");
+  return Number(Boolean(a.monthlyTargetReached)) - Number(Boolean(b.monthlyTargetReached))
+    || compareMonthlyProgress({ ...a, monthlyGainCount: a.monthlyGainCount!, lifetimeGainCount: a.lifetimeGainCount!, physicalSlotNumber: a.slotNumber },
+      { ...b, monthlyGainCount: b.monthlyGainCount!, lifetimeGainCount: b.lifetimeGainCount!, physicalSlotNumber: b.slotNumber });
+}
+
+function postAthAllowed(candidates: readonly StrategyCandidate[], residentBuy?: StrategyResidentBuy | null) {
+  const primary = candidates.some(s => s.postAthGroup === "PRIMARY" && monthlyEligible(s)
+    && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(s.state));
+  return primary ? candidates.filter(s => s.postAthGroup === "PRIMARY" || s.entryOrigin === "REENTRY"
+    || s.id === residentBuy?.candidateId || s.state === "ARMED" || s.state === "PARTIALLY_FILLED") : [...candidates];
+}
+
+/** A permutation of the existing uncommitted levels, never new capital or a
+ * reanchor. The LIVE adapter must cancel/reconcile an affected resident BEFORE
+ * atomically committing this allocation under the run lease. */
+export function allocateMonthlyEntryLevels(context: StrategyContext, candidates: readonly StrategyCandidate[],
+  floor: number, regime: "NORMAL" | "POST_ATH", residentBuy?: StrategyResidentBuy | null) {
+  assertContext(context); assertCandidates(candidates, context.slotCount);
+  if (!Number.isFinite(floor) || floor <= 0) throw new Error("COINOPS_STRATEGY_MARKET_INVALID");
+  const resident = candidates.find(s => s.id === residentBuy?.candidateId);
+  if (residentBuy && (!resident || !["ARMED", "PARTIALLY_FILLED"].includes(resident.state)
+    || !Number.isFinite(residentBuy.executedQuantity) || residentBuy.executedQuantity < 0))
+    throw new Error("COINOPS_STRATEGY_RESIDENT_BUY_INVALID");
+  if (resident && (resident.state === "PARTIALLY_FILLED" || residentBuy!.executedQuantity > 0 || resident.buyPrice >= floor))
+    return { assignments: [], requiresResidentCancel: false, nextCandidateId: resident.id, held: true };
+  const allowed = regime === "POST_ATH" ? postAthAllowed(candidates, residentBuy) : [...candidates];
+  const available = allowed.filter(s => monthlyEligible(s) && ["PLANNED", "ARMED"].includes(s.state) && s.buyPrice < floor);
+  for (const s of available) monthlyPriority(s,s);
+  const levels = [...available].sort((a,b) => b.buyPrice-a.buyPrice
+    || Number(b.id === resident?.id)-Number(a.id === resident?.id) || a.slotNumber-b.slotNumber);
+  const priority = [...available].sort(monthlyPriority);
+  const assignments = priority.map((s,i) => ({ id: s.id, slotNumber: s.slotNumber,
+    previousPrice: s.buyPrice, price: levels[i]!.buyPrice, sourceId: levels[i]!.id,
+    sourceOrigin: levels[i]!.levelOrigin ?? levels[i]!.entryOrigin ?? "GRID", rank: s.operationalRank ?? null }));
+  const nextCandidateId = priority[0]?.id ?? null;
+  return { assignments, nextCandidateId, held: false, requiresResidentCancel: Boolean(resident && (
+    resident.id !== nextCandidateId || assignments.find(s => s.id === resident.id)?.price !== resident.buyPrice)) };
 }
 
 export function strategyOperationId(context: StrategyContext, candidate: StrategyCandidate) {
@@ -200,7 +249,7 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
     || (armed[0] && armed[0].id !== current.id))) throw new Error("COINOPS_STRATEGY_RESIDENT_BUY_INVALID");
   const ranked = [...candidates].filter((candidate) => monthlyEligible(candidate)
     && (candidate.state === "PLANNED" || candidate.state === "ARMED"))
-    .sort((left, right) => right.buyPrice - left.buyPrice
+    .sort((left, right) => (context.entryPriorityPolicy === ENTRY_PRIORITY_POLICY ? monthlyPriority(left,right) : right.buyPrice - left.buyPrice)
       || (left.operationalRank ?? left.slotNumber) - (right.operationalRank ?? right.slotNumber) || left.slotNumber - right.slotNumber);
   const missedCandidateIds = ranked.filter((candidate) => candidate.state === "PLANNED" && candidate.buyPrice >= observedFloor).map((candidate) => candidate.id);
   if (current && (current.state === "PARTIALLY_FILLED" || (residentBuy?.executedQuantity ?? 0) > 0)) {
@@ -226,7 +275,7 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
   }
   return {
     decision: decision(context, next, current ? "CANCEL_REPLACE_NEXT_BUY" : "ARM_NEXT_BUY", next.buyPrice, candidateBalance(next), 50,
-      current ? "HIGHER_VALID_ENTRY_HAS_PRIORITY" : "HIGHEST_VALID_ENTRY_BELOW_MARKET", "ARMED"),
+      context.entryPriorityPolicy === ENTRY_PRIORITY_POLICY ? "MONTHLY_GAINS_PRIORITY" : current ? "HIGHER_VALID_ENTRY_HAS_PRIORITY" : "HIGHEST_VALID_ENTRY_BELOW_MARKET", "ARMED"),
     missedCandidateIds,
     nextCandidateId: next.id
   };
@@ -237,12 +286,7 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
 export function planStrategyPostAthNextEntry(context: StrategyContext,
   candidates: readonly StrategyCandidate[], observedFloor: number, residentBuy?: StrategyResidentBuy | null) {
   assertCandidates(candidates, context.slotCount);
-  const primaryAvailable = candidates.some((candidate) => candidate.postAthGroup === "PRIMARY"
-    && monthlyEligible(candidate)
-    && ["PLANNED", "ARMED", "PARTIALLY_FILLED"].includes(candidate.state));
-  const allowed = primaryAvailable ? candidates.filter((candidate) => candidate.postAthGroup === "PRIMARY"
-    || candidate.entryOrigin === "REENTRY" || candidate.id === residentBuy?.candidateId
-    || candidate.state === "ARMED" || candidate.state === "PARTIALLY_FILLED") : candidates;
+  const allowed = postAthAllowed(candidates, residentBuy);
   return planStrategyNextEntry(context, allowed, observedFloor, residentBuy);
 }
 

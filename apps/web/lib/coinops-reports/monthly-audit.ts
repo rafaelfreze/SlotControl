@@ -63,7 +63,9 @@ export function buildMonthlyAuditRows(args: {
           strategyVersion: current ? (environment === "SHADOW" ? activeCycle?.strategy_version : run?.strategy_version) ?? null : null
         };
       });
-      const ranked = rankMonthlySlots(asset, `${period}-15T12:00:00Z`, inputs);
+      // This dataset describes archived SHADOW/TESTNET periods. Do not apply
+      // today's REAL strategy retroactively to their historic goal/rank policy.
+      const ranked = rankMonthlySlots(asset, `${period}-15T12:00:00Z`, inputs,asset==="BTC"?7:2,25,"LEGACY_PRICE_FIRST");
       for (const status of ranked) {
         const raw = inputs[status.physicalSlotNumber - 1]!;
         output.push({ environment, asset, symbol: `${asset}USDC`, cycle_id: raw.cycleId,

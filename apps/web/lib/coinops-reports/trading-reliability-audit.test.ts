@@ -4,7 +4,7 @@ import { buildAuditReport } from "./report-engine.ts";
 import { REPORT_VERSION } from "./filters.ts";
 
 test("v22 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {
-  assert.equal(REPORT_VERSION, 30);
+  assert.equal(REPORT_VERSION, 31);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
     generatedAt: "2026-10-05T12:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
   { start: "2026-10-05T00:00:00Z", end: "2026-10-06T00:00:00Z", assets: ["BTC", "SOL"], environments: ["REAL"] });

@@ -25,9 +25,9 @@ function rafael() {
   return { inputs, statuses, candidates };
 }
 
-test("Rafael BTC: #7 rank3 and 4/7 do not displace higher resident #6 rank5 and 3/7", () => {
+test("historical price-first planner remains reproducible, while current monthly ranks advance #7", () => {
   const { statuses, candidates } = rafael(), before = structuredClone(candidates);
-  assert.deepEqual([7, 6, 8].map(n => statuses.find(s => s.physicalSlotNumber === n)!.operationalRank), [3, 5, 7]);
+  assert.deepEqual([7, 6, 8].map(n => statuses.find(s => s.physicalSlotNumber === n)!.operationalRank), [1, 2, 6]);
   const result = planStrategyNextEntry(context, candidates, 438237,
     { candidateId: "fixture:6", executedQuantity: 0 });
   assert.equal(result.nextCandidateId, "fixture:6");
@@ -71,13 +71,13 @@ test("post-gain reentry uses preserved price, not a stale gain rank; partial/cro
     { candidateId: "fixture:7", executedQuantity: 0 }).decision.reason, "RESIDENT_BUY_REQUIRES_RECONCILIATION");
 });
 
-test("monthly eligibility and lifetime rank are distinct, with calendar/year rollover and OPEN preserved", () => {
+test("monthly priority and lifetime tie-break are distinct, with calendar/year rollover and OPEN preserved", () => {
   const input: MonthlySlotInput[] = [{ physicalSlotNumber: 1, physicalSlotId: "a:1", lifetimeGainCount: 20,
     monthlyGainCount: 1, balanceUsdc: 22, entryState: "OPEN" },
   { physicalSlotNumber: 2, physicalSlotId: "a:2", lifetimeGainCount: 4,
     monthlyGainCount: 4, balanceUsdc: 22, entryState: "PLANNED" }];
   const original = structuredClone(input), before = rankMonthlySlots("BTC", "2026-12-31T23:59:59-04:00", input);
-  assert.equal(before[0]!.operationalRank, 1, "documented lifetime policy, not a new monthly comparator");
+  assert.equal(before[0]!.operationalRank, 2, "monthly 4 precedes monthly 1 despite lifetime 20");
   const next = rankMonthlySlots("BTC", "2027-01-01T00:00:00-04:00", input.map(s => ({ ...s, monthlyGainCount: 0 })));
   assert.equal(monthlyPeriodKey("2027-01-01T03:59:59Z"), "2026-12");
   assert.equal(next[0]!.periodKey, "2027-01"); assert.equal(next[0]!.entryState, "OPEN");
@@ -118,8 +118,8 @@ test("post-ATH primary gate still admits a priced reentry/resident; reruns do no
 test("UI explains rank/price/residency without introducing a second ranking or entry implementation", () => {
   const source = readFileSync(new URL("../../app/automacao/premium-automation.tsx", import.meta.url), "utf8");
   const note = source.slice(source.indexOf('data-testid="slot-priority-explanation"'), source.indexOf("</details>", source.indexOf('data-testid="slot-priority-explanation"')));
-  for (const text of ["gains do mês", "gains totais (lifetime)", "PRIMARY", "RESERVE", "maior preço válido", "fill parcial"])
+  for (const text of ["gains do mês", "Gains totais (lifetime)", "PRIMARY", "RESERVE", "níveis", "fill parcial"])
     assert.ok(note.includes(text), text);
   assert.doesNotMatch(note, /onClick=|onSubmit=|fetch\(|planStrategy/);
-  assert.ok(source.includes("Rank não é fila de compra"));
+  assert.ok(source.includes("PRÓXIMA BUY identifica a ordem residente"));
 });

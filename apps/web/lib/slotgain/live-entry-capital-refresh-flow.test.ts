@@ -15,6 +15,7 @@ import * as unsentProof from "../execution/account-order-unsent-proof.ts";
 import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
+import * as liveAudit from "../execution/live-audit-event.ts";
 import * as strategyParameterRegistry from "../execution/strategy-parameter-registry.ts";
 import * as scope from "../execution/operator-context.ts";
 import * as engineExposure from "../execution/engine-exposure.ts";
@@ -38,7 +39,7 @@ type Options = { asset?: "BTC" | "SOL"; currency?: "BRL" | "USDT"; legacy?: bool
   cancel?: "FILLED" | "PARTIALLY_FILLED" | "TIMEOUT_CANCELED" | "TIMEOUT_NEW";
   staleCaps?: boolean; noContribution?: boolean; contributionSource?: "SELECTIVE" | "ALL_SLOTS";
   openContributionOnly?: boolean; crashAfterCancel?: boolean; crashAfterPrepared?: boolean;
-  lostCreateResponse?: boolean; slotCount?: number };
+  lostCreateResponse?: boolean; slotCount?: number; monthlyCounts?:Record<number,number>; allocationTimeout?:boolean };
 
 function harness(options: Options = {}) {
   const count = options.slotCount ?? 25;
@@ -53,7 +54,7 @@ function harness(options: Options = {}) {
   const run: Row = { ...identity, id: "12345678-1234-1234-1234-123456789abc", asset, symbol: engine.symbol,
     engine, status: "ACTIVE", lease_owner: "lease-fixture", lease_until: new Date(Date.now() + 180_000).toISOString(),
     entry_regime: "NORMAL", entry_spacing: 0.03, gain_rate: 0.05, anchor_price: 110,
-    slot_count: count, config_snapshot: { slot_count: count },
+    slot_count: count, config_snapshot: { slot_count: count,entry_priority_policy:monthlyPolicy.ENTRY_PRIORITY_POLICY },
     strategy_version: strategy.STRATEGY_VERSION };
   const profile: Row = { ...identity, id: "profile-fixture", asset, environment: "REAL",
     regime: "POST_ATH", config_version: 2, gain_rate: 0.05, normal_spacing_rate: 0.03,
@@ -164,6 +165,21 @@ function harness(options: Options = {}) {
     async rpc(name: string, params: Row) {
       calls.push({ kind: name, input: params });
       assert.equal(params.p_lease_owner, run.lease_owner);
+      if (name === "allocate_live_monthly_entry_levels") {
+        calls.push({kind:"allocate",input:structuredClone(params)});
+        assert.equal((params.p_expected as unknown[]).length,count);
+        for(const a of params.p_assignments as Row[]){const s=slots.find(s=>s.id===a.id)!;
+          assert.equal(s.entry_state,"PLANNED");assert.equal(s.position_quantity,0);
+          assert.ok(!orders.some(o=>o.slot_id===s.id&&["NEW","PREPARED","PARTIALLY_FILLED"].includes(String(o.status))));
+          Object.assign(s,{target_buy_price:a.price,entry_reference_price:a.price,operational_rank:a.rank});}
+        const sources=Object.fromEntries((params.p_assignments as Row[]).map(a=>[String(a.id),{
+          run_id:run.id,engine_id:run.trading_engine_id,slot_id:a.id,price:a.price,source_origin:a.sourceOrigin,plan_id:params.p_plan_id}]));
+        const checkpoint={policy:monthlyPolicy.ENTRY_PRIORITY_POLICY,plan_id:params.p_plan_id,period:params.p_period,
+          assignments:params.p_assignments,price_sources:sources};
+        run.config_snapshot={...(run.config_snapshot as Row),entry_priority_checkpoint:checkpoint,
+          entry_priority_policy:monthlyPolicy.ENTRY_PRIORITY_POLICY,entry_price_sources:sources};
+        return options.allocationTimeout?{data:null,error:{message:"503 after committed allocation"}}:{data:checkpoint,error:null};
+      }
       if (name === "prepare_robot_v1_live_order") {
         const existing = orders.find((o) => o.client_order_id === params.p_client_order_id);
         if (existing) return { data: structuredClone(existing), error: null };
@@ -175,6 +191,7 @@ function harness(options: Options = {}) {
           requested_quote: params.p_quote, price: params.p_price,
           reserved_notional_brl: Number(params.p_quantity) * Number(params.p_price),
           strategy_decision_id: params.p_decision_id, created_at: new Date().toISOString(),
+          config_snapshot:structuredClone(run.config_snapshot),
         });
         orders.push(prepared);
         return { data: structuredClone(prepared), error: null };
@@ -218,6 +235,7 @@ function harness(options: Options = {}) {
       .map((o) => ({ ...o, id: o.orderId })),
   });
   const dependencies: Record<string, unknown> = {
+    "./live-audit-event":liveAudit,
     "./live-ledger-read": liveLedgerRead, "./live-read-error": liveReadError,
     "./live-exposure-read": { readLiveExposure },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck }, "./live-quote-balance": { liveQuoteBalanceCheck },
@@ -253,7 +271,12 @@ function harness(options: Options = {}) {
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
     "./operator-context-server": { resolveOperatorEngine: async () => engine },
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE" }) },
-    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => slots.map((s) => ({
+    "./monthly-slot-server": { loadMonthlySlotStatuses: async () => options.monthlyCounts
+      ? monthlyPolicy.rankMonthlySlots(asset,new Date().toISOString(),slots.map(s=>({physicalSlotId:String(s.id),
+        physicalSlotNumber:Number(s.slot_number),entryState:String(s.entry_state),balanceUsdc:22,
+        lifetimeGainCount:options.monthlyCounts![Number(s.slot_number)]??0,
+        monthlyGainCount:options.monthlyCounts![Number(s.slot_number)]??0})),7,count)
+      : slots.map((s) => ({
       physicalSlotId: s.id, physicalSlotNumber: s.slot_number, operationalRank: s.operational_rank,
       lifetimeGainCount: 0, monthlyGainCount: 0,
       monthlyGainTarget: asset === "BTC" ? 7 : 2,
@@ -264,6 +287,12 @@ function harness(options: Options = {}) {
       completeStrategyDecision: async () => calls.push({ kind: "complete" }),
     },
     "./live-executor-transport": {
+      readLiveExecutorOrderObservation:async (_run:unknown,id:string)=>{
+        calls.push({kind:"observe",input:{id}});const actual=exchange.get(id);
+        return {order:structuredClone(actual??null),trades:!actual?null:Number(actual.executedQuantity)>0?[{
+          id:"trade-fixture",quantity:actual.executedQuantity,quoteQuantity:actual.cumulativeQuoteQuantity,
+          commission:0,commissionAsset:identity.quote_asset,isBuyer:actual.side==="BUY",filledAt:"2026-09-27T11:00:00.000Z"}]:[]};
+      },
       readLiveExecutorState: async () => state(),
       readLiveExecutorOrder: async (_run: unknown, id: string) => {
         calls.push({ kind: "read", input: { id } });
@@ -349,6 +378,48 @@ for (const slotCount of [50, 75, 100]) test(`${slotCount} slots NEXT BUY replace
   assert.equal(h.calls.filter(call => call.kind === "cancel").length, 1);
   assert.equal(h.orders.filter(order => order.side === "BUY" && order.status === "NEW").length, 1);
   h.unchangedOpen();
+});
+
+for(const slotCount of [25,50,100]) test(`${slotCount} monthly allocation replaces the owner after a verified zero-fill cancel`,async()=>{
+ const h=harness({asset:"BTC",slotCount,noContribution:true,monthlyCounts:{2:1,3:4,4:3,5:2}});
+ const money=structuredClone(h.tables.robot_v1_live_slot_accounts);
+ assert.equal(await h.arm(),"NEXT_BUY_ARMED");
+ assert.equal(h.orders.find(o=>o.side==="BUY"&&o.status==="NEW")?.slot_number,3);
+ assert.equal(h.orders.find(o=>o.side==="BUY"&&o.status==="NEW")?.price,100);
+ assert.equal(h.calls.filter(c=>c.kind==="cancel").length,1);assert.equal(h.calls.filter(c=>c.kind==="allocate").length,1);
+ assert.equal(await h.arm(),"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT");
+ assert.equal(h.calls.filter(c=>c.kind==="create").length,1);assert.deepEqual(h.tables.robot_v1_live_slot_accounts,money);h.unchangedOpen();
+});
+for(const cancel of ["FILLED","PARTIALLY_FILLED","TIMEOUT_NEW","TIMEOUT_CANCELED"] as const)
+test(`monthly priority cancel race ${cancel} never allocates executed capital or duplicates a BUY`,async()=>{
+ const h=harness({asset:"BTC",cancel,noContribution:true,monthlyCounts:{2:1,3:4}});
+ if(cancel==="TIMEOUT_NEW")await assert.rejects(h.arm(),/503/);
+ else assert.equal(await h.arm(),cancel==="TIMEOUT_CANCELED"?"NEXT_BUY_ARMED":"ENTRY_FILLED_DURING_REPLACEMENT");
+ assert.equal(h.calls.filter(c=>c.kind==="allocate").length,cancel==="TIMEOUT_CANCELED"?1:0);
+ assert.equal(h.calls.filter(c=>c.kind==="create").length,cancel==="TIMEOUT_CANCELED"?1:0);h.unchangedOpen();
+});
+test("monthly allocation timeout after commit is read back and never repeated",async()=>{
+ const h=harness({asset:"BTC",allocationTimeout:true,noContribution:true,monthlyCounts:{2:1,3:4}});
+ assert.equal(await h.arm(),"NEXT_BUY_ARMED");assert.equal(await h.arm(),"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT");
+ assert.equal(h.calls.filter(c=>c.kind==="allocate").length,1);assert.equal(h.calls.filter(c=>c.kind==="create").length,1);h.unchangedOpen();
+});
+
+test("a GRID slot receiving a proven REENTRY level retains the committed level provenance",async()=>{
+ const h=harness({asset:"BTC",noContribution:true,monthlyCounts:{2:1,3:4}});
+ h.slots[2].entry_origin="GRID";
+ assert.equal(await h.arm(),"NEXT_BUY_ARMED");
+ const own=h.orders.find(o=>o.side==="BUY"&&o.status==="NEW")!;
+ const snapshot=own.config_snapshot as Row;
+ assert.equal(((snapshot.entry_price_sources as Row)[String(own.slot_id)] as Row).source_origin,"REENTRY");
+ h.unchangedOpen();
+});
+test("crash after committed allocation resumes without another cancel or financial duplication",async()=>{
+ const h=harness({asset:"BTC",noContribution:true,monthlyCounts:{2:1,3:4}}),rpc=h.service.rpc.bind(h.service);let crash=true;
+ h.service.rpc=async(name,params)=>{const result=await rpc(name,params);
+   if(name==="allocate_live_monthly_entry_levels"&&crash){crash=false;throw Error("FIXTURE_CRASH_AFTER_COMMIT")}return result};
+ await assert.rejects(h.arm(),/FIXTURE_CRASH_AFTER_COMMIT/);
+ assert.equal(await h.arm(),"NEXT_BUY_ARMED");assert.equal(await h.arm(),"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT");
+ assert.equal(h.calls.filter(c=>c.kind==="cancel").length,1);assert.equal(h.calls.filter(c=>c.kind==="create").length,1);h.unchangedOpen();
 });
 
 for (const slotCount of [50, 100]) test(`${slotCount} slots known cancel503/crash checkpoint converge and ambiguous outcomes never duplicate`, async () => {

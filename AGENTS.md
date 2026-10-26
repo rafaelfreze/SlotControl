@@ -191,6 +191,27 @@ no ambiente de destino antes de operação remota.
   verificador somente leitura em `tools/operations/check-coinops-supabase-access.ps1`;
   ver `docs/COINOPS_SUPABASE_ACCESS_20261016.md`. Não usar `.env.local` legado.
 
+## Prioridade mensal de entradas — decisão autorizada em 26/10/2026
+
+- `MONTHLY_GAINS_V1` substitui preço/lifetime como prioridade principal de novas
+  entradas REAL: elegíveis abaixo da meta por gains do mês DESC em
+  America/Campo_Grande; lifetime DESC e físico ASC apenas desempatarão. Meta
+  individual atingida aguarda o dia 1º; somente N/N metas completas libera todos
+  no mesmo mês, sem zerar gains (confirmação explícita do proprietário).
+  OPEN/partial/MISSED/evidência incompleta
+  não recebem outra entrada. Preservar limites PRIMARY/RESERVE do ciclo e a
+  exceção canônica de reentrada; prioridade mensal dentro do conjunto permitido.
+- Níveis não comprometidos são um pool separado do slot/capital/histórico.
+  Strategy Engine atribui preços aos slots prioritários; BUY residente só muda
+  por cancelamento próprio ONLY_NEW reconciliado sem fill, lease e permutação
+  atômica `allocate_live_monthly_entry_levels`. Fill concorrente vence; resposta
+  ambígua exige readback. Provar origem de cada nível no checkpoint/snapshot,
+  sem enfraquecer tick, referência, ownership ou geometria GRID. Não alterar
+  OPEN/TP/gain/meta/spacing/capital nem reescrever snapshots históricos.
+- UI diferencia rank desejado, preço prospectivo e BUY confirmada. Auditoria
+  v31 exporta política, atribuições e fontes; snapshots antigos sem marcador
+  conservam significado legado. Ver `docs/COINOPS_MONTHLY_ENTRY_PRIORITY_20261026.md`.
+
 ## Backtests e Local
 
 - tools/backtests e datasets físicos são simulação isolada; não são fonte normativa para produção.
@@ -369,7 +390,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 30`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading, proteção da pausa intencional, auditoria final imutável e marcos históricos de reset sem reemissão. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 31`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading, proteção da pausa intencional, auditoria final imutável e marcos históricos de reset sem reemissão. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

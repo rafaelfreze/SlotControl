@@ -8,7 +8,7 @@ const generatedAt = "2026-10-16T19:30:00Z";
 const filters = { start: "2026-10-16T00:00:00Z", end: "2026-10-17T00:00:00Z",
   assets: ["SOL"] as ["SOL"], environments: ["REAL"] as ["REAL"] };
 test("v27 records the owned observation protocol without inventing capacity, history or an authorization cache", () => {
-  assert.equal(REPORT_VERSION, 30);
+  assert.equal(REPORT_VERSION, 31);
   const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [], generatedAt,
     scope: { tenantId: "fixture", userId: "fixture" } }, filters);
   const rule = report.datasets.rules.find(row => row.parameter === "large_engine_owned_observation_protocol")!;
@@ -36,7 +36,7 @@ test("v27 preserves the new transient read path and legacy25 evidence in existin
   assert.equal(exported.slot_count, 25); assert.equal(exported.last_reconciled_at, last);
   assert.deepEqual(exported.config_snapshot, before.config_snapshot); assert.deepEqual(run, before);
   const pack = buildReportPackage(report, filters, generatedAt, "fixture-sha");
-  assert.equal(pack.manifest.report_version, 30);
+  assert.equal(pack.manifest.report_version, 31);
   assert.equal(pack.manifest.schema_version, "coinops/robot-v1/reports-v30-controlled-handoffs");
   assert.equal(pack.manifest.financial_writes_from_export, 0);
 });

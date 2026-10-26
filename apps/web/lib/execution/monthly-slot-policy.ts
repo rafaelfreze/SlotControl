@@ -2,6 +2,7 @@ import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "./engine-slo
 import type { V1Asset } from "./robot-v1.ts";
 
 export const MONTHLY_SLOT_TIMEZONE = "America/Campo_Grande";
+export const ENTRY_PRIORITY_POLICY = "MONTHLY_GAINS_V1" as const;
 export const MONTHLY_SLOT_TARGET: Readonly<Record<V1Asset, number>> = { BTC: 7, SOL: 2 };
 
 const monthFormatter = new Intl.DateTimeFormat("en-US", {
@@ -45,6 +46,13 @@ export type MonthlySlotInput = {
   monthlyManualGainCount?: number | null;
 };
 
+/** Monthly progress is the primary key; lifetime is only a deterministic tie. */
+export function compareMonthlyProgress(a: { monthlyGainCount: number | null; lifetimeGainCount: number; physicalSlotNumber: number },
+  b: { monthlyGainCount: number | null; lifetimeGainCount: number; physicalSlotNumber: number }) {
+  return (b.monthlyGainCount ?? -1) - (a.monthlyGainCount ?? -1)
+    || b.lifetimeGainCount - a.lifetimeGainCount || a.physicalSlotNumber - b.physicalSlotNumber;
+}
+
 export type MonthlySlotStatus = MonthlySlotInput & {
   monthlyGainTarget: number;
   periodKey: string;
@@ -69,7 +77,8 @@ export function monthlyGoalsComplete(asset: V1Asset,
 /** Gain rank is independent of price. The engine still decides which priced
  * opportunity is valid; an OPEN position can finish after reaching its goal. */
 export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs: readonly MonthlySlotInput[],
-  target = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT): MonthlySlotStatus[] {
+  target = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT,
+  policy: typeof ENTRY_PRIORITY_POLICY | "LEGACY_PRICE_FIRST" = ENTRY_PRIORITY_POLICY): MonthlySlotStatus[] {
   validateEngineSlotCount(slotCount);
   if (!Number.isInteger(target) || target < 1 || target > 1000)
     throw new Error("COINOPS_MONTHLY_TARGET_INVALID");
@@ -93,12 +102,12 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
     return { ...input, monthlyGainTarget: target, periodKey, timezone: MONTHLY_SLOT_TIMEZONE,
       monthlyTargetReached: reached, eligibleForNewEntry: blockedReason === null, blockedReason, operationalRank: null };
   });
-  if (monthlyGoalsComplete(asset, statuses, target, slotCount)) for (const slot of statuses) {
-    slot.eligibleForNewEntry = true;
-    slot.blockedReason = null;
-  }
+  if (monthlyGoalsComplete(asset,statuses,target,slotCount))
+    for (const s of statuses) { s.eligibleForNewEntry=true;s.blockedReason=null; }
   const eligible = statuses.filter((slot) => slot.eligibleForNewEntry)
-    .sort((left, right) => right.lifetimeGainCount - left.lifetimeGainCount || left.physicalSlotNumber - right.physicalSlotNumber);
+    .sort((a,b)=>policy === "LEGACY_PRICE_FIRST"
+      ? b.lifetimeGainCount-a.lifetimeGainCount||a.physicalSlotNumber-b.physicalSlotNumber
+      : Number(a.monthlyTargetReached)-Number(b.monthlyTargetReached)||compareMonthlyProgress(a,b));
   eligible.forEach((slot, index) => { slot.operationalRank = index + 1; });
   return statuses;
 }

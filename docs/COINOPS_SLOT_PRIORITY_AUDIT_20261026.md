@@ -1,5 +1,10 @@
 # Rafael — rank de gains e NEXT BUY (26/10/2026)
 
+> Registro histórico da política anterior. O comando posterior do proprietário
+> autorizou MONTHLY_GAINS_V1 e a atribuição prospectiva de níveis; consultar
+> [nova regra](COINOPS_MONTHLY_ENTRY_PRIORITY_20261026.md). As provas abaixo
+> descrevem o runtime e as ordens observados antes dessa mudança.
+
 ## Conclusão e escopo
 
 Não foi encontrado erro na seleção da BUY. O problema era uma ambiguidade de

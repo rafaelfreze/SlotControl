@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error";
 import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger } from "./live-ledger-read";
 
@@ -18,10 +18,10 @@ import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event";
 import { readResetRecoveryMilestone } from "./live-reset-recovery";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
-import { monthlyPeriodKey } from "./monthly-slot-policy";
+import { monthlyPeriodKey, ENTRY_PRIORITY_POLICY } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
   LIVE_ACTIVE_ORDER_STATUSES, LIVE_TERMINAL_ORDER_STATUSES } from "./robot-v1-live-cycle";
-import { STRATEGY_VERSION, planStrategyInitialEntry, planStrategyNextEntry,
+import { STRATEGY_VERSION, allocateMonthlyEntryLevels, planStrategyInitialEntry, planStrategyNextEntry,
   planStrategyPostAthNextEntry, planStrategyTakeProfit, planStrategyClosedSlot,
   type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision,
@@ -151,7 +151,8 @@ async function configUpdatePending(service: Service, run: Run) {
   return row.strategy_config_pending;
 }
 const context = (run: Run, transitionKey?: string) => ({ asset: run.asset, cycleId: run.id,
-  observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey, slotCount: configuredEngineSlotCount(run.engine ?? run) });
+  observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey,
+  entryPriorityPolicy: ENTRY_PRIORITY_POLICY, slotCount: configuredEngineSlotCount(run.engine ?? run) });
 
 function assertScope() {
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId())
@@ -239,7 +240,7 @@ function candidate(slot: Slot, account: Account, rank: number | null,
   reached: boolean, eligible: boolean): StrategyCandidate {
   return { id: slot.id, slotNumber: slot.slot_number, operationSequence: slot.operation_sequence,
     buyPrice: amount(slot.target_buy_price), balanceQuote: amount(account.balance_brl),
-    operationalRank: rank === null ? null : slot.post_ath_group ? slot.operational_rank ?? rank : rank,
+    operationalRank: rank,
     monthlyTargetReached: reached, monthlyEntryEligible: eligible, postAthGroup: slot.post_ath_group,
     entryOrigin: slot.entry_origin,
     state: slot.missed_at ? "MISSED" : ["OPEN", "CLOSED", "ARMED"].includes(slot.entry_state)
@@ -426,8 +427,15 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
   const check = (price: number) => {
     if (order.side === "BUY") {
       const rates = strategyRatesForOrder(order, run);
+      const sources = order.config_snapshot?.entry_price_sources as Record<string, { run_id:string; engine_id:string;
+        slot_id:string; price:number; source_origin:"GRID"|"REENTRY" }> | undefined;
+      const source = sources?.[slot.id];
+      const origin = order.config_snapshot?.entry_priority_policy === ENTRY_PRIORITY_POLICY && source
+        && source.run_id === run.id && source.engine_id === run.trading_engine_id && source.slot_id === slot.id
+        && Number(source.price) === price && ["GRID","REENTRY"].includes(source.source_origin)
+        ? source.source_origin : slot.entry_origin;
       assertStrategyBuyPrice({ price, referencePrice: amount(slot.entry_reference_price),
-        anchorPrice: rates.anchor, spacing: rates.spacing, tick, entryOrigin: slot.entry_origin,
+        anchorPrice: rates.anchor, spacing: rates.spacing, tick, entryOrigin: origin,
         slotCount: configuredEngineSlotCount(run.engine ?? run) });
     } else {
       const buys = ledger.orders.filter((item) => item.slot_id === slot.id
@@ -1464,7 +1472,7 @@ async function holdEntryForQuoteBalance(service: Service, run: Run, slot: Slot,
 }
 
 async function armNextEntry(service: Service, run: Run, ledger: Ledger,
-  state: LiveExecutorState) {
+  state: LiveExecutorState, priorityCommitted = false): Promise<string> {
   await validateRunEngine(service, run);
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   if (!prep.live_enabled || prep.kill_switch || entryBlocked(run)) return "KILL_SWITCH";
@@ -1553,16 +1561,92 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const account = ledger.accounts.find((row) => row.slot_number === slot.slot_number)!;
     const rank = ranks.get(slot.slot_number)!;
     const value = { ...candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached, rank.eligibleForNewEntry),
+      monthlyGainCount: rank.monthlyGainCount!, lifetimeGainCount: rank.lifetimeGainCount,
       balanceQuote: Math.min(amount(account.balance_brl), amount(prep.max_order_notional_brl)) };
+    const source = (run.config_snapshot.entry_price_sources as Record<string,{price:number;source_origin:"GRID"|"REENTRY"}> | undefined)?.[slot.id];
+    if (source && Number(source.price) === value.buyPrice) value.levelOrigin = source.source_origin;
     if (active?.slot_id === slot.id) value.state = "ARMED";
     return value;
   });
-  const contextKey = `QUEUE:${ledger.orders.filter((item) => item.side === "BUY").length}`;
+  const period = monthlyPeriodKey(new Date());
+  const contextKey = `${ENTRY_PRIORITY_POLICY}:${period}:QUEUE:${ledger.orders.filter((item) => item.side === "BUY").length}`;
   const observedFloor = state.price.price;
   const resident = active ? { candidateId: active.slot_id, executedQuantity: amount(active.executed_quantity),
     ...(refresh?.status === "REPLACE" && capitalSources.length ? { capitalRefresh: {
       quantityBefore: amount(active.requested_quantity), quantityAfter: refresh.quantity, notional: refresh.notional,
     } } : {}) } : null;
+  const allocation = allocateMonthlyEntryLevels(context(run, contextKey), candidates, observedFloor, run.entry_regime, resident);
+  const reallocates = allocation.assignments.some(a => {
+    const slot = ledger.slots.find(s => s.id === a.id)!;
+    return a.price !== amount(slot.target_buy_price) || (slot.entry_state === "PLANNED" && slot.operational_rank !== a.rank);
+  });
+  if (!priorityCommitted && !allocation.held && (allocation.requiresResidentCancel || reallocates
+    || run.config_snapshot.entry_priority_policy !== ENTRY_PRIORITY_POLICY)) {
+    // Preflight the priority owner's own capital at the newly assigned price.
+    // This never borrows another slot's balance and never cancels for an
+    // unaffordable/min-notional-invalid replacement.
+    const desired = allocation.assignments.find(a => a.id === allocation.nextCandidateId);
+    if (!desired && activeSlot && allocation.requiresResidentCancel) {
+      const feeHold=await holdEntryForBnbFeeBalance(service,run,activeSlot,state);
+      if(feeHold)return feeHold;
+    }
+    if (desired) {
+      const selected = ledger.slots.find(s => s.id === desired.id)!;
+      const balance = amount(ledger.accounts.find(a => a.slot_number === selected.slot_number)!.balance_brl);
+      const quantity = floorStep(spendable(balance, reclaimed) / desired.price, state.filters.quantityStep);
+      if (quantity < state.filters.minQuantity || quantity > state.filters.maxQuantity
+        || quantity * desired.price < state.filters.minNotional) return "PRIORITY_SIZING_HOLD";
+      const feeHold = await holdEntryForBnbFeeBalance(service, run, selected, state);
+      if (feeHold) return feeHold;
+      if (await holdEntryForQuoteBalance(service, run, selected, state, quantity * desired.price,
+        active?.status === "NEW" && observedActive ? reclaimed : 0)) return "QUOTE_BALANCE_HOLD";
+    }
+    const planId = createHash("sha256").update(JSON.stringify([ENTRY_PRIORITY_POLICY,run.id,run.entry_regime,period,
+      status.map(s => [s.physicalSlotNumber,s.monthlyGainCount,s.lifetimeGainCount,s.monthlyGainTarget]),
+      allocation.assignments.map(a => [a.id,a.price,a.rank])])).digest("hex");
+    if (allocation.requiresResidentCancel && active) {
+      if (!observedActive || state.supports_unfilled_buy_cancel !== true) return "PRIORITY_RESIDENT_CONFIRMATION_PENDING";
+      await event(service, run, `ENTRY_PRIORITY:${planId}:REQUESTED`, "ENTRY_PRIORITY_REALLOCATION_REQUESTED", null,
+        { policy: ENTRY_PRIORITY_POLICY, plan_id: planId, period, old_client_order_id: active.client_order_id,
+          desired_slot_id: allocation.nextCandidateId, assignments: allocation.assignments });
+      if (!await cancelOwnedEntry(service, run, active, true)) return "ENTRY_FILLED_DURING_REPLACEMENT";
+      await updateSlot(service, run, activeSlot!, { entry_state: "PLANNED" });
+      state = await readLiveExecutorState(run);
+      if (allocation.assignments.some(a => a.price >= state.price.price)) return "PRIORITY_MARKET_CHANGED";
+    }
+    const assignments = allocation.assignments.filter(a => ledger.slots.find(s => s.id === a.id)!.entry_state === "PLANNED");
+    const expected = ledger.slots.map(s => ({ id:s.id,n:s.slot_number,state:s.entry_state,sequence:s.operation_sequence,
+      price:amount(s.target_buy_price),reference:amount(s.entry_reference_price),position:amount(s.position_quantity),
+      monthly:ranks.get(s.slot_number)!.monthlyGainCount,lifetime:ranks.get(s.slot_number)!.lifetimeGainCount }));
+    await renewLease(service, run);
+    const saved = await service.rpc("allocate_live_monthly_entry_levels", { p_run_id:run.id,p_lease_owner:run.lease_owner,
+      p_plan_id:planId,p_period:period,p_expected:expected,p_assignments:assignments,
+      p_context:{regime:run.entry_regime,config_version:run.config_version,monthly_target:status[0]!.monthlyGainTarget,
+        shard:run.engine!.executor_shard_id} });
+    let committed = saved.data as { price_sources?:Record<string,unknown> } | null;
+    if (saved.error) {
+      // A lost RPC response is observed, not retried as a financial operation.
+      const readback = await service.from("robot_v1_live_runs").select("config_snapshot")
+        .eq("id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("lease_owner",run.lease_owner).maybeSingle();
+      const checkpoint = readback.data?.config_snapshot?.entry_priority_checkpoint;
+      if (readback.error || checkpoint?.plan_id !== planId) {
+        if (/COINOPS_ENTRY_PRIORITY_(SNAPSHOT_CHANGED|INPUT_INVALID)/.test(saved.error.message ?? "")) return "PRIORITY_SNAPSHOT_CHANGED";
+        throw new Error("COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN");
+      }
+      committed = { ...checkpoint, price_sources:readback.data?.config_snapshot?.entry_price_sources };
+    }
+    const reloaded = await runRows(service, run);
+    if (assignments.some(a => {
+      const s = reloaded.slots.find(s => s.id === a.id);
+      return !s || s.entry_state !== "PLANNED" || amount(s.target_buy_price) !== a.price
+        || amount(s.entry_reference_price) !== a.price || s.operational_rank !== a.rank;
+    })) throw new Error("COINOPS_LIVE_ENTRY_PRIORITY_READBACK_MISMATCH");
+    run.config_snapshot = { ...run.config_snapshot, entry_priority_policy:ENTRY_PRIORITY_POLICY,
+      entry_price_sources:committed?.price_sources };
+    // A single bounded continuation after the atomic DB checkpoint. The normal
+    // planner/ownership/dispatch guards remain the only authority to place BUY.
+    return armNextEntry(service, run, reloaded, state, true);
+  }
   const planned = run.entry_regime === "POST_ATH"
     ? planStrategyPostAthNextEntry(context(run, contextKey), candidates, observedFloor, resident)
     : planStrategyNextEntry(context(run, contextKey), candidates, observedFloor, resident);
