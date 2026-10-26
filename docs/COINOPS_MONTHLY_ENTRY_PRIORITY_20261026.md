@@ -84,3 +84,35 @@ primeira tentativa de build encontrou EPERM na pasta gerada; a repetição isola
 com permissão local concluiu. Warnings já existentes de Supabase/Edge e CSS.
 Resultados de Production e paridade devem ser confirmados após o deploy; estes
 testes não afirmam que uma ordem real foi criada nem certificam admissão N>25.
+
+## Correção do contrato de eventos e recuperação em 26/10
+
+O primeiro RPC publicado tentou inserir `asset` em `robot_v1_live_events`.
+A tabela real não possui essa coluna; o ativo pertence ao run. O fixture SQL
+original incluía a coluna indevidamente e deixou de reproduzir o contrato real.
+Isso causou `COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN` em ARM_ENTRY nos 14
+motores, fechando somente os gates de novas compras. A transação atômica não
+confirmou a alocação. O worker continuou reconciliando posições e protegendo TPs.
+
+A migration original permanece imutável. A correção aditiva
+`20261026144000_fix_monthly_priority_event_schema.sql` substitui somente o corpo
+do RPC, removendo a coluna inválida do INSERT, e preserva SECURITY INVOKER,
+grants, lease/CAS e todas as provas financeiras. Aplicação no projeto/ref/schema
+oficiais foi confirmada em 26/10. Não houve UPDATE SQL para liberar gates.
+
+O teste descartável agora exige as 14 colunas reais do evento, reproduz o erro
+original, prova rollback integral de preços/checkpoint/evento e executa o RPC
+corrigido com o papel service_role e privilégios efetivos. Seis testes SQL PASS;
+três testes do controle oficial PASS. Não foi necessário reconstruir a aplicação:
+a correção é exclusivamente SQL e o código web já havia passado lint/typecheck/build.
+
+A retomada usa exclusivamente `resume-engine-official.mjs` e o endpoint oficial
+RESUME/OPERATOR_CONTROL: escopo/run exatos, secret somente em stdin sem eco,
+lease, reconciliação recente, Binance/ledger/TP, decisões e dispatches assentados
+duas vezes e CAS do incidente. LEASE_BUSY não altera dados e exige nova leitura
+antes de outro pedido. Nenhum cancelamento ou trade artificial serve de teste.
+
+Primeiro motor retomado: Rafael/BTCBRL. Às 14:53:32Z o cron confirmou a alocação
+mensal e às 14:53:40Z observou NEW a BUY do slot físico #7, preço 432279 BRL;
+o slot #6 recebeu o nível prospectivo 427956 BRL. A recuperação dos demais
+motores e a paridade final serão registradas após a validação real completa.

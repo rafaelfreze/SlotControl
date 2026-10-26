@@ -30,8 +30,13 @@ before(async()=>{
  create table coinops.robot_v1_slot_gain_totals(trading_engine_id uuid,slot_number integer,environment text,asset text,product_id uuid,
   tenant_id uuid,user_id uuid,operator_id uuid,exchange_account_id uuid,period_key text,lifetime_gain_count integer,monthly_gain_count integer);
  create table coinops.robot_v1_live_orders(run_id uuid,slot_id uuid,operation_sequence integer,status text,executed_quantity numeric,cumulative_quote numeric,trades_reconciled boolean);
- create table coinops.robot_v1_live_events(run_id uuid,product_id uuid,tenant_id uuid,user_id uuid,operator_id uuid,exchange_account_id uuid,
-  trading_engine_id uuid,asset text,quote_asset text,event_key text,event_type text,slot_number integer,details jsonb,unique(run_id,event_key));
+ create table coinops.robot_v1_live_events(id uuid default gen_random_uuid(),run_id uuid,product_id uuid,tenant_id uuid,user_id uuid,operator_id uuid,exchange_account_id uuid,
+  trading_engine_id uuid,quote_asset text,event_key text,event_type text,slot_number integer,details jsonb,observed_at timestamptz default now(),unique(run_id,event_key));
+ grant usage on schema coinops,auth to service_role;
+ grant select on all tables in schema coinops to service_role;
+ grant update on coinops.robot_v1_live_runs,coinops.robot_v1_live_slots,
+  coinops.trading_engines,coinops.robot_v1_live_preparations to service_role;
+ grant insert on coinops.robot_v1_live_events to service_role;
  insert into coinops.operators values('${id(1)}','${id(2)}','${id(3)}','${id(4)}','ACTIVE',false);
  insert into coinops.exchange_accounts values('${id(5)}','${id(1)}','ACTIVE',false);
  insert into coinops.executor_shards values('executor-01',true),('executor-02',true);
@@ -54,9 +59,23 @@ const assignments=()=>[{id:id(101),slotNumber:1,previousPrice:999,price:998,sour
 const call=(ex,as=assignments(),le=lease,h=hash)=>`select coinops.allocate_live_monthly_entry_levels('${id(7)}','${le}','${h}',
  to_char(now() at time zone 'America/Campo_Grande','YYYY-MM'),${j(ex)},${j(as)},
  '${JSON.stringify({regime:'NORMAL',config_version:3,monthly_target:7,shard:'executor-01'})}'::jsonb) as proof`;
+test('real event schema reproduces the original failure atomically; corrective migration makes it executable',async()=>{
+ const columns=await query("select column_name from information_schema.columns where table_schema='coinops' and table_name='robot_v1_live_events'");
+ assert.deepEqual(columns.map(c=>c.column_name).sort(),['id','run_id','product_id','tenant_id','user_id',
+  'event_key','event_type','slot_number','details','observed_at','operator_id','exchange_account_id',
+  'trading_engine_id','quote_asset'].sort());
+ const ex=await expected();
+ await assert.rejects(query(call(ex)),/column "asset" of relation "robot_v1_live_events" does not exist/);
+ assert.deepEqual(await expected(),ex);
+ assert.equal((await query('select count(*)::integer as n from coinops.robot_v1_live_events'))[0].n,0);
+ assert.deepEqual((await query('select config_snapshot from coinops.robot_v1_live_runs'))[0].config_snapshot,{});
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261026144000_fix_monthly_priority_event_schema.sql',import.meta.url),'utf8'));
+});
 test('atomic swap, exact source provenance, capital unchanged and idempotent replay',async()=>{
  const ex=await expected(),before=await query('select * from coinops.robot_v1_live_slot_accounts');
- const first=(await query(call(ex)))[0].proof;assert.equal(first.policy,'MONTHLY_GAINS_V1');
+ await db.exec('set role service_role');
+ let first;try{first=(await query(call(ex)))[0].proof;}finally{await db.exec('reset role');}
+ assert.equal(first.policy,'MONTHLY_GAINS_V1');
  assert.equal(first.price_sources[id(102)].source_origin,'GRID');
  assert.equal((await query(`select target_buy_price from coinops.robot_v1_live_slots where id='${id(102)}'`))[0].target_buy_price,'999');
  const second=(await query(call(ex)))[0].proof;assert.deepEqual(second,first);
