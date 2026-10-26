@@ -73,6 +73,7 @@ function harness(initialData = fixture()) {
     },
   };
   const modules: Record<string, unknown> = { react, "react/jsx-runtime": jsxRuntime,
+    "next/link": { default: (props: React.ComponentProps<"a">) => React.createElement("a", props) },
     "next/navigation": { useRouter: () => ({ refresh: () => { routerRefreshes++; } }) },
     "../automacao/premium-primitives": { PremiumBrand: () => React.createElement("span", {}, "CoinOps"),
       PremiumIcon: () => React.createElement("svg", { "aria-hidden": true }) } };

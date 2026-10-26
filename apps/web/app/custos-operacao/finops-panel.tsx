@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import type { FinopsDashboard, FinopsExecutor, FinopsService, FinopsCapitalRow, FinancialOrigin } from "@/lib/coinops-finops/types";
 import { PremiumBrand, PremiumIcon } from "../automacao/premium-primitives";
 
@@ -180,7 +181,7 @@ export function FinopsPanel({ data: initialData, homeHref = "/automacao?view=liv
     } finally { syncInFlight.current = false; setSyncing(false); }
   }
   return <div className="fo-app" data-testid="finops-admin">
-    <header className="fo-topbar"><PremiumBrand /><span className="fo-admin-label">ADMIN</span><a className="fo-back fo-button" href={homeHref} aria-label="Voltar ao Início mantendo conta e mercado"><PremiumIcon name="home" />Início</a></header>
+    <header className="fo-topbar"><PremiumBrand /><span className="fo-admin-label">ADMIN</span><Link prefetch={false} className="fo-back fo-button" href={homeHref} aria-label="Voltar ao Início mantendo conta e mercado"><PremiumIcon name="home" />Início</Link></header>
     <main>
       <section className="fo-heading"><div><span className="fo-eyebrow">GESTÃO DA PLATAFORMA</span><h1>Custos &amp; Operação</h1><p>Capital acompanhado, resultados das estratégias e custos do CoinOps, cada um no seu lugar.</p></div><div className="fo-period"><strong>{periodLabel(data.period)}</strong><button className="fo-button" type="button" disabled={syncing} onClick={() => void sync()}>{syncing ? "Atualizando…" : "Atualizar dados"}</button><div className="fo-freshness"><small>Coleta de capital e infraestrutura: {instant(data.operationalCapturedAt ?? data.externalCapturedAt ?? data.capturedAt)}</small><small>Coleta de fornecedores: {instant(data.externalCapturedAt ?? data.capturedAt)}</small><span>{data.syncStatus === "OK" ? "Snapshot disponível · confira a data das fontes" : labels[data.syncStatus] ?? data.syncStatus}</span></div><small className="fo-refresh-help">Atualizar consulta capital e infraestrutura agora (intervalo mínimo de 60s). Fornecedores: a cada 6h. Falhas permanecem indicadas, sem alterar o trading.</small></div></section>
       {syncResult ? <p className={`fo-sync-result ${syncResult.error ? "fo-error" : ""}`} role={syncResult.error ? "alert" : "status"}>{syncResult.message}</p> : null}

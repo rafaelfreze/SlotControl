@@ -133,6 +133,10 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     : undefined;
   // Start independent remote reads before the ledger fan-out. Previously each
   // group waited for the previous group, adding their network latencies.
+  // Start this independent, read-only observation before the engine projection.
+  const onboardingPromise = Promise.resolve(supabase.from("account_onboarding_checks")
+    .select("exchange_account_id,trading_engine_id,check_key,status,checked_at")
+    .eq("operator_id", registry.operator.id).order("checked_at", { ascending: false }).limit(200));
   const manualAdjustmentsPromise = Promise.resolve(supabase.from("robot_v1_manual_adjustments")
     .select("id,trading_engine_id,exchange_account_id,environment,asset,slot_number,kind,gain_units,currency,original_amount,converted_amount_usdc,created_at,reversal_of,reason").in("trading_engine_id", registry.engines.map((engine) => engine.id))
     .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id)
@@ -369,9 +373,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
     accountId: searchParams?.account || "ALL", symbol: searchParams?.market || "ALL",
   }, undefined, presentationEnvironment(view), true, nativeLiveReadPromise, legacySnapshot.unavailableAssets);
   timing.stage("engine_projection");
-  const onboarding = await supabase.from("account_onboarding_checks")
-    .select("exchange_account_id,trading_engine_id,check_key,status,checked_at")
-    .eq("operator_id", registry.operator.id).order("checked_at", { ascending: false }).limit(200);
+  const onboarding = await onboardingPromise;
   if (onboarding.error) unavailableModules.push("onboarding");
   presentation.onboardingChecks = onboarding.data ?? [];
   const strategyPanels: Record<string, StrategyPanelData> = {}, adjustmentPanels: Record<string, AdjustmentPanelData> = {};

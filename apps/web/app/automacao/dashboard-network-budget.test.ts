@@ -53,6 +53,7 @@ test("actual Home base reads send five LIVE requests instead of seven empty hist
 
 test("independent metadata reads begin before their later consumer awaits them", async () => {
   for (const [file, variable, tables] of [
+    ["./page.tsx", "onboardingPromise", ["account_onboarding_checks"]],
     ["./page.tsx", "manualAdjustmentsPromise", ["robot_v1_manual_adjustments"]],
     ["./operator-presentation-server.ts", "capsPromise", ["account_quote_caps"]],
     ["./page.tsx", "legacyPreparationPromise", ["robot_v1_live_preparations", "robot_v1_live_global_caps",
