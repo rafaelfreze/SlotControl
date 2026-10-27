@@ -88,7 +88,7 @@ health_matches() {
 if [[ $previous == "$release" && $old_version == "$revision" ]] \
   && systemctl is-active --quiet coinops-live-executor && health_matches "$revision"; then
   bash "$script_directory/install-nonce-retention.sh" "$maintenance_revision" || fail 'NONCE_MAINTENANCE_INSTALL_FAILED'
-  printf 'ALREADY_DEPLOYED shard=%s sha=%s (no restart); FLEET_PARITY_REQUIRED before closing rollout\n' "$shard" "$revision"; exit 0
+  printf 'ALREADY_DEPLOYED shard=%s sha=%s (no restart); FLEET_PARITY_REQUIRED and ADMISSION_PREFLIGHT_REQUIRED before closing rollout\n' "$shard" "$revision"; exit 0
 fi
 set_version "$revision"
 switch_release "$release"
@@ -112,3 +112,4 @@ fi
 bash "$script_directory/install-nonce-retention.sh" "$maintenance_revision" || fail 'NONCE_MAINTENANCE_INSTALL_FAILED'
 printf 'DEPLOY_HEALTHY shard=%s sha=%s ip=%s\n' "$shard" "$revision" "$ipv4"
 printf 'FLEET_PARITY_REQUIRED: run fleet-parity.mjs --verify from reviewed main before closing this rollout.\n'
+printf 'ADMISSION_PREFLIGHT_REQUIRED: complete all shards, then run tools/operations/certify-executor-admission.mjs --record --ssh-key EXISTING_KEY on the authorized control plane; runtime health alone does not certify new admissions.\n'

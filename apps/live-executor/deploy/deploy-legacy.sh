@@ -88,7 +88,7 @@ runtime_preflight "$repo" || fail 'CURRENT_SERVICE_IMPORT_FAILED'
 if [[ $previous == "$revision" && $old_version == "$revision" ]] \
   && systemctl is-active --quiet coinops-live-executor && health_matches "$revision"; then
   bash "$script_directory/install-nonce-retention.sh" "$maintenance_revision" || fail 'NONCE_MAINTENANCE_INSTALL_FAILED'
-  printf 'ALREADY_DEPLOYED shard=executor-01 sha=%s (no restart); FLEET_PARITY_REQUIRED before closing rollout\n' "$revision"; exit 0
+  printf 'ALREADY_DEPLOYED shard=executor-01 sha=%s (no restart); FLEET_PARITY_REQUIRED and ADMISSION_PREFLIGHT_REQUIRED before closing rollout\n' "$revision"; exit 0
 fi
 (umask 022; git -C "$repo" merge --ff-only "$revision") || fail 'FAST_FORWARD_FAILED'
 public_code_permissions || rollback
@@ -99,3 +99,4 @@ health_matches "$revision" || rollback
 bash "$script_directory/install-nonce-retention.sh" "$maintenance_revision" || fail 'NONCE_MAINTENANCE_INSTALL_FAILED'
 printf 'DEPLOY_HEALTHY shard=executor-01 sha=%s ip=%s\n' "$revision" "$ipv4"
 printf 'FLEET_PARITY_REQUIRED: run fleet-parity.mjs --verify from reviewed main before closing this rollout.\n'
+printf 'ADMISSION_PREFLIGHT_REQUIRED: complete all shards, then run tools/operations/certify-executor-admission.mjs --record --ssh-key EXISTING_KEY on the authorized control plane; runtime health alone does not certify new admissions.\n'

@@ -313,6 +313,15 @@ no ambiente de destino antes de operação remota.
 - O modelo de decisão fica em `apps/web/lib/coinops-capacity/capacity-manager.ts`. O gate de admissão somente é considerado ativo após migration, coleta contínua, publicação do executor e web, e smoke comprovados. Motores existentes não dependem do Capacity Manager para operar; indisponibilidade dele bloqueia apenas novas ativações.
 - Admissão canônica: `coinops.executor_capacity_policy()` e `preview_executor_admission` são a única fórmula usada pelo preview, ASSIGN e reserva serializada. `capacity-manager.ts` classifica saúde/pressão; regressão SQL exige paridade dos thresholds. Perfil comum: 6000/min, projeção <=65%, reserva única de 35%, incremento conservador de 900 (não chamar de p95 medido). Política v3: média dos máximos por minuto em 15 min, pelo menos 15 amostras; pico histórico somente OBSERVE, que pode coexistir com SIM. Histerese persistida pelo coletor por shard/ambiente/+N: reabrir após 10 min contínuos com projeção <=60%; bloquear quando média projetada >65%, atual >=75% ou atual projetado >=90%, preservando gates de freshness/recursos/Watchdog. GET/reload nunca avança o relógio. Não há cota de sete motores. Ver `docs/COINOPS_ADMISSION_HYSTERESIS_20260930.md`.
 - Todo novo shard herda defaults da política, Node/release do `fleet-release.json`, e permanece sem admissão até `capacity-preflight.mjs --record` no control plane autorizado. A certificação exige FLEET_PARITY_PASS de todos os habilitados; SQL revalida política, runtime da telemetria, IP, registry e Watchdog por shard. Falha só bloqueia novas admissões; não pausa motores. Reexecutar após mudança de runtime/política/IP e antes de onboarding. Ver `docs/COINOPS_CAPACITY_AUDIT_20260929.md`.
+- Fechamento de rollout (27/10/2026): `DEPLOY_HEALTHY`/`FLEET_PARITY_PASS` não
+  concluem a publicação se a certificação de admissão ainda aponta a outra release.
+  Após atualizar sequencialmente todos os shards habilitados, usar o preflight
+  oficial e conferir `plus_one.ready.ready` em cada um. A CLI autenticada existente
+  é suportada por `node tools/operations/certify-executor-admission.mjs --record
+  --ssh-key CAMINHO_DA_CHAVE_EXISTENTE`, sem exportar secrets ou tocar motores.
+  O comando padrão/`--verify` é somente leitura. Nunca atualizar atestação por
+  UPDATE manual ou copiar perfil 50/100 entre releases; não alterar timers nem
+  forçar CAPACITY_OK. Ver `docs/COINOPS_CAPACITY_READINESS_20261027.md`.
 
 ### Contrato multi-shard e onboarding
 

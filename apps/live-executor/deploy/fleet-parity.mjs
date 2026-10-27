@@ -287,7 +287,8 @@ export function sshEvidence(shard, expected, { keyPath, sshUser = "root", sshBin
 export async function verifyFleet({ manifest = readManifest(), repo = DEFAULT_REPO,
   env = process.env, keyPath = env.COINOPS_FLEET_SSH_KEY, sshUser = env.COINOPS_FLEET_SSH_USER ?? "root",
   fetcher = fetch, probe = sshEvidence, now = Date.now,
-  sourceReader = readGitRuntimeManifest, gitSource = officialGitSource } = {}) {
+  sourceReader = readGitRuntimeManifest, gitSource = officialGitSource,
+  registryReader = () => discoverEnabledShards(env, fetcher) } = {}) {
   validateManifest(manifest);
   const git = gitSource(manifest, repo);
   const expected = sourceReader(repo, manifest.target_sha);
@@ -298,11 +299,11 @@ export async function verifyFleet({ manifest = readManifest(), repo = DEFAULT_RE
       && sourceReader(repo, revision).runtime_sha256 !== expected.runtime_sha256)
       fail("FLEET_RUNTIME_CHANGE_REQUIRES_RELEASE");
   }
-  const registry = await discoverEnabledShards(env, fetcher);
+  const registry = await registryReader();
   const evidence = [];
   for (const shard of normalizeRegistry(registry)) evidence.push(await probe(shard, expected, { keyPath, sshUser }));
   // Re-read registry: an enabled shard created during the audit must not be omitted.
-  const finalRegistry = await discoverEnabledShards(env, fetcher);
+  const finalRegistry = await registryReader();
   const result = evaluateFleetParity(manifest, finalRegistry, evidence, now());
   if (JSON.stringify(normalizeRegistry(registry)) !== JSON.stringify(normalizeRegistry(finalRegistry))) {
     result.status = "FLEET_PARITY_NOT_CONFIRMED";

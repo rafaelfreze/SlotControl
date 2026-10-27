@@ -21,18 +21,18 @@ export function certificateForFleet(fleet, manifest, policy) {
     }) };
 }
 export async function capacityPreflight({ record = false, env = process.env,
-  fleetVerifier = verifyFleet, fetcher = fetch } = {}) {
+  fleetVerifier = verifyFleet, fetcher = fetch, rpcProvider } = {}) {
   const url = env.SUPABASE_URL ?? env.NEXT_PUBLIC_SUPABASE_URL;
-  if (url !== PROJECT || env.SUPABASE_DATA_SCHEMA !== "coinops" || !env.SUPABASE_SERVICE_ROLE_KEY)
+  if (!rpcProvider && (url !== PROJECT || env.SUPABASE_DATA_SCHEMA !== "coinops" || !env.SUPABASE_SERVICE_ROLE_KEY))
     throw new Error("CAPACITY_SUPABASE_SCOPE_INVALID");
-  const rpc = async (name, body = {}) => {
+  const rpc = rpcProvider ?? (async (name, body = {}) => {
     const response = await fetcher(`${url}/rest/v1/rpc/${name}`, { method: "POST", redirect: "error",
       signal: AbortSignal.timeout(10000), headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY,
         Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, "content-type": "application/json",
         "Content-Profile": "coinops", "Accept-Profile": "coinops" }, body: JSON.stringify(body) });
     if (!response.ok) throw new Error("CAPACITY_PREFLIGHT_RPC_FAILED");
     return response.json();
-  };
+  });
   const manifest = readManifest(), policy = await rpc("executor_capacity_policy");
   const fleet = await fleetVerifier({ manifest, env });
   const certificate = certificateForFleet(fleet, manifest, policy);
@@ -45,7 +45,7 @@ export async function capacityPreflight({ record = false, env = process.env,
     return own.length!==1 || own[0].plus_one?.ready?.ready!==true;
   })) throw new Error("CAPACITY_READINESS_NOT_CONFIRMED");
   return { status: recorded, policy_version: policy.version, target_sha: manifest.target_sha,
-    shards: decisions.map((d) => ({ shard_id: d.shard_id, readiness: d.plus_one.ready,
+    shards: decisions.filter(d => fleet.shards.some(s => s.shard_id === d.shard_id)).map((d) => ({ shard_id: d.shard_id, readiness: d.plus_one.ready,
       admission: d.plus_one.code, reason: d.plus_one.reason })) };
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {

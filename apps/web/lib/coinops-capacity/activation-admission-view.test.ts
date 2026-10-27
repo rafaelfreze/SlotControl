@@ -34,12 +34,16 @@ test("untrusted numeric evidence cannot produce invented countdown", () => {
 
 test("GET reads the canonical decision per engine's own shard without Binance, reservation, or hysteresis mutation", () => {
   const source = readFileSync(new URL("../../app/api/coinops-engine-control/route.ts", import.meta.url), "utf8");
+  const reader = source.slice(source.indexOf("async function readActivationAdmission"), source.indexOf("export async function GET"));
   const get = source.slice(source.indexOf("export async function GET"), source.indexOf("type Intent"));
-  assert.equal((get.match(/rpc\("preview_executor_admission"/g) ?? []).length, 1);
-  assert.doesNotMatch(get, /reserveEngineCapacity|operatorAccountSnapshot|\.update\(|\.insert\(/);
-  assert.match(get, /p_shard_id: engine\.executor_shard_id/);
-  assert.match(get, /p_exclude_engine: engine\.id/);
-  assert.doesNotMatch(get, /p_shard_id: selectedAccount/);
+  assert.equal((reader.match(/rpc\("preview_executor_admission"/g) ?? []).length, 1);
+  assert.equal((reader.match(/rpc\("preview_engine_slot_admission"/g) ?? []).length, 1);
+  assert.match(reader, /slotCount === 25/);
+  assert.match(get, /readActivationAdmission\(service, engine\)/);
+  assert.doesNotMatch(get + reader, /reserveEngineCapacity|operatorAccountSnapshot|\.update\(|\.insert\(/);
+  assert.match(reader, /p_shard_id: engine\.executor_shard_id/);
+  assert.match(reader, /p_exclude_engine: engine\.id/);
+  assert.doesNotMatch(get + reader, /p_shard_id: selectedAccount/);
   const ui = readFileSync(new URL("../../app/automacao/engine-control-center.tsx", import.meta.url), "utf8");
   assert.match(ui, /engine\.environment === "REAL" && !engineAdmission\.allowed/);
   assert.match(ui, /PREPARADO · AGUARDANDO ADMISSÃO/);
