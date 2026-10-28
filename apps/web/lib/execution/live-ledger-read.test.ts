@@ -13,6 +13,43 @@ import * as slotTopology from "./engine-slot-topology.ts";
 
 const physical = () => Array.from({ length: 25 }, (_, i) => ({ slot_number: i + 1 }));
 
+test("SDK525 GET retries once with a fresh complete snapshot; exhaustion keeps typed evidence", async () => {
+  for (const recover of [true, false]) {
+    let requests = 0;
+    const client = createClient("https://offline.invalid", "offline-fixture-not-a-secret", {
+      db: { schema: "coinops" }, auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: async (_url, init) => {
+        assert.equal(init?.method, "GET"); assert.equal(init?.body, undefined);
+        requests++;
+        return requests === 2 && recover
+          ? new Response(JSON.stringify(physical()), { status: 200, headers: { "content-type": "application/json" } })
+          : new Response("<html>PRIVATE_TLS_FAILURE</html>", { status: 525, headers: { "content-type": "text/html" } });
+      } },
+    });
+    const read = () => boundedLedgerRead((deadline, attempt) => observeLedgerRows("slots",
+      client.from("robot_v1_live_slots").select("slot_number").abortSignal(deadline), deadline, attempt));
+    if (recover) assert.deepEqual(await read(), physical());
+    else await assert.rejects(read(), error => {
+      assert.ok(error instanceof readErrors.LiveReadUnavailable);
+      assert.equal(error.httpStatus, 525); assert.equal(error.attempts, 2);
+      assert.equal(error.path, "ledger/slots");
+      assert.ok(!JSON.stringify(readErrors.liveFailureEvidence(error, "RECONCILE_ORDERS", "LIVE_CRON")).includes("PRIVATE"));
+      return true;
+    });
+    assert.equal(requests, 2);
+  }
+});
+
+test("525 never overrides a DB permission/schema code;526 certificate failures remain hard", async () => {
+  for (const [status, code] of [[525, "42501"], [525, "42P01"], [525, "PGRST301"], [525, "PGRST003"], [526, ""]] as const) {
+    let calls = 0;
+    await assert.rejects(boundedLedgerRead((deadline, attempt) => {
+      calls++; return observeLedgerRows("slots", Promise.resolve({ data: null, error: { code }, status }), deadline, attempt);
+    }), readErrors.LiveLedgerReadFailed);
+    assert.equal(calls, 1);
+  }
+});
+
 test("503/connection/timeout reads retry a complete snapshot once; provider evidence is sanitized", async () => {
   for (const error of [{ code: "PGRST003", status: 504 }, { code: "08006", status: 503 },
     { code: "57014", status: 500 }, { code: "", status: 503 }, { code: "", status: 0 }]) {

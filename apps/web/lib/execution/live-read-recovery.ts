@@ -1,14 +1,14 @@
 export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown; metadata_path?: unknown;
   audit_phase?: unknown; audit_reason?: unknown; audit_event_type?: unknown; audit_attempts?: unknown;
   audit_http_status?: unknown; audit_provider_code?: unknown; audit_event_key?: unknown;
-  http_status?: unknown; provider_code?: unknown };
+  http_status?: unknown; provider_code?: unknown; read_attempts?: unknown };
 
 // Every captured audit diagnostic is bound into the final incident CAS too.
 // A changed provider/phase must not inherit a legacy or transient approval.
 export const READ_RECOVERY_DIAGNOSTIC_KEYS = ["stage", "root_code", "read_path", "metadata_path",
   "audit_phase", "audit_reason", "audit_event_type", "audit_attempts", "audit_http_status",
-  "audit_provider_code", "audit_event_key"] as const;
-const AUDIT_DETAIL_KEYS = READ_RECOVERY_DIAGNOSTIC_KEYS.slice(4);
+  "audit_provider_code", "audit_event_key", "http_status", "provider_code", "read_attempts"] as const;
+const AUDIT_DETAIL_KEYS = READ_RECOVERY_DIAGNOSTIC_KEYS.filter(key => key.startsWith("audit_"));
 const AUDIT_CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
   "08000", "08003", "08006", "53300", "57014"]);
 
@@ -170,15 +170,29 @@ export function isPermissionStateReadRecovery(code: string | null, details?: Rea
       || code === "COINOPS_LIVE_CREDIT_SLOTS_FAILED" && details.stage === "CREDIT_SLOTS");
 }
 
+/** Compatibility for the exact captured pre-fix525 GET incident. Not a general
+ * READ_FAILED exception: permission/schema/provider errors stay closed. Resume
+ * must additionally prove complete financial state and twice-settled dispatches
+ * under the existing lease, with all three diagnostics bound into its CAS. */
+export function isLedgerTlsReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return code === "COINOPS_LIVE_LEDGER_READ_FAILED" && details?.root_code === code
+    && details.http_status === 525 && (details.provider_code === undefined || details.provider_code === null)
+    && details.read_path === "ledger/slots"
+    && ["LOAD_LEDGER", "RECONCILE_ORDERS"].includes(String(details.stage))
+    && Number.isInteger(details.read_attempts) && Number(details.read_attempts) >= 1
+    && Number(details.read_attempts) <= 2;
+}
+
 /** Only a previously blocked ACTIVE run that has just passed its full
  * reconciliation may use the existing guarded resume path automatically. */
 export function mayRecoverReadOutage(status: string, reconciledStatus: string,
   alertCode: string | null, details?: ReadRecoveryDetails | null): boolean {
   return status === "ACTIVE" && reconciledStatus === "OK"
-    && !NON_RECOVERABLE_READ_ROOTS.has(String(details?.root_code))
+    && (!NON_RECOVERABLE_READ_ROOTS.has(String(details?.root_code)) || isLedgerTlsReadRecovery(alertCode, details))
     && (details?.root_code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || isAuditEventRecovery(alertCode, details))
     && (details?.read_path !== "ledger/reset_recovery_milestone" || isResetMilestoneReadRecovery(alertCode, details))
-    && (isPermissionStateReadRecovery(alertCode, details)
+    && (isLedgerTlsReadRecovery(alertCode, details)
+      || isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)
       || isExposureStateReadRecovery(alertCode, details)
       || isAccountBudgetAlertRecovery(alertCode, details)

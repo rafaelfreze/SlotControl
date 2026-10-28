@@ -5,7 +5,7 @@ import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -89,7 +89,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   let resetMilestoneReads = 0;
   let lineageReads = 0;
   const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery
-    || options.auditEventRecovery;
+    || options.auditEventRecovery || options.alerts?.some(group => group.some(alert => isLedgerTlsReadRecovery(alert.code, alert.details)));
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
     let mutation: Record<string, unknown> | null = null;
@@ -270,7 +270,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
       operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-      isResetMilestoneReadRecovery,
+      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery,
       assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
@@ -318,6 +318,29 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   return { run: (source = "VERIFIED_READ_RECOVERY") => resume("run-a", "user", "SOL", source), calls, writes,
     orders, slots };
 }
+
+test("legacy525 recovery proves settled decisions twice, complete protection and exact diagnostics without order writes", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_LEDGER_READ_FAILED", details: {
+    root_code: "COINOPS_LIVE_LEDGER_READ_FAILED", stage: "RECONCILE_ORDERS", read_path: "ledger/slots", http_status: 525, read_attempts: 1 } };
+  const safe = fixture({ alerts: [[incident]] });
+  assert.equal((await safe.run()).status, "RESUMED");
+  const clear = safe.writes.find(w => w.table === "robot_v1_live_alerts" && w.data.resolved_at)!;
+  for (const key of ["http_status", "provider_code", "read_attempts"])
+    assert.equal(clear.filters[`details->>${key}`], incident.details[key as keyof typeof incident.details] ?? null);
+  assert.ok(safe.writes.every(w => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(w.table)));
+  for (const options of [{ missingTp: true }, { missingSlot: true }, { duplicateSlot: true }, { ledgerDenied: true },
+    { operatorPendingDispatch: true }, { operatorUnsettledDecision: true }, { operatorProofDenied: true },
+    { operatorLatePendingDispatch: true }, { operatorLateUnsettledDecision: true }, { casLost: true }]) {
+    const blocked = fixture({ alerts: [[incident]], ...options });
+    await assert.rejects(blocked.run());
+    if (!options.casLost) assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false);
+  }
+  for (const patch of [{ http_status: 526 }, { provider_code: "42501" }, { read_attempts: 2 }]) {
+    const blocked = fixture({ alerts: [[incident], [{ ...incident, details: { ...incident.details, ...patch } }]] });
+    await assert.rejects(blocked.run(), /INCIDENT_CHANGED/);
+    assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false);
+  }
+});
 
 test("verified recovery claims lease, proves fresh health/protection and conditionally resolves only its incident", async () => {
   const scenario = fixture();

@@ -4,8 +4,29 @@ import test from "node:test";
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
   isRegistryStateReadRecovery, isExposureStateReadRecovery, isAccountBudgetAlertRecovery,
   isCapitalAuditReadRecovery, operatorRecoveryAlert, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery,
   assertAuditEventRecoveryEvidence, type AuditRecoveryEvent } from "./live-read-recovery.ts";
+
+test("legacy525 eligibility is exact; permission/schema/unknown reads never inherit it and CAS binds evidence", () => {
+  const code = "COINOPS_LIVE_LEDGER_READ_FAILED";
+  const details = { root_code: code, stage: "RECONCILE_ORDERS", read_path: "ledger/slots", http_status: 525, read_attempts: 1 };
+  const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code, first_seen_at: "2026-10-28T20:35:15Z", last_seen_at: "2026-10-28T20:35:15Z", details };
+  assert.equal(isLedgerTlsReadRecovery(code, details), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, details), true);
+  assert.deepEqual(verifiedReadRecoveryAlert("ACTIVE", "run-a", [alert]), alert);
+  for (const patch of [{ http_status: 403 }, { http_status: 400 }, { http_status: 526 }, { http_status: undefined },
+    { provider_code: "42501" }, { provider_code: "PGRST003" }, { provider_code: "" },
+    { read_attempts: 0 }, { read_attempts: 3 }, { read_attempts: undefined },
+    { read_path: "ledger/orders" }, { read_path: "order/create" }, { stage: "ARM_ENTRY" }, { root_code: "OTHER" }]) {
+    const changed = { ...details, ...patch };
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, changed), false);
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details: changed }]), /INCIDENT_CHANGED/);
+  }
+  assert.equal(mayRecoverReadOutage("PAUSED", "OK", code, details), false);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, details), false);
+  for (const patch of [{ http_status: 526 }, { provider_code: "42501" }, { read_attempts: 2 }])
+    assert.throws(() => verifiedReadRecoveryAlert("ACTIVE", "run-a", [{ ...alert, details: { ...details, ...patch } }], alert), /INCIDENT_CHANGED/);
+});
 
 test("recovers only a successfully reconciled active read outage", () => {
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_RECONCILE_ORDERS_FAILED"), true);

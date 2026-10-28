@@ -35,7 +35,10 @@ export async function observeLedgerRows<T>(resource: Resource, query: PromiseLik
     const connection = CONNECTION_CODES.has(code) && ([503, 504].includes(status ?? -1)
       || code === "57014" && status === 500);
     if (connection || !code
-      && (deadline.aborted || network || [502, 503, 504].includes(status ?? -1)))
+      // Cloudflare525 is an origin TLS handshake failure, not a DB/schema
+      // verdict. This GET-only boundary still enforces the same two attempts
+      // and persistent-outage checkpoint. Never ignore a provider error code.
+      && (deadline.aborted || network || [502, 503, 504, 525].includes(status ?? -1)))
       throw new LiveReadUnavailable("COINOPS_LIVE_LEDGER_READ_UNAVAILABLE", path, attempt, status, code);
     throw new LiveLedgerReadFailed(path, attempt, status, code);
   }

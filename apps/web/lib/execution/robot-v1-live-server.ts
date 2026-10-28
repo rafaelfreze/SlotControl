@@ -12,6 +12,7 @@ import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
   isResetMilestoneReadRecovery,
+  isLedgerTlsReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS,
   type ReadRecoveryAlert, type AuditRecoveryEvent } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
@@ -2337,6 +2338,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       && isAccountBudgetAlertRecovery(recoveryIncident.code, recoveryIncident.details));
     const capitalAuditRecovery = Boolean(recoveryIncident
       && isCapitalAuditReadRecovery(recoveryIncident.code, recoveryIncident.details));
+    const ledgerTlsReadRecovery = Boolean(recoveryIncident
+      && isLedgerTlsReadRecovery(recoveryIncident.code, recoveryIncident.details));
     const auditEventRecovery = Boolean(recoveryIncident && (isAuditEventRecovery(recoveryIncident.code, recoveryIncident.details)
       || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));
     const resetAuditReplayRecovery = Boolean(recoveryIncident
@@ -2362,7 +2365,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery)
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
@@ -2401,7 +2404,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery)
+    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);
