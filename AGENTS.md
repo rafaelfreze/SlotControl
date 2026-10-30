@@ -428,3 +428,14 @@ Relate de forma proporcional:
 - limitações e pendências reais.
 
 Nunca declare teste, migration, operação financeira, webhook, READY, smoke ou produção sem prova.
+
+## Padrão global de sites sem fricção e mensuração (30/10/2026)
+
+Todos os sites e landing pages atuais e futuros seguem o padrão OnPlay: navegação rápida, sem bloqueios e sem banners invasivos de cookies. Remover somente avisos desnecessários; tecnologias opcionais que dependem de consentimento mantêm escolha explícita, discreta, acessível e não bloqueante de aceitar, recusar e configurar/alterar preferências. Silêncio, navegação ou clique WhatsApp nunca significam aceite. Não contornar recusa por Pixel, CAPI, fingerprinting ou identificadores ocultos.
+
+Priorizar contadores operacionais próprios, agregados e minimizados de páginas e cliques WhatsApp/telefone quando a finalidade e base legal permitirem. Não armazenar nomes, números de visitantes, mensagens, IP completo, cookies de visitante, IDs persistentes ou reconstruir sessões de quem recusou. Dedupe técnica usa apenas recibo efêmero de evento; falha de analytics nunca bloqueia o contato. Registrar produto/empresa, seção/CTA, período e origem apenas quando legitimamente conhecida. Preservar LGPD, ANPD e políticas Meta/Google.
+
+Componentes-base, templates e páginas legadas herdam a regra. Master e cliente usam a mesma fonte agregada por empresa/período/filtro, com cobertura explícita e indisponível diferente de zero. Não somar cliques operacionais e autorizados nem tratar clique como conversa, lead qualificado ou venda. Eventos publicitários, conversas recebidas e resultados comerciais permanecem separados. Preservar isolamento, consentimento, RLS, Auth, integrações e campanhas. Validar aceite/recusa/sem escolha, mudança posterior, mobile, falha de rede, repetição, navegação e isolamento usando fixtures sem conversões comerciais falsas.
+
+### Continuidade — referência Hostinger (30/10/2026)
+Preservar os modos de consentimento válidos por site, inclusive Google Consent Mode avançado já existente: defaults negados, ads_data_redaction, sem cookies publicitários ou IDs de clique antes do aceite. Meta e demais tecnologias opcionais dependem da autorização aplicável. Não substituir silenciosamente o modo avançado por bloqueio total e não copiar carregamento presumido do Hostinger. A coleta operacional própria continua separada, agregada, com recibo efêmero/deduplicação e retry finito, sem identificar visitantes e sem bloquear WhatsApp. Labels, metas, campanhas e orçamentos permanecem intocados.

@@ -1,0 +1,21 @@
+import { type ReactNode } from "react";
+import { type PaidData, type PremiumData, type Product } from "./model.js";
+export type DashboardProps = {
+    data: PremiumData;
+    product: Product;
+    companyKey: string;
+    basePath: string;
+    previous?: PremiumData;
+    paid?: PaidData;
+    title?: string;
+    eyebrow?: string;
+    query?: Record<string, string>;
+    details?: ReactNode;
+    filters?: ReactNode;
+    master?: boolean;
+    sources?: ReactNode;
+    canExport?: boolean;
+    reportEditor?: ReactNode;
+    backHref?: string;
+};
+export declare function MarketingDashboard({ data, product, companyKey, basePath, previous, paid, title, eyebrow, query, details, filters, master, sources, canExport, reportEditor, backHref }: DashboardProps): import("react").JSX.Element;

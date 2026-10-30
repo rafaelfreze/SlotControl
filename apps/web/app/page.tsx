@@ -1,3 +1,4 @@
+import {PublicWebsiteCounter} from "@/components/marketing/website-counter";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
@@ -26,7 +27,7 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="page-shell landing-shell">
+    <main className="page-shell landing-shell"><PublicWebsiteCounter/>
       <nav className="top-nav" aria-label="Principal">
         <Link className="brand-link" href="/">
           <CoinOpsBrand subtitle="Operacoes inteligentes em cripto" />
