@@ -1345,7 +1345,10 @@ async function readCapitalRefreshEvents(service: Service, run: Run) {
           .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
           .eq("trading_engine_id", run.trading_engine_id).eq("quote_asset", run.quote_asset).eq("run_id", run.id)
           .in("event_type", ["NEXT_BUY_CAPITAL_REFRESH_PLANNED", "NEXT_BUY_CAPITAL_REFRESH_CONFIRMED"])
-          .order("observed_at").order("id").range(start, end).abortSignal(deadline), deadline, attempt),
+          // Match the run/type index even with a cached generic PostgREST
+          // plan. Confirmation builds its complete confirmed-key set before
+          // processing PLANNED rows; cross-type chronology is not authority.
+          .order("event_type").order("observed_at").order("id").range(start, end).abortSignal(deadline), deadline, attempt),
     }), "COINOPS_LIVE_CAPITAL_AUDIT_INCOMPLETE");
     if (!run.engine) throw new Error("COINOPS_LIVE_ENGINE_UNRESOLVED");
     for (const row of rows) {

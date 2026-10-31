@@ -3,5 +3,5 @@
 import "server-only";
 
 export const WORKLOAD_CODE_CONTRACT = "COINOPS_FINANCIAL_WORKLOAD_V1" as const;
-export const WORKLOAD_CODE_SHA256 = "12528c49ff53fe3d241be1d9ca2016a126a5d3342956b523b6d9655b2b45f6b3";
+export const WORKLOAD_CODE_SHA256 = "ac467a87af20660adeee8cafbbe12a670fd4beb5531e3ab10534068d14fc29cb";
 export const WORKLOAD_CODE_FILE_COUNT = 110;

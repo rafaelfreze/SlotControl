@@ -47,7 +47,7 @@ function fixture(options: { count?: number; engine?: string; failRead?: number; 
       assert.equal(filters.run_id, run.id);
       if (filters.event_key) return { data: [], error: null, status: 200 };
       assert.deepEqual(filters.event_type, eventTypes);
-      assert.deepEqual(order, ["observed_at", "id"]);
+      assert.deepEqual(order, ["event_type", "observed_at", "id"]);
       assert.ok(signal instanceof AbortSignal);
       assert.equal(signal.aborted, false);
       reads.push({ range, signal, filters, order });
@@ -141,6 +141,20 @@ test("capital audit confirmation writes once only after every GET page converged
   assert.equal(scenario.writes[0].event_key, "CAPITAL_REFRESH:old:new:2:CONFIRMED");
   assert.equal(scenario.writes[0].run_id, scenario.run.id);
   assert.deepEqual(scenario.orders, ordersBefore);
+});
+
+test("capital audit type-first pagination preserves confirmation idempotency in either cross-type order", async () => {
+  for (const confirmedFirst of [true, false]) {
+    const scenario = fixture({ planned: true });
+    const planned = scenario.rows[0];
+    const confirmed = { ...planned, id: "confirmed-event", event_type: eventTypes[1] };
+    scenario.rows.splice(0, 1, ...(confirmedFirst ? [confirmed, planned] : [planned, confirmed]));
+    const before = structuredClone(scenario.orders);
+    await scenario.confirm();
+    assert.equal(scenario.reads.length, 1);
+    assert.deepEqual(scenario.writes, []);
+    assert.deepEqual(scenario.orders, before);
+  }
 });
 
 test("capital audit metadata alone retries the captured immutable row, never the financial step or paged audit", async () => {
