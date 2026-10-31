@@ -82,7 +82,10 @@ export function assertAuditEventRecoveryEvidence(incident: ReadRecoveryAlert, ru
   if (!(isAuditEventRecovery(incident.code, incident.details) || isResetMilestoneReadRecovery(incident.code, incident.details))
     || incident.alert_key !== `LIVE_RUN:${run.id}:CRITICAL` || !event
     || ![now, first, last, reconciled, observed].every(Number.isFinite)
-    || first - last > 1_000 || Math.max(first, last) >= observed
+    // first_seen_at is DB ingestion time; last_seen_at is caller observation
+    // time. Request/commit latency can invert them by more than one second.
+    // Require newer proof than BOTH, never normalize/rewrite either timestamp.
+    || Math.max(first, last) >= observed
     || observed > reconciled || reconciled > now || now - observed > 150_000
     || reconciled - observed > 120_000 || event.run_id !== run.id
     || event.event_type !== "RECONCILED" || event.slot_number !== null

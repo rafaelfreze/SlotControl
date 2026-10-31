@@ -542,6 +542,25 @@ test("audit recovery requires fresh later exact-engine RECONCILED proof, never h
   for (const last_reconciled_at of [null, "invalid", "2026-10-21T13:40:19Z", "2026-10-21T13:40:31Z"])
     assert.throws(() => assertAuditEventRecoveryEvidence(incident, { ...run, last_reconciled_at }, event, now), /AUDIT_RECOVERY_UNPROVEN/);
   assert.throws(() => assertAuditEventRecoveryEvidence(incident, run, event, now + 151_000), /AUDIT_RECOVERY_UNPROVEN/);
-  for (const first_seen_at of [undefined, "invalid", "2026-10-21T13:28:02Z"])
+  for (const first_seen_at of [undefined, "invalid", "2026-10-21T13:40:21Z"])
     assert.throws(() => assertAuditEventRecoveryEvidence({ ...incident, first_seen_at }, run, event, now), /AUDIT_RECOVERY_UNPROVEN/);
+});
+
+test("audit recovery uses the later DB-ingestion/observation time without a permanent skew block", () => {
+  const now = Date.parse("2026-10-31T11:39:40Z");
+  const incident = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: auditCode,
+    first_seen_at: "2026-10-31T11:35:47.551021Z", last_seen_at: "2026-10-31T11:35:44.905Z", details: auditDetails };
+  const run = { id: "run-a", product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
+    exchange_account_id: "account-a", trading_engine_id: "engine-a", quote_asset: "BRL",
+    last_reconciled_at: "2026-10-31T11:39:36.919Z", strategy_version: "fixture-v1" };
+  const event: AuditRecoveryEvent = { ...run, run_id: run.id, event_key: "RECONCILED:2026-10-31T11:39",
+    event_type: "RECONCILED", slot_number: null, observed_at: "2026-10-31T11:39:35.820076Z",
+    details: { next: "KILL_SWITCH", strategy_version: "fixture-v1" } };
+  assert.equal(assertAuditEventRecoveryEvidence(incident, run, event, now), event);
+  assert.equal(assertAuditEventRecoveryEvidence({ ...incident, first_seen_at: incident.last_seen_at,
+    last_seen_at: incident.first_seen_at }, run, event, now), event);
+  for (const times of [
+    { first_seen_at: event.observed_at }, { last_seen_at: event.observed_at },
+    { first_seen_at: "2026-10-31T11:40:00Z" }, { last_seen_at: "2026-10-31T11:40:00Z" },
+  ]) assert.throws(() => assertAuditEventRecoveryEvidence({ ...incident, ...times }, run, event, now), /AUDIT_RECOVERY_UNPROVEN/);
 });

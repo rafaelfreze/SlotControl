@@ -855,6 +855,33 @@ test("final audit legacy recovery proves a new current scoped checkpoint and set
     .every(write => write.filters.id === "engine-a" && write.filters.exchange_account_id === "account-a"));
 });
 
+test("audit recovery with delayed DB ingestion keeps financial proofs and exact timestamp CAS", async () => {
+  const code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
+  const first = Date.now() - 60_000;
+  const incident = { ...known, code, first_seen_at: new Date(first).toISOString(),
+    last_seen_at: new Date(first - 2646).toISOString(), details: { stage: "AUDIT_EVENT", root_code: code,
+      audit_phase: "READBACK", audit_reason: "READBACK_UNAVAILABLE", audit_event_type: "RECONCILED",
+      audit_event_key: "RECONCILED:2026-10-31T11:35", audit_attempts: 1, audit_http_status: null, audit_provider_code: null } };
+  const safe = fixture({ alerts: [[incident]], auditEventRecovery: true, caixetaLayout: true });
+  const orders = structuredClone(safe.orders);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.deepEqual(safe.orders, orders);
+  assert.equal(safe.calls.filter(c => c === "audit-checkpoint-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "operator-dispatch-read").length, 2);
+  const clear = safe.writes.find(w => w.table === "robot_v1_live_alerts" && w.data.resolved_at)!;
+  assert.equal(clear.filters.first_seen_at, incident.first_seen_at);
+  assert.equal(clear.filters.last_seen_at, incident.last_seen_at);
+  for (const extra of [{ missingTp: true }, { operatorPendingDispatch: true }]) {
+    const blocked = fixture({ alerts: [[incident]], auditEventRecovery: true, caixetaLayout: true, ...extra });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false);
+  }
+  const changed = fixture({ alerts: [[incident], [{ ...incident, first_seen_at: new Date(first + 1).toISOString() }]],
+    auditEventRecovery: true, caixetaLayout: true });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(w => w.data.kill_switch === false), false);
+});
+
 test("audit recovery never opens entries on stale/foreign/missing proof, hard reads, unsettled finance or changed incident", async () => {
   const code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
   const incident = { ...known, code, first_seen_at: new Date(Date.now() - 60_000).toISOString(),

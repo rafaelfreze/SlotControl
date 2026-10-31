@@ -13,7 +13,7 @@ disponível; os endpoints financeiros assinados do Executor02 estavam saudáveis
 
 O SELECT completo e já paginado usava o índice cronológico de escopo, mas
 `event_type` era filtro residual. Em Samya/BTCUSDT o plano real descartou 38.286
-eventos comuns para retornar zero eventos de refresh: 18.471,883ms, 35.043 blocos
+eventos comuns para retornar zero eventos de refresh: 18.471,883ms, 36.034 blocos
 de índice/heap no nó de scan. O deadline de observação de 5s era insuficiente
 porque faltava acesso seletivo, não porque devesse ser aumentado.
 
