@@ -22,7 +22,7 @@ import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey, ENTRY_PRIORITY_POLICY } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
   LIVE_ACTIVE_ORDER_STATUSES, LIVE_TERMINAL_ORDER_STATUSES } from "./robot-v1-live-cycle";
-import { STRATEGY_VERSION, allocateMonthlyEntryLevels, planStrategyInitialEntry, planStrategyNextEntry,
+import { STRATEGY_VERSION, calculateStrategyTakeProfit, allocateMonthlyEntryLevels, planStrategyInitialEntry, planStrategyNextEntry,
   planStrategyPostAthNextEntry, planStrategyTakeProfit, planStrategyClosedSlot,
   type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision,
@@ -38,7 +38,8 @@ import { isProvablyUnsentTakeProfit } from "./live-unsent-tp-recovery";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
-import { strategyRatesForOrder } from "./live-strategy-snapshot";
+import { gridContextForPrice, strategyRatesForOrder, type GridPriceContext } from "./live-strategy-snapshot";
+import { proveMonthlyGridRepair, proveRetainedGridContext, type MonthlyGridRepair } from "./monthly-grid-recovery";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
   type StrategyApplyPolicy, type StrategyParameterKey } from "./strategy-parameter-registry";
@@ -435,8 +436,10 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
         && source.run_id === run.id && source.engine_id === run.trading_engine_id && source.slot_id === slot.id
         && Number(source.price) === price && ["GRID","REENTRY"].includes(source.source_origin)
         ? source.source_origin : slot.entry_origin;
+      const grid = origin === "GRID" ? gridContextForPrice(order.config_snapshot, run, price,
+        configuredEngineSlotCount(run.engine ?? run)) : undefined;
       assertStrategyBuyPrice({ price, referencePrice: amount(slot.entry_reference_price),
-        anchorPrice: rates.anchor, spacing: rates.spacing, tick, entryOrigin: origin,
+        anchorPrice: grid?.anchor ?? rates.anchor, spacing: grid?.spacing ?? rates.spacing, tick, entryOrigin: origin,
         slotCount: configuredEngineSlotCount(run.engine ?? run) });
     } else {
       const buys = ledger.orders.filter((item) => item.slot_id === slot.id
@@ -769,6 +772,148 @@ async function retireNeverSubmittedEntry(service: Service, run: Run, order: Orde
     "CONFIG_PREPARED_BUY_RETIRED", order.slot_number, { client_order_id: order.client_order_id });
 }
 
+/** Repair only the proven pre-dispatch monthly provenance defect. Never edits
+ * an immutable order snapshot, cancels a resident, or opens a BUY gate. The
+ * persisted STARTED proof makes each interruption resumable under a new lease. */
+async function repairMonthlyGridProvenance(service: Service, run: Run, ledger: Ledger, state: LiveExecutorState) {
+  if (!entryBlocked(run) || run.last_error !== "COINOPS_STRATEGY_PRICE_INVARIANT_FAILED") return false;
+  const marker = run.config_snapshot.monthly_grid_recovery as { phase: string; proof: MonthlyGridRepair } | undefined;
+  if (marker?.phase === "COMPLETED") return false;
+  const incident = await readOperatorRecoveryIncident(service, run);
+  if (!incident || incident.code !== "COINOPS_STRATEGY_PRICE_INVARIANT_FAILED") return false;
+  let proof: MonthlyGridRepair;
+  try { proof = proveMonthlyGridRepair(run, ledger.orders, ledger.slots, incident, state.filters.priceTick,
+    configuredEngineSlotCount(run.engine!), marker?.proof); }
+  catch { return false; } // An unproved price failure retains its original gate/cause.
+  await assertNoPendingStrategyUpdate(service, run);
+  const health = await loadLiveEngineExecutorStatus(run);
+  if (!["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
+    throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_EXECUTOR_UNHEALTHY");
+  const order = ledger.orders.find(o => o.id === proof.order_id)!;
+  const prior = ledger.orders.find(o => o.id === proof.predecessor_order_id)!;
+  if (order.client_order_id !== liveClientOrderId(run.id, run.asset, order.slot_number,
+    order.operation_sequence, "BUY", order.revision, run.engine!))
+    throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_OWNERSHIP_UNPROVEN");
+  const transition = await service.from("robot_v1_live_events").select("observed_at,details")
+    .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id).eq("event_type", "ATH_TRANSITION")
+    .eq("event_key", `ATH_TRANSITION:${run.ath_transition_key ?? "NORMAL"}:${proof.period}`).single();
+  if (transition.error || transition.data?.details?.regime !== "NORMAL"
+    || transition.data.details.config_version !== order.config_version
+    || Date.parse(transition.data.observed_at) > Date.parse(order.created_at)
+    || Date.parse(order.created_at) - Date.parse(transition.data.observed_at) > 120_000)
+    throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_TRANSITION_UNPROVEN");
+  const absent = await readLiveExecutorOrder(run, order.client_order_id, null);
+  const canceled = await readLiveExecutorOrder(run, prior.client_order_id, prior.exchange_order_id);
+  if (absent.order || !canceled.order || canceled.order.orderId !== prior.exchange_order_id
+    || canceled.order.status !== "CANCELED" || canceled.order.executedQuantity !== 0
+    || canceled.order.cumulativeQuoteQuantity !== 0)
+    throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_EXCHANGE_UNPROVEN");
+  const protectedLedger = { ...ledger, orders: ledger.orders.filter(o => o.id !== order.id) };
+  if (protectedLedger.orders.some(o => !o.client_order_id.startsWith(liveEngineOrderPrefix(run.engine!))
+    || o.status === "PREPARED" || LIVE_TERMINAL_ORDER_STATUSES.has(o.status) && !o.trades_reconciled))
+    throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_LEDGER_UNSETTLED");
+  assertLiveResidentPrices(run, protectedLedger, state);
+  await assertAllPositionsProtected(run, protectedLedger, state);
+  const decision = await service.from("robot_v1_strategy_decisions")
+    .select("decision_id,result,dispatched_at,exchange_ack_at,completed_at")
+    .eq("trading_engine_id", run.trading_engine_id).eq("operator_id", run.operator_id)
+    .eq("exchange_account_id", run.exchange_account_id).eq("cycle_id", run.id)
+    .eq("environment", "REAL").eq("decision_id", order.strategy_decision_id ?? "").single();
+  const reservation = await service.from("account_order_budget_reservations").select("client_order_id")
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).is("acknowledged_at", null).limit(1);
+  if (decision.error || !decision.data || reservation.error || !Array.isArray(reservation.data)
+    || reservation.data.length || decision.data.dispatched_at || decision.data.exchange_ack_at
+    || !(decision.data.result === "PENDING" && !decision.data.completed_at
+      || marker && order.status === "CANCELED" && decision.data.result === "COMPLETED"))
+    throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_DISPATCH_UNPROVEN");
+  const price = amount(order.price);
+  const contexts = { ...(run.config_snapshot.entry_grid_contexts as Record<string, GridPriceContext> | undefined),
+    [String(price)]: { run_id: run.id, engine_id: run.trading_engine_id, price,
+      anchor: proof.corrected_anchor, spacing: strategyRatesForOrder(prior, run).spacing,
+      slot_count: configuredEngineSlotCount(run.engine!) } };
+  const save = async (phase: string) => {
+    await renewLease(service, run);
+    const snapshot = { ...run.config_snapshot, entry_grid_contexts: contexts, monthly_grid_recovery: { phase, proof } };
+    const saved = await service.from("robot_v1_live_runs").update({ config_snapshot: snapshot })
+      .eq("id", run.id).eq("trading_engine_id", run.trading_engine_id).eq("lease_owner", run.lease_owner)
+      .select("config_snapshot").single();
+    if (saved.error || !saved.data) throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_CHECKPOINT_FAILED");
+    run.config_snapshot = saved.data.config_snapshot;
+  };
+  await save("STARTED");
+  await renewLease(service, run);
+  if (order.status === "PREPARED") {
+    const retired = await service.from("robot_v1_live_orders")
+      .update({ status: "CANCELED", trades_reconciled: true, reserved_notional_brl: 0 })
+      .eq("id", order.id).eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+      .eq("status", "PREPARED").is("submission_guarded_at", null).is("exchange_order_id", null)
+      .eq("executed_quantity", 0).eq("cumulative_quote", 0).select("id").single();
+    if (retired.error || !retired.data) throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_ORDER_CHANGED");
+  }
+  await completeStrategyDecision(service, run, "REAL", order.strategy_decision_id!,
+    { status: "RETIRED_NEVER_SUBMITTED", recovery: "MONTHLY_GRID_PROVENANCE_V1", order_id: order.id }, false);
+  const slot = ledger.slots.find(s => s.id === order.slot_id)!;
+  await updateSlot(service, run, slot, { entry_state: "PLANNED" });
+  await assertSettledOperatorRecovery(service, run, await runRows(service, run));
+  await readOperatorRecoveryIncident(service, run, incident);
+  await event(service, run, `MONTHLY_GRID_REPAIRED:${order.id}`, "MONTHLY_GRID_REPAIRED", order.slot_number,
+    { ...proof, client_order_id: order.client_order_id, source: "PROVEN_NEVER_SUBMITTED" });
+  await save("COMPLETED");
+  return true;
+}
+
+/** One-time legacy metadata backfill, before a future price becomes an order.
+ * No existing order or price is changed. The complete protection phase has
+ * already succeeded; the historical snapshot is additional provenance only. */
+async function hydrateRetainedGridContexts(service: Service, run: Run, ledger: Ledger, state: LiveExecutorState) {
+  if (run.entry_regime !== "NORMAL" || run.config_snapshot.entry_priority_policy !== ENTRY_PRIORITY_POLICY
+    || run.ath_period_key !== monthlyPeriodKey(new Date())) return;
+  const count = configuredEngineSlotCount(run.engine!), rates = strategyRatesForOrder({},run);
+  const sources = run.config_snapshot.entry_price_sources as Record<string,Record<string,unknown>> | undefined;
+  const invalid = ledger.slots.filter(slot => {
+    const source=sources?.[slot.id], price=amount(slot.target_buy_price);
+    if(slot.entry_state!=="PLANNED" || amount(slot.position_quantity)!==0 || !source
+      || source.run_id!==run.id || source.engine_id!==run.trading_engine_id || source.slot_id!==slot.id
+      || source.source_origin!=="GRID" || Number(source.price)!==price
+      || ledger.orders.some(o=>o.slot_id===slot.id && o.operation_sequence===slot.operation_sequence
+        && (LIVE_ACTIVE_ORDER_STATUSES.has(o.status) || amount(o.executed_quantity)>0))) return false;
+    const context=gridContextForPrice(run.config_snapshot,run,price,count);
+    try { assertStrategyBuyPrice({price,referencePrice:amount(slot.entry_reference_price),
+      anchorPrice:context?.anchor??rates.anchor,spacing:context?.spacing??rates.spacing,
+      tick:state.filters.priceTick,entryOrigin:"GRID",slotCount:count});return false; }
+    catch { return true; }
+  });
+  if(!invalid.length)return;
+  const transition=await service.from("robot_v1_live_events").select("observed_at,details")
+    .eq("run_id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("event_type","ATH_TRANSITION")
+    .eq("event_key",`ATH_TRANSITION:${run.ath_transition_key??"NORMAL"}:${run.ath_period_key}`).single();
+  if(transition.error || transition.data?.details?.regime!=="NORMAL"
+    || transition.data.details.config_version!==run.config_version
+    || monthlyPeriodKey(new Date(transition.data.observed_at))!==run.ath_period_key) return;
+  const contexts={...(run.config_snapshot.entry_grid_contexts as Record<string,GridPriceContext>|undefined)};
+  const evidence=[];
+  for(const slot of invalid){
+    const found=proveRetainedGridContext(run,ledger.orders,amount(slot.target_buy_price),transition.data.observed_at,
+      state.filters.priceTick,count);
+    if(!found)continue;
+    contexts[String(found.context.price)]=found.context;
+    evidence.push({slot_id:slot.id,price:found.context.price,source_order_id:found.source_order_id});
+  }
+  if(!evidence.length)return;
+  const key=createHash("sha256").update(JSON.stringify(evidence)).digest("hex");
+  // Prove provenance before updating metadata. If the save fails, this event
+  // asserts only the historical proof, never that a financial action occurred.
+  await event(service,run,`GRID_CONTEXT_PROVEN:${key}`,"GRID_CONTEXT_PROVEN",null,{evidence});
+  await renewLease(service,run);
+  const snapshot={...run.config_snapshot,entry_grid_contexts:contexts,entry_grid_context_legacy_proof:key};
+  const saved=await service.from("robot_v1_live_runs").update({config_snapshot:snapshot})
+    .eq("id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("lease_owner",run.lease_owner)
+    .select("config_snapshot").single();
+  if(saved.error || !saved.data)throw new Error("COINOPS_MONTHLY_GRID_CONTEXT_BACKFILL_FAILED");
+  run.config_snapshot=saved.data.config_snapshot;
+}
+
 async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState, feeValuation?: ReconciliationFeeValuation) {
   const filters = symbolFilters(state);
@@ -778,6 +923,19 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
     let orders = operationOrders(ledger.orders, slot);
     let buys = orders.filter((item) => item.side === "BUY" && amount(item.executed_quantity) > 0);
     if (!buys.length) continue;
+    // Never strand an exchange-valid BUY's tiny partial fill by canceling its
+    // remainder before checking whether a TP can exist. Keep that SAME owned
+    // order resident; no extra BUY is submitted and the local gate stays shut.
+    if (buys.some(item => item.status === "PARTIALLY_FILLED")) {
+      const quantity = buys.reduce((sum, item) => sum + amount(item.executed_quantity), 0);
+      const quote = buys.reduce((sum, item) => sum + amount(item.cumulative_quote), 0);
+      const rates = strategyRatesForOrder(buys[0], run);
+      const price = calculateStrategyTakeProfit(quote / quantity, filters.priceTick,
+        { gainRate: rates.gain, entrySpacing: rates.spacing });
+      const uncovered = liveUncoveredQuantity(orders, filters.quantityStep);
+      if (uncovered < state.filters.minQuantity || uncovered * price + 1e-8 < state.filters.minNotional)
+        throw new Error("COINOPS_LIVE_TP_FILTER_UNPROTECTABLE");
+    }
     for (const buy of buys.filter((item) => item.status === "PARTIALLY_FILLED"))
       await cancelOwnedEntry(service, run, buy, false, feeValuation);
     orders = operationOrders(ledger.orders, slot);
@@ -970,6 +1128,33 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
         operationSequence: slot.operation_sequence };
     }), statuses[0]!.monthlyGainTarget, configuredEngineSlotCount(run.engine!));
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
+  const gridContexts: Record<string, GridPriceContext> = {};
+  const sources = { ...(run.config_snapshot.entry_price_sources as Record<string, Record<string, unknown>> | undefined) };
+  const previousRates = strategyRatesForOrder({ config_snapshot: run.config_snapshot }, run);
+  for (const item of decisions) {
+    if (item.frozenReason === "OPEN_OR_TP") continue;
+    const slot = ledger.slots.find(row => row.id === item.physicalSlotId)!;
+    const source = sources[slot.id];
+    if (source && Number(source.price) === amount(slot.target_buy_price)
+      && (source.run_id !== run.id || source.engine_id !== run.trading_engine_id || source.slot_id !== slot.id
+        || !["GRID", "REENTRY"].includes(String(source.source_origin))))
+      throw new Error("COINOPS_STRATEGY_GRID_CONTEXT_INVALID");
+    const origin = source && Number(source.price) === amount(slot.target_buy_price)
+      ? source.source_origin : slot.entry_origin;
+    if (!item.frozenReason) delete sources[slot.id];
+    if (!item.frozenReason || origin === "GRID") {
+      const prior = item.frozenReason ? gridContextForPrice(run.config_snapshot, run, item.nextBuyPrice,
+        configuredEngineSlotCount(run.engine!)) : undefined;
+      const anchor = item.frozenReason ? prior?.anchor ?? previousRates.anchor : state.price.price;
+      const spacing = item.frozenReason ? prior?.spacing ?? previousRates.spacing
+        : amount(profile.regime === "POST_ATH" ? profile.post_ath_spacing_rate : profile.normal_spacing_rate);
+      assertStrategyBuyPrice({ price: item.nextBuyPrice, referencePrice: item.nextBuyPrice,
+        anchorPrice: anchor, spacing, tick: state.filters.priceTick, entryOrigin: "GRID",
+        slotCount: configuredEngineSlotCount(run.engine!) });
+      gridContexts[String(item.nextBuyPrice)] = { run_id: run.id, engine_id: run.trading_engine_id,
+        price: item.nextBuyPrice, anchor, spacing, slot_count: configuredEngineSlotCount(run.engine!) };
+    }
+  }
   for (const item of decisions) {
     const slot = ledger.slots.find((row) => row.slot_number === item.physicalSlotNumber)!;
     if (!item.frozenReason && slot.entry_state === "PLANNED") {
@@ -995,6 +1180,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
       ? profile.post_ath_spacing_rate : profile.normal_spacing_rate,
     config_version: profile.config_version,
     config_snapshot: { ...run.config_snapshot, ladder_anchor_price: state.price.price,
+      entry_grid_contexts: gridContexts, entry_price_sources: sources,
       gain_rate: Number(run.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
       post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
       monthly_target: statuses[0]!.monthlyGainTarget,
@@ -1747,6 +1933,8 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
       && order.exchange_order_id !== null && order.status !== "PREPARED").map(order => order.id));
     stage = "RECONCILE_ORDERS";
     const reconciliationState = await readLiveExecutorState(run);
+    if (await repairMonthlyGridProvenance(service, run, ledger, reconciliationState))
+      ledger = await runRows(service, run);
     assertLiveResidentPrices(run, ledger, reconciliationState);
     const feeValuation = configuredEngineSlotCount(run.engine ?? run) > 25
       ? createReconciliationFeeValuation(run, reconciliationState) : undefined;
@@ -1817,6 +2005,8 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     await applyPendingStrategyUpdate(service, run, current, state);
     if (await configUpdatePending(service, run)) return { status: "RETRY", code: "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING" };
     const configured = await runRows(service, run);
+    stage = "GRID_CONTEXT";
+    await hydrateRetainedGridContexts(service, run, configured, state);
     stage = "RESTART_CYCLE";
     const successor = await restartClosedCycle(service, run, configured, state);
     if (successor) return { status: "RESTARTED", nextRunId: successor };
@@ -2319,7 +2509,7 @@ async function assertResetAuditReplayRecovery(service: Service, run: Run, incide
 }
 
 export async function resumeLiveRun(runId: string, userId: string, asset: V1Asset,
-  source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" = "OPERATOR_CONTROL") {
+  source: "OPERATOR_CONTROL" | "VERIFIED_READ_RECOVERY" | "VERIFIED_GRID_RECOVERY" | "VERIFIED_TP_FILTER_RECOVERY" = "OPERATOR_CONTROL") {
   assertScope();
   const service = createServiceRoleClient();
   const run = await claim(service, runId);
@@ -2337,6 +2527,29 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (source === "VERIFIED_READ_RECOVERY")
       recoveryIncident = await readVerifiedRecoveryIncident(service, run);
     else recoveryIncident = await readOperatorRecoveryIncident(service, run) ?? undefined;
+    const protectionRecovery = source === "VERIFIED_GRID_RECOVERY" || source === "VERIFIED_TP_FILTER_RECOVERY";
+    if (protectionRecovery) {
+      const code = source === "VERIFIED_GRID_RECOVERY" ? "COINOPS_STRATEGY_PRICE_INVARIANT_FAILED"
+        : "COINOPS_LIVE_TP_FILTER_UNPROTECTABLE";
+      const stage = source === "VERIFIED_GRID_RECOVERY" ? "RECONCILE_ORDERS" : "PROTECT_TP";
+      if (!recoveryIncident || recoveryIncident.code !== code || recoveryIncident.details?.root_code !== code
+        || recoveryIncident.details.stage !== stage || run.status !== "ACTIVE"
+        || Date.now() - Date.parse(run.last_reconciled_at!) > 150_000
+        || Date.parse(run.last_reconciled_at!) <= Math.max(Date.parse(recoveryIncident.first_seen_at!),
+          Date.parse(recoveryIncident.last_seen_at)))
+        throw new Error("COINOPS_LIVE_PROTECTION_RECOVERY_UNPROVEN");
+      if (source === "VERIFIED_GRID_RECOVERY") {
+        const repaired = run.config_snapshot.monthly_grid_recovery as { phase?: string; proof?: MonthlyGridRepair } | undefined;
+        if (repaired?.phase !== "COMPLETED" || !repaired.proof
+          || repaired.proof.incident_first_seen_at !== recoveryIncident.first_seen_at)
+          throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_UNPROVEN");
+        const audit = await service.from("robot_v1_live_events").select("details")
+          .eq("run_id", run.id).eq("trading_engine_id", run.trading_engine_id)
+          .eq("event_key", `MONTHLY_GRID_REPAIRED:${repaired.proof.order_id}`).single();
+        if (audit.error || audit.data?.details?.order_id !== repaired.proof.order_id)
+          throw new Error("COINOPS_MONTHLY_GRID_RECOVERY_UNPROVEN");
+      }
+    }
     const budgetAlertRecovery = Boolean(recoveryIncident
       && isAccountBudgetAlertRecovery(recoveryIncident.code, recoveryIncident.details));
     const capitalAuditRecovery = Boolean(recoveryIncident
@@ -2368,7 +2581,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery)
+    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
@@ -2407,7 +2620,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
-    if (source === "OPERATOR_CONTROL" || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery)
+    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);

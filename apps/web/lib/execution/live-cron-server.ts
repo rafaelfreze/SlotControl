@@ -60,13 +60,18 @@ export async function handleLiveCron(request: NextRequest, mode: "EXECUTION" | "
             .eq("alert_key", `LIVE_RUN:${run.id}:CRITICAL`)
             .is("resolved_at", null).maybeSingle();
           if (alert.error) throw new Error("COINOPS_LIVE_RECOVERY_ALERT_LOOKUP_FAILED");
-          if (mayRecoverReadOutage(run.status, reconciled.status, alert.data?.code ?? null, alert.data?.details)) {
+          const protectionRecovery = alert.data?.details?.root_code === alert.data?.code
+            && (alert.data?.code === "COINOPS_STRATEGY_PRICE_INVARIANT_FAILED" && alert.data.details.stage === "RECONCILE_ORDERS"
+              ? "VERIFIED_GRID_RECOVERY" : alert.data?.code === "COINOPS_LIVE_TP_FILTER_UNPROTECTABLE"
+                && alert.data.details.stage === "PROTECT_TP" ? "VERIFIED_TP_FILTER_RECOVERY" : null);
+          if (protectionRecovery || mayRecoverReadOutage(run.status, reconciled.status, alert.data?.code ?? null, alert.data?.details)) {
             const resumed = await resumeLiveRun(run.id, run.user_id, run.asset,
-              "VERIFIED_READ_RECOVERY");
+              protectionRecovery || "VERIFIED_READ_RECOVERY");
             const recoveryAudit = resumed.recovered_alert_code && resumed.recovered_alert_last_seen_at
               ? await recordVerifiedReadRecovery(service, { shardId: run.executor_shard_id,
                 accountId: run.exchange_account_id, engineId: run.trading_engine_id, runId: run.id,
-                alertCode: resumed.recovered_alert_code, alertSeenAt: resumed.recovered_alert_last_seen_at })
+                alertCode: resumed.recovered_alert_code, alertSeenAt: resumed.recovered_alert_last_seen_at,
+                action: protectionRecovery || "VERIFIED_READ_RECOVERY" })
               : "AUDIT_FAILED";
             return { ...run, run_id: run.id, ...reconciled,
               status: "RECOVERED", recovery: resumed.status, recovery_audit: recoveryAudit };

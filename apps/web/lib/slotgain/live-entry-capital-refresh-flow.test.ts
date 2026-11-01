@@ -13,6 +13,7 @@ import * as unsentTp from "../execution/live-unsent-tp-recovery.ts";
 import * as unsentEntry from "../execution/live-unsent-entry-recovery.ts";
 import * as unsentProof from "../execution/account-order-unsent-proof.ts";
 import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
+import * as monthlyGridRecovery from "../execution/monthly-grid-recovery.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
 import * as liveAudit from "../execution/live-audit-event.ts";
@@ -21,6 +22,7 @@ import * as scope from "../execution/operator-context.ts";
 import * as engineExposure from "../execution/engine-exposure.ts";
 import * as ledgerRead from "../execution/complete-ledger-read.ts";
 import * as liveLedgerRead from "../execution/live-ledger-read.ts";
+import * as liveReadRecovery from "../execution/live-read-recovery.ts";
 import * as liveReadError from "../execution/live-read-error.ts";
 import * as liveBudgetAlert from "../execution/live-account-budget-alert.ts";
 import { readLiveExposure } from "../execution/live-exposure-read.ts";
@@ -29,6 +31,10 @@ import { liveQuoteBalanceCheck } from "../execution/live-quote-balance.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
+  hydrateRetainedGridContexts: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<void>;
+  repairMonthlyGridProvenance: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<boolean>;
+  ensureTakeProfits: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<void>;
+  assertLiveOrderPrice: (run: Row, ledger: unknown, order: Row, tick: number) => void;
   armNextEntry: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<string>;
   reconcileOrder: (service: unknown, run: Row, order: Row) => Promise<Row>;
   confirmCapitalRefreshes: (service: unknown, run: Row, ledger: unknown) => Promise<void>;
@@ -152,6 +158,10 @@ function harness(options: Options = {}) {
         eq(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         is(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         in(key: string, value: unknown[]) { predicates.push((row) => value.includes(row[key])); return query; },
+        or(expression: string) {
+          assert.equal(expression,"result.neq.COMPLETED,result.is.null");
+          predicates.push(row=>row.result!=="COMPLETED");return query;
+        },
         gt(key: string, value: string | number) { predicates.push((row) => row[key] != null
           && (typeof value === "number" ? Number(row[key]) > value : String(row[key]) > value)); return query; },
         update(values: Row) { update = values; return query; },
@@ -237,6 +247,7 @@ function harness(options: Options = {}) {
   const dependencies: Record<string, unknown> = {
     "./live-audit-event":liveAudit,
     "./live-ledger-read": liveLedgerRead, "./live-read-error": liveReadError,
+    "./live-read-recovery": liveReadRecovery,
     "./live-exposure-read": { readLiveExposure },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck }, "./live-quote-balance": { liveQuoteBalanceCheck },
     "./live-account-budget-alert": { ...liveBudgetAlert, resolveAccountBudgetAlert: async () => undefined },
@@ -264,6 +275,7 @@ function harness(options: Options = {}) {
       },
     },
     "./live-strategy-snapshot": strategySnapshot,
+    "./monthly-grid-recovery": monthlyGridRecovery,
     "./ath-ladder": athLadder, "./monthly-slot-policy": monthlyPolicy,
     "./strategy-parameter-registry": strategyParameterRegistry,
     "./ath-profile-server": { loadAthProfile: async () => profile, refreshAthProfile: async () => profile },
@@ -284,7 +296,11 @@ function harness(options: Options = {}) {
     "./strategy-decision-server": {
       persistStrategyDecision: async (_s: unknown, _scope: unknown, _env: unknown, decision: Row) => calls.push({ kind: "decision", input: decision }),
       dispatchStrategyDecision: async () => calls.push({ kind: "dispatch" }),
-      completeStrategyDecision: async () => calls.push({ kind: "complete" }),
+      completeStrategyDecision: async (_s:unknown,_owner:unknown,_env:unknown,id:string) => {
+        calls.push({ kind: "complete" });
+        const decision=tables.robot_v1_strategy_decisions?.find(d=>d.decision_id===id);
+        if(decision)Object.assign(decision,{result:"COMPLETED",completed_at:new Date().toISOString()});
+      },
     },
     "./live-executor-transport": {
       readLiveExecutorOrderObservation:async (_run:unknown,id:string)=>{
@@ -335,7 +351,7 @@ function harness(options: Options = {}) {
     },
   };
   const source = readFileSync(new URL("../execution/robot-v1-live-server.ts", import.meta.url), "utf8")
-    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate };";
+    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate, ensureTakeProfits, assertLiveOrderPrice, repairMonthlyGridProvenance, hydrateRetainedGridContexts };";
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ES2022 } }).outputText;
   const runtime = {} as Runtime;
@@ -348,6 +364,117 @@ function harness(options: Options = {}) {
     unchangedOpen() { assert.deepEqual({ slot: slots[0], account: accounts[0], tp: orders[1], buy: orders[0] }, initialOpen); },
   };
 }
+
+test("tiny partial BUY stays resident: TP min-notional is checked BEFORE cancel, without extra BUY or TP changes", async () => {
+  const h=harness(); const buy=h.orders[2]!;
+  Object.assign(buy,{status:"PARTIALLY_FILLED",executed_quantity:.004,cumulative_quote:.4,trades_reconciled:true});
+  Object.assign(h.slots[1]!,{entry_state:"OPEN",position_quantity:.004});
+  const before=structuredClone(h.orders);
+  await assert.rejects(h.runtime.ensureTakeProfits(h.service,h.run,
+    {slots:h.slots,orders:h.orders,accounts:h.accounts},h.state()),/COINOPS_LIVE_TP_FILTER_UNPROTECTABLE/);
+  assert.deepEqual(h.orders,before); assert.equal(h.calls.filter(c=>["cancel","create","dispatch"].includes(c.kind)).length,0);
+  h.unchangedOpen();
+});
+
+function monthlyRepairHarness(crashAfterCancel=false) {
+  const h=harness({crashAfterCancel}), code="COINOPS_STRATEGY_PRICE_INVARIANT_FAILED";
+  const owner={operator_id:h.run.operator_id,exchange_account_id:h.run.exchange_account_id,trading_engine_id:h.run.trading_engine_id};
+  (h.run.engine as Row).engine_kill_switch=true;
+  Object.assign(h.run,{last_error:code,ath_period_key:"2026-11",ath_transition_key:null,config_version:2,entry_spacing:.03});
+  const source={run_id:h.run.id,engine_id:h.run.trading_engine_id,slot_id:h.slots[1]!.id,price:106.7,source_origin:"GRID"};
+  const snapshot={ladder_anchor_price:120,entry_spacing:.03,gain_rate:.05,regime:"NORMAL",
+    entry_priority_policy:monthlyPolicy.ENTRY_PRIORITY_POLICY,entry_price_sources:{[String(source.slot_id)]:source}};
+  h.run.config_snapshot=structuredClone(snapshot);
+  const prior=h.orders[2]!;
+  Object.assign(prior,{price:106.7,status:"CANCELED",trades_reconciled:true,config_version:2,
+    config_snapshot:{...structuredClone(snapshot),ladder_anchor_price:110},created_at:"2026-10-31T01:00:00Z"});
+  Object.assign(h.exchange.get(String(prior.client_order_id))!,{price:106.7,status:"CANCELED"});
+  const prepared={...structuredClone(prior),id:"unsent-monthly",revision:2,status:"PREPARED",trades_reconciled:false,
+    client_order_id:cycle.liveClientOrderId(String(h.run.id),"SOL",2,1,"BUY",2,h.run.engine as never),
+    exchange_order_id:null,submission_guarded_at:null,created_at:"2026-11-01T04:00:50Z",
+    strategy_decision_id:"monthly-intent",config_snapshot:structuredClone(snapshot)};
+  h.orders.push(prepared);
+  Object.assign(h.slots[1]!,{entry_state:"ARMED",target_buy_price:106.7,entry_reference_price:106.7});
+  h.tables.robot_v1_live_alerts=[{...owner,product_id:h.run.product_id,tenant_id:h.run.tenant_id,user_id:h.run.user_id,
+    severity:"CRITICAL",resolved_at:null,alert_key:`LIVE_RUN:${h.run.id}:CRITICAL`,code,
+    first_seen_at:"2026-11-01T04:01:00Z",last_seen_at:"2026-11-01T04:01:01Z",details:{root_code:code,stage:"RECONCILE_ORDERS"}}];
+  h.tables.robot_v1_strategy_decisions=[{...owner,product_id:h.run.product_id,tenant_id:h.run.tenant_id,user_id:h.run.user_id,
+    cycle_id:h.run.id,environment:"REAL",decision_id:"monthly-intent",action_type:"ARM_NEXT_BUY",
+    result:"PENDING",dispatched_at:null,exchange_ack_at:null,completed_at:null}];
+  h.tables.account_order_budget_reservations=[];
+  h.tables.robot_v1_live_events.push({...owner,run_id:h.run.id,event_type:"ATH_TRANSITION",
+    event_key:"ATH_TRANSITION:NORMAL:2026-11",observed_at:"2026-11-01T04:00:40Z",details:{regime:"NORMAL",config_version:2}});
+  const repair=()=>h.runtime.repairMonthlyGridProvenance(h.service,h.run,{slots:h.slots,orders:h.orders,accounts:h.accounts},h.state());
+  return {...h,prepared,repair};
+}
+
+test("legacy monthly repair retires only a GET-proven never-submitted intent; immutable snapshots, TPs and gates survive",async()=>{
+  const h=monthlyRepairHarness(),before=structuredClone(h.prepared.config_snapshot);
+  assert.equal(await h.repair(),true);
+  assert.equal(h.prepared.status,"CANCELED");assert.deepEqual(h.prepared.config_snapshot,before);
+  assert.equal(h.slots[1]!.entry_state,"PLANNED");assert.equal((h.run.engine as Row).engine_kill_switch,true);
+  assert.equal((h.run.config_snapshot as Row).ladder_anchor_price,120,"newly generated GRID keeps new anchor");
+  assert.equal(await h.repair(),false);assert.equal(h.calls.filter(c=>["create","cancel","dispatch"].includes(c.kind)).length,0);
+  h.unchangedOpen();
+});
+
+test("repair crash after retirement resumes from durable STARTED without another order or lost intent",async()=>{
+  const h=monthlyRepairHarness(true);
+  await assert.rejects(h.repair(),/SLOT_UPDATE_FAILED/);
+  assert.equal(h.prepared.status,"CANCELED");
+  assert.equal(await h.repair(),true);h.unchangedOpen();
+});
+
+test("an exchange order appearing during legacy recovery cannot be retired or replaced",async()=>{
+  const h=monthlyRepairHarness();h.exchange.set(String(h.prepared.client_order_id),{orderId:"unexpected",status:"NEW"});
+  await assert.rejects(h.repair(),/EXCHANGE_UNPROVEN/);assert.equal(h.prepared.status,"PREPARED");
+  assert.equal(h.calls.filter(c=>["create","cancel","dispatch"].includes(c.kind)).length,0);
+});
+
+test("legacy future-level provenance backfill preserves the current NEXT BUY, all slots, capital and TPs",async()=>{
+  const h=harness(),period=monthlyPolicy.monthlyPeriodKey(new Date()),slot=h.slots[2]!;
+  const source={run_id:h.run.id,engine_id:h.run.trading_engine_id,slot_id:slot.id,price:106.7,source_origin:"GRID"};
+  const snapshot={ladder_anchor_price:120,entry_spacing:.03,gain_rate:.05,regime:"NORMAL",
+    entry_priority_policy:monthlyPolicy.ENTRY_PRIORITY_POLICY,entry_price_sources:{[String(slot.id)]:source}};
+  Object.assign(h.run,{config_version:2,ath_period_key:period,ath_transition_key:null,config_snapshot:structuredClone(snapshot)});
+  Object.assign(slot,{entry_origin:"GRID",target_buy_price:106.7,entry_reference_price:106.7});
+  Object.assign(h.orders[2]!,{config_version:2,created_at:new Date(Date.now()-40*86_400_000).toISOString(),
+    config_snapshot:{...structuredClone(snapshot),ladder_anchor_price:110}});
+  h.tables.robot_v1_live_events.push({run_id:h.run.id,trading_engine_id:h.run.trading_engine_id,event_type:"ATH_TRANSITION",
+    event_key:`ATH_TRANSITION:NORMAL:${period}`,observed_at:`${period}-01T04:00:40Z`,details:{regime:"NORMAL",config_version:2}});
+  const before=structuredClone({orders:h.orders,slots:h.slots,accounts:h.accounts});
+  const hydrate=()=>h.runtime.hydrateRetainedGridContexts(h.service,h.run,{slots:h.slots,orders:h.orders,accounts:h.accounts},h.state());
+  await hydrate();await hydrate();
+  const ctx=strategySnapshot.gridContextForPrice(h.run.config_snapshot as Row,
+    {id:String(h.run.id),trading_engine_id:String(h.run.trading_engine_id)},106.7,25)!;
+  assert.equal(ctx.anchor,110);assert.deepEqual({orders:h.orders,slots:h.slots,accounts:h.accounts},before);
+  assert.equal(h.calls.filter(c=>["cancel","create","dispatch"].includes(c.kind)).length,0);
+  assert.equal(h.writes.filter(w=>w.table==="robot_v1_live_events"&&w.values.event_type==="GRID_CONTEXT_PROVEN").length,1);
+});
+
+test("monthly transition preserves the geometric origin of retained GRID levels across allocation and new order snapshot", async () => {
+  const h=harness(); const retained=h.slots[2]!;
+  Object.assign(h.run,{anchor_price:110,entry_spacing:.03,config_snapshot:{ladder_anchor_price:110,
+    entry_spacing:.03,gain_rate:.05,entry_priority_policy:monthlyPolicy.ENTRY_PRIORITY_POLICY,
+    entry_price_sources:{[String(retained.id)]:{run_id:h.run.id,engine_id:h.run.trading_engine_id,
+      slot_id:retained.id,price:106.7,source_origin:"GRID"}}}});
+  Object.assign(retained,{target_buy_price:106.7,entry_reference_price:106.7});
+  h.slots[3]!.entry_origin="GRID";
+  (h.run.engine as Row).ath_reference_symbol="SOLUSDC";
+  const previousFetch=globalThis.fetch;
+  globalThis.fetch=async()=>({ok:true,json:async()=>({price:"120"})}) as Response;
+  try { await h.runtime.applyAthTransition(h.service,h.run,{slots:h.slots,orders:h.orders,accounts:h.accounts},h.state(),false); }
+  finally { globalThis.fetch=previousFetch; }
+  const snapshot=h.run.config_snapshot as Row;
+  assert.equal(snapshot.ladder_anchor_price,120);
+  const context=strategySnapshot.gridContextForPrice(snapshot,{id:String(h.run.id),trading_engine_id:String(h.run.trading_engine_id)},106.7,25)!;
+  assert.equal(context.anchor,110);assert.equal(context.spacing,.03);
+  const next={...h.orders[2]!,slot_id:retained.id,price:106.7,config_snapshot:structuredClone(snapshot)};
+  h.runtime.assertLiveOrderPrice(h.run,{slots:h.slots,orders:h.orders,accounts:h.accounts},next,.01);
+  const wrong=structuredClone(next);((wrong.config_snapshot as Row).entry_grid_contexts as Row)={};
+  assert.throws(()=>h.runtime.assertLiveOrderPrice(h.run,{slots:h.slots,orders:h.orders,accounts:h.accounts},wrong,.01),/PRICE_INVARIANT/);
+  h.unchangedOpen();
+});
 
 for (const asset of ["BTC", "SOL"] as const) for (const currency of ["BRL", "USDT"] as const) {
   test(`LIVE ${asset}/${currency}: applied contribution replaces only zero-fill BUY at the same slot/price exactly once`, async () => {

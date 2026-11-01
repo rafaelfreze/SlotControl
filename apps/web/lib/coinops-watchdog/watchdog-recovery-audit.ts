@@ -2,7 +2,8 @@ import type { createServiceRoleClient } from "../supabase/service-role";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type RecoveryScope = { shardId: string; accountId: string; engineId: string;
-  runId: string; alertCode: string; alertSeenAt: string };
+  runId: string; alertCode: string; alertSeenAt: string;
+  action?: "VERIFIED_READ_RECOVERY" | "VERIFIED_GRID_RECOVERY" | "VERIFIED_TP_FILTER_RECOVERY" };
 
 /** Best-effort evidence only, after a guarded resume has succeeded. This hook
  * neither authorizes trading nor marks the engine healthy: the next watchdog
@@ -21,7 +22,7 @@ export async function recordVerifiedReadRecovery(service: Service, scope: Recove
       if (previous.some((action) => action && typeof action === "object"
         && action.recovery_id === recoveryId)) continue;
       let update = service.from("watchdog_incidents").update({
-        actions_taken: [...previous, { action: "VERIFIED_READ_RECOVERY", status: "RESUMED",
+        actions_taken: [...previous, { action: scope.action ?? "VERIFIED_READ_RECOVERY", status: "RESUMED",
           source_alert_code: scope.alertCode, recovery_id: recoveryId, timestamp: now }],
         last_recovery_attempt_at: now, last_seen_at: now, state_after: "RECOVERING", result: "RECOVERING",
       }).eq("incident_id", incident.incident_id).eq("shard_id", scope.shardId)

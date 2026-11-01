@@ -59,7 +59,8 @@ test("both exchange paths gate dispatch and reconciliation with the shared price
     live.indexOf("async function ensureTakeProfits("));
   assert.ok(liveReconcile.indexOf("assertLiveOrderPrice(") < liveReconcile.indexOf("submission_guarded_at: new Date"));
   assert.match(live, /assertLiveResidentPrices\(run, ledger, state\)/);
-  assert.match(live, /assertLiveResidentPrices\(run, ledger, await readLiveExecutorState\(run\)\)/);
+  assert.match(live, /const reconciliationState = await readLiveExecutorState\(run\)/);
+  assert.match(live, /assertLiveResidentPrices\(run, ledger, reconciliationState\)/);
   const testnetSync = testnet.slice(testnet.indexOf("async function syncOrder("),
     testnet.indexOf("async function applyTestnetAthTransition("));
   assert.ok(testnetSync.indexOf("assertTestnetOrderPrice(") < testnetSync.indexOf("adapter.ensureOwnedOrder("));

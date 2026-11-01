@@ -53,7 +53,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   const now = Date.now();
   const run = { ...scope, id: "run-a", asset: "SOL", status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date(now - (options.auditEventRecovery ? 1_000 : 0)).toISOString(), lease_owner: "lease",
-    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25,
+    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25, config_snapshot: {},
     previous_run_id: options.resetReplayRecovery ? "64b267d0-3897-4783-a07e-69c427472f81" : null,
     reset_idempotency_key: options.resetReplayRecovery ? "RESET:64b267d0-3897-4783-a07e-69c427472f81:owned:old-final-tp" : null };
   const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
@@ -318,6 +318,28 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   return { run: (source = "VERIFIED_READ_RECOVERY") => resume("run-a", "user", "SOL", source), calls, writes,
     orders, slots };
 }
+
+test("TP filter recovery opens only after fresh complete protection and twice-settled dispatches; never sends orders",async()=>{
+  const code="COINOPS_LIVE_TP_FILTER_UNPROTECTABLE";
+  const incident={...known,code,details:{root_code:code,stage:"PROTECT_TP"}};
+  const safe=fixture({alerts:[[incident]],operatorRecovery:true});
+  assert.equal((await safe.run("VERIFIED_TP_FILTER_RECOVERY")).status,"RESUMED");
+  assert.equal(safe.calls.filter(c=>c==="operator-intent-read").length,2);
+  for(const option of [{missingTp:true},{operatorPendingDispatch:true},{operatorLateUnsettledDecision:true},
+    {operatorOrderStatus:"PREPARED"},{healthy:false},{configPending:true}]) {
+    const h=fixture({alerts:[[incident]],operatorRecovery:true,...option});
+    await assert.rejects(h.run("VERIFIED_TP_FILTER_RECOVERY"));
+    assert.equal(h.writes.some(w=>w.table==="robot_v1_live_alerts"&&w.data.resolved_at),false,JSON.stringify(option));
+  }
+  const raced=fixture({alerts:[[incident]],operatorRecovery:true,casLost:true});
+  await assert.rejects(raced.run("VERIFIED_TP_FILTER_RECOVERY"),/INCIDENT_CHANGED/);
+  assert.equal(raced.writes.some(w=>w.table==="robot_v1_live_events"&&w.data.event_type==="LIVE_RESUMED"),false);
+  const wrong=fixture({alerts:[[known]],operatorRecovery:true});
+  await assert.rejects(wrong.run("VERIFIED_TP_FILTER_RECOVERY"),/PROTECTION_RECOVERY_UNPROVEN/);
+  const grid=fixture({alerts:[[{...incident,code:"COINOPS_STRATEGY_PRICE_INVARIANT_FAILED",
+    details:{root_code:"COINOPS_STRATEGY_PRICE_INVARIANT_FAILED",stage:"RECONCILE_ORDERS"}}]],operatorRecovery:true});
+  await assert.rejects(grid.run("VERIFIED_GRID_RECOVERY"),/MONTHLY_GRID_RECOVERY_UNPROVEN/);
+});
 
 test("legacy525 recovery proves settled decisions twice, complete protection and exact diagnostics without order writes", async () => {
   const incident = { ...known, code: "COINOPS_LIVE_LEDGER_READ_FAILED", details: {
