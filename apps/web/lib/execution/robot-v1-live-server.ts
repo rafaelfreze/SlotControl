@@ -41,7 +41,7 @@ import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-ent
 import { gridContextForPrice, strategyRatesForOrder, type GridPriceContext } from "./live-strategy-snapshot";
 import { marketEntryIntent, planExplicitMissedMarketRecovery, EXPLICIT_MISSED_RECOVERY,
   type MarketEntryIntent } from "./market-entry-policy";
-import { operatorConnectionAdmin } from "./operator-executor-admin";
+import { operatorExecutorAdmin } from "./operator-executor-admin";
 import { proveMonthlyGridRepair, proveRetainedGridContext, type MonthlyGridRepair } from "./monthly-grid-recovery";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
@@ -1725,8 +1725,15 @@ async function alignRecoveryOrderCap(service:Service,run:Run,slot:Slot,account:A
   if(!rows.some(e=>e.trading_engine_id===run.trading_engine_id&&e.expected_max_order_quote===old)
     || Math.abs(rows.reduce((n,e)=>n+e.target_hard_cap_quote,0)-globalCap)>1e-8)return null;
   await renewLease(service,run);
-  try{const result=await operatorConnectionAdmin<{status:string}>(run.operator_id,run.exchange_account_id,
-    run.engine!.executor_shard_id!,"/v1/admin/capital",{quote_asset:run.quote_asset,mode:"ORDER_CAP_ALIGNMENT_V1",
+  // This is an already installed engine, not new-connection onboarding. Its
+  // immutable engine routing remains authoritative, including the original
+  // legacy credential. A historical onboarding status cannot reroute it.
+  const credential=run.engine!.is_legacy_default&&run.engine!.legacy_compatible
+    &&run.engine!.executor_shard_id==="executor-01"?"legacy-binance-production"
+      :`account_${run.exchange_account_id.replaceAll("-","")}`;
+  try{const result=await operatorExecutorAdmin<{status:string}>("/v1/admin/capital",{
+      operator_id:run.operator_id,exchange_account_id:run.exchange_account_id,trading_engine_id:run.trading_engine_id,
+      credential_ref:credential,environment:"REAL",quote_asset:run.quote_asset,mode:"ORDER_CAP_ALIGNMENT_V1",
       expected_account_cap_quote:globalCap,target_account_cap_quote:globalCap,engines:rows},"CAPITAL");
     if(result.status!=="UPDATED")throw new Error("COINOPS_RECOVERY_ORDER_CAP_NATIVE_UNCONFIRMED");
   }catch{

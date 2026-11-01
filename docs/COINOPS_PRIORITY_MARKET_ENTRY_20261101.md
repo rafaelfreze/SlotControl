@@ -117,6 +117,13 @@ versões web exatas em janela UTC limitada, paridade e certificação de admiss�
 Os testes cobrem replay, perdas de resposta, cap/lease/saldo divergentes,
 permissões, preservação dos irmãos e veto sem protocolo ou ganho comprovado.
 
+O alinhamento usa o roteamento imutável do engine já instalado, não o gate de
+onboarding de uma nova conexão. Rafael conserva a credencial legacy no Executor
+01; status histórico VALIDATION_REQUIRED do cadastro não pode impedir esse
+controle autenticado de metadados. O registro nativo ainda valida a credencial,
+conta, shard e inventário completo. Os testes simulam onboarding indisponível
+nos casos legacy e dinâmico; nenhum gate de cadastro novo foi relaxado.
+
 ## Limitação distinta: parcial da Dete
 
 Dete/SOLBRL #8 operação 3 foi uma BUY original de 2,187 SOL a R$513,10

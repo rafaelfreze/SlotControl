@@ -60,6 +60,7 @@ function harness(options: Options = {}) {
   const engine = { ...identity, id: identity.trading_engine_id, base_asset: asset, environment: "REAL",
     symbol: `${asset}${identity.quote_asset}`, status: "ACTIVE", global_kill_switch: false,
     account_kill_switch: false, engine_kill_switch: false, legacy_compatible: options.legacy ?? false,
+    is_legacy_default:options.legacy??false,
     hard_cap_quote: 1000, strategy_config_pending: false, slot_count: count,executor_shard_id:"executor-01" };
   const run: Row = { ...identity, id: "12345678-1234-1234-1234-123456789abc", asset, symbol: engine.symbol,
     engine, status: "ACTIVE", lease_owner: "lease-fixture", lease_until: new Date(Date.now() + 180_000).toISOString(),
@@ -271,9 +272,12 @@ function harness(options: Options = {}) {
       .map((o) => ({ ...o, id: o.orderId })),
   });
   const dependencies: Record<string, unknown> = {
-    "./operator-executor-admin":{operatorConnectionAdmin:async(...args:unknown[])=>{
-      assert.equal(args[0],run.operator_id);assert.equal(args[1],run.exchange_account_id);assert.equal(args[2],"executor-01");
-      assert.equal(args[3],"/v1/admin/capital");const input=args[4]as Row;
+    "./operator-executor-admin":{operatorConnectionAdmin:async()=>{throw Error("onboarding connection unavailable")},
+      operatorExecutorAdmin:async(...args:unknown[])=>{
+      assert.equal(args[0],"/v1/admin/capital");const input=args[1]as Row;
+      assert.equal(input.operator_id,run.operator_id);assert.equal(input.exchange_account_id,run.exchange_account_id);
+      assert.equal(input.trading_engine_id,run.trading_engine_id);assert.equal(input.environment,"REAL");
+      assert.equal(input.credential_ref,engine.legacy_compatible&&engine.is_legacy_default?"legacy-binance-production":`account_${run.exchange_account_id.replaceAll("-","")}`);
       assert.equal(input.mode,"ORDER_CAP_ALIGNMENT_V1");assert.equal(input.expected_account_cap_quote,1000);assert.equal(input.target_account_cap_quote,1000);
       const rows=input.engines as Row[];assert.equal(rows.length,1);assert.equal(rows[0].expected_hard_cap_quote,1000);assert.equal(rows[0].target_hard_cap_quote,1000);
       calls.push({kind:"native-order-cap",input});nativeOrderCap=Number(rows[0].target_max_order_quote);
@@ -507,8 +511,8 @@ test("prospective priority-crossed entry works without sweeping legacy MISSED; u
  assert.equal(old.calls.filter(c=>c.kind==="create"||c.kind==="cancel").length,0);
 });
 
-for(const failure of ["none","lost-native","lost-rpc"] as const)test(`explicit funded reinvestment aligns only unit cap before full-slot MARKET (${failure})`,async()=>{
- const h=missedMarketHarness({monthlyCounts:{2:1,3:0},unitOrderCap:18,orderCapAlignment:true,
+for(const legacy of [false,true])for(const failure of ["none","lost-native","lost-rpc"] as const)test(`installed engine cap alignment ignores stale onboarding, keeps exact credential (${legacy}/${failure})`,async()=>{
+ const h=missedMarketHarness({legacy,monthlyCounts:{2:1,3:0},unitOrderCap:18,orderCapAlignment:true,
   lostOrderCapResponse:failure==="lost-native",lostOrderCapRpcResponse:failure==="lost-rpc"});
  Object.assign(h.accounts[2],{contribution_brl:18,market_pnl_brl:42,fees_brl:0,manual_gain_brl:0,dust_quantity:0,gain_count:1});
  const auth=(h.run.config_snapshot as Row).market_entry_authorization as Row;
