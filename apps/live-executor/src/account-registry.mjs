@@ -504,7 +504,9 @@ export async function promoteRegistryEngine(staticRegistry, directory, scope) {
 export async function changeRegistryCapital(staticRegistry, directory, scope) {
   assertExecutorShardContext(staticRegistry.executor_shard_id ?? "executor-01", scope);
   const legacy = scope.exchange_account_id === staticRegistry.legacy_account_id;
+  const orderOnly=scope.mode==="ORDER_CAP_ALIGNMENT_V1";
   if (![scope.operator_id, scope.exchange_account_id].every((id) => UUID.test(id ?? ""))
+    || scope.mode!==undefined&&!orderOnly
     || scope.environment !== "REAL" || !["BRL", "USDT"].includes(scope.quote_asset)
     || !installedCredentialReference(staticRegistry, scope)
     || !Array.isArray(scope.engines) || scope.engines.length < 1
@@ -527,6 +529,13 @@ export async function changeRegistryCapital(staticRegistry, directory, scope) {
     // on this shard are denied, not adopted. Legacy single-shard calls remain
     // compatible; an explicit cross-shard inventory is never inferred.
     const partitioned = scope.engines.every((item) => /^executor-[0-9]{2,4}$/.test(item.executor_shard_id ?? ""));
+    if(orderOnly&&(scope.expected_account_cap_quote!==scope.target_account_cap_quote
+      || scope.engines.some(item=>item.expected_hard_cap_quote!==item.target_hard_cap_quote
+        || !Number.isFinite(item.expected_max_order_quote)||!Number.isFinite(item.target_max_order_quote)
+        || item.expected_max_order_quote<=0||item.target_max_order_quote<item.expected_max_order_quote
+        || item.target_max_order_quote>item.target_hard_cap_quote)
+      || scope.engines.filter(item=>item.expected_max_order_quote!==item.target_max_order_quote).length!==1))
+      deny("EXECUTOR_ORDER_CAP_ALIGNMENT_DENIED");
     if ((!partitioned && rows.length !== scope.engines.length)
       || (partitioned && scope.engines.some((item) =>
         (item.executor_shard_id === (staticRegistry.executor_shard_id ?? "executor-01"))
@@ -542,10 +551,12 @@ export async function changeRegistryCapital(staticRegistry, directory, scope) {
           && item.target_hard_cap_quote <= scope.target_account_cap_quote)))
       deny("EXECUTOR_CAP_CHANGE_DENIED");
     const alreadyTarget = rows.every((row) => row.account_cap_quote === scope.target_account_cap_quote
-      && row.hard_cap_quote === scope.engines.find((item) => item.trading_engine_id === row.trading_engine_id)?.target_hard_cap_quote);
+      && row.hard_cap_quote === scope.engines.find((item) => item.trading_engine_id === row.trading_engine_id)?.target_hard_cap_quote
+      && (!orderOnly||row.max_order_quote===scope.engines.find(item=>item.trading_engine_id===row.trading_engine_id)?.target_max_order_quote));
     if (alreadyTarget) return { status: "UPDATED", replayed: true };
     if (rows.some((row) => row.account_cap_quote !== scope.expected_account_cap_quote
-      || row.hard_cap_quote !== scope.engines.find((item) => item.trading_engine_id === row.trading_engine_id)?.expected_hard_cap_quote)
+      || row.hard_cap_quote !== scope.engines.find((item) => item.trading_engine_id === row.trading_engine_id)?.expected_hard_cap_quote
+      || orderOnly&&row.max_order_quote!==scope.engines.find(item=>item.trading_engine_id===row.trading_engine_id)?.expected_max_order_quote)
       || Math.abs(scope.engines.reduce((sum, item) => sum + item.target_hard_cap_quote, 0)
         - scope.target_account_cap_quote) > 1e-8)
       deny("EXECUTOR_CAP_CHANGE_STALE");
@@ -553,7 +564,7 @@ export async function changeRegistryCapital(staticRegistry, directory, scope) {
       const item = scope.engines.find((candidate) => candidate.trading_engine_id === row.trading_engine_id);
       return { trading_engine_id: row.trading_engine_id, symbol: row.symbol,
         hard_cap_quote: item.target_hard_cap_quote,
-        max_order_quote: Math.min(item.target_hard_cap_quote,
+        max_order_quote: orderOnly?item.target_max_order_quote:Math.min(item.target_hard_cap_quote,
           row.max_order_quote + item.target_hard_cap_quote - item.expected_hard_cap_quote) };
     });
     const staticTargets = targets.filter((item) => staticRegistry.engines.some((row) => row.trading_engine_id === item.trading_engine_id));

@@ -256,6 +256,30 @@ test("Rafael legacy caps use a persistent identity-bound override and replay saf
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("order-cap alignment changes one approved unit cap, preserves totals/siblings and replays by exact value",async()=>{
+ const directory=await mkdtemp(join(tmpdir(),"coinops-order-cap-"));
+ const rows=engines.filter(row=>row.exchange_account_id===ACCOUNT_A&&row.quote_asset==="BRL");
+ const installed=validateExecutorRegistry({...registryFixture(rows),legacy_account_id:ACCOUNT_A});
+ const request={operator_id:rows[0].operator_id,exchange_account_id:ACCOUNT_A,credential_ref:"legacy-binance-production",
+  environment:"REAL",quote_asset:"BRL",mode:"ORDER_CAP_ALIGNMENT_V1",expected_account_cap_quote:725,target_account_cap_quote:725,
+  engines:rows.map(row=>({trading_engine_id:row.trading_engine_id,symbol:row.symbol,
+   expected_hard_cap_quote:row.hard_cap_quote,target_hard_cap_quote:row.hard_cap_quote,
+   expected_max_order_quote:row.max_order_quote,target_max_order_quote:row.symbol==="BTCBRL"?19.26268762:row.max_order_quote}))};
+ try{
+  for(const bad of [{...request,target_account_cap_quote:776},
+   {...request,engines:request.engines.map(e=>({...e,target_hard_cap_quote:e.target_hard_cap_quote+1}))},
+   {...request,engines:request.engines.map(e=>({...e,target_max_order_quote:e.target_hard_cap_quote+1}))},
+   {...request,engines:request.engines.map(e=>({...e,target_max_order_quote:e.expected_max_order_quote+1}))}])
+   await assert.rejects(changeRegistryCapital(installed,directory,bad));
+  assert.equal((await changeRegistryCapital(installed,directory,request)).replayed,false);
+  assert.equal((await changeRegistryCapital(installed,directory,request)).replayed,true);
+  const after=await loadCombinedRegistry(installed,directory);
+  const btc=after.engines.find(e=>e.symbol==="BTCBRL"),old=rows.find(e=>e.symbol==="BTCBRL");
+  assert.deepEqual(btc,{...old,max_order_quote:19.26268762});
+  assert.deepEqual(after.engines.find(e=>e.symbol==="SOLBRL"),rows.find(e=>e.symbol==="SOLBRL"));
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+
 test("rolling upgrade bridge is explicit, Rafael-pinned and never repairs a partial/tampered context", () => {
   const pinned = validateExecutorRegistry({ ...registry, legacy_account_id: ACCOUNT_A });
   const options = { allowLegacy: true, path: "/v1/state" };

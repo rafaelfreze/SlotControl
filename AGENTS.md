@@ -235,6 +235,12 @@ no ambiente de destino antes de operação remota.
   TP da nova operação usa seu fill real, nunca o nível planejado atravessado.
   Não usar essa regra como complemento de uma posição parcial. Ver
   `docs/COINOPS_PRIORITY_MARKET_ENTRY_20261101.md`.
+- Recuperação explícita com reinvestimento comprovado pode alinhar somente o
+  limite unitário ao saldo próprio autorizado, sob lease/evento imutável e
+  `ORDER_CAP_ALIGNMENT_V1`. Native CAS precede RPC atômica de metadados; exige
+  balanço contribuição + PnL - taxas íntegro, sem aportes/ganhos manuais/dust
+  ambíguos. Limites totais do motor/conta, posições, valores e irmãos não mudam.
+  Protocolo ausente ou metadados divergentes mantém HOLD antes de cancelar BUY.
 
 ## Backtests e Local
 

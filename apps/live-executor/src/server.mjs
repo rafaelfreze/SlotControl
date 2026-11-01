@@ -111,6 +111,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
     value.account_order_budget_protocol = 1;
     value.order_observation_protocol = 1;
     value.entry_market_protocol = 1;
+    value.order_cap_alignment_protocol = 1;
     cachedHealth = { at: now(), value };
     return value;
   }
@@ -491,6 +492,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           isolation_contract: ACCOUNT_ORDER_POLICY, account_order_budget_protocol: 1,
           order_observation_protocol: 1,
           account_order_budget_enforced: accountBudgetEnabled, unsent_recovery_protocol: 1, entry_market_protocol: 1,
+          order_cap_alignment_protocol:1,
           trading_enabled: flags.tradingEnabled, kill_switch: flags.killSwitch, latency_ms: now() - started };
         engineHealthCache.set(engine.trading_engine_id, { at: now(), value });
         writeJson(response, status, value);

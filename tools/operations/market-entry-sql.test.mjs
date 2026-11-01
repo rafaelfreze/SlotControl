@@ -62,7 +62,15 @@ before(async()=>{
  insert into coinops.robot_v1_slot_gain_totals select '${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}','BTC','REAL',n,
    to_char(now() at time zone 'America/Campo_Grande','YYYY-MM'),0,0 from generate_series(1,25)n;
  `);
+ await db.exec(`alter table coinops.trading_engines add column config jsonb default '{}',add column updated_at timestamptz default now();
+ alter table coinops.robot_v1_live_preparations add column id uuid default gen_random_uuid(),add column compounding_enabled boolean default true,
+ add column max_order_notional_quote numeric,add column updated_at timestamptz default now(),
+ add column operator_id uuid default '${id(1)}',add column exchange_account_id uuid default '${id(5)}',add column config_version int default 1;
+ alter table coinops.robot_v1_live_slot_accounts add column market_pnl_brl numeric default 0,add column manual_gain_brl numeric default 0,
+ add column fees_brl numeric default 0,add column dust_quantity numeric default 0;
+ alter table coinops.account_quote_caps add column operator_id uuid default '${id(1)}';`);
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261101123000_live_priority_market_entry.sql',import.meta.url),'utf8'));
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261101171116_live_recovery_order_cap_alignment.sql',import.meta.url),'utf8'));
 });
 after(async()=>db.close());
 async function intent({missed=false,quote=22,explicit=false}={}){
@@ -108,6 +116,28 @@ test('explicit recovery still needs an exact immutable authorization and preserv
  assert.equal(row.config_snapshot.market_entry_authorization.recovery_priority,'EXPLICIT_OPERATION_V1');
  assert.equal(Number((await query(`select monthly_gain_count from coinops.robot_v1_slot_gain_totals where slot_number=9`))[0].monthly_gain_count),1);
 }));
+
+const align=(target=22,expected=18,owner=lease)=>`select coinops.align_live_recovery_order_cap('${id(7)}','${id(107)}',${expected},${target},5000,5000,'${owner}')e`;
+async function capFixture(){await intent({missed:true,explicit:true});await db.exec(`update coinops.robot_v1_live_preparations set max_order_notional_brl=18;
+ update coinops.robot_v1_live_slot_accounts set contribution_brl=18,market_pnl_brl=4,gain_count=1 where slot_number=7;`);}
+test('unit cap alignment is exact/replayable and never changes capital, siblings, balances or total caps',()=>tx(async()=>{
+ await capFixture();const before=(await query(`select sum(balance_brl)total from coinops.robot_v1_live_slot_accounts`))[0].total;
+ assert.equal((await query(align()))[0].e.new_order_cap,22);assert.equal((await query(align()))[0].e.new_order_cap,22);
+ assert.equal((await query(`select max_order_notional_brl c,configured_live_capital_brl capital,max_total_exposure_brl exposure from coinops.robot_v1_live_preparations`))[0].c,'22');
+ assert.equal((await query(`select sum(balance_brl)total from coinops.robot_v1_live_slot_accounts`))[0].total,before);
+ assert.equal((await query(`select hard_cap_quote c from coinops.trading_engines`))[0].c,'5000');
+ assert.equal((await query(`select count(*)::int n from coinops.robot_v1_live_events where event_type='RECOVERY_ORDER_CAP_ALIGNED'`))[0].n,1);
+}));
+test('unit cap alignment refuses unapproved funds, missing authorization, noncompounding, lease/caps drift or OPEN',()=>tx(async()=>{
+ await capFixture();await denied(align(23));await denied(align(22,17));await denied(align(22,18,id(88)));
+ for(const change of [`update coinops.robot_v1_live_preparations set compounding_enabled=false`,
+  `update coinops.robot_v1_live_slot_accounts set market_pnl_brl=0 where slot_number=7`,
+  `delete from coinops.robot_v1_live_events`,
+  `update coinops.robot_v1_live_slots set entry_state='OPEN'where slot_number=7`,
+  `update coinops.account_quote_caps set hard_cap_quote=4999`]){
+  await db.exec('savepoint case_change');await db.exec(change);await denied(align());await db.exec('rollback to case_change');
+ }
+}));
 test('R$10 cannot replace a funded R$1122 slot; quote must equal complete current own balance',()=>tx(async()=>{
  await intent({quote:10});await db.exec(`update coinops.robot_v1_live_slot_accounts set balance_brl=1122.26938511 where slot_number=7`);
  await denied(call(10));
@@ -144,6 +174,6 @@ test('actual terminal MARKET fill establishes only its new reference and immutab
 test('anon/authenticated cannot execute either financial RPC',async()=>{
  for(const role of ['anon','authenticated'])await tx(async()=>{
   await db.exec(`grant usage on schema coinops to ${role};set local role ${role}`);
-  await denied(call());await denied(`select coinops.finalize_live_market_entry_reference('${id(999)}',1,'${lease}')`);
+  await denied(call());await denied(`select coinops.finalize_live_market_entry_reference('${id(999)}',1,'${lease}')`);await denied(align());
  });
 });

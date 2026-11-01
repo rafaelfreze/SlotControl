@@ -41,6 +41,7 @@ import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-ent
 import { gridContextForPrice, strategyRatesForOrder, type GridPriceContext } from "./live-strategy-snapshot";
 import { marketEntryIntent, planExplicitMissedMarketRecovery, EXPLICIT_MISSED_RECOVERY,
   type MarketEntryIntent } from "./market-entry-policy";
+import { operatorConnectionAdmin } from "./operator-executor-admin";
 import { proveMonthlyGridRepair, proveRetainedGridContext, type MonthlyGridRepair } from "./monthly-grid-recovery";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
@@ -65,7 +66,7 @@ type Scope = { product_id: string; tenant_id: string; user_id: string };
 type Preparation = Scope & EngineScope & { asset: V1Asset; symbol: Symbol; slot_count: number;
   configured_live_capital_brl: number | string; max_order_notional_brl: number | string;
   max_total_exposure_brl: number | string; monthly_target: number;
-  live_enabled: boolean; kill_switch: boolean; config_version: number };
+  live_enabled: boolean; kill_switch: boolean; config_version: number; compounding_enabled?:boolean };
 type Run = Scope & EngineScope & { id: string; asset: V1Asset; symbol: Symbol; status: string; slot_count?: number;
   execution_source?: string;
   created_at: string; reset_idempotency_key: string | null;
@@ -1695,6 +1696,66 @@ async function holdEntryForQuoteBalance(service: Service, run: Run, slot: Slot,
   return false;
 }
 
+/** Exact, explicitly authorized compounded balance only. Aggregate caps never
+ * grow here. Native CAS metadata precedes atomic DB metadata; a crash cannot
+ * authorize an order until both agree and the ordinary financial gates pass. */
+async function alignRecoveryOrderCap(service:Service,run:Run,slot:Slot,account:Account,
+  prep:Preparation,state:LiveExecutorState,globalCap:number):Promise<LiveExecutorState|null>{
+  const target=amount(account.balance_brl),old=amount(prep.max_order_notional_brl);
+  if(!prep.compounding_enabled || amount(account.market_pnl_brl)<=0 || amount(account.manual_gain_brl)!==0
+    || amount(account.dust_quantity)!==0 || account.gain_count<=0
+    || Math.abs(target-Number((amount(account.contribution_brl)+amount(account.market_pnl_brl)-amount(account.fees_brl)).toFixed(8)))>1e-8
+    || target>amount(run.engine!.hard_cap_quote) || target>amount(prep.max_total_exposure_brl)
+    || !state.execution_caps || state.execution_caps.engine!==amount(run.engine!.hard_cap_quote)
+    || state.execution_caps.account!==globalCap || ![old,target].includes(state.execution_caps.max_order))return null;
+  const [engines,preparations]=await Promise.all([
+    service.from("trading_engines").select("id,symbol,hard_cap_quote,executor_shard_id,config")
+      .eq("operator_id",run.operator_id).eq("exchange_account_id",run.exchange_account_id)
+      .eq("environment","REAL").eq("quote_asset",run.quote_asset).eq("status","ACTIVE"),
+    service.from("robot_v1_live_preparations").select("trading_engine_id,max_order_notional_brl")
+      .eq("operator_id",run.operator_id).eq("exchange_account_id",run.exchange_account_id).eq("quote_asset",run.quote_asset),
+  ]);
+  if(engines.error||preparations.error||!engines.data?.length||!preparations.data)throw new Error("COINOPS_RECOVERY_ORDER_CAP_INVENTORY_UNAVAILABLE");
+  const rows=engines.data.map(e=>{const p=preparations.data!.filter(p=>p.trading_engine_id===e.id);
+    if(p.length!==1||!/^executor-[0-9]{2,4}$/.test(e.executor_shard_id))throw new Error("COINOPS_RECOVERY_ORDER_CAP_INVENTORY_UNPROVEN");
+    const cap=Number((e.config as Record<string,unknown>|null)?.max_order_quote??p[0].max_order_notional_brl);
+    return{trading_engine_id:e.id,symbol:e.symbol,executor_shard_id:e.executor_shard_id,
+      expected_hard_cap_quote:Number(e.hard_cap_quote),target_hard_cap_quote:Number(e.hard_cap_quote),
+      expected_max_order_quote:cap,target_max_order_quote:e.id===run.trading_engine_id?target:cap};});
+  if(!rows.some(e=>e.trading_engine_id===run.trading_engine_id&&e.expected_max_order_quote===old)
+    || Math.abs(rows.reduce((n,e)=>n+e.target_hard_cap_quote,0)-globalCap)>1e-8)return null;
+  await renewLease(service,run);
+  try{const result=await operatorConnectionAdmin<{status:string}>(run.operator_id,run.exchange_account_id,
+    run.engine!.executor_shard_id!,"/v1/admin/capital",{quote_asset:run.quote_asset,mode:"ORDER_CAP_ALIGNMENT_V1",
+      expected_account_cap_quote:globalCap,target_account_cap_quote:globalCap,engines:rows},"CAPITAL");
+    if(result.status!=="UPDATED")throw new Error("COINOPS_RECOVERY_ORDER_CAP_NATIVE_UNCONFIRMED");
+  }catch{
+    // Observe metadata after a lost response; never retry an exchange write.
+    const observed=await readLiveExecutorState(run);
+    if(observed.execution_caps?.max_order===old)return null;
+    if(observed.execution_caps?.max_order!==target)throw new Error("COINOPS_RECOVERY_ORDER_CAP_NATIVE_UNCONFIRMED");
+  }
+  const fresh=await readLiveExecutorState(run);
+  const orders=(s:LiveExecutorState)=>s.open_orders.map(o=>`${o.id}:${o.clientOrderId}:${o.side}:${o.price}:${o.originalQuantity}:${o.executedQuantity}`).sort().join("|");
+  if(fresh.execution_caps?.max_order!==target||fresh.execution_caps.engine!==state.execution_caps.engine
+    || fresh.execution_caps.account!==globalCap)throw new Error("COINOPS_RECOVERY_ORDER_CAP_NATIVE_UNCONFIRMED");
+  if(orders(fresh)!==orders(state))return null; // A natural fill must reconcile first.
+  await renewLease(service,run);
+  const saved=await service.rpc("align_live_recovery_order_cap",{p_run_id:run.id,p_slot_id:slot.id,
+    p_expected_cap:old,p_target_cap:target,p_engine_cap:amount(run.engine!.hard_cap_quote),
+    p_account_cap:globalCap,p_lease_owner:run.lease_owner});
+  if(saved.error){
+    const observed=await scopedPreparation(service,run.user_id,run.asset,{environment:"REAL",...run});
+    const proof=await service.from("robot_v1_live_events").select("details").eq("run_id",run.id)
+      .eq("trading_engine_id",run.trading_engine_id)
+      .eq("event_key",`RECOVERY_ORDER_CAP_ALIGNED:${slot.id}:${slot.operation_sequence}:${monthlyPeriodKey(new Date())}`).single();
+    if(amount(observed.max_order_notional_brl)!==target||proof.error||proof.data?.details?.new_order_cap!==target
+      || proof.data.details.old_order_cap!==old)throw new Error("COINOPS_RECOVERY_ORDER_CAP_PERSIST_UNCONFIRMED");
+  }else if(saved.data?.new_order_cap!==target)throw new Error("COINOPS_RECOVERY_ORDER_CAP_PERSIST_UNCONFIRMED");
+  prep.max_order_notional_brl=target;
+  return fresh;
+}
+
 async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState, priorityCommitted = false): Promise<string> {
   await validateRunEngine(service, run);
@@ -1819,7 +1880,17 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const selected=ledger.slots.find(s=>s.id===marketPlan.candidateId)!;
     const balance=amount(ledger.accounts.find(a=>a.slot_number===selected.slot_number)!.balance_brl);
     const quote=Number(balance.toFixed(8));
-    if(quote<state.filters.minNotional || spendable(balance,reclaimed)+1e-8<quote)return "CAPACITY_HOLD";
+    if(quote<state.filters.minNotional)return "CAPACITY_HOLD";
+    if(explicitRecovery&&quote>amount(prep.max_order_notional_brl)){
+      if(entryExecutor.health?.order_cap_alignment_protocol!==1)return "CAPACITY_HOLD";
+      const aligned=await alignRecoveryOrderCap(service,run,selected,
+        ledger.accounts.find(a=>a.slot_number===selected.slot_number)!,prep,state,globalCap);
+      if(!aligned)return "CAPACITY_HOLD";
+      state=aligned;
+      if(state.price.price>marketPlan.referencePrice)return "PRIORITY_RESIDENT_CONFIRMATION_PENDING";
+    }
+    if(spendable(balance,reclaimed)+1e-8<quote||!state.execution_caps
+      || state.execution_caps.max_order+1e-8<quote)return "CAPACITY_HOLD";
     const feeHold=await holdEntryForBnbFeeBalance(service,run,selected,state);
     if(feeHold)return feeHold;
     if(await holdEntryForQuoteBalance(service,run,selected,state,quote,

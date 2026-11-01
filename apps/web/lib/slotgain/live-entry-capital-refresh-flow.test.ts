@@ -48,7 +48,8 @@ type Options = { asset?: "BTC" | "SOL"; currency?: "BRL" | "USDT"; legacy?: bool
   cancel?: "FILLED" | "PARTIALLY_FILLED" | "TIMEOUT_CANCELED" | "TIMEOUT_NEW";
   staleCaps?: boolean; noContribution?: boolean; contributionSource?: "SELECTIVE" | "ALL_SLOTS";
   openContributionOnly?: boolean; crashAfterCancel?: boolean; crashAfterPrepared?: boolean;
-  lostCreateResponse?: boolean; slotCount?: number; monthlyCounts?:Record<number,number>; allocationTimeout?:boolean; marketProtocol?:boolean; marketFill?:boolean };
+  lostCreateResponse?: boolean; slotCount?: number; monthlyCounts?:Record<number,number>; allocationTimeout?:boolean; marketProtocol?:boolean; marketFill?:boolean;
+  unitOrderCap?:number; orderCapAlignment?:boolean; lostOrderCapResponse?:boolean; lostOrderCapRpcResponse?:boolean };
 
 function harness(options: Options = {}) {
   const count = options.slotCount ?? 25;
@@ -59,7 +60,7 @@ function harness(options: Options = {}) {
   const engine = { ...identity, id: identity.trading_engine_id, base_asset: asset, environment: "REAL",
     symbol: `${asset}${identity.quote_asset}`, status: "ACTIVE", global_kill_switch: false,
     account_kill_switch: false, engine_kill_switch: false, legacy_compatible: options.legacy ?? false,
-    hard_cap_quote: 1000, strategy_config_pending: false, slot_count: count };
+    hard_cap_quote: 1000, strategy_config_pending: false, slot_count: count,executor_shard_id:"executor-01" };
   const run: Row = { ...identity, id: "12345678-1234-1234-1234-123456789abc", asset, symbol: engine.symbol,
     engine, status: "ACTIVE", lease_owner: "lease-fixture", lease_until: new Date(Date.now() + 180_000).toISOString(),
     entry_regime: "NORMAL", entry_spacing: 0.03, gain_rate: 0.05, anchor_price: 110,
@@ -103,7 +104,8 @@ function harness(options: Options = {}) {
     robot_v1_live_slots: slots, robot_v1_live_slot_accounts: accounts, robot_v1_live_orders: orders,
     robot_v1_strategy_decisions: [],
     robot_v1_live_preparations: [{ ...identity, live_enabled: true, kill_switch: false,
-      monthly_target: asset === "BTC" ? 7 : 2, max_order_notional_brl: 100, max_total_exposure_brl: 1000, slot_count: count }],
+      monthly_target: asset === "BTC" ? 7 : 2, max_order_notional_brl: options.unitOrderCap??100,
+      compounding_enabled:true,max_total_exposure_brl: 1000, slot_count: count }],
     account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [], robot_v1_live_alerts: [],
     robot_v1_ath_profiles: [profile],
     strategy_bulk_batches: [], strategy_bulk_engine_updates: [], account_order_budget_reservations:[],
@@ -115,6 +117,7 @@ function harness(options: Options = {}) {
   };
   const writes: Array<{ table: string; values: Row; ids: unknown[] }> = [];
   const calls: Array<{ kind: string; input?: Row }> = [];
+  let nativeOrderCap=options.unitOrderCap??100;
   const exchange = new Map<string, Row>();
   for (const row of orders) exchange.set(String(row.client_order_id), {
     symbol: engine.symbol, side: row.side, clientOrderId: row.client_order_id,
@@ -181,6 +184,16 @@ function harness(options: Options = {}) {
     async rpc(name: string, params: Row) {
       calls.push({ kind: name, input: params });
       assert.equal(params.p_lease_owner, run.lease_owner);
+      if(name==="align_live_recovery_order_cap"){
+        assert.equal(params.p_expected_cap,options.unitOrderCap);assert.equal(params.p_engine_cap,1000);assert.equal(params.p_account_cap,1000);
+        tables.robot_v1_live_preparations[0].max_order_notional_brl=params.p_target_cap;
+        Object.assign(engine,{config:{max_order_quote:params.p_target_cap}});
+        const details={old_order_cap:params.p_expected_cap,new_order_cap:params.p_target_cap};
+        tables.robot_v1_live_events.push({...identity,run_id:run.id,
+          event_key:`RECOVERY_ORDER_CAP_ALIGNED:${params.p_slot_id}:1:${monthlyPolicy.monthlyPeriodKey(new Date())}`,
+          event_type:"RECOVERY_ORDER_CAP_ALIGNED",details});
+        return options.lostOrderCapRpcResponse?{data:null,error:{message:"lost metadata RPC response"}}:{data:details,error:null};
+      }
       if (name === "allocate_live_monthly_entry_levels") {
         calls.push({kind:"allocate",input:structuredClone(params)});
         assert.equal((params.p_expected as unknown[]).length,count);
@@ -253,11 +266,19 @@ function harness(options: Options = {}) {
       priceTick: 0.01, minQuantity: 0.001, maxQuantity: 10000, minNotional: 5 },
     balances: [{ asset: identity.quote_asset, free: 1000 }, { asset: "BNB", free: .001 }], supports_unfilled_buy_cancel: true,
     bnb_quote_price: { symbol: `BNB${identity.quote_asset}`, price: 6000, observedAt: new Date().toISOString() },
-    execution_caps: { engine: options.staleCaps ? 500 : 1000, account: 1000, max_order: 100 },
+    execution_caps: { engine: options.staleCaps ? 500 : 1000, account: 1000, max_order: nativeOrderCap },
     open_orders: [...exchange.values()].filter((o) => ["NEW", "PARTIALLY_FILLED"].includes(String(o.status)))
       .map((o) => ({ ...o, id: o.orderId })),
   });
   const dependencies: Record<string, unknown> = {
+    "./operator-executor-admin":{operatorConnectionAdmin:async(...args:unknown[])=>{
+      assert.equal(args[0],run.operator_id);assert.equal(args[1],run.exchange_account_id);assert.equal(args[2],"executor-01");
+      assert.equal(args[3],"/v1/admin/capital");const input=args[4]as Row;
+      assert.equal(input.mode,"ORDER_CAP_ALIGNMENT_V1");assert.equal(input.expected_account_cap_quote,1000);assert.equal(input.target_account_cap_quote,1000);
+      const rows=input.engines as Row[];assert.equal(rows.length,1);assert.equal(rows[0].expected_hard_cap_quote,1000);assert.equal(rows[0].target_hard_cap_quote,1000);
+      calls.push({kind:"native-order-cap",input});nativeOrderCap=Number(rows[0].target_max_order_quote);
+      if(options.lostOrderCapResponse)throw Error("metadata response lost");return{status:"UPDATED"};
+    }},
     "../supabase/service-role":{createServiceRoleClient:()=>service},
     "./live-audit-event":liveAudit,
     "./live-ledger-read": liveLedgerRead, "./live-read-error": liveReadError,
@@ -296,7 +317,8 @@ function harness(options: Options = {}) {
     "./operator-context": scope,
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
     "./operator-context-server": { resolveOperatorEngine: async () => engine },
-    "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE",health:{entry_market_protocol:options.marketProtocol?1:undefined} }) },
+    "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE",health:{entry_market_protocol:options.marketProtocol?1:undefined,
+      order_cap_alignment_protocol:options.orderCapAlignment?1:undefined} }) },
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => options.monthlyCounts
       ? monthlyPolicy.rankMonthlySlots(asset,new Date().toISOString(),slots.map(s=>({physicalSlotId:String(s.id),
         physicalSlotNumber:Number(s.slot_number),entryState:String(s.entry_state),balanceUsdc:22,
@@ -483,6 +505,34 @@ test("prospective priority-crossed entry works without sweeping legacy MISSED; u
  const future=missedMarketHarness({},false);assert.equal(await future.arm(),"MARKET_ENTRY_SUBMITTED");
  const old=missedMarketHarness({marketProtocol:false});assert.equal(await old.arm(),"MARKET_ENTRY_PROTOCOL_HOLD");
  assert.equal(old.calls.filter(c=>c.kind==="create"||c.kind==="cancel").length,0);
+});
+
+for(const failure of ["none","lost-native","lost-rpc"] as const)test(`explicit funded reinvestment aligns only unit cap before full-slot MARKET (${failure})`,async()=>{
+ const h=missedMarketHarness({monthlyCounts:{2:1,3:0},unitOrderCap:18,orderCapAlignment:true,
+  lostOrderCapResponse:failure==="lost-native",lostOrderCapRpcResponse:failure==="lost-rpc"});
+ Object.assign(h.accounts[2],{contribution_brl:18,market_pnl_brl:42,fees_brl:0,manual_gain_brl:0,dust_quantity:0,gain_count:1});
+ const auth=(h.run.config_snapshot as Row).market_entry_authorization as Row;
+ Object.assign(auth,{recovery_priority:marketPolicy.EXPLICIT_MISSED_RECOVERY,slot_number:3,
+  authorization_event_key:`REQUEST:${h.selected.id}:1:${monthlyPolicy.monthlyPeriodKey(new Date())}:${marketPolicy.EXPLICIT_MISSED_RECOVERY}`});
+ const before=structuredClone(h.accounts);
+ assert.equal(await h.arm(),"MARKET_ENTRY_SUBMITTED");assert.deepEqual(h.accounts,before);
+ assert.equal(h.calls.filter(c=>c.kind==="native-order-cap").length,1);
+ assert.equal(h.calls.filter(c=>c.kind==="align_live_recovery_order_cap").length,1);
+ assert.equal(h.tables.robot_v1_live_preparations[0].max_order_notional_brl,60);
+ assert.equal(h.tables.robot_v1_live_preparations[0].max_total_exposure_brl,1000);
+ assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.side==="BUY").length,1);
+ assert.equal(h.calls.find(c=>c.kind==="create"&&c.input?.side==="BUY")?.input?.quoteOrderQty,"60");h.unchangedOpen();
+});
+
+test("unsupported cap protocol or unproven reinvestment preserves the resident BUY and caps",async()=>{
+ for(const protocol of [false,true]){
+  const h=missedMarketHarness({monthlyCounts:{2:1,3:0},unitOrderCap:18,orderCapAlignment:protocol});
+  const auth=(h.run.config_snapshot as Row).market_entry_authorization as Row;
+  Object.assign(auth,{recovery_priority:marketPolicy.EXPLICIT_MISSED_RECOVERY,slot_number:3,
+   authorization_event_key:`REQUEST:${h.selected.id}:1:${monthlyPolicy.monthlyPeriodKey(new Date())}:${marketPolicy.EXPLICIT_MISSED_RECOVERY}`});
+  assert.equal(await h.arm(),"CAPACITY_HOLD");assert.equal(h.calls.filter(c=>["create","cancel","native-order-cap"].includes(c.kind)).length,0);
+  assert.equal(h.tables.robot_v1_live_preparations[0].max_order_notional_brl,18);h.unchangedOpen();
+ }
 });
 
 test("lost MARKET response reconciles the exact client id and never submits another BUY",async()=>{

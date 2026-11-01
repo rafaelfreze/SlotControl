@@ -87,6 +87,36 @@ Testes isolados cobrem saldo integral/ganhos, metas/virada mensal/N/N,
 LIMIT residente, fill/cancel concorrente, HTTP 503, resposta perdida,
 idempotência, referência/TP reais e permissões SQL. Testes não fazem trades LIVE.
 
+## Limite unitário legado e saldo reinvestido
+
+A tentativa real do Rafael #7 expôs um segundo guard legítimo: seu limite por
+ordem ainda era R$18,00 na preparação e no executor, enquanto o slot detinha
+R$19,26268762 (R$18 + R$1,44432 de PnL - R$0,18163238 de taxas). O worker retornou
+CAPACITY_HOLD antes de cancelar a NEXT BUY. Capital total de motor R$450 e conta
+R$775 já comportavam a exposição; nenhum desses limites precisa crescer.
+
+Somente a recuperação explícita, vazia e comprovada pode alinhar o teto unitário
+ao saldo autorizado. O backend mantém inventário completo da conta/moeda e envia
+`ORDER_CAP_ALIGNMENT_V1` ao admin/capital: todos os hard caps permanecem iguais,
+exatamente um limite unitário aumenta por CAS e os irmãos conservam seus valores.
+O protocolo nativo é anunciado em health. Não editar registry/vault manualmente.
+
+Após readback nativo sem alteração de ordens, a RPC
+`align_live_recovery_order_cap` valida lease, identidade, autorização imutável,
+operação MISSED vazia, compounding e saldo formado por contribuição + PnL - taxas.
+Somente metadados da preparação e `engine.config.max_order_quote` são alinhados
+atomicamente, com evento RECOVERY_ORDER_CAP_ALIGNED. Não cria ganhos, saldo,
+aporte, ordem nem altera gain/meta/spacing. Falha ou crash mantém a operação
+fechada até os dois lados concordarem; resposta perdida exige readback.
+
+Migration: `20261101171116_live_recovery_order_cap_alignment.sql`. SECURITY INVOKER,
+EXECUTE apenas service_role. O transporte financeiro conserva seus hard caps e
+novo preflight verifica também o teto nativo antes de qualquer cancelamento.
+Esta continuação altera o admin runtime: requer release comum/rollout sequencial,
+versões web exatas em janela UTC limitada, paridade e certificação de admissão.
+Os testes cobrem replay, perdas de resposta, cap/lease/saldo divergentes,
+permissões, preservação dos irmãos e veto sem protocolo ou ganho comprovado.
+
 ## Limitação distinta: parcial da Dete
 
 Dete/SOLBRL #8 operação 3 foi uma BUY original de 2,187 SOL a R$513,10
