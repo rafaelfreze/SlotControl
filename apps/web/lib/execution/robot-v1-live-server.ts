@@ -2361,10 +2361,22 @@ async function verifyPartialRecoverySource(service:Service,run:Run,ledger:Ledger
       ||LIVE_ACTIVE_ORDER_STATUSES.has(o.status)||!o.trades_reconciled)))throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
   await assertAllPositionsProtected(run,{...ledger,slots:ledger.slots.filter(s=>s.id!==slot.id)},state);
   if(ledger.orders.some(o=>o.side==="BUY"&&LIVE_ACTIVE_ORDER_STATUSES.has(o.status)))throw Error("COINOPS_PARTIAL_RECOVERY_RESIDENT_BUY");
-  const observation=await readLiveExecutorOrderObservation(run,source.client_order_id,source.exchange_order_id);
+  // The combined HTTP observation protocol is certified for N>25 only. Keep
+  // legacy25 on its existing exact query/trades endpoints and prove totals.
+  const observation=configuredEngineSlotCount(run.engine??run)>25
+    ?await readLiveExecutorOrderObservation(run,source.client_order_id,source.exchange_order_id)
+    :await Promise.all([readLiveExecutorOrder(run,source.client_order_id,source.exchange_order_id),
+      readLiveExecutorTrades(run,source.client_order_id,source.exchange_order_id)])
+      .then(([order,trades])=>({order:order.order,trades:trades.trades}));
   if(!observation.order||observation.order.status!==source.status
     ||observation.order.executedQuantity!==amount(source.executed_quantity)
-    ||observation.order.cumulativeQuoteQuantity!==amount(source.cumulative_quote))throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
+    ||observation.order.cumulativeQuoteQuantity!==amount(source.cumulative_quote)||!Array.isArray(observation.trades)
+    ||new Set(observation.trades.map(t=>t.id)).size!==observation.trades.length
+    ||observation.trades.some(t=>!t.isBuyer||!(t.quantity>0)||!(t.quoteQuantity>0)||!(t.commission>=0))
+    ||Math.abs(observation.trades.reduce((sum,t)=>sum+t.quantity,0)-amount(source.executed_quantity))>1e-12
+    ||Math.abs(observation.trades.reduce((sum,t)=>sum+t.quoteQuantity,0)-amount(source.cumulative_quote))>1e-8
+    ||Math.abs(observation.trades.reduce((sum,t)=>sum+(t.commissionAsset===run.asset?t.commission:0),0)-amount(source.fee_base))>1e-12)
+    throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
   const incident=await readOperatorRecoveryIncident(service,run);
   if(!incident||incident.code!=="COINOPS_LIVE_TP_FILTER_UNPROTECTABLE"
     ||incident.details?.root_code!==incident.code||incident.details.stage!=="PROTECT_TP"

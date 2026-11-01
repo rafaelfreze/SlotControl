@@ -48,6 +48,7 @@ type Runtime = {
   applyPendingStrategyUpdate: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<string>;
 };
 type Options = { asset?: "BTC" | "SOL"; currency?: "BRL" | "USDT"; legacy?: boolean;
+  forbidObservation?:boolean;
   cancel?: "FILLED" | "PARTIALLY_FILLED" | "TIMEOUT_CANCELED" | "TIMEOUT_NEW";
   staleCaps?: boolean; noContribution?: boolean; contributionSource?: "SELECTIVE" | "ALL_SLOTS";
   openContributionOnly?: boolean; crashAfterCancel?: boolean; crashAfterPrepared?: boolean;
@@ -357,6 +358,7 @@ function harness(options: Options = {}) {
     },
     "./live-executor-transport": {
       readLiveExecutorOrderObservation:async (_run:unknown,id:string)=>{
+        if(options.forbidObservation)throw Error("N25_MUST_USE_QUERY_TRADES");
         calls.push({kind:"observe",input:{id}});const actual=exchange.get(id);
         return {order:structuredClone(actual??null),trades:!actual?null:Number(actual.executedQuantity)>0?[{
           id:"trade-fixture",quantity:actual.executedQuantity,quoteQuantity:actual.cumulativeQuoteQuantity,
@@ -424,7 +426,7 @@ function harness(options: Options = {}) {
 }
 
 test("owner authorizes terminal partial; ordinary next worker prepares it once and leaves entry gates held until TP/reconciliation",async()=>{
- const h=harness({asset:"SOL",marketFill:true}),source=h.orders[2];
+ const h=harness({asset:"SOL",marketFill:true,forbidObservation:true}),source=h.orders[2];
  Object.assign(source,{status:"CANCELED",executed_quantity:.004,cumulative_quote:.4,trades_reconciled:true,exchange_order_id:"432"});
  Object.assign(h.slots[1],{entry_state:"OPEN",position_quantity:.004,position_committed_brl:.4});
  Object.assign(h.exchange.get(String(source.client_order_id))!,{status:"CANCELED",executedQuantity:.004,cumulativeQuoteQuantity:.4,orderId:"432"});

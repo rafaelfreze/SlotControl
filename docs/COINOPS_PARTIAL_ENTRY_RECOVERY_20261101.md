@@ -26,6 +26,8 @@ Exige fonte terminal própria com fills exatos, incidente TP_FILTER no mesmo
 episódio, 25/25 (ou N canônico) completos, todos os outros TPs protegidos,
 ausência de outra BUY residente e filtros/BNB frescos. Salva autorização/evento
 imutáveis; não envia a ordem no controle. Resposta incerta exige readback.
+Motores de 25 usam query-order + trades com totais/fees coerentes; o protocolo
+HTTP combinado de observação permanece exclusivo dos motores N>25 certificados.
 
 O worker normal usa a mesma lease, planner de recuperação, journal query-first,
 clientOrderId único, guard de dispatch e ledger. O complemento é o mínimo
