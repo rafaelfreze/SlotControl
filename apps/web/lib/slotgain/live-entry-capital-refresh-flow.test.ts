@@ -455,6 +455,23 @@ test("requested missed owner: zero-fill NEXT BUY canceled, full slot MARKET, act
  assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.type==="MARKET").length,1,"no duplicate catch-up");
 });
 
+test("explicit operator recovery wins over 1/7 resident versus 0/7 returning slot once, preserves gains and ordinary queue",async()=>{
+ const h=missedMarketHarness({monthlyCounts:{2:1,3:0}});
+ assert.equal(await h.arm(),"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT");
+ const auth=(h.run.config_snapshot as Row).market_entry_authorization as Row;
+ Object.assign(auth,{recovery_priority:marketPolicy.EXPLICIT_MISSED_RECOVERY,slot_number:3,
+  authorization_event_key:`REQUEST:${h.selected.id}:1:${monthlyPolicy.monthlyPeriodKey(new Date())}:${marketPolicy.EXPLICIT_MISSED_RECOVERY}`});
+ const accounts=structuredClone(h.accounts);
+ assert.equal(await h.arm(),"MARKET_ENTRY_SUBMITTED");assert.equal(h.selected.entry_state,"OPEN");
+ assert.deepEqual(h.accounts,accounts);assert.equal(h.calls.filter(c=>c.kind==="cancel").length,1);
+ assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.type==="MARKET").length,1);
+ assert.equal(((h.run.config_snapshot as Row).market_entry_intent as Row).recovery_priority,marketPolicy.EXPLICIT_MISSED_RECOVERY);
+ await h.runtime.finalizeMarketEntryReferences(h.service,h.run,structuredClone({slots:h.slots,orders:h.orders,accounts:h.accounts}),h.state());
+ await h.runtime.ensureTakeProfits(h.service,h.run,structuredClone({slots:h.slots,orders:h.orders,accounts:h.accounts}),h.state());
+ assert.equal(await h.arm(),"NEXT_BUY_ARMED");
+ assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.type==="MARKET").length,1);h.unchangedOpen();
+});
+
 for(const cancel of ["FILLED","PARTIALLY_FILLED","TIMEOUT_NEW"] as const)test(`market catch-up never duplicates a resident with race ${cancel}`,async()=>{
  const h=missedMarketHarness({cancel});
  if(cancel==="TIMEOUT_NEW")await assert.rejects(h.arm(),/EXECUTOR_HTTP_503/);

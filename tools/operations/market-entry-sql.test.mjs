@@ -65,10 +65,12 @@ before(async()=>{
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261101123000_live_priority_market_entry.sql',import.meta.url),'utf8'));
 });
 after(async()=>db.close());
-async function intent({missed=false,quote=22}={}){
+async function intent({missed=false,quote=22,explicit=false}={}){
  const period=(await query(`select to_char(now()at time zone'America/Campo_Grande','YYYY-MM')p`))[0].p;
  const authorization={policy:'PRIORITY_MISSED_MARKET_V1',run_id:id(7),engine_id:id(6),slot_id:id(107),slot_number:7,
-  operation_sequence:8,period,source_missed_at:'2026-11-01T04:00:28Z',quote_cap:quote,authorization_event_key:'REQUEST:7:8'};
+  operation_sequence:8,period,source_missed_at:'2026-11-01T04:00:28Z',quote_cap:quote,
+  authorization_event_key:explicit?'REQUEST:7:8:EXPLICIT_OPERATION_V1':'REQUEST:7:8',
+  ...(explicit?{recovery_priority:'EXPLICIT_OPERATION_V1'}:{})};
  const market={policy:'PRIORITY_MISSED_MARKET_V1',run_id:id(7),engine_id:id(6),slot_id:id(107),slot_number:7,
   operation_sequence:8,decision_id:decision,quote,reference_price:432279,reason:missed?'OPERATOR_MISSED_ENTRY':'PROSPECTIVE_CROSSED_ENTRY',period};
  await db.exec(`update coinops.robot_v1_live_runs set config_snapshot=${j({market_entry_intent:market,...(missed?{market_entry_authorization:authorization}:{})})};
@@ -76,7 +78,7 @@ async function intent({missed=false,quote=22}={}){
   '${id(5)}','${id(6)}','${id(7)}','${id(107)}','REAL',8,'OPEN_ENTRY_MARKET','PENDING',null,null);
  ${missed?`update coinops.robot_v1_live_slots set entry_state='MISSED',missed_at='2026-11-01T04:00:28Z'where slot_number=7;
  insert into coinops.robot_v1_live_events(run_id,trading_engine_id,event_key,event_type,slot_number,details)
- values('${id(7)}','${id(6)}','REQUEST:7:8','MISSED_MARKET_ENTRY_REQUESTED',7,${j(authorization)});`:''}`);
+ values('${id(7)}','${id(6)}',${q(authorization.authorization_event_key)},'MISSED_MARKET_ENTRY_REQUESTED',7,${j(authorization)});`:''}`);
  return market;
 }
 const call=(quote=22,owner=lease)=>`select (coinops.prepare_robot_v1_live_order('${id(7)}','${id(107)}','BUY','ENTRY',1,
@@ -98,6 +100,13 @@ test('legacy MISSED requires exact operator request event; ordinary history cann
 test('legacy MISSED requested current operation enters once and clears only its missed flag',()=>tx(async()=>{
  await intent({missed:true});await query(call());const row=(await query(`select entry_state,missed_at from coinops.robot_v1_live_slots where slot_number=7`))[0];
  assert.equal(row.entry_state,'ARMED');assert.equal(row.missed_at,null);
+}));
+test('explicit recovery still needs an exact immutable authorization and preserves gain counters',()=>tx(async()=>{
+ await intent({missed:true,explicit:true});
+ await db.exec(`update coinops.robot_v1_slot_gain_totals set monthly_gain_count=1,lifetime_gain_count=1 where slot_number=9`);
+ const row=(await query(call()))[0];assert.equal(row.requested_quote,'22');
+ assert.equal(row.config_snapshot.market_entry_authorization.recovery_priority,'EXPLICIT_OPERATION_V1');
+ assert.equal(Number((await query(`select monthly_gain_count from coinops.robot_v1_slot_gain_totals where slot_number=9`))[0].monthly_gain_count),1);
 }));
 test('R$10 cannot replace a funded R$1122 slot; quote must equal complete current own balance',()=>tx(async()=>{
  await intent({quote:10});await db.exec(`update coinops.robot_v1_live_slot_accounts set balance_brl=1122.26938511 where slot_number=7`);

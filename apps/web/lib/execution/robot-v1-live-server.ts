@@ -39,7 +39,8 @@ import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
 import { gridContextForPrice, strategyRatesForOrder, type GridPriceContext } from "./live-strategy-snapshot";
-import { marketEntryIntent, type MarketEntryIntent } from "./market-entry-policy";
+import { marketEntryIntent, planExplicitMissedMarketRecovery, EXPLICIT_MISSED_RECOVERY,
+  type MarketEntryIntent } from "./market-entry-policy";
 import { proveMonthlyGridRepair, proveRetainedGridContext, type MonthlyGridRepair } from "./monthly-grid-recovery";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
@@ -1810,7 +1811,9 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     ...(refresh?.status === "REPLACE" && capitalSources.length ? { capitalRefresh: {
       quantityBefore: amount(active.requested_quantity), quantityAfter: refresh.quantity, notional: refresh.notional,
     } } : {}) } : null;
-  const marketPlan=planStrategyMissedMarketEntry(context(run,contextKey),candidates,observedFloor,run.entry_regime,resident);
+  const explicitRecovery=planExplicitMissedMarketRecovery(context(run,contextKey),run.trading_engine_id,
+    candidates,observedFloor,run.entry_regime,resident,run.config_snapshot.market_entry_authorization);
+  const marketPlan=explicitRecovery??planStrategyMissedMarketEntry(context(run,contextKey),candidates,observedFloor,run.entry_regime,resident);
   if(marketPlan){
     if(entryExecutor.health?.entry_market_protocol!==1)return "MARKET_ENTRY_PROTOCOL_HOLD";
     const selected=ledger.slots.find(s=>s.id===marketPlan.candidateId)!;
@@ -1823,7 +1826,8 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
       active?.status==="NEW"&&observedActive?reclaimed:0))return "QUOTE_BALANCE_HOLD";
     await event(service,run,`MARKET_ENTRY_REQUESTED:${marketPlan.decision.decision_id}`,"MARKET_ENTRY_REQUESTED",
       selected.slot_number,{policy:ENTRY_MARKET_POLICY,operation_sequence:selected.operation_sequence,
-        reference_price:marketPlan.referencePrice,quote,old_client_order_id:active?.client_order_id??null});
+        reference_price:marketPlan.referencePrice,quote,old_client_order_id:active?.client_order_id??null,
+        ...(explicitRecovery?{recovery_priority:EXPLICIT_MISSED_RECOVERY}:{})});
     if(active){
       if(!observedActive || state.supports_unfilled_buy_cancel!==true)return "PRIORITY_RESIDENT_CONFIRMATION_PENDING";
       if(!await cancelOwnedEntry(service,run,active,true))return "ENTRY_FILLED_DURING_REPLACEMENT";
@@ -1833,7 +1837,8 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const intent:MarketEntryIntent={policy:ENTRY_MARKET_POLICY,run_id:run.id,engine_id:run.trading_engine_id,
       slot_id:selected.id,slot_number:selected.slot_number,operation_sequence:selected.operation_sequence,
       decision_id:marketPlan.decision.decision_id,quote,reference_price:marketPlan.referencePrice,
-      reason:selected.entry_state==="MISSED"?"OPERATOR_MISSED_ENTRY":"PROSPECTIVE_CROSSED_ENTRY",period};
+      reason:selected.entry_state==="MISSED"?"OPERATOR_MISSED_ENTRY":"PROSPECTIVE_CROSSED_ENTRY",period,
+      ...(explicitRecovery?{recovery_priority:EXPLICIT_MISSED_RECOVERY}:{})};
     await renewLease(service,run);
     const snapshot={...run.config_snapshot,market_entry_intent:intent};
     const saved=await service.from("robot_v1_live_runs").update({config_snapshot:snapshot})
@@ -2281,10 +2286,11 @@ export async function authorizeMissedMarketEntry(runId:string,slotNumber:number,
       || Math.abs(Date.parse(missed.data.observed_at)-Date.parse(slot.missed_at))>5000)
       throw new Error("COINOPS_MARKET_ENTRY_MISSED_EVIDENCE_UNPROVEN");
     const account=ledger.accounts.find(a=>a.slot_number===slotNumber)!;
-    const period=monthlyPeriodKey(new Date()),key=`MISSED_MARKET_ENTRY_REQUESTED:${slot.id}:${operationSequence}:${period}`;
+    const period=monthlyPeriodKey(new Date()),key=`MISSED_MARKET_ENTRY_REQUESTED:${slot.id}:${operationSequence}:${period}:${EXPLICIT_MISSED_RECOVERY}`;
     const authorization={policy:ENTRY_MARKET_POLICY,run_id:run.id,engine_id:run.trading_engine_id,
       slot_id:slot.id,slot_number:slotNumber,operation_sequence:operationSequence,period,
-      source_missed_at:slot.missed_at,quote_cap:amount(account.balance_brl),authorization_event_key:key};
+      source_missed_at:slot.missed_at,quote_cap:amount(account.balance_brl),authorization_event_key:key,
+      recovery_priority:EXPLICIT_MISSED_RECOVERY};
     await event(service,run,key,"MISSED_MARKET_ENTRY_REQUESTED",slotNumber,authorization);
     await renewLease(service,run);
     const snapshot={...run.config_snapshot,market_entry_authorization:authorization};

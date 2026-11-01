@@ -221,6 +221,13 @@ no ambiente de destino antes de operação remota.
 - Níveis prospectivos inferiores ficam na fila. MISSED histórico exige pedido
   explícito escopado a run/engine/slot/operação, prova de ausência de execução e
   evento imutável; não converter todo o histórico em ordens de mercado.
+- Esclarecimento posterior do proprietário em 01/11: a recuperação explícita
+  de uma operação MISSED identificada usa `EXPLICIT_OPERATION_V1`, como Rafael
+  BTCBRL #7/operação8. Seu conjunto permitido fica restrito à operação autorizada
+  para que outro slot com gains no novo mês não a mantenha abandonada. Preservar
+  meta/elegibilidade do próprio slot, grupos ATH, proteção/concorrência da BUY
+  residente e prioridade mensal normal após a recuperação. Autorizações antigas
+  sem esse marcador continuam na fila normal; não inferir exceções em massa.
 - BUY residente NEW/zero-fill só sai por ONLY_NEW e reconciliação; fill concorrente
   vence. OPEN/partial não são entradas perdidas. Ownership, lease, idempotência,
   prioridade mensal/15+Reserve, gain, spacing e TPs anteriores permanecem.

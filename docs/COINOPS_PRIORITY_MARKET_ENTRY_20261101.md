@@ -26,6 +26,29 @@ O caso autorizado nesta manutenção é Rafael/BTCBRL físico #7, operação 8; 
 MISSED antigos não são varridos. O endpoint oficial usa credencial de controle
 dedicada, resolve valores server-side e não aceita preço ou valor do caller.
 
+### Recuperação explícita de operação após a virada
+
+Esclarecimento posterior em 01/11: o operador pediu que Rafael #7 fosse efetivamente
+recolocado na operação, sem continuar aguardando o #9 (1/7 no mês contra 0/7 do #7,
+que possui 7 ganhos históricos). A autorização anterior somente liberava sua
+elegibilidade; a ordenação mensal mantinha o #9 na frente. Não havia fill do #7.
+
+`EXPLICIT_OPERATION_V1` restringe o conjunto permitido de uma decisão de recuperação
+à operação MISSED expressamente identificada. A mesma Strategy Engine calcula a
+entrada, mantendo os contadores reais, a meta do próprio slot e os gates de
+regime/residente/partial-fill. Depois do fill, a fila mensal normal volta a valer.
+Não é uma mudança global de prioridade para lifetime nem uma varredura de MISSED.
+
+A nova ação administrativa registra evento com sufixo próprio, sem sobrescrever
+o pedido antigo, e snapshot escopado ao engine/run/slot/sequência/mês/orçamento.
+A preparação SQL continua exigindo igualdade exata com esse evento imutável.
+Autorizações antigas sem marcador não ganham prioridade excepcional. Uma operação
+OPEN/partial, mês/operação diferentes ou autorização sem prova nunca qualifica.
+BUY residente atravessada ou com fill prevalece; apenas NEW/zero-fill comprovada
+pode ser cancelada via ONLY_NEW. O TP da nova operação usa o fill real e as ordens
+anteriores permanecem intactas. O ajuste é web-only, sem migration ou mudança no
+grafo nativo: verificar fingerprint, sem restart dos executores.
+
 ## Protocolo financeiro
 
 1. Claim/lease do engine, configuração sem atualização pendente, ledger completo,

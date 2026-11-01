@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ENTRY_MARKET_POLICY, planStrategyMissedMarketEntry, planStrategyNextEntry, type StrategyCandidate } from "./strategy-engine.ts";
 import { ENTRY_PRIORITY_POLICY } from "./monthly-slot-policy.ts";
-import { marketEntryIntent } from "./market-entry-policy.ts";
+import { marketEntryIntent, planExplicitMissedMarketRecovery, EXPLICIT_MISSED_RECOVERY } from "./market-entry-policy.ts";
 
 const ctx={asset:"BTC" as const,cycleId:"run",observedAt:"2026-11-01T04:00:30Z",
   entryPriorityPolicy:ENTRY_PRIORITY_POLICY,entryMarketPolicy:ENTRY_MARKET_POLICY};
@@ -68,4 +68,24 @@ test("an ENTRY quote needs exact immutable market intent; foreign scope, amount,
     {requested_quantity:.00004},{strategy_decision_id:"other"}])assert.throws(()=>marketEntryIntent({...order,...change}));
   assert.equal(marketEntryIntent({...order,requested_quote:null,requested_quantity:.00004,price:432279}),null,
     "immutable old LIMIT is not reinterpreted by a later policy");
+});
+
+test("explicit historical recovery selects only its empty operation despite a higher normal monthly owner",()=>{
+ const s=slots();Object.assign(s[0]!,{state:"MISSED",buyPrice:432279,monthlyGainCount:0});
+ Object.assign(s[1]!,{state:"ARMED",buyPrice:419440,monthlyGainCount:1,lifetimeGainCount:4});
+ const resident={candidateId:s[1]!.id,executedQuantity:0},original=structuredClone(s);
+ const auth={policy:ENTRY_MARKET_POLICY,recovery_priority:EXPLICIT_MISSED_RECOVERY,run_id:"run",engine_id:"engine",
+  slot_id:s[0]!.id,slot_number:1,operation_sequence:8,period:"2026-11",quote_cap:1122.26938511,
+  authorization_event_key:`REQUEST:slot-1:8:2026-11:${EXPLICIT_MISSED_RECOVERY}`};
+ assert.equal(planStrategyMissedMarketEntry(ctx,s,423673,"NORMAL",resident),null,"normal monthly priority remains unchanged");
+ const plan=()=>planExplicitMissedMarketRecovery(ctx,"engine",s,423673,"NORMAL",resident,auth);
+ assert.equal(plan()!.candidateId,s[0]!.id);assert.equal(plan()!.requiresResidentCancel,true);
+ assert.equal(plan()!.decision.target_notional,1122.26938511);assert.deepEqual(s,original);
+ for(const change of [{engine_id:"other"},{run_id:"other"},{operation_sequence:9},{slot_number:2},
+   {period:"2026-10"},{recovery_priority:undefined},{authorization_event_key:"REQUEST"},{quote_cap:10},{quote_cap:undefined}])
+  assert.equal(planExplicitMissedMarketRecovery(ctx,"engine",s,423673,"NORMAL",resident,{...auth,...change}),null);
+ s[0]!.monthlyEntryEligible=false;assert.equal(plan(),null);s[0]!.monthlyEntryEligible=true;
+ s[0]!.state="OPEN";assert.equal(plan(),null);s[0]!.state="MISSED";
+ s[1]!.state="PARTIALLY_FILLED";assert.equal(plan(),null);s[1]!.state="ARMED";
+ assert.equal(planExplicitMissedMarketRecovery(ctx,"engine",s,423673,"NORMAL",{...resident,executedQuantity:.001},auth),null);
 });
