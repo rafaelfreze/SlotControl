@@ -277,7 +277,7 @@ function harness(options: Options = {}) {
       assert.equal(args[0],"/v1/admin/capital");const input=args[1]as Row;
       assert.equal(input.operator_id,run.operator_id);assert.equal(input.exchange_account_id,run.exchange_account_id);
       assert.equal(input.trading_engine_id,run.trading_engine_id);assert.equal(input.environment,"REAL");
-      assert.equal(input.credential_ref,engine.legacy_compatible&&engine.is_legacy_default?"legacy-binance-production":`account_${run.exchange_account_id.replaceAll("-","")}`);
+      assert.equal(input.credential_ref,engine.legacy_compatible&&engine.is_legacy_default?"legacy-binance-production":`account_${String(run.exchange_account_id).replaceAll("-","")}`);
       assert.equal(input.mode,"ORDER_CAP_ALIGNMENT_V1");assert.equal(input.expected_account_cap_quote,1000);assert.equal(input.target_account_cap_quote,1000);
       const rows=input.engines as Row[];assert.equal(rows.length,1);assert.equal(rows[0].expected_hard_cap_quote,1000);assert.equal(rows[0].target_hard_cap_quote,1000);
       calls.push({kind:"native-order-cap",input});nativeOrderCap=Number(rows[0].target_max_order_quote);
