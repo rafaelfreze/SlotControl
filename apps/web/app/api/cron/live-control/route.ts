@@ -5,7 +5,7 @@ import { resolveOperatorEngine } from "@/lib/execution/operator-context-server";
 import { liveEngineOrderPrefix } from "@/lib/execution/robot-v1-live-cycle";
 import { isIdentity, type EngineSelection } from "@/lib/execution/operator-context";
 import { readLiveExecutorState } from "@/lib/execution/live-executor-transport";
-import { authorizeMissedMarketEntry, prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
+import { authorizeMissedMarketEntry, authorizePartialEntryRecovery, prepareLiveCycle, resumeLiveRun } from "@/lib/execution/robot-v1-live-server";
 import { getCoinOpsServiceTenantId, getSupabaseDataSchema } from "@/lib/supabase/env";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { reserveEngineCapacity } from "@/lib/coinops-capacity/capacity-server";
@@ -33,12 +33,12 @@ export async function POST(request: NextRequest) {
   const payload = await request.json().catch(() => null) as { action?: unknown; asset?: unknown;
     exchange_account_id?: string; trading_engine_id?: string; run_id?:string; slot_number?:number; operation_sequence?:number } | null;
   if (!payload || Object.keys(payload).some((key) => !["action", "asset", "exchange_account_id", "trading_engine_id",
-      ...(payload.action==="REENTER_MISSED_MARKET"?["run_id","slot_number","operation_sequence"]:[])].includes(key))
-    || !["PREPARE", "ACTIVATE", "RESUME", "REENTER_MISSED_MARKET"].includes(String(payload.action))
+      ...(["REENTER_MISSED_MARKET","PARTIAL_RECOVERY"].includes(String(payload.action))?["run_id","slot_number","operation_sequence"]:[])].includes(key))
+    || !["PREPARE", "ACTIVATE", "RESUME", "REENTER_MISSED_MARKET","PARTIAL_RECOVERY"].includes(String(payload.action))
     || !["BTC", "SOL"].includes(String(payload.asset))
-    || ["RESUME","REENTER_MISSED_MARKET"].includes(String(payload.action))
+    || ["RESUME","REENTER_MISSED_MARKET","PARTIAL_RECOVERY"].includes(String(payload.action))
       && (!isIdentity(payload.exchange_account_id) || !isIdentity(payload.trading_engine_id))
-    || payload.action==="REENTER_MISSED_MARKET" && (!isIdentity(payload.run_id) || !Number.isInteger(payload.slot_number) || payload.slot_number!<1
+    || ["REENTER_MISSED_MARKET","PARTIAL_RECOVERY"].includes(String(payload.action)) && (!isIdentity(payload.run_id) || !Number.isInteger(payload.slot_number) || payload.slot_number!<1
       || !Number.isInteger(payload.operation_sequence) || payload.operation_sequence!<1))
     return NextResponse.json({ error: "COINOPS_LIVE_CONTROL_INVALID" }, { status: 400, headers });
   try {
@@ -48,12 +48,12 @@ export async function POST(request: NextRequest) {
     if (owner.error || owner.data?.length !== 1)
       throw new Error("COINOPS_LIVE_OWNER_AMBIGUOUS");
     const asset = payload.asset as "BTC" | "SOL";
-    const action = payload.action as "PREPARE" | "ACTIVATE" | "RESUME" | "REENTER_MISSED_MARKET";
+    const action = payload.action as "PREPARE" | "ACTIVATE" | "RESUME" | "REENTER_MISSED_MARKET"|"PARTIAL_RECOVERY";
     const selection: EngineSelection = { environment: "REAL", asset,
       exchange_account_id: payload.exchange_account_id, trading_engine_id: payload.trading_engine_id };
     const engine = await resolveOperatorEngine(service, owner.data[0], selection);
     const health = await loadLiveEngineExecutorStatus(engine);
-    const allowedHealth = action === "RESUME"
+    const allowedHealth = action === "RESUME"||action==="PARTIAL_RECOVERY"
       ? ["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"]
       : [action === "PREPARE" ? "LIVE_EXECUTOR_READY" : "LIVE_EXECUTOR_ACTIVE"];
     if (!allowedHealth.includes(health.gate))
@@ -70,10 +70,10 @@ export async function POST(request: NextRequest) {
     // Intentional account pause keeps the worker registered and its run PAUSED.
     // Resume through the canonical lease/TP/ownership/CAS flow, never ACTIVATE.
     const allowedStatuses = action === "RESUME" ? ["ACTIVE", "PAUSED"]
-      : action==="REENTER_MISSED_MARKET"?["ACTIVE"]:["PREPARING"];
+      : ["REENTER_MISSED_MARKET","PARTIAL_RECOVERY"].includes(action)?["ACTIVE"]:["PREPARING"];
     if (runs.error || runs.data?.length !== 1 || !allowedStatuses.includes(runs.data[0].status)
       || runs.data[0].product_id !== owner.data[0].product_id
-      || action==="REENTER_MISSED_MARKET" && runs.data[0].id!==payload.run_id)
+      || ["REENTER_MISSED_MARKET","PARTIAL_RECOVERY"].includes(action) && runs.data[0].id!==payload.run_id)
       throw new Error("COINOPS_LIVE_RUN_GATE_DENIED");
     if (action === "RESUME") {
       const result = await resumeLiveRun(runs.data[0].id, owner.data[0].user_id, asset);
@@ -81,6 +81,10 @@ export async function POST(request: NextRequest) {
     }
     if(action==="REENTER_MISSED_MARKET"){
       const result=await authorizeMissedMarketEntry(runs.data[0].id,payload.slot_number!,payload.operation_sequence!,owner.data[0].user_id,asset);
+      return NextResponse.json(result,{headers});
+    }
+    if(action==="PARTIAL_RECOVERY"){
+      const result=await authorizePartialEntryRecovery(runs.data[0].id,payload.slot_number!,payload.operation_sequence!,owner.data[0].user_id,asset);
       return NextResponse.json(result,{headers});
     }
     const state = await readLiveExecutorState(engine);

@@ -19,6 +19,7 @@ import { buildEngineIsolationAudit } from "./engine-isolation-audit.ts";
 import { auditPausedEntryEvidence, pausedProtectionDetails } from "./paused-entry-audit.ts";
 import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "../execution/engine-slot-topology.ts";
 import { largeEngineProgressAudit } from "./large-engine-progress-audit.ts";
+import { auditPartialEntryRecovery } from "./partial-entry-recovery-audit.ts";
 
 export type ReportEnvironment = "SHADOW" | "TESTNET" | "REAL";
 export type ReportAsset = "BTC" | "SOL";
@@ -395,6 +396,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "controlled_engine_handoff", value: "LEASE_CAS_SOURCE_FENCE_AND_FRESH_EXACT_PROOF", version: 30,
     source: "coinops.engine_handoffs", notes: "OFFBOARDED é gestão assumida pelo cliente, não ciclo concluído. Posições/TPs permanecem na exchange; leitura histórica não prova saldo, P&L ou proteção atuais. Migração preserva engine/run/slots/ordens e exige origem sem escrita, destino validado e Admission canônico; sem adoção por símbolo nem cópia de claims." });
+  if(filters.environments.includes("REAL"))rules.push({effective_from:input.generatedAt,environment:"REAL",asset:null,
+    parameter:"orphaned_partial_entry_recovery",value:"ORPHANED_PARTIAL_RECOVERY_V1",version:1,
+    source:"robot_v1_live_events + robot_v1_live_orders + robot_v1_live_fills",evidence_scope:"CURRENT_CODE_CONTRACT",
+    notes:"Somente autorização explícita da operação parcial terminal, com fills e incidente exatos. Um complemento mínimo executável, dentro do saldo do mesmo slot; não redimensiona estratégia nem renova operação. Lease, snapshot imutável, client ID único, caps, BNB, caixa, orçamento Binance e ownership permanecem. TP usa quantidades líquidas e preço médio das duas BUY comprovadas. Recuperação/TP/retomada exigem reconciliação; autorização sozinha não significa sucesso. BUY parcial residente abaixo do mínimo de TP não tem o restante cancelado pelo fluxo normal."});
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "reset_recovery_milestone_observation", value: "BOUNDED_LEDGER_GET_CHECKPOINT_AND_PROVEN_STALE_RECOVERY", unit: "enum", version: 1,
     source: "robot_v1_live_events:RESET_RECOVERED/RECONCILED + robot_v1_live_runs + robot_v1_live_alerts", evidence_scope: "CURRENT_CODE_CONTRACT",
@@ -906,7 +911,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     datasets.live_preparation = preparation.rows.filter((row) => filters.assets.includes(row.asset as ReportAsset));
   }
   datasets.checks = buildAuditChecks(datasets, { source: input.sources, incompleteSources, generatedAt: input.generatedAt, filters, allOperations, allCapital, engineSlotCount: input.engineSlotCount });
-  datasets.checks.push(...auditPausedEntryEvidence(liveExecution, incompleteSources));
+  datasets.checks.push(...auditPausedEntryEvidence(liveExecution, incompleteSources),...auditPartialEntryRecovery(liveExecution,incompleteSources));
   if (preparation) {
     datasets.checks.push({ code: "LIVE_PREPARATION_NATIVE_GATE",
       status: preparation.gate === "LIVE_PREPARATION_READY" ? "PASS" : "WARNING",

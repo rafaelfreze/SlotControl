@@ -242,6 +242,19 @@ no ambiente de destino antes de operação remota.
   ambíguos. Limites totais do motor/conta, posições, valores e irmãos não mudam.
   Protocolo ausente ou metadados divergentes mantém HOLD antes de cancelar BUY.
 
+## Recuperação de parcial terminal — 01/11/2026
+
+- `ORPHANED_PARTIAL_RECOVERY_V1` é recuperação explícita de uma BUY parcial
+  terminal abaixo do mínimo de TP, dentro da mesma operação e saldo do slot.
+  Não é reentrada perdida nem redimensionamento da estratégia. Controle
+  `PARTIAL_RECOVERY` autoriza identidade exata; worker canônico prepara um único
+  complemento mínimo sob lease, evento imutável e RPC service_role. Binance,
+  caixa, BNB, caps e orçamento de ordens continuam obrigatórios. TP agrega
+  somente as duas BUY próprias comprovadas; nenhuma proteção global é relaxada.
+  O gate local continua fechado até proteção e retomada oficiais. BUY parcial
+  ainda residente não deve ser cancelada enquanto o TP não for executável.
+  Ver `docs/COINOPS_PARTIAL_ENTRY_RECOVERY_20261101.md`.
+
 ## Backtests e Local
 
 - tools/backtests e datasets físicos são simulação isolada; não são fonte normativa para produção.
@@ -429,7 +442,7 @@ NEXT_PUBLIC_ é público e nunca recebe credencial. Nunca copie secret produtivo
 Toda nova regra operacional, estado de slot, tipo de ordem, mecanismo de execução, regime, meta, aporte, reciclagem, proteção ou comportamento que possa alterar decisões do robô deve ser incorporado à camada de auditoria/relatórios na mesma entrega, com testes correspondentes. Nova regra sem observabilidade/exportação = tarefa incompleta.
 
 - Central: `/relatorios`; exports autenticados em `/api/coinops-reports`, sempre no escopo de produto, tenant e usuário com RLS.
-- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 31`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading, proteção da pausa intencional, auditoria final imutável e marcos históricos de reset sem reemissão. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
+- Contrato versionado: `apps/web/lib/coinops-reports`, `report_version = 32`, com topologia canônica por engine, progresso cooperativo sem fabricar reconciliação, observação própria coerente de ordens/fills, roteamento e isolamento por shard, evidência de atribuição/retry do trading, proteção da pausa intencional, auditoria final imutável e marcos históricos de reset sem reemissão. Declaração de identidade não substitui certificação de runtime, credencial e capacidade; ausência de evidência não é READY. Ao mudar semântica ou formato, versionar e atualizar fontes, regras, checks, CSV/JSON, documentação e testes juntos.
 - Aporte aplicado ao slot da NEXT BUY: o reconciliador oficial pode atualizar quantidade no mesmo preço somente após prova de aporte, BUY sem fills, caps sincronizados e suporte `ONLY_NEW`. OPEN/TP nunca são ampliados; fill concorrente vence a substituição. Ver `docs/COINOPS_NEXT_BUY_CAPITAL_REFRESH.md`. Não usar cancelamento manual, MARKET complementar ou outra implementação de estratégia.
 - Preservar identidade física de slots, histórico imutável, separação SHADOW/TESTNET/REAL e origem da evidência. Lacunas históricas, snapshots atuais e ambiguidades devem ser explícitos; não transformar ausência de evidência em PASS ou zero.
 - Relatório é somente leitura. Nunca iniciar execução, reconciliação com escrita em exchange ou operação financeira para gerar relatório/smoke.

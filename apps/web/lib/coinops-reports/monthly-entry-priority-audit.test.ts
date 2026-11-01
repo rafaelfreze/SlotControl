@@ -12,7 +12,7 @@ test("v31 exports the policy and committed allocation without rewriting legacy r
  const original=structuredClone(sources);
  const report=buildAuditReport({sources,incompleteSources:[],warnings:[],generatedAt:at,scope:{tenantId:"t",userId:"u"}},
   {start:"2026-10-01T00:00:00Z",end:"2026-11-01T00:00:00Z",assets:["BTC","SOL"],environments:["REAL"]});
- assert.equal(REPORT_VERSION,31);assert.ok(report.datasets.rules.some(r=>r.parameter==="monthly_entry_priority"));
+ assert.equal(REPORT_VERSION,32);assert.ok(report.datasets.rules.some(r=>r.parameter==="monthly_entry_priority"));
  const rows=report.datasets.live_execution;
  assert.equal(rows.find(r=>r.row_type==="RUN"&&r.id==="r")?.entry_priority_policy,"MONTHLY_GAINS_V1");
  assert.equal(rows.find(r=>r.row_type==="RUN"&&r.id==="legacy")?.entry_priority_policy,"LEGACY_PRICE_FIRST");

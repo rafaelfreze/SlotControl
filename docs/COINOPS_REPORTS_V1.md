@@ -1,6 +1,13 @@
 # CoinOps — relatórios auditáveis (runbook histórico)
 
-Contrato atual v29: publica `reset_recovered_milestone_persistence`,
+Contrato atual v32: inclui `ORPHANED_PARTIAL_RECOVERY_V1`, a autorização
+escopada, BUY original parcial, complemento único, fills e TP da mesma operação.
+`ORPHANED_PARTIAL_RECOVERY_AUDIT` distingue evidência persistida completa,
+pendência, fonte incompleta e divergência; não certifica Binance atual.
+Datasets/CSV/JSON existentes e snapshots históricos permanecem preservados.
+Ver `COINOPS_PARTIAL_ENTRY_RECOVERY_20261101.md`.
+
+Evolução v29: publica `reset_recovered_milestone_persistence`,
 `reset_recovered_mismatch_guarded_recovery` e
 `reset_recovery_milestone_observation` como `CURRENT_CODE_CONTRACT`.
 `RESET_RECOVERED:<previous_run_id>` é marco histórico imutável first-writer por

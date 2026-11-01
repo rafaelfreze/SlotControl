@@ -15,6 +15,7 @@ import * as unsentProof from "../execution/account-order-unsent-proof.ts";
 import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
 import * as monthlyGridRecovery from "../execution/monthly-grid-recovery.ts";
 import * as marketPolicy from "../execution/market-entry-policy.ts";
+import * as partialRecovery from "../execution/partial-entry-recovery.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
 import * as liveAudit from "../execution/live-audit-event.ts";
@@ -32,6 +33,8 @@ import { liveQuoteBalanceCheck } from "../execution/live-quote-balance.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
+  authorizePartialEntryRecovery:(runId:string,slot:number,operation:number,userId:string,asset:"BTC"|"SOL")=>Promise<Row>;
+  progressPartialEntryRecovery:(service:unknown,run:Row,ledger:unknown,state:Row)=>Promise<boolean>;
   authorizeMissedMarketEntry:(runId:string,slot:number,operation:number,userId:string,asset:"BTC"|"SOL")=>Promise<Row>;
   finalizeMarketEntryReferences:(service:unknown,run:Row,ledger:unknown,state:Row)=>Promise<void>;
   hydrateRetainedGridContexts: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<void>;
@@ -182,9 +185,18 @@ function harness(options: Options = {}) {
       };
       return query;
     },
-    async rpc(name: string, params: Row) {
+    async rpc(name: string, params: Row):Promise<{data:unknown;error:unknown}> {
       calls.push({ kind: name, input: params });
       assert.equal(params.p_lease_owner, run.lease_owner);
+      if(name==="authorized_partial_entry_recovery")return{data:true,error:null};
+      if(name==="prepare_live_partial_entry_recovery"){
+        const auth=(run.config_snapshot as Row).partial_entry_recovery_authorization as Row;
+        const result=await service.rpc("prepare_robot_v1_live_order",{...params,p_side:"BUY",p_purpose:"ENTRY",p_quote:auth.quote,p_quantity:null,p_price:null});
+        const saved=orders.find(o=>o.client_order_id===params.p_client_order_id)!;
+        saved.config_snapshot={...(run.config_snapshot as Row),partial_entry_recovery_intent:auth};
+        slots.find(s=>s.id===params.p_slot_id)!.entry_state="OPEN";
+        return{...result,data:structuredClone(saved)};
+      }
       if(name==="align_live_recovery_order_cap"){
         assert.equal(params.p_expected_cap,options.unitOrderCap);assert.equal(params.p_engine_cap,1000);assert.equal(params.p_account_cap,1000);
         tables.robot_v1_live_preparations[0].max_order_notional_brl=params.p_target_cap;
@@ -314,6 +326,7 @@ function harness(options: Options = {}) {
       },
     },
     "./live-strategy-snapshot": strategySnapshot, "./market-entry-policy":marketPolicy,
+    "./partial-entry-recovery":partialRecovery,
     "./monthly-grid-recovery": monthlyGridRecovery,
     "./ath-ladder": athLadder, "./monthly-slot-policy": monthlyPolicy,
     "./strategy-parameter-registry": strategyParameterRegistry,
@@ -322,7 +335,7 @@ function harness(options: Options = {}) {
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
     "./operator-context-server": { resolveOperatorEngine: async () => engine },
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE",health:{entry_market_protocol:options.marketProtocol?1:undefined,
-      order_cap_alignment_protocol:options.orderCapAlignment?1:undefined} }) },
+      order_cap_alignment_protocol:options.orderCapAlignment?1:undefined,partial_entry_recovery_protocol:1} }) },
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => options.monthlyCounts
       ? monthlyPolicy.rankMonthlySlots(asset,new Date().toISOString(),slots.map(s=>({physicalSlotId:String(s.id),
         physicalSlotNumber:Number(s.slot_number),entryState:String(s.entry_state),balanceUsdc:22,
@@ -379,7 +392,8 @@ function harness(options: Options = {}) {
         calls.push({ kind: "create", input });
         assert.ok(["BUY", "SELL"].includes(String(input.side)));
         assert.ok(["ENTRY", "TP"].includes(String(input.purpose)));
-        assert.ok(input.type==="LIMIT" || options.marketProtocol && input.type==="MARKET");
+        assert.ok(input.type==="LIMIT" || input.type==="MARKET"&&(options.marketProtocol
+          ||input.partialEntryRecoveryPolicy===partialRecovery.PARTIAL_ENTRY_RECOVERY_POLICY));
         assert.ok(!exchange.has(String(input.clientOrderId)), "duplicate exchange write");
         const created = { symbol: input.symbol, clientOrderId: input.clientOrderId, side: input.side,
           orderId: `replacement-exchange-${input.side}`, status: "NEW", price: Number(input.price??0),
@@ -395,7 +409,7 @@ function harness(options: Options = {}) {
     },
   };
   const source = readFileSync(new URL("../execution/robot-v1-live-server.ts", import.meta.url), "utf8")
-    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate, ensureTakeProfits, assertLiveOrderPrice, repairMonthlyGridProvenance, hydrateRetainedGridContexts, finalizeMarketEntryReferences };";
+    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate, ensureTakeProfits, assertLiveOrderPrice, repairMonthlyGridProvenance, hydrateRetainedGridContexts, finalizeMarketEntryReferences, progressPartialEntryRecovery };";
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ES2022 } }).outputText;
   const runtime = {} as Runtime;
@@ -408,6 +422,65 @@ function harness(options: Options = {}) {
     unchangedOpen() { assert.deepEqual({ slot: slots[0], account: accounts[0], tp: orders[1], buy: orders[0] }, initialOpen); },
   };
 }
+
+test("owner authorizes terminal partial; ordinary next worker prepares it once and leaves entry gates held until TP/reconciliation",async()=>{
+ const h=harness({asset:"SOL",marketFill:true}),source=h.orders[2];
+ Object.assign(source,{status:"CANCELED",executed_quantity:.004,cumulative_quote:.4,trades_reconciled:true,exchange_order_id:"432"});
+ Object.assign(h.slots[1],{entry_state:"OPEN",position_quantity:.004,position_committed_brl:.4});
+ Object.assign(h.exchange.get(String(source.client_order_id))!,{status:"CANCELED",executedQuantity:.004,cumulativeQuoteQuantity:.4,orderId:"432"});
+ Object.assign(h.run.engine as Row,{engine_kill_switch:true});h.tables.robot_v1_live_preparations[0].kill_switch=true;
+ h.run.last_error="COINOPS_LIVE_TP_FILTER_UNPROTECTABLE";h.run.lease_owner=null;h.run.lease_until=null;
+ const first=new Date(Date.now()-60000).toISOString();
+ h.tables.robot_v1_live_alerts=[{...h.tables.operators[0],asset:"SOL",trading_engine_id:h.run.trading_engine_id,
+  exchange_account_id:h.run.exchange_account_id,alert_key:`LIVE_RUN:${h.run.id}:CRITICAL`,severity:"CRITICAL",resolved_at:null,
+  code:h.run.last_error,first_seen_at:first,last_seen_at:first,
+  details:{root_code:h.run.last_error,stage:"PROTECT_TP",run_id:h.run.id}}];
+ const before=structuredClone(h.accounts);
+ const auth=await h.runtime.authorizePartialEntryRecovery(String(h.run.id),2,1,String(h.run.user_id),"SOL");
+ assert.equal(auth.status,"PARTIAL_RECOVERY_AUTHORIZED");assert.equal(auth.quote_cap,5.16);
+ assert.equal(h.calls.filter(c=>c.kind==="create"||c.kind==="cancel").length,0);
+ h.run.lease_owner="next-worker-lease";h.run.lease_until=new Date(Date.now()+120000).toISOString();
+ const ledger=()=>structuredClone({slots:h.slots,orders:h.orders,accounts:h.accounts});
+ assert.equal(await h.runtime.progressPartialEntryRecovery(h.service,h.run,ledger(),h.state()),true);
+ assert.equal(await h.runtime.progressPartialEntryRecovery(h.service,h.run,ledger(),h.state()),false);
+ await h.runtime.ensureTakeProfits(h.service,h.run,ledger(),h.state());
+ assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.side==="BUY").length,1);
+ assert.equal(h.tables.robot_v1_live_preparations[0].kill_switch,true);assert.deepEqual(h.accounts,before);
+ assert.equal(h.orders.filter(o=>o.slot_id===source.slot_id&&o.side==="SELL").length,1);
+});
+
+for(const lost of [false,true])test(`explicit orphan rescue uses same operation, query-first recovery and combined TP; siblings remain exact (${lost})`,async()=>{
+ const h=harness({asset:"SOL",marketFill:true,lostCreateResponse:lost}),source=h.orders[2];
+ Object.assign(source,{status:"CANCELED",executed_quantity:.004,cumulative_quote:.4,trades_reconciled:true,exchange_order_id:"432"});
+ Object.assign(h.slots[1],{entry_state:"OPEN",position_quantity:.004,position_committed_brl:.4});
+ Object.assign(h.exchange.get(String(source.client_order_id))!,{status:"CANCELED",executedQuantity:.004,cumulativeQuoteQuantity:.4,orderId:"432"});
+ const sibling=structuredClone({slot:h.slots[0],buy:h.orders[0],tp:h.orders[1]}),balances=structuredClone(h.accounts);
+ Object.assign(h.run.engine as Row,{engine_kill_switch:true});h.run.last_error="COINOPS_LIVE_TP_FILTER_UNPROTECTABLE";
+ h.tables.robot_v1_live_preparations[0].kill_switch=true;
+ const proof={policy:partialRecovery.PARTIAL_ENTRY_RECOVERY_POLICY,run_id:h.run.id,engine_id:h.run.trading_engine_id,
+  slot_id:source.slot_id,slot_number:2,operation_sequence:1,source_order_id:source.id,source_client_order_id:source.client_order_id,
+  source_exchange_order_id:source.exchange_order_id,source_quantity:.004,source_quote:.4,source_fee_base:0,source_committed:.4,
+  quote:5.16,slot_balance:60,gain_rate:.05,spacing:.03,incident_key:"ROOT",incident_first_seen_at:new Date().toISOString(),
+  authorization_event_key:"AUTH",authorized_at:new Date().toISOString()};
+ const child={...source,id:"child",revision:2,status:"PREPARED",exchange_order_id:null,submission_guarded_at:null,
+  strategy_decision_id:"rescue-decision",client_order_id:cycle.liveClientOrderId(String(h.run.id),"SOL",2,1,"BUY",2,h.run.engine as never),
+  requested_quote:5.16,requested_quantity:null,price:null,reserved_notional_brl:5.16,executed_quantity:0,cumulative_quote:0,
+  trades_reconciled:false,config_snapshot:{...(h.run.config_snapshot as Row),partial_entry_recovery_intent:proof}};
+ h.orders.push(child);
+ if(lost)await assert.rejects(h.runtime.reconcileOrder(h.service,h.run,child),/EXECUTOR_HTTP_503/);
+ await h.runtime.reconcileOrder(h.service,h.run,child);
+ assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.side==="BUY").length,1);
+ assert.equal(h.calls.find(c=>c.kind==="create"&&c.input?.side==="BUY")?.input?.partialEntryRecoveryPolicy,proof.policy);
+ const ledger=()=>structuredClone({slots:h.slots,orders:h.orders,accounts:h.accounts});
+ // A lost TP ACK is recovered by its exact persisted ID on the next pass.
+ if(lost)await assert.rejects(h.runtime.ensureTakeProfits(h.service,h.run,ledger(),h.state()),/EXECUTOR_HTTP_503/);
+ for(const o of h.orders.filter(o=>o.side==="SELL"&&o.status==="PREPARED"))await h.runtime.reconcileOrder(h.service,h.run,o);
+ await h.runtime.ensureTakeProfits(h.service,h.run,ledger(),h.state());
+ const tp=h.calls.find(c=>c.kind==="create"&&c.input?.side==="SELL")?.input;
+ assert.equal((tp?.partialEntryRecoverySources as Row).recoveryClientOrderId,child.client_order_id);
+ assert.equal(tp?.sourceBuyClientOrderId,source.client_order_id);
+ assert.deepEqual({slot:h.slots[0],buy:h.orders[0],tp:h.orders[1]},sibling);assert.deepEqual(h.accounts,balances);
+});
 
 test("tiny partial BUY stays resident: TP min-notional is checked BEFORE cancel, without extra BUY or TP changes", async () => {
   const h=harness(); const buy=h.orders[2]!;

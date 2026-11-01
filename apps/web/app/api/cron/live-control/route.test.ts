@@ -54,6 +54,9 @@ function fixture(options: { status?: string; health?: string; count?: number; pr
       authorizeMissedMarketEntry:async(...args:unknown[])=>{
         calls.push({name:"market-authorize",args});if(options.coreError)throw new Error(options.coreError);
         return {status:"MARKET_ENTRY_AUTHORIZED",cycle_id:runId,slot_number:7,operation_sequence:8};
+      },
+      authorizePartialEntryRecovery:async(...args:unknown[])=>{
+        calls.push({name:"partial-authorize",args});return{status:"PARTIAL_RECOVERY_AUTHORIZED",cycle_id:runId,slot_number:8,operation_sequence:3};
       } },
     "@/lib/supabase/env": { getSupabaseDataSchema: () => options.schema ?? "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "@/lib/supabase/service-role": { createServiceRoleClient: () => service },
@@ -74,6 +77,18 @@ function request(action = "RESUME", auth = secret, host = "cripto-flax.vercel.ap
     headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" },
     body: JSON.stringify({ action, asset: "SOL", exchange_account_id: account, trading_engine_id: engineId, ...extras }) });
 }
+
+test("partial recovery authorizes exact ACTIVE operation only; amount/foreign run/paused cannot dispatch",async()=>{
+ const a=fixture({status:"ACTIVE"});const fields={run_id:runId,slot_number:8,operation_sequence:3};
+ assert.equal((await a.post(request("PARTIAL_RECOVERY",secret,"cripto-flax.vercel.app",fields))).status,200);
+ assert.deepEqual(a.calls.find(c=>c.name==="partial-authorize")?.args,[runId,8,3,"owner","SOL"]);
+ assert.equal(a.calls.some(c=>["exchange","activate","resume"].includes(c.name)),false);
+ for(const patch of [{amount:10},{run_id:engineId},{slot_number:0}]){
+  const b=fixture({status:"ACTIVE"});assert.notEqual((await b.post(request("PARTIAL_RECOVERY",secret,"cripto-flax.vercel.app",{...fields,...patch}))).status,200);
+  assert.equal(b.calls.some(c=>c.name==="partial-authorize"),false);
+ }
+ const paused=fixture();assert.notEqual((await paused.post(request("PARTIAL_RECOVERY",secret,"cripto-flax.vercel.app",fields))).status,200);
+});
 
 test("intentional PAUSED and blocked ACTIVE use canonical RESUME, exact engine/run, never activation or order transport", async () => {
   for (const status of ["PAUSED", "ACTIVE"]) for (const health of ["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"]) {

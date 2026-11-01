@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { ENTRY_MARKET_POLICY } from "../../web/lib/execution/strategy-engine.ts";
+import { PARTIAL_ENTRY_RECOVERY_POLICY } from "../../web/lib/execution/partial-entry-recovery.ts";
 
 import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { ExecutorRejection, ExecutorPreDispatchRejection } from "./security.mjs";
@@ -268,8 +269,11 @@ export class BinanceLiveTransport {
     const marketEntry = side === "BUY" && purpose === "ENTRY" && input.type === "MARKET"
       && input.entryMarketPolicy === ENTRY_MARKET_POLICY && positive(Number(input.entryReferencePrice))
       && Number.isInteger(input.entrySlotNumber) && input.entrySlotNumber === Number(match[2]);
-    if (!marketEntry && purpose !== (side === "SELL" ? "TP" : input.type === "MARKET" ? "INITIAL" : "ENTRY")
-      || input.entryMarketPolicy !== undefined && !marketEntry)
+    const partialRecovery=side==="BUY"&&purpose==="ENTRY"&&input.type==="MARKET"
+      &&input.partialEntryRecoveryPolicy===PARTIAL_ENTRY_RECOVERY_POLICY;
+    if (!marketEntry && !partialRecovery && purpose !== (side === "SELL" ? "TP" : input.type === "MARKET" ? "INITIAL" : "ENTRY")
+      || input.entryMarketPolicy !== undefined && !marketEntry
+      || input.partialEntryRecoveryPolicy!==undefined&&!partialRecovery)
       throw new ExecutorRejection("EXECUTOR_PURPOSE_INVALID", 403);
     const existing = await this.queryOrder(symbol, clientOrderId);
     if (existing) return existing;
@@ -304,6 +308,22 @@ export class BinanceLiveTransport {
         || snapshot.openOrders.some(order => order.side === "BUY" && order.clientOrderId?.startsWith(
           this.engine ? engineOrderPrefix(this.engine) : `COR1-${match[1]}-`))))
         throw new ExecutorRejection("EXECUTOR_MARKET_ENTRY_UNRECONCILED", 403);
+      if(partialRecovery){
+        const source=input.partialEntryRecoverySource;
+        const own=source&&this.ownership(symbol,source.clientOrderId,"BUY");
+        const proof=own&&own[2]===match[2]&&await this.observeOwnedOrder(symbol,source.clientOrderId,source.orderId);
+        const parent=proof?.order;
+        if(!parent||!["CANCELED","EXPIRED","EXPIRED_IN_MATCH"].includes(parent.status)
+          ||parent.side!=="BUY"||parent.executedQuantity!==Number(source.quantity)
+          ||parent.cumulativeQuoteQuantity!==Number(source.quote)||parent.executedQuantity<=0
+          ||parent.cumulativeQuoteQuantity>=snapshot.filters.minNotional
+          ||notional<snapshot.filters.minNotional
+          ||notional>snapshot.filters.minNotional+2*snapshot.filters.quantityStep*snapshot.price.price+.01000001
+          ||snapshot.openOrders.some(o=>o.clientOrderId&&o.clientOrderId.startsWith(
+            this.engine?engineOrderPrefix(this.engine):`COR1-${match[1]}-`)
+            &&(o.side==="BUY"||this.ownership(symbol,o.clientOrderId,o.side)[2]===match[2])))
+          throw new ExecutorRejection("EXECUTOR_PARTIAL_RECOVERY_UNPROVEN",403);
+      }
       fields = { symbol, side, type: "MARKET", quoteOrderQty: quote };
     } else if (input.type === "LIMIT" && (side === "BUY" || side === "SELL")) {
       const quantity = String(input.quantity ?? ""), price = String(input.price ?? "");
@@ -321,7 +341,27 @@ export class BinanceLiveTransport {
         if (source[2] !== match[2] || !/^\d+$/.test(String(input.sourceBuyOrderId ?? "")))
           throw new ExecutorRejection("EXECUTOR_TP_SOURCE_UNVERIFIED", 403);
         const ownBuy = await this.queryOrder(symbol, input.sourceBuyClientOrderId, input.sourceBuyOrderId);
-        if (!ownBuy || ownBuy.side !== "BUY" || ownBuy.executedQuantity + 1e-10 < q)
+        let ownedQuantity=ownBuy?.executedQuantity??0;
+        if(input.partialEntryRecoverySources!==undefined){
+          const pair=input.partialEntryRecoverySources;
+          const child=pair&&this.ownership(symbol,pair.recoveryClientOrderId,"BUY");
+          const observed=child&&child[2]===match[2]&&pair.recoveryClientOrderId!==input.sourceBuyClientOrderId
+            &&await this.observeOwnedOrder(symbol,pair.recoveryClientOrderId,pair.recoveryOrderId);
+          const original=ownBuy&&await this.observeOwnedOrder(symbol,input.sourceBuyClientOrderId,input.sourceBuyOrderId);
+          if(pair?.policy!==PARTIAL_ENTRY_RECOVERY_POLICY||!original?.order||!observed?.order
+            ||!["CANCELED","EXPIRED","EXPIRED_IN_MATCH"].includes(original.order.status)
+            ||original.order.executedQuantity<=0||original.order.cumulativeQuoteQuantity>=snapshot.filters.minNotional
+            ||!TERMINAL.has(observed.order.status)||observed.order.executedQuantity<=0||observed.order.side!=="BUY"
+            ||observed.order.cumulativeQuoteQuantity>snapshot.filters.minNotional+2*snapshot.filters.quantityStep
+              *(observed.order.cumulativeQuoteQuantity/observed.order.executedQuantity)+.01000001
+            ||snapshot.openOrders.some(o=>o.side==="SELL"&&o.clientOrderId?.startsWith(
+              this.engine?engineOrderPrefix(this.engine):`COR1-${match[1]}-`)
+              &&this.ownership(symbol,o.clientOrderId,"SELL")[2]===match[2]))
+            throw new ExecutorRejection("EXECUTOR_PARTIAL_RECOVERY_TP_UNPROVEN",403);
+          const baseFees=[...original.trades,...observed.trades].reduce((sum,t)=>sum+(t.commissionAsset===match[1]?t.commission:0),0);
+          ownedQuantity=original.order.executedQuantity+observed.order.executedQuantity-baseFees;
+        }
+        if (!ownBuy || ownBuy.side !== "BUY" || ownedQuantity + 1e-10 < q)
           throw new ExecutorRejection("EXECUTOR_TP_SOURCE_UNVERIFIED", 403);
         if (!snapshot.account.balances.some((b) => b.asset === match[1] && b.free + 1e-10 >= q))
           throw new ExecutorRejection("EXECUTOR_TP_BASE_BALANCE_INSUFFICIENT", 403);

@@ -1,6 +1,7 @@
 import { ENTRY_MARKET_POLICY, planStrategyMissedMarketEntry, type StrategyContext,
   type StrategyCandidate, type StrategyResidentBuy } from "./strategy-engine.ts";
 import { monthlyPeriodKey } from "./monthly-slot-policy.ts";
+import { partialEntryRecoveryIntent } from "./partial-entry-recovery.ts";
 
 export const EXPLICIT_MISSED_RECOVERY = "EXPLICIT_OPERATION_V1" as const;
 
@@ -41,6 +42,7 @@ export function marketEntryIntent(order: { side: string; purpose: string; run_id
   requested_quote: number|string|null; requested_quantity: number|string|null; price: number|string|null;
   strategy_decision_id: string|null; config_snapshot: Record<string,unknown> }): MarketEntryIntent | null {
   if(order.side!=="BUY" || order.purpose!=="ENTRY" || order.requested_quote===null)return null;
+  if(partialEntryRecoveryIntent(order))return null;
   const intent=order.config_snapshot.market_entry_intent as MarketEntryIntent|undefined;
   if(!intent || intent.policy!==ENTRY_MARKET_POLICY || intent.run_id!==order.run_id
     || intent.engine_id!==order.trading_engine_id || intent.slot_id!==order.slot_id

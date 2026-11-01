@@ -42,6 +42,8 @@ import { gridContextForPrice, strategyRatesForOrder, type GridPriceContext } fro
 import { marketEntryIntent, planExplicitMissedMarketRecovery, EXPLICIT_MISSED_RECOVERY,
   type MarketEntryIntent } from "./market-entry-policy";
 import { operatorExecutorAdmin } from "./operator-executor-admin";
+import { PARTIAL_ENTRY_RECOVERY_POLICY, minimalPartialRecoveryQuote, partialEntryRecoveryIntent,
+  planPartialEntryRecovery, type PartialEntryRecovery } from "./partial-entry-recovery";
 import { proveMonthlyGridRepair, proveRetainedGridContext, type MonthlyGridRepair } from "./monthly-grid-recovery";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
@@ -429,6 +431,12 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
   observedPrice?: number | null) {
   if (order.purpose === "INITIAL") return;
   const slot = ledger.slots.find((item) => item.id === order.slot_id);
+  const rescue=partialEntryRecoveryIntent(order);
+  if(rescue){
+    if(!slot||slot.operation_sequence!==rescue.operation_sequence||order.run_id!==run.id
+      ||order.trading_engine_id!==run.trading_engine_id)throw Error("COINOPS_PARTIAL_RECOVERY_INTENT_UNPROVEN");
+    return;
+  }
   const market = marketEntryIntent(order);
   if (market) {
     if (!slot || order.run_id!==run.id || order.trading_engine_id!==run.trading_engine_id
@@ -582,12 +590,19 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
         throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
     }
     await validateRunEngine(service, run);
-    if (order.side === "BUY" && (entryBlocked(run) || await configUpdatePending(service, run))) return order;
+    const rescue=partialEntryRecoveryIntent(order);
+    if(rescue){
+      const allowed=await service.rpc("authorized_partial_entry_recovery",{p_order_id:order.id,p_lease_owner:run.lease_owner});
+      if(allowed.error||allowed.data!==true)throw Error("COINOPS_PARTIAL_RECOVERY_DISPATCH_UNPROVEN");
+    }
+    if (order.side === "BUY" && ((!rescue&&entryBlocked(run)) || run.engine!.global_kill_switch
+      ||run.engine!.account_kill_switch||await configUpdatePending(service, run))) return order;
     const market = marketEntryIntent(order);
     const health = await loadLiveEngineExecutorStatus(run);
     if (order.side === "BUY" && health.gate !== "LIVE_EXECUTOR_ACTIVE") return order;
     if (market && health.health?.entry_market_protocol !== 1)
       throw new Error("COINOPS_MARKET_ENTRY_PROTOCOL_UNAVAILABLE");
+    if(rescue&&health.health?.partial_entry_recovery_protocol!==1)throw Error("COINOPS_PARTIAL_RECOVERY_PROTOCOL_UNAVAILABLE");
     if (order.side === "SELL" && !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_TP_EXECUTOR_UNAVAILABLE");
     const state = await readLiveExecutorState(run);
@@ -610,7 +625,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
       .eq("user_id", run.user_id).eq("trading_engine_id", run.trading_engine_id).single();
     const globalCap = await quoteCap(service, run);
     if (caps.error || !caps.data
-      || order.side === "BUY" && (!caps.data.live_enabled || caps.data.kill_switch))
+      || order.side === "BUY" && (!caps.data.live_enabled || caps.data.kill_switch&&!rescue))
       throw new Error("COINOPS_LIVE_WRITE_GATE_BLOCKED");
     const pre = await exposure(service, run);
     // The prepared order is already reserved in SQL; the transport receives
@@ -619,12 +634,22 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
     const buy = rows.orders.find((item) => item.slot_id === order.slot_id
       && item.operation_sequence === order.operation_sequence && item.side === "BUY"
       && amount(item.executed_quantity) > 0 && item.exchange_order_id);
+    const recoveryBuy=order.side==="SELL"?rows.orders.find(item=>item.slot_id===order.slot_id
+      &&item.operation_sequence===order.operation_sequence&&amount(item.executed_quantity)>0
+      &&partialEntryRecoveryIntent(item)):undefined;
+    const recoveryProof=recoveryBuy&&partialEntryRecoveryIntent(recoveryBuy);
+    if(recoveryProof&&(!buy||buy.id!==recoveryProof.source_order_id||!recoveryBuy.exchange_order_id
+      ||health.health?.partial_entry_recovery_protocol!==1))throw Error("COINOPS_PARTIAL_RECOVERY_TP_UNPROVEN");
     const input = { symbol: run.symbol, clientOrderId: order.client_order_id,
-      side: order.side, purpose: order.purpose, type: order.purpose === "INITIAL" || market ? "MARKET" : "LIMIT",
-      ...(order.purpose === "INITIAL" || market ? { quoteOrderQty: String(order.requested_quote) }
+      side: order.side, purpose: order.purpose, type: order.purpose === "INITIAL" || market ||rescue ? "MARKET" : "LIMIT",
+      ...(order.purpose === "INITIAL" || market ||rescue ? { quoteOrderQty: String(order.requested_quote) }
         : { quantity: String(order.requested_quantity), price: String(order.price) }),
       ...(market ? { entryMarketPolicy: market.policy, entryReferencePrice: market.reference_price,
         entrySlotNumber: market.slot_number } : {}),
+      ...(rescue?{partialEntryRecoveryPolicy:rescue.policy,partialEntryRecoverySource:{clientOrderId:rescue.source_client_order_id,
+        orderId:rescue.source_exchange_order_id,quantity:rescue.source_quantity,quote:rescue.source_quote}}:{}),
+      ...(recoveryProof?{partialEntryRecoverySources:{policy:recoveryProof.policy,
+        recoveryClientOrderId:recoveryBuy!.client_order_id,recoveryOrderId:recoveryBuy!.exchange_order_id}}:{}),
       expectedOwnedOpenIds, assetCapBrl: amount(caps.data.max_total_exposure_brl),
       globalCapBrl: globalCap,
       assetExposureBeforeBrl: pre[run.asset] - reserve,
@@ -2118,6 +2143,9 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     await finalizeMarketEntryReferences(service,run,ledger,state);
     assertLiveResidentPrices(run, ledger, state);
     stage = "PROTECT_TP";
+    if(await progressPartialEntryRecovery(service,run,ledger,state)){
+      ledger=await runRows(service,run);state=await readLiveExecutorState(run);
+    }
     await ensureTakeProfits(service, run, ledger, state, feeValuation);
     const entryProtectedThisPass = Boolean(feeValuation && (
       ledger.orders.some(order => order.side === "BUY"
@@ -2319,6 +2347,112 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
  * writes remain inside advanceLiveRunOnce's existing reconciler. */
 export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
   return continueLiveAdvance(runId, source, advanceLiveRunOnce);
+}
+
+async function verifyPartialRecoverySource(service:Service,run:Run,ledger:Ledger,state:LiveExecutorState,
+  slot:Slot,source:Order){
+  if(slot.entry_state!=="OPEN"||source.side!=="BUY"||source.slot_id!==slot.id
+    ||source.operation_sequence!==slot.operation_sequence||!source.exchange_order_id
+    ||!["CANCELED","EXPIRED","EXPIRED_IN_MATCH"].includes(source.status)||!source.trades_reconciled
+    ||amount(source.executed_quantity)<=0||amount(source.cumulative_quote)>=state.filters.minNotional
+    ||amount(source.requested_quantity)<=amount(source.executed_quantity)
+    ||Math.abs(amount(slot.position_quantity)-amount(source.executed_quantity)+amount(source.fee_base))>1e-12
+    ||operationOrders(ledger.orders,slot).some(o=>o.id!==source.id&&(o.side!=="BUY"||amount(o.executed_quantity)>0
+      ||LIVE_ACTIVE_ORDER_STATUSES.has(o.status)||!o.trades_reconciled)))throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
+  await assertAllPositionsProtected(run,{...ledger,slots:ledger.slots.filter(s=>s.id!==slot.id)},state);
+  if(ledger.orders.some(o=>o.side==="BUY"&&LIVE_ACTIVE_ORDER_STATUSES.has(o.status)))throw Error("COINOPS_PARTIAL_RECOVERY_RESIDENT_BUY");
+  const observation=await readLiveExecutorOrderObservation(run,source.client_order_id,source.exchange_order_id);
+  if(!observation.order||observation.order.status!==source.status
+    ||observation.order.executedQuantity!==amount(source.executed_quantity)
+    ||observation.order.cumulativeQuoteQuantity!==amount(source.cumulative_quote))throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
+  const incident=await readOperatorRecoveryIncident(service,run);
+  if(!incident||incident.code!=="COINOPS_LIVE_TP_FILTER_UNPROTECTABLE"
+    ||incident.details?.root_code!==incident.code||incident.details.stage!=="PROTECT_TP"
+    ||!incident.first_seen_at)throw Error("COINOPS_PARTIAL_RECOVERY_INCIDENT_UNPROVEN");
+  return incident;
+}
+
+/** Owner authorizes this existing partial operation; the normal leased worker
+ * remains the only financial writer. No order is sent by this control action. */
+export async function authorizePartialEntryRecovery(runId:string,slotNumber:number,operationSequence:number,
+  userId:string,asset:V1Asset){
+  assertScope();const service=createServiceRoleClient(),run=await claim(service,runId);
+  if(!run)throw Error("COINOPS_PARTIAL_RECOVERY_LEASE_BUSY");
+  try{
+    await validateRunEngine(service,run);
+    if(run.user_id!==userId||run.asset!==asset||run.status!=="ACTIVE"||!run.engine!.engine_kill_switch
+      ||run.engine!.global_kill_switch||run.engine!.account_kill_switch
+      ||run.last_error&&run.last_error!=="COINOPS_LIVE_TP_FILTER_UNPROTECTABLE")throw Error("COINOPS_PARTIAL_RECOVERY_SCOPE_DENIED");
+    await assertNoPendingStrategyUpdate(service,run);
+    const health=await loadLiveEngineExecutorStatus(run);
+    if(!["LIVE_EXECUTOR_ACTIVE","LIVE_EXECUTOR_PROTECTED"].includes(health.gate)
+      ||health.health?.partial_entry_recovery_protocol!==1)throw Error("COINOPS_PARTIAL_RECOVERY_PROTOCOL_UNAVAILABLE");
+    const ledger=await runRows(service,run),slot=ledger.slots.find(s=>s.slot_number===slotNumber);
+    if(!slot||slot.operation_sequence!==operationSequence)throw Error("COINOPS_PARTIAL_RECOVERY_OPERATION_CHANGED");
+    const existing=operationOrders(ledger.orders,slot).find(o=>partialEntryRecoveryIntent(o));
+    if(existing)return{status:"PARTIAL_RECOVERY_ALREADY_PREPARED",cycle_id:run.id,slot_number:slotNumber,operation_sequence:operationSequence};
+    const sources=operationOrders(ledger.orders,slot).filter(o=>o.side==="BUY"&&amount(o.executed_quantity)>0);
+    if(sources.length!==1)throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
+    const source=sources[0],state=await readLiveExecutorState(run);
+    const incident=await verifyPartialRecoverySource(service,run,ledger,state,slot,source);
+    const account=ledger.accounts.find(a=>a.slot_number===slotNumber)!;
+    const quote=minimalPartialRecoveryQuote(state.price.price,state.filters.minNotional,state.filters.quantityStep);
+    if(amount(slot.position_committed_brl)+quote>amount(account.balance_brl)
+      ||!liveBnbFeeBalanceCheck(state,run.quote_asset).sufficient)throw Error("COINOPS_PARTIAL_RECOVERY_FUNDING_UNPROVEN");
+    const rates=strategyRatesForOrder(source,run),key=`PARTIAL_ENTRY_RECOVERY_REQUESTED:${slot.id}:${operationSequence}`;
+    const proof:PartialEntryRecovery={policy:PARTIAL_ENTRY_RECOVERY_POLICY,run_id:run.id,engine_id:run.trading_engine_id,
+      slot_id:slot.id,slot_number:slotNumber,operation_sequence:operationSequence,source_order_id:source.id,
+      source_client_order_id:source.client_order_id,source_exchange_order_id:source.exchange_order_id!,
+      source_quantity:amount(source.executed_quantity),source_quote:amount(source.cumulative_quote),source_fee_base:amount(source.fee_base),
+      source_committed:amount(slot.position_committed_brl),quote,slot_balance:amount(account.balance_brl),gain_rate:rates.gain,spacing:rates.spacing,
+      incident_key:incident.alert_key,incident_first_seen_at:incident.first_seen_at!,authorization_event_key:key,authorized_at:new Date().toISOString()};
+    const old=run.config_snapshot.partial_entry_recovery_authorization as PartialEntryRecovery|undefined;
+    const authorization=old??proof;
+    if(old&&(old.slot_id!==proof.slot_id||old.operation_sequence!==operationSequence||old.source_order_id!==source.id))
+      throw Error("COINOPS_PARTIAL_RECOVERY_AUTHORIZATION_CONFLICT");
+    await event(service,run,key,"PARTIAL_ENTRY_RECOVERY_REQUESTED",slotNumber,authorization);
+    await renewLease(service,run);
+    const saved=await service.from("robot_v1_live_runs").update({config_snapshot:{...run.config_snapshot,partial_entry_recovery_authorization:authorization}})
+      .eq("id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("lease_owner",run.lease_owner).select("id").single();
+    if(saved.error||!saved.data)throw Error("COINOPS_PARTIAL_RECOVERY_AUTHORIZATION_UNPROVEN");
+    return{status:"PARTIAL_RECOVERY_AUTHORIZED",cycle_id:run.id,slot_number:slotNumber,operation_sequence:operationSequence,quote_cap:authorization.quote};
+  }finally{await release(service,run,run.last_error,false);}
+}
+
+async function progressPartialEntryRecovery(service:Service,run:Run,ledger:Ledger,state:LiveExecutorState){
+  const auth=run.config_snapshot.partial_entry_recovery_authorization as PartialEntryRecovery|undefined;
+  if(!auth||auth.policy!==PARTIAL_ENTRY_RECOVERY_POLICY)return false;
+  const slot=ledger.slots.find(s=>s.id===auth.slot_id);
+  if(!slot||slot.operation_sequence!==auth.operation_sequence)return false; // Completed historical operation.
+  const existing=operationOrders(ledger.orders,slot).find(o=>partialEntryRecoveryIntent(o));
+  if(existing)return false; // Its persisted ID is reconciled above, never create a second complement.
+  const source=ledger.orders.find(o=>o.id===auth.source_order_id);
+  if(!source)throw Error("COINOPS_PARTIAL_RECOVERY_SOURCE_UNPROVEN");
+  const incident=await verifyPartialRecoverySource(service,run,ledger,state,slot,source);
+  const account=ledger.accounts.find(a=>a.slot_number===slot.slot_number)!;
+  if(auth.run_id!==run.id||auth.engine_id!==run.trading_engine_id||auth.incident_key!==incident.alert_key
+    ||auth.incident_first_seen_at!==incident.first_seen_at||auth.source_quantity!==amount(source.executed_quantity)
+    ||auth.source_quote!==amount(source.cumulative_quote)||auth.source_committed!==amount(slot.position_committed_brl)
+    ||auth.slot_balance!==amount(account.balance_brl)||auth.quote<state.filters.minNotional
+    ||auth.quote>state.filters.minNotional+2*state.filters.quantityStep*state.price.price+.01000001
+    ||Date.now()-Date.parse(auth.authorized_at)>30*60_000)throw Error("COINOPS_PARTIAL_RECOVERY_AUTHORIZATION_UNPROVEN");
+  const health=await loadLiveEngineExecutorStatus(run);
+  if(health.health?.partial_entry_recovery_protocol!==1)throw Error("COINOPS_PARTIAL_RECOVERY_PROTOCOL_UNAVAILABLE");
+  if(await holdEntryForBnbFeeBalance(service,run,slot,state)
+    ||await holdEntryForQuoteBalance(service,run,slot,state,auth.quote))return false;
+  const decision=planPartialEntryRecovery(context(run),auth);
+  await persistStrategyDecision(service,owned(run),"REAL",decision,slot.operation_sequence);
+  const revision=Math.max(0,...ledger.orders.filter(o=>o.slot_id===slot.id&&o.side==="BUY").map(o=>o.revision))+1;
+  const client=liveClientOrderId(run.id,run.asset,slot.slot_number,slot.operation_sequence,"BUY",revision,run.engine!);
+  await renewLease(service,run);
+  const result=await service.rpc("prepare_live_partial_entry_recovery",{p_run_id:run.id,p_slot_id:slot.id,
+    p_revision:revision,p_client_order_id:client,p_decision_id:decision.decision_id,p_lease_owner:run.lease_owner});
+  const order=(Array.isArray(result.data)?result.data[0]:result.data)as Order|null;
+  if(result.error||!order||order.client_order_id!==client)throw Error("COINOPS_PARTIAL_RECOVERY_PREPARE_UNPROVEN");
+  await event(service,run,`${client}:PREPARED`,"ORDER_PREPARED",slot.slot_number,{side:"BUY",purpose:"ENTRY",revision,
+    decision_id:decision.decision_id,recovery_policy:auth.policy,source_order_id:source.id,quote:auth.quote});
+  await reconcileOrder(service,run,order);
+  return true;
 }
 
 /** Explicit owner instruction for ONE legacy missed operation. Financial
