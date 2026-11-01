@@ -124,6 +124,12 @@ controle autenticado de metadados. O registro nativo ainda valida a credencial,
 conta, shard e inventário completo. Os testes simulam onboarding indisponível
 nos casos legacy e dinâmico; nenhum gate de cadastro novo foi relaxado.
 
+O schema real mantém `max_order_notional_quote` como coluna gerada de
+`max_order_notional_brl`. A migration corretiva
+`20261101175214_fix_recovery_order_cap_generated_alias.sql` atualiza somente a
+coluna canônica. O fixture SQL reproduz a coluna gerada, para que uma tentativa
+de gravar diretamente no alias falhe também antes da publicação.
+
 ## Limitação distinta: parcial da Dete
 
 Dete/SOLBRL #8 operação 3 foi uma BUY original de 2,187 SOL a R$513,10

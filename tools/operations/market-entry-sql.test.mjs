@@ -64,13 +64,14 @@ before(async()=>{
  `);
  await db.exec(`alter table coinops.trading_engines add column config jsonb default '{}',add column updated_at timestamptz default now();
  alter table coinops.robot_v1_live_preparations add column id uuid default gen_random_uuid(),add column compounding_enabled boolean default true,
- add column max_order_notional_quote numeric,add column updated_at timestamptz default now(),
+ add column max_order_notional_quote numeric generated always as(max_order_notional_brl)stored,add column updated_at timestamptz default now(),
  add column operator_id uuid default '${id(1)}',add column exchange_account_id uuid default '${id(5)}',add column config_version int default 1;
  alter table coinops.robot_v1_live_slot_accounts add column market_pnl_brl numeric default 0,add column manual_gain_brl numeric default 0,
  add column fees_brl numeric default 0,add column dust_quantity numeric default 0;
  alter table coinops.account_quote_caps add column operator_id uuid default '${id(1)}';`);
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261101123000_live_priority_market_entry.sql',import.meta.url),'utf8'));
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261101171116_live_recovery_order_cap_alignment.sql',import.meta.url),'utf8'));
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261101175214_fix_recovery_order_cap_generated_alias.sql',import.meta.url),'utf8'));
 });
 after(async()=>db.close());
 async function intent({missed=false,quote=22,explicit=false}={}){
