@@ -198,7 +198,7 @@ no ambiente de destino antes de operação remota.
   America/Campo_Grande; lifetime DESC e físico ASC apenas desempatarão. Meta
   individual atingida aguarda o dia 1º; somente N/N metas completas libera todos
   no mesmo mês, sem zerar gains (confirmação explícita do proprietário).
-  OPEN/partial/MISSED/evidência incompleta
+  OPEN/partial/evidência incompleta
   não recebem outra entrada. Preservar limites PRIMARY/RESERVE do ciclo e a
   exceção canônica de reentrada; prioridade mensal dentro do conjunto permitido.
 - Níveis não comprometidos são um pool separado do slot/capital/histórico.
@@ -211,6 +211,23 @@ no ambiente de destino antes de operação remota.
 - UI diferencia rank desejado, preço prospectivo e BUY confirmada. Auditoria
   v31 exporta política, atribuições e fontes; snapshots antigos sem marcador
   conservam significado legado. Ver `docs/COINOPS_MONTHLY_ENTRY_PRIORITY_20261026.md`.
+
+### Entrada prioritária a mercado — autorização de 01/11/2026
+
+- `PRIORITY_MISSED_MARKET_V1`: somente o dono prioritário elegível de um nível
+  prospectivo já atravessado pode entrar MARKET, com o saldo inteiro do próprio
+  slot (principal + ganhos), sujeito a caixa Spot, BNB, filtros e caps. Nunca
+  reduzir a compra para o mínimo nocional nem comprar todos os níveis em lote.
+- Níveis prospectivos inferiores ficam na fila. MISSED histórico exige pedido
+  explícito escopado a run/engine/slot/operação, prova de ausência de execução e
+  evento imutável; não converter todo o histórico em ordens de mercado.
+- BUY residente NEW/zero-fill só sai por ONLY_NEW e reconciliação; fill concorrente
+  vence. OPEN/partial não são entradas perdidas. Ownership, lease, idempotência,
+  prioridade mensal/15+Reserve, gain, spacing e TPs anteriores permanecem.
+- Intent MARKET tem snapshot próprio, protocolo nativo 1 e clientOrderId único.
+  TP da nova operação usa seu fill real, nunca o nível planejado atravessado.
+  Não usar essa regra como complemento de uma posição parcial. Ver
+  `docs/COINOPS_PRIORITY_MARKET_ENTRY_20261101.md`.
 
 ## Backtests e Local
 

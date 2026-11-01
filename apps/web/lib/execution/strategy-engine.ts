@@ -9,10 +9,10 @@ import { ENTRY_PRIORITY_POLICY, compareMonthlyProgress } from "./monthly-slot-po
  * Transport, exchange credentials and execution environment never enter it. */
 export const STRATEGY_VERSION = "4.3.1" as const;
 
-export type StrategyActionType = "OPEN_INITIAL_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
+export type StrategyActionType = "OPEN_INITIAL_MARKET" | "OPEN_ENTRY_MARKET" | "CREATE_TP" | "PLAN_LOCAL_REENTRY" | "ARM_NEXT_BUY"
   | "CANCEL_REPLACE_NEXT_BUY" | "COMPLETE_CYCLE" | "REANCHOR" | "WAIT";
 export type StrategyContext = { asset: V1Asset; cycleId: string; observedAt: string; transitionKey?: string; quoteAsset?: string; slotCount?: number;
-  entryPriorityPolicy?: typeof ENTRY_PRIORITY_POLICY };
+  entryPriorityPolicy?: typeof ENTRY_PRIORITY_POLICY; entryMarketPolicy?: typeof ENTRY_MARKET_POLICY };
 export type StrategyCandidate = {
   id: string;
   slotNumber: number;
@@ -30,6 +30,9 @@ export type StrategyCandidate = {
   postAthGroup?: "PRIMARY" | "RESERVE" | null;
   entryOrigin?: "GRID" | "REENTRY";
   levelOrigin?: "GRID" | "REENTRY";
+  /** REAL adapter proof: an uncommitted prospective level, or an explicitly
+   * authorized legacy MISSED operation. Never inferred for OPEN/partial. */
+  marketEntryEligible?: boolean;
   state: "PLANNED" | "ARMED" | "PARTIALLY_FILLED" | "OPEN" | "CLOSED" | "MISSED";
 };
 export type StrategyResidentBuy = { candidateId: string; executedQuantity: number;
@@ -51,12 +54,15 @@ export type StrategyDecision = {
   created_at: string;
 };
 
+export const ENTRY_MARKET_POLICY = "PRIORITY_MISSED_MARKET_V1" as const;
+
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 function assertContext(context: StrategyContext) {
   validateEngineSlotCount(context.slotCount ?? DEFAULT_ENGINE_SLOT_COUNT);
   if (!["BTC", "SOL"].includes(context.asset) || !context.cycleId || !Number.isFinite(Date.parse(context.observedAt))
     || context.entryPriorityPolicy !== undefined && context.entryPriorityPolicy !== ENTRY_PRIORITY_POLICY
+    || context.entryMarketPolicy !== undefined && context.entryMarketPolicy !== ENTRY_MARKET_POLICY
     || context.quoteAsset !== undefined && !/^[A-Z0-9]{2,20}$/.test(context.quoteAsset)) {
     throw new Error("COINOPS_STRATEGY_CONTEXT_INVALID");
   }
@@ -162,6 +168,7 @@ export function isStrategyDecisionProven(action: StrategyActionType, targetPrice
   const samePrice = (price: number | null | undefined) => price != null && targetPrice != null && Math.abs(price - targetPrice) < 1e-9;
   const filled = Boolean(slot && slot.executedQuantity > 0 && slot.buyFilledAt && Number.isFinite(Date.parse(slot.buyFilledAt)));
   if (action === "OPEN_INITIAL_MARKET") return operationSequence === 1 && (filled || Boolean(archived && archived.executedQuantity > 0));
+  if (action === "OPEN_ENTRY_MARKET") return filled || Boolean(archived && archived.executedQuantity > 0);
   if (action === "CREATE_TP") return Boolean((slot && filled && slot.sellOrderId && ["TP_ACTIVE", "CLOSED"].includes(slot.state) && samePrice(slot.takeProfitPrice))
     || (archived && archived.executedQuantity > 0 && samePrice(archived.takeProfitPrice)));
   if (action === "PLAN_LOCAL_REENTRY") return Boolean((slot && samePrice(slot.buyPrice)
@@ -251,7 +258,8 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
     && (candidate.state === "PLANNED" || candidate.state === "ARMED"))
     .sort((left, right) => (context.entryPriorityPolicy === ENTRY_PRIORITY_POLICY ? monthlyPriority(left,right) : right.buyPrice - left.buyPrice)
       || (left.operationalRank ?? left.slotNumber) - (right.operationalRank ?? right.slotNumber) || left.slotNumber - right.slotNumber);
-  const missedCandidateIds = ranked.filter((candidate) => candidate.state === "PLANNED" && candidate.buyPrice >= observedFloor).map((candidate) => candidate.id);
+  const missedCandidateIds = context.entryMarketPolicy===ENTRY_MARKET_POLICY ? []
+    : ranked.filter((candidate) => candidate.state === "PLANNED" && candidate.buyPrice >= observedFloor).map((candidate) => candidate.id);
   if (current && (current.state === "PARTIALLY_FILLED" || (residentBuy?.executedQuantity ?? 0) > 0)) {
     return { decision: wait(context, current, "RESIDENT_BUY_PARTIAL_FILL_PROTECTED"), missedCandidateIds, nextCandidateId: current.id };
   }
@@ -279,6 +287,35 @@ export function planStrategyNextEntry(context: StrategyContext, candidates: read
     missedCandidateIds,
     nextCandidateId: next.id
   };
+}
+
+/** Only the highest-priority eligible owner may catch up at MARKET. Legacy
+ * missed history requires explicit adapter proof. One resident/partial BUY is
+ * never treated as a missing order, and the adapter must settle a zero-fill
+ * cancellation before preparing this decision. No burst through crossed levels. */
+export function planStrategyMissedMarketEntry(context: StrategyContext, candidates: readonly StrategyCandidate[],
+  observedPrice: number, regime: "NORMAL" | "POST_ATH", residentBuy?: StrategyResidentBuy | null) {
+  assertContext(context); assertCandidates(candidates,context.slotCount);
+  if (context.entryPriorityPolicy !== ENTRY_PRIORITY_POLICY || context.entryMarketPolicy!==ENTRY_MARKET_POLICY
+    || !Number.isFinite(observedPrice) || observedPrice<=0)
+    throw new Error("COINOPS_MARKET_ENTRY_CONTEXT_INVALID");
+  const armed=candidates.filter(s=>["ARMED","PARTIALLY_FILLED"].includes(s.state));
+  if(armed.length>1)throw new Error("COINOPS_STRATEGY_MULTIPLE_ARMED_BUYS");
+  const current=residentBuy?candidates.find(s=>s.id===residentBuy.candidateId):armed[0];
+  if(residentBuy && (!current || !["ARMED","PARTIALLY_FILLED"].includes(current.state)
+    || !Number.isFinite(residentBuy.executedQuantity) || residentBuy.executedQuantity<0
+    || armed[0] && armed[0].id!==current.id))throw new Error("COINOPS_STRATEGY_RESIDENT_BUY_INVALID");
+  if(current && (current.state==="PARTIALLY_FILLED" || (residentBuy?.executedQuantity??0)>0
+    || current.buyPrice>=observedPrice))return null;
+  const adapted=candidates.map(s=>s.marketEntryEligible?{...s,operationalRank:s.operationalRank??s.slotNumber,
+    ...(s.state==="MISSED"?{state:"PLANNED" as const}:{})}:s);
+  const allowed=regime==="POST_ATH"?postAthAllowed(adapted,residentBuy):adapted;
+  const owners=allowed.filter(s=>monthlyEligible(s)&&["PLANNED","ARMED"].includes(s.state)).sort(monthlyPriority);
+  const selected=owners[0];
+  if(!selected || selected.id===current?.id || !selected.marketEntryEligible || selected.buyPrice<observedPrice)return null;
+  return { decision:decision(context,selected,"OPEN_ENTRY_MARKET",observedPrice,candidateBalance(selected),100,
+    "MISSED_PRIORITY_MARKET_ENTRY","OPEN"),candidateId:selected.id,requiresResidentCancel:Boolean(current),
+    referencePrice:selected.buyPrice,policy:ENTRY_MARKET_POLICY };
 }
 
 /** The primary gate applies only to new grid entries. A local reentry and an

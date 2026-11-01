@@ -14,6 +14,7 @@ import * as unsentEntry from "../execution/live-unsent-entry-recovery.ts";
 import * as unsentProof from "../execution/account-order-unsent-proof.ts";
 import * as strategySnapshot from "../execution/live-strategy-snapshot.ts";
 import * as monthlyGridRecovery from "../execution/monthly-grid-recovery.ts";
+import * as marketPolicy from "../execution/market-entry-policy.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
 import * as liveAudit from "../execution/live-audit-event.ts";
@@ -31,6 +32,8 @@ import { liveQuoteBalanceCheck } from "../execution/live-quote-balance.ts";
 
 type Row = Record<string, unknown>;
 type Runtime = {
+  authorizeMissedMarketEntry:(runId:string,slot:number,operation:number,userId:string,asset:"BTC"|"SOL")=>Promise<Row>;
+  finalizeMarketEntryReferences:(service:unknown,run:Row,ledger:unknown,state:Row)=>Promise<void>;
   hydrateRetainedGridContexts: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<void>;
   repairMonthlyGridProvenance: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<boolean>;
   ensureTakeProfits: (service: unknown, run: Row, ledger: unknown, state: Row) => Promise<void>;
@@ -45,7 +48,7 @@ type Options = { asset?: "BTC" | "SOL"; currency?: "BRL" | "USDT"; legacy?: bool
   cancel?: "FILLED" | "PARTIALLY_FILLED" | "TIMEOUT_CANCELED" | "TIMEOUT_NEW";
   staleCaps?: boolean; noContribution?: boolean; contributionSource?: "SELECTIVE" | "ALL_SLOTS";
   openContributionOnly?: boolean; crashAfterCancel?: boolean; crashAfterPrepared?: boolean;
-  lostCreateResponse?: boolean; slotCount?: number; monthlyCounts?:Record<number,number>; allocationTimeout?:boolean };
+  lostCreateResponse?: boolean; slotCount?: number; monthlyCounts?:Record<number,number>; allocationTimeout?:boolean; marketProtocol?:boolean; marketFill?:boolean };
 
 function harness(options: Options = {}) {
   const count = options.slotCount ?? 25;
@@ -103,7 +106,7 @@ function harness(options: Options = {}) {
       monthly_target: asset === "BTC" ? 7 : 2, max_order_notional_brl: 100, max_total_exposure_brl: 1000, slot_count: count }],
     account_quote_caps: [{ ...identity, hard_cap_quote: 1000 }], robot_v1_live_events: [], robot_v1_live_alerts: [],
     robot_v1_ath_profiles: [profile],
-    strategy_bulk_batches: [], strategy_bulk_engine_updates: [],
+    strategy_bulk_batches: [], strategy_bulk_engine_updates: [], account_order_budget_reservations:[],
     robot_v1_live_selective_contribution_allocations: [
       { ...applied, id: "open-slot-pending", slot_number: 1, status: "PENDING", applied_at: null },
       ...(!options.noContribution && !options.openContributionOnly && options.contributionSource !== "ALL_SLOTS" ? [applied] : []),
@@ -159,6 +162,9 @@ function harness(options: Options = {}) {
         is(key: string, value: unknown) { predicates.push((row) => row[key] === value); return query; },
         in(key: string, value: unknown[]) { predicates.push((row) => value.includes(row[key])); return query; },
         or(expression: string) {
+          if(expression.startsWith("lease_until.is.null,lease_until.lt.")){
+            predicates.push(row=>row.lease_until==null || Date.parse(String(row.lease_until))<Date.now());return query;
+          }
           assert.equal(expression,"result.neq.COMPLETED,result.is.null");
           predicates.push(row=>row.result!=="COMPLETED");return query;
         },
@@ -194,17 +200,24 @@ function harness(options: Options = {}) {
         const existing = orders.find((o) => o.client_order_id === params.p_client_order_id);
         if (existing) return { data: structuredClone(existing), error: null };
         const selected = slots.find((s) => s.id === params.p_slot_id)!;
-        const prepared = order(Number(selected.slot_number), "BUY", {
-          id: `prepared-${params.p_revision}`, revision: params.p_revision,
+        const prepared = order(Number(selected.slot_number), params.p_side as "BUY"|"SELL", {
+          id: `prepared-${selected.slot_number}-${params.p_side}-${params.p_revision}`, revision: params.p_revision,
           client_order_id: params.p_client_order_id, status: "PREPARED", exchange_order_id: null,
           submission_guarded_at: null, trades_reconciled: false, requested_quantity: params.p_quantity,
           requested_quote: params.p_quote, price: params.p_price,
-          reserved_notional_brl: Number(params.p_quantity) * Number(params.p_price),
+          reserved_notional_brl: params.p_side==="SELL"?0:params.p_quote!==null?Number(params.p_quote):Number(params.p_quantity) * Number(params.p_price),
           strategy_decision_id: params.p_decision_id, created_at: new Date().toISOString(),
           config_snapshot:structuredClone(run.config_snapshot),
         });
         orders.push(prepared);
+        if(params.p_quote!==null && params.p_purpose==="ENTRY")Object.assign(selected,{entry_state:"ARMED",missed_at:null});
         return { data: structuredClone(prepared), error: null };
+      }
+      if(name==="finalize_live_market_entry_reference"){
+        const buy=orders.find(o=>o.id===params.p_order_id)!;
+        const reference=Math.floor(Number(buy.cumulative_quote)/Number(buy.executed_quantity)/Number(params.p_price_tick)+1e-10)*Number(params.p_price_tick);
+        Object.assign(slots.find(s=>s.id===buy.slot_id)!,{target_buy_price:reference,entry_reference_price:reference,entry_origin:"REENTRY"});
+        return {data:reference,error:null};
       }
       if (name === "finish_strategy_bulk_engine_update") {
         const item = tables.strategy_bulk_engine_updates.find((row) => row.id === params.p_item_id)!;
@@ -245,6 +258,7 @@ function harness(options: Options = {}) {
       .map((o) => ({ ...o, id: o.orderId })),
   });
   const dependencies: Record<string, unknown> = {
+    "../supabase/service-role":{createServiceRoleClient:()=>service},
     "./live-audit-event":liveAudit,
     "./live-ledger-read": liveLedgerRead, "./live-read-error": liveReadError,
     "./live-read-recovery": liveReadRecovery,
@@ -274,7 +288,7 @@ function harness(options: Options = {}) {
         assert.equal(lease, run.lease_owner);
       },
     },
-    "./live-strategy-snapshot": strategySnapshot,
+    "./live-strategy-snapshot": strategySnapshot, "./market-entry-policy":marketPolicy,
     "./monthly-grid-recovery": monthlyGridRecovery,
     "./ath-ladder": athLadder, "./monthly-slot-policy": monthlyPolicy,
     "./strategy-parameter-registry": strategyParameterRegistry,
@@ -282,7 +296,7 @@ function harness(options: Options = {}) {
     "./operator-context": scope,
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => identity.tenant_id },
     "./operator-context-server": { resolveOperatorEngine: async () => engine },
-    "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE" }) },
+    "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE",health:{entry_market_protocol:options.marketProtocol?1:undefined} }) },
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => options.monthlyCounts
       ? monthlyPolicy.rankMonthlySlots(asset,new Date().toISOString(),slots.map(s=>({physicalSlotId:String(s.id),
         physicalSlotNumber:Number(s.slot_number),entryState:String(s.entry_state),balanceUsdc:22,
@@ -339,11 +353,15 @@ function harness(options: Options = {}) {
         calls.push({ kind: "create", input });
         assert.ok(["BUY", "SELL"].includes(String(input.side)));
         assert.ok(["ENTRY", "TP"].includes(String(input.purpose)));
-        assert.equal(input.type, "LIMIT");
+        assert.ok(input.type==="LIMIT" || options.marketProtocol && input.type==="MARKET");
         assert.ok(!exchange.has(String(input.clientOrderId)), "duplicate exchange write");
         const created = { symbol: input.symbol, clientOrderId: input.clientOrderId, side: input.side,
-          orderId: "replacement-exchange", status: "NEW", price: Number(input.price),
+          orderId: `replacement-exchange-${input.side}`, status: "NEW", price: Number(input.price??0),
           executedQuantity: 0, cumulativeQuoteQuantity: 0 };
+        if(input.type==="MARKET"&&options.marketFill){
+          const quantity=Math.floor(Number(input.quoteOrderQty)/119/.001)*.001;
+          Object.assign(created,{status:"FILLED",executedQuantity:quantity,cumulativeQuoteQuantity:Number((quantity*119).toFixed(8))});
+        }
         exchange.set(String(input.clientOrderId), created);
         if (options.lostCreateResponse) throw new Error("EXECUTOR_HTTP_503");
         return { order: created };
@@ -351,7 +369,7 @@ function harness(options: Options = {}) {
     },
   };
   const source = readFileSync(new URL("../execution/robot-v1-live-server.ts", import.meta.url), "utf8")
-    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate, ensureTakeProfits, assertLiveOrderPrice, repairMonthlyGridProvenance, hydrateRetainedGridContexts };";
+    + "\nexport { armNextEntry, reconcileOrder, confirmCapitalRefreshes, applyAthTransition, applyPendingStrategyUpdate, ensureTakeProfits, assertLiveOrderPrice, repairMonthlyGridProvenance, hydrateRetainedGridContexts, finalizeMarketEntryReferences };";
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ES2022 } }).outputText;
   const runtime = {} as Runtime;
@@ -407,6 +425,56 @@ function monthlyRepairHarness(crashAfterCancel=false) {
   const repair=()=>h.runtime.repairMonthlyGridProvenance(h.service,h.run,{slots:h.slots,orders:h.orders,accounts:h.accounts},h.state());
   return {...h,prepared,repair};
 }
+
+function missedMarketHarness(options:Partial<Options>={},legacyMissed=true){
+ const h=harness({noContribution:true,marketProtocol:true,marketFill:true,monthlyCounts:{3:4},...options});
+ const slot=h.slots[2]!;
+ Object.assign(slot,{entry_state:legacyMissed?"MISSED":"PLANNED",missed_at:legacyMissed?new Date().toISOString():null,
+  target_buy_price:130,entry_reference_price:130});
+ Object.assign(h.accounts[2]!,{balance_brl:60,contribution_brl:60});
+ if(legacyMissed)h.run.config_snapshot={...(h.run.config_snapshot as Row),market_entry_authorization:{
+  policy:strategy.ENTRY_MARKET_POLICY,run_id:h.run.id,engine_id:h.run.trading_engine_id,slot_id:slot.id,
+  operation_sequence:slot.operation_sequence,period:monthlyPolicy.monthlyPeriodKey(new Date()),
+  source_missed_at:slot.missed_at,quote_cap:60}};
+ return {...h,selected:slot};
+}
+
+test("requested missed owner: zero-fill NEXT BUY canceled, full slot MARKET, actual-fill TP/reference, then ordinary NEXT BUY",async()=>{
+ const h=missedMarketHarness(),ledger=()=>structuredClone({slots:h.slots,orders:h.orders,accounts:h.accounts});
+ assert.equal(await h.arm(),"MARKET_ENTRY_SUBMITTED");
+ const buys=h.calls.filter(c=>c.kind==="create"&&c.input?.side==="BUY");
+ assert.equal(buys.length,1);assert.equal(buys[0]!.input?.type,"MARKET");assert.equal(buys[0]!.input?.quoteOrderQty,"60");
+ assert.equal(h.calls.filter(c=>c.kind==="cancel").length,1);assert.equal(h.selected.entry_state,"OPEN");
+ await h.runtime.finalizeMarketEntryReferences(h.service,h.run,ledger(),h.state());
+ assert.equal(h.selected.entry_reference_price,119,"future reentry follows this actual MARKET operation");
+ await h.runtime.ensureTakeProfits(h.service,h.run,ledger(),h.state());
+ const tp=h.orders.find(o=>o.slot_id===h.selected.id&&o.side==="SELL")!;
+ assert.equal(tp.price,124.95);assert.equal(tp.requested_quantity,.504);
+ h.unchangedOpen();
+ assert.equal(await h.arm(),"NEXT_BUY_ARMED");
+ assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.type==="MARKET").length,1,"no duplicate catch-up");
+});
+
+for(const cancel of ["FILLED","PARTIALLY_FILLED","TIMEOUT_NEW"] as const)test(`market catch-up never duplicates a resident with race ${cancel}`,async()=>{
+ const h=missedMarketHarness({cancel});
+ if(cancel==="TIMEOUT_NEW")await assert.rejects(h.arm(),/EXECUTOR_HTTP_503/);
+ else assert.equal(await h.arm(),"ENTRY_FILLED_DURING_REPLACEMENT");
+ assert.equal(h.calls.filter(c=>c.kind==="create").length,0);h.unchangedOpen();
+});
+
+test("prospective priority-crossed entry works without sweeping legacy MISSED; unsupported native protocol keeps the old BUY",async()=>{
+ const future=missedMarketHarness({},false);assert.equal(await future.arm(),"MARKET_ENTRY_SUBMITTED");
+ const old=missedMarketHarness({marketProtocol:false});assert.equal(await old.arm(),"MARKET_ENTRY_PROTOCOL_HOLD");
+ assert.equal(old.calls.filter(c=>c.kind==="create"||c.kind==="cancel").length,0);
+});
+
+test("lost MARKET response reconciles the exact client id and never submits another BUY",async()=>{
+ const h=missedMarketHarness({lostCreateResponse:true});await assert.rejects(h.arm(),/EXECUTOR_HTTP_503/);
+ const order=h.orders.find(o=>o.slot_id===h.selected.id&&o.status==="PREPARED")!;
+ assert.ok(order);await h.runtime.reconcileOrder(h.service,h.run,order);
+ assert.equal(order.status,"FILLED");assert.equal(h.calls.filter(c=>c.kind==="create"&&c.input?.side==="BUY").length,1);
+ h.unchangedOpen();
+});
 
 test("legacy monthly repair retires only a GET-proven never-submitted intent; immutable snapshots, TPs and gates survive",async()=>{
   const h=monthlyRepairHarness(),before=structuredClone(h.prepared.config_snapshot);
@@ -900,6 +968,28 @@ for (const options of [{ staleCaps: true }, { noContribution: true }, { openCont
     h.unchangedOpen();
   });
 }
+
+test("explicit legacy authorization proves exact empty missed operation without touching exchange, gates or freshness",async()=>{
+ const h=harness({marketProtocol:true});
+ h.run.lease_until=null;h.run.lease_owner=null;
+ h.run.last_reconciled_at="2026-11-01T04:00:30Z";
+ const s=h.slots[6];Object.assign(s,{entry_state:"MISSED",missed_at:"2026-11-01T04:00:28Z",target_buy_price:130,entry_reference_price:130});
+ h.tables.robot_v1_live_events.push({...h.run,run_id:h.run.id,slot_number:7,event_type:"MISSED_LEVEL",
+  observed_at:"2026-11-01T04:00:28.870Z",details:{reason:"NO_RESIDENT_BUY_AT_OBSERVATION",target_price:130}});
+ const request=()=>h.runtime.authorizeMissedMarketEntry(String(h.run.id),7,1,String(h.run.user_id),"SOL");
+ const result=await request();assert.equal(result.status,"MARKET_ENTRY_AUTHORIZED");
+ const snapshot=h.run.config_snapshot as Row;const proof=snapshot.market_entry_authorization as Row;
+ assert.equal(proof.slot_id,s.id);assert.equal(proof.quote_cap,h.accounts[6].balance_brl);
+ assert.equal(h.calls.filter(c=>["create","cancel"].includes(c.kind)).length,0);
+ assert.equal(s.entry_state,"MISSED");assert.equal(h.run.last_reconciled_at,"2026-11-01T04:00:30Z");
+ await request();assert.equal(h.tables.robot_v1_live_events.filter(e=>e.event_type==="MISSED_MARKET_ENTRY_REQUESTED").length,1);
+ for(const change of [{operation_sequence:2},{entry_state:"OPEN",position_quantity:.001}]){
+  const before=structuredClone(s);Object.assign(s,change);await assert.rejects(request());Object.assign(s,before);
+ }
+ Object.assign(h.tables.robot_v1_live_events.find(e=>e.event_type==="MISSED_LEVEL")!,{details:{reason:"UNKNOWN",target_price:130}});
+ await assert.rejects(request(),/MISSED_EVIDENCE_UNPROVEN/);
+ h.unchangedOpen();
+});
 
 test("LIVE existing all-slots contribution reuses the same resizing path and source audit", async () => {
   const h = harness({ contributionSource: "ALL_SLOTS" });

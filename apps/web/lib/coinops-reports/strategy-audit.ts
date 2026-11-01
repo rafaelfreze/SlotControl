@@ -7,7 +7,7 @@ const string = (value: unknown) => String(value ?? "");
 const time = (value: unknown) => Date.parse(string(value));
 const object = (value: unknown): AuditRow => value && typeof value === "object" && !Array.isArray(value) ? value as AuditRow : {};
 const active = (value: unknown) => ["NEW", "PREPARED", "PARTIALLY_FILLED", "PENDING"].includes(string(value));
-const external = (row: AuditRow) => ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"].includes(string(row.action_type));
+const external = (row: AuditRow) => ["OPEN_INITIAL_MARKET", "OPEN_ENTRY_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"].includes(string(row.action_type));
 const fields = "id environment asset decision_id strategy_version cycle_id slot_id operation_id operation_sequence action_type target_price target_notional priority reason expected_next_state observed_next_state created_at dispatched_at exchange_ack_at completed_at result error latency_ms root_cause resolved_by_version".split(" ");
 
 /** Only persisted decisions are exported. Legacy execution is never backfilled. */

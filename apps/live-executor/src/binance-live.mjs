@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { ENTRY_MARKET_POLICY } from "../../web/lib/execution/strategy-engine.ts";
 
 import { BinanceReadOnlyError, BinanceSpotAdapter } from "../../web/lib/execution/binance-spot-adapter.ts";
 import { ExecutorRejection, ExecutorPreDispatchRejection } from "./security.mjs";
@@ -264,7 +265,11 @@ export class BinanceLiveTransport {
   async createOwnedOrder(input, { allowCreate, tradingEnabled, killSwitch }) {
     const { symbol, clientOrderId, side, purpose } = input;
     const match = this.ownership(symbol, clientOrderId, side);
-    if (purpose !== (side === "SELL" ? "TP" : input.type === "MARKET" ? "INITIAL" : "ENTRY"))
+    const marketEntry = side === "BUY" && purpose === "ENTRY" && input.type === "MARKET"
+      && input.entryMarketPolicy === ENTRY_MARKET_POLICY && positive(Number(input.entryReferencePrice))
+      && Number.isInteger(input.entrySlotNumber) && input.entrySlotNumber === Number(match[2]);
+    if (!marketEntry && purpose !== (side === "SELL" ? "TP" : input.type === "MARKET" ? "INITIAL" : "ENTRY")
+      || input.entryMarketPolicy !== undefined && !marketEntry)
       throw new ExecutorRejection("EXECUTOR_PURPOSE_INVALID", 403);
     const existing = await this.queryOrder(symbol, clientOrderId);
     if (existing) return existing;
@@ -295,6 +300,10 @@ export class BinanceLiveTransport {
       notional = Number(quote);
       if (!DECIMAL.test(quote) || !positive(notional) || !snapshot.account.balances.some((b) => b.asset === (this.engine?.quote_asset ?? "BRL") && b.free + 1e-8 >= notional))
         throw new ExecutorRejection("EXECUTOR_MARKET_BUY_INVALID", 403);
+      if (marketEntry && (notional + 1e-8 < snapshot.filters.minNotional
+        || snapshot.openOrders.some(order => order.side === "BUY" && order.clientOrderId?.startsWith(
+          this.engine ? engineOrderPrefix(this.engine) : `COR1-${match[1]}-`))))
+        throw new ExecutorRejection("EXECUTOR_MARKET_ENTRY_UNRECONCILED", 403);
       fields = { symbol, side, type: "MARKET", quoteOrderQty: quote };
     } else if (input.type === "LIMIT" && (side === "BUY" || side === "SELL")) {
       const quantity = String(input.quantity ?? ""), price = String(input.price ?? "");

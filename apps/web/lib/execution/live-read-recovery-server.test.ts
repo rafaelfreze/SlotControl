@@ -168,7 +168,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
         assert.equal(filters.cycle_id, undefined, "another run's unsettled dispatch must not be hidden");
         if (table === "robot_v1_strategy_decisions") {
           assert.equal(filters.environment, "REAL");
-          assert.deepEqual(filters.action_type, ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"]);
+          assert.deepEqual(filters.action_type, ["OPEN_INITIAL_MARKET", "OPEN_ENTRY_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"]);
           if (settledProof) {
             operatorIntentReads++;
             assert.equal(filters.or, "result.neq.COMPLETED,result.is.null");

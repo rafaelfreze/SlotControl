@@ -50,6 +50,10 @@ function fixture(options: { status?: string; health?: string; count?: number; pr
         calls.push({ name: "resume", args });
         if (options.coreError) throw new Error(options.coreError);
         return { status: "RESUMED", cycle_id: runId };
+      },
+      authorizeMissedMarketEntry:async(...args:unknown[])=>{
+        calls.push({name:"market-authorize",args});if(options.coreError)throw new Error(options.coreError);
+        return {status:"MARKET_ENTRY_AUTHORIZED",cycle_id:runId,slot_number:7,operation_sequence:8};
       } },
     "@/lib/supabase/env": { getSupabaseDataSchema: () => options.schema ?? "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "@/lib/supabase/service-role": { createServiceRoleClient: () => service },
@@ -141,4 +145,20 @@ test("ACTIVATE remains PREPARING and ACTIVE-health only; PREPARE remains READY-h
   const activate = fixture({ status: "PREPARING" }); assert.equal((await activate.post(request("ACTIVATE"))).status, 200);
   assert.equal(activate.calls.filter(call => call.name === "activate").length, 1);
   assert.equal(activate.calls.some(call => call.name === "resume"), false);
+});
+
+test("market catch-up authorizes only exact ACTIVE run/slot/operation, never accepts money or directly calls exchange",async()=>{
+ const extras={run_id:runId,slot_number:7,operation_sequence:8};
+ const api=fixture({status:"ACTIVE"});const result=await api.post(request("REENTER_MISSED_MARKET",secret,"cripto-flax.vercel.app",extras));
+ assert.equal(result.status,200);
+ assert.deepEqual(api.calls.find(c=>c.name==="market-authorize")?.args,[runId,7,8,"owner","SOL"]);
+ assert.equal(api.calls.some(c=>["exchange","activate","reserve","resume"].includes(c.name)),false);
+ for(const invalid of [{slot_number:0},{operation_sequence:0},{slot_number:"7"},{run_id:undefined},{quote:10},{price:432279}]){
+  const h=fixture();assert.equal((await h.post(request("REENTER_MISSED_MARKET",secret,"cripto-flax.vercel.app",{...extras,...invalid}))).status,400);
+  assert.equal(h.calls.some(c=>c.name==="market-authorize"),false);
+ }
+ for(const status of ["PAUSED","PREPARING"]){const h=fixture({status});
+  assert.equal((await h.post(request("REENTER_MISSED_MARKET",secret,"cripto-flax.vercel.app",extras))).status,503);}
+ const changed=fixture();assert.equal((await changed.post(request("REENTER_MISSED_MARKET",secret,"cripto-flax.vercel.app",
+  {...extras,run_id:"90000000-0000-4000-8000-000000000001"}))).status,503);
 });

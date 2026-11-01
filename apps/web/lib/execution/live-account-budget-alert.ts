@@ -117,7 +117,7 @@ async function heldDispatchCompleted(service: Service, run: Run, alert: Alert, o
   return decision.result === "COMPLETED" && validTime(decision.completed_at) && validTime(decision.exchange_ack_at)
     && decision.observed_next_state?.exchange_order_id === order.exchange_order_id
     && (order.side === "SELL" ? decision.action_type === "CREATE_TP"
-      : ["OPEN_INITIAL_MARKET", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"].includes(decision.action_type))
+      : ["OPEN_INITIAL_MARKET", "OPEN_ENTRY_MARKET", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"].includes(decision.action_type))
     && validTime(reservation.reserved_at) && validTime(reservation.acknowledged_at)
     && Date.parse(reservation.acknowledged_at) >= Date.parse(reservation.reserved_at);
 }

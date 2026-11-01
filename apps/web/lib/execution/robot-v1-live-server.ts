@@ -22,7 +22,7 @@ import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey, ENTRY_PRIORITY_POLICY } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
   LIVE_ACTIVE_ORDER_STATUSES, LIVE_TERMINAL_ORDER_STATUSES } from "./robot-v1-live-cycle";
-import { STRATEGY_VERSION, calculateStrategyTakeProfit, allocateMonthlyEntryLevels, planStrategyInitialEntry, planStrategyNextEntry,
+import { STRATEGY_VERSION, ENTRY_MARKET_POLICY, planStrategyMissedMarketEntry, calculateStrategyTakeProfit, allocateMonthlyEntryLevels, planStrategyInitialEntry, planStrategyNextEntry,
   planStrategyPostAthNextEntry, planStrategyTakeProfit, planStrategyClosedSlot,
   type StrategyCandidate, type StrategyDecision } from "./strategy-engine";
 import { persistStrategyDecision, dispatchStrategyDecision,
@@ -39,6 +39,7 @@ import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
 import { gridContextForPrice, strategyRatesForOrder, type GridPriceContext } from "./live-strategy-snapshot";
+import { marketEntryIntent, type MarketEntryIntent } from "./market-entry-policy";
 import { proveMonthlyGridRepair, proveRetainedGridContext, type MonthlyGridRepair } from "./monthly-grid-recovery";
 import { assertRowEngine, type EngineContext, type EngineSelection } from "./operator-context";
 import { strategyParameter, strategyParameterAffectsCurrentLadder,
@@ -154,7 +155,8 @@ async function configUpdatePending(service: Service, run: Run) {
 }
 const context = (run: Run, transitionKey?: string) => ({ asset: run.asset, cycleId: run.id,
   observedAt: new Date().toISOString(), quoteAsset: run.quote_asset, transitionKey,
-  entryPriorityPolicy: ENTRY_PRIORITY_POLICY, slotCount: configuredEngineSlotCount(run.engine ?? run) });
+  entryPriorityPolicy: ENTRY_PRIORITY_POLICY, entryMarketPolicy:ENTRY_MARKET_POLICY,
+  slotCount: configuredEngineSlotCount(run.engine ?? run) });
 
 function assertScope() {
   if (getSupabaseDataSchema() !== "coinops" || !getCoinOpsServiceTenantId())
@@ -425,6 +427,14 @@ function assertLiveOrderPrice(run: Run, ledger: Ledger, order: Order, tick: numb
   observedPrice?: number | null) {
   if (order.purpose === "INITIAL") return;
   const slot = ledger.slots.find((item) => item.id === order.slot_id);
+  const market = marketEntryIntent(order);
+  if (market) {
+    if (!slot || order.run_id!==run.id || order.trading_engine_id!==run.trading_engine_id
+      || order.operation_sequence!==slot.operation_sequence || amount(order.executed_quantity)===0
+        && amount(slot.entry_reference_price)!==market.reference_price)
+      throw new Error("COINOPS_MARKET_ENTRY_INTENT_INVALID");
+    return;
+  }
   if (!slot || !order.price) throw new Error("COINOPS_STRATEGY_PRICE_INVARIANT_FAILED");
   const check = (price: number) => {
     if (order.side === "BUY") {
@@ -571,8 +581,11 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
     }
     await validateRunEngine(service, run);
     if (order.side === "BUY" && (entryBlocked(run) || await configUpdatePending(service, run))) return order;
+    const market = marketEntryIntent(order);
     const health = await loadLiveEngineExecutorStatus(run);
     if (order.side === "BUY" && health.gate !== "LIVE_EXECUTOR_ACTIVE") return order;
+    if (market && health.health?.entry_market_protocol !== 1)
+      throw new Error("COINOPS_MARKET_ENTRY_PROTOCOL_UNAVAILABLE");
     if (order.side === "SELL" && !["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(health.gate))
       throw new Error("COINOPS_LIVE_TP_EXECUTOR_UNAVAILABLE");
     const state = await readLiveExecutorState(run);
@@ -586,7 +599,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
       if (!slot) throw new Error("COINOPS_LIVE_ORDER_SLOT_MISSING");
       if (await holdEntryForBnbFeeBalance(service, run, slot, state)) return order;
       if (await holdEntryForQuoteBalance(service, run, slot, state,
-        order.purpose === "INITIAL" ? amount(order.requested_quote)
+        order.requested_quote !== null ? amount(order.requested_quote)
           : amount(order.requested_quantity) * amount(order.price))) return order;
     }
     const caps = await service.from("robot_v1_live_preparations")
@@ -605,9 +618,11 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
       && item.operation_sequence === order.operation_sequence && item.side === "BUY"
       && amount(item.executed_quantity) > 0 && item.exchange_order_id);
     const input = { symbol: run.symbol, clientOrderId: order.client_order_id,
-      side: order.side, purpose: order.purpose, type: order.purpose === "INITIAL" ? "MARKET" : "LIMIT",
-      ...(order.purpose === "INITIAL" ? { quoteOrderQty: String(order.requested_quote) }
+      side: order.side, purpose: order.purpose, type: order.purpose === "INITIAL" || market ? "MARKET" : "LIMIT",
+      ...(order.purpose === "INITIAL" || market ? { quoteOrderQty: String(order.requested_quote) }
         : { quantity: String(order.requested_quantity), price: String(order.price) }),
+      ...(market ? { entryMarketPolicy: market.policy, entryReferencePrice: market.reference_price,
+        entrySlotNumber: market.slot_number } : {}),
       expectedOwnedOpenIds, assetCapBrl: amount(caps.data.max_total_exposure_brl),
       globalCapBrl: globalCap,
       assetExposureBeforeBrl: pre[run.asset] - reserve,
@@ -652,7 +667,7 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
         if (!slot) throw new Error("COINOPS_LIVE_ORDER_SLOT_MISSING");
         if (await holdEntryForBnbFeeBalance(service, run, slot, fresh)) return order;
         if (await holdEntryForQuoteBalance(service, run, slot, fresh,
-          order.purpose === "INITIAL" ? amount(order.requested_quote)
+          order.requested_quote !== null ? amount(order.requested_quote)
             : amount(order.requested_quantity) * amount(order.price))) return order;
       }
       throw new AccountOrderBudgetHold("COINOPS_ACCOUNT_ORDER_NOT_SUBMITTED", order.client_order_id, order.side);
@@ -972,6 +987,24 @@ async function ensureTakeProfits(service: Service, run: Run, ledger: Ledger,
       uncovered, null, price);
     ledger.orders.push(order);
     await reconcileOrder(service, run, order, feeValuation);
+  }
+}
+
+async function finalizeMarketEntryReferences(service:Service,run:Run,ledger:Ledger,state:LiveExecutorState){
+  for(const order of ledger.orders){
+    if(!marketEntryIntent(order) || !LIVE_TERMINAL_ORDER_STATUSES.has(order.status)
+      || !order.trades_reconciled || amount(order.executed_quantity)<=0)continue;
+    const slot=ledger.slots.find(s=>s.id===order.slot_id);
+    if(!slot || slot.operation_sequence!==order.operation_sequence || slot.entry_state!=="OPEN")continue;
+    const reference=floorStep(amount(order.cumulative_quote)/amount(order.executed_quantity),state.filters.priceTick);
+    if(amount(slot.entry_reference_price)===reference && amount(slot.target_buy_price)===reference)continue;
+    await renewLease(service,run);
+    const saved=await service.rpc("finalize_live_market_entry_reference",{p_order_id:order.id,
+      p_price_tick:state.filters.priceTick,p_lease_owner:run.lease_owner});
+    if(saved.error || Number(saved.data)!==reference)throw new Error("COINOPS_MARKET_ENTRY_REFERENCE_UNPROVEN");
+    Object.assign(slot,{entry_reference_price:reference,target_buy_price:reference,entry_origin:"REENTRY"});
+    await event(service,run,`MARKET_ENTRY_REFERENCE:${order.id}`,"MARKET_ENTRY_REFERENCE",slot.slot_number,
+      {order_id:order.id,operation_sequence:order.operation_sequence,reference_price:reference});
   }
 }
 
@@ -1666,7 +1699,8 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   await validateRunEngine(service, run);
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   if (!prep.live_enabled || prep.kill_switch || entryBlocked(run)) return "KILL_SWITCH";
-  if ((await loadLiveEngineExecutorStatus(run)).gate !== "LIVE_EXECUTOR_ACTIVE")
+  const entryExecutor = await loadLiveEngineExecutorStatus(run);
+  if (entryExecutor.gate !== "LIVE_EXECUTOR_ACTIVE")
     return "EXECUTOR_NOT_ACTIVE";
   const globalCap = await quoteCap(service, run);
   const deployed = await exposure(service, run);
@@ -1718,7 +1752,7 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
       const feeHold = await holdEntryForBnbFeeBalance(service, run, activeSlot, state);
       if (feeHold) return feeHold;
       if (await holdEntryForQuoteBalance(service, run, activeSlot, state,
-        active.purpose === "INITIAL" ? amount(active.requested_quote)
+        active.requested_quote !== null ? amount(active.requested_quote)
           : amount(active.requested_quantity) * amount(active.price))) return "QUOTE_BALANCE_HOLD";
     }
     throw new Error("COINOPS_LIVE_PREPARED_BUY_UNRESOLVED");
@@ -1753,6 +1787,17 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const value = { ...candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached, rank.eligibleForNewEntry),
       monthlyGainCount: rank.monthlyGainCount!, lifetimeGainCount: rank.lifetimeGainCount,
       balanceQuote: Math.min(amount(account.balance_brl), amount(prep.max_order_notional_brl)) };
+    const authorization=run.config_snapshot.market_entry_authorization as Record<string,unknown>|undefined;
+    const authorizedMissed=slot.entry_state==="MISSED" && authorization?.policy===ENTRY_MARKET_POLICY
+      && authorization.run_id===run.id && authorization.engine_id===run.trading_engine_id
+      && authorization.slot_id===slot.id && authorization.operation_sequence===slot.operation_sequence
+      && authorization.period===monthlyPeriodKey(new Date()) && authorization.source_missed_at===slot.missed_at
+      && Number(authorization.quote_cap)>=amount(account.balance_brl);
+    const uncommitted=amount(slot.position_quantity)===0 && !operationOrders(ledger.orders,slot).some(o=>
+      LIVE_ACTIVE_ORDER_STATUSES.has(o.status) || amount(o.executed_quantity)>0 || !o.trades_reconciled);
+    value.marketEntryEligible=uncommitted && (slot.entry_state==="PLANNED"&&!slot.missed_at || authorizedMissed);
+    if(authorizedMissed && (!rank.monthlyTargetReached || status.every(s=>s.monthlyTargetReached)))
+      value.monthlyEntryEligible=true;
     const source = (run.config_snapshot.entry_price_sources as Record<string,{price:number;source_origin:"GRID"|"REENTRY"}> | undefined)?.[slot.id];
     if (source && Number(source.price) === value.buyPrice) value.levelOrigin = source.source_origin;
     if (active?.slot_id === slot.id) value.state = "ARMED";
@@ -1765,6 +1810,44 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     ...(refresh?.status === "REPLACE" && capitalSources.length ? { capitalRefresh: {
       quantityBefore: amount(active.requested_quantity), quantityAfter: refresh.quantity, notional: refresh.notional,
     } } : {}) } : null;
+  const marketPlan=planStrategyMissedMarketEntry(context(run,contextKey),candidates,observedFloor,run.entry_regime,resident);
+  if(marketPlan){
+    if(entryExecutor.health?.entry_market_protocol!==1)return "MARKET_ENTRY_PROTOCOL_HOLD";
+    const selected=ledger.slots.find(s=>s.id===marketPlan.candidateId)!;
+    const balance=amount(ledger.accounts.find(a=>a.slot_number===selected.slot_number)!.balance_brl);
+    const quote=Number(balance.toFixed(8));
+    if(quote<state.filters.minNotional || spendable(balance,reclaimed)+1e-8<quote)return "CAPACITY_HOLD";
+    const feeHold=await holdEntryForBnbFeeBalance(service,run,selected,state);
+    if(feeHold)return feeHold;
+    if(await holdEntryForQuoteBalance(service,run,selected,state,quote,
+      active?.status==="NEW"&&observedActive?reclaimed:0))return "QUOTE_BALANCE_HOLD";
+    await event(service,run,`MARKET_ENTRY_REQUESTED:${marketPlan.decision.decision_id}`,"MARKET_ENTRY_REQUESTED",
+      selected.slot_number,{policy:ENTRY_MARKET_POLICY,operation_sequence:selected.operation_sequence,
+        reference_price:marketPlan.referencePrice,quote,old_client_order_id:active?.client_order_id??null});
+    if(active){
+      if(!observedActive || state.supports_unfilled_buy_cancel!==true)return "PRIORITY_RESIDENT_CONFIRMATION_PENDING";
+      if(!await cancelOwnedEntry(service,run,active,true))return "ENTRY_FILLED_DURING_REPLACEMENT";
+      await updateSlot(service,run,activeSlot!,{entry_state:"PLANNED"});
+      state=await readLiveExecutorState(run);
+    }
+    const intent:MarketEntryIntent={policy:ENTRY_MARKET_POLICY,run_id:run.id,engine_id:run.trading_engine_id,
+      slot_id:selected.id,slot_number:selected.slot_number,operation_sequence:selected.operation_sequence,
+      decision_id:marketPlan.decision.decision_id,quote,reference_price:marketPlan.referencePrice,
+      reason:selected.entry_state==="MISSED"?"OPERATOR_MISSED_ENTRY":"PROSPECTIVE_CROSSED_ENTRY",period};
+    await renewLease(service,run);
+    const snapshot={...run.config_snapshot,market_entry_intent:intent};
+    const saved=await service.from("robot_v1_live_runs").update({config_snapshot:snapshot})
+      .eq("id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("lease_owner",run.lease_owner)
+      .select("config_snapshot").single();
+    if(saved.error || !saved.data)throw new Error("COINOPS_MARKET_ENTRY_CHECKPOINT_FAILED");
+    run.config_snapshot=saved.data.config_snapshot;
+    const revision=Math.max(0,...ledger.orders.filter(o=>o.slot_id===selected.id&&o.side==="BUY").map(o=>o.revision))+1;
+    const order=await prepareOrder(service,run,selected,marketPlan.decision,"BUY","ENTRY",revision,null,quote,null);
+    ledger.orders.push(order);
+    await updateSlot(service,run,selected,{entry_state:"ARMED",missed_at:null});
+    await reconcileOrder(service,run,order);
+    return "MARKET_ENTRY_SUBMITTED";
+  }
   const allocation = allocateMonthlyEntryLevels(context(run, contextKey), candidates, observedFloor, run.entry_regime, resident);
   const reallocates = allocation.assignments.some(a => {
     const slot = ledger.slots.find(s => s.id === a.id)!;
@@ -1949,6 +2032,7 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     ledger = await runRows(service, run);
     stage = "READ_STATE";
     let state = await readLiveExecutorState(run);
+    await finalizeMarketEntryReferences(service,run,ledger,state);
     assertLiveResidentPrices(run, ledger, state);
     stage = "PROTECT_TP";
     await ensureTakeProfits(service, run, ledger, state, feeValuation);
@@ -2018,10 +2102,11 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     if (await configUpdatePending(service, run)) return { status: "RETRY", code: "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING" };
     const next = await armNextEntry(service, run, entered, state);
     // A MARKET can fill in the same invocation. Protect it before returning.
-    if (next === "INITIAL_SUBMITTED" || next === "NEXT_BUY_ARMED" || next === "ENTRY_FILLED_DURING_REPLACEMENT") {
+    if (next === "INITIAL_SUBMITTED" || next === "MARKET_ENTRY_SUBMITTED" || next === "NEXT_BUY_ARMED" || next === "ENTRY_FILLED_DURING_REPLACEMENT") {
       stage = "ASSERT_NEW_POSITION";
       const after = await runRows(service, run);
       state = await readLiveExecutorState(run);
+      await finalizeMarketEntryReferences(service,run,after,state);
       await ensureTakeProfits(service, run, after, state, feeValuation);
       state = await readLiveExecutorState(run);
       await assertAllPositionsProtected(run, after, state);
@@ -2151,6 +2236,72 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
  * writes remain inside advanceLiveRunOnce's existing reconciler. */
 export async function advanceLiveRun(runId: string, source = "LIVE_CRON") {
   return continueLiveAdvance(runId, source, advanceLiveRunOnce);
+}
+
+/** Explicit owner instruction for ONE legacy missed operation. Financial
+ * execution stays in the ordinary leased worker; no order is sent here. */
+export async function authorizeMissedMarketEntry(runId:string,slotNumber:number,operationSequence:number,
+  userId:string,asset:V1Asset){
+  assertScope();
+  const service=createServiceRoleClient(),run=await claim(service,runId);
+  if(!run)throw new Error("COINOPS_MARKET_ENTRY_LEASE_BUSY");
+  let errorCode:string|null=null;
+  try{
+    await validateRunEngine(service,run);
+    if(run.user_id!==userId || run.asset!==asset || run.status!=="ACTIVE" || run.last_error
+      || entryBlocked(run) || !Number.isInteger(slotNumber) || !Number.isInteger(operationSequence))
+      throw new Error("COINOPS_MARKET_ENTRY_AUTHORIZATION_DENIED");
+    await assertNoPendingStrategyUpdate(service,run);
+    const executor=await loadLiveEngineExecutorStatus(run);
+    if(executor.gate!=="LIVE_EXECUTOR_ACTIVE" || executor.health?.entry_market_protocol!==1)
+      throw new Error("COINOPS_MARKET_ENTRY_PROTOCOL_UNAVAILABLE");
+    const ledger=await runRows(service,run),slot=ledger.slots.find(s=>s.slot_number===slotNumber);
+    if(!slot || slot.operation_sequence!==operationSequence)
+      throw new Error("COINOPS_MARKET_ENTRY_OPERATION_CHANGED");
+    const existing=operationOrders(ledger.orders,slot).find(o=>marketEntryIntent(o));
+    if(existing)return {status:"MARKET_ENTRY_ALREADY_PREPARED",cycle_id:run.id,slot_number:slotNumber,
+      operation_sequence:operationSequence,client_order_id:existing.client_order_id};
+    if(slot.entry_state!=="MISSED" || !slot.missed_at || amount(slot.position_quantity)!==0
+      || operationOrders(ledger.orders,slot).some(o=>LIVE_ACTIVE_ORDER_STATUSES.has(o.status)
+        || amount(o.executed_quantity)>0 || !o.trades_reconciled))
+      throw new Error("COINOPS_MARKET_ENTRY_SLOT_NOT_EMPTY");
+    const state=await readLiveExecutorState(run);
+    assertLiveResidentPrices(run,ledger,state);
+    await assertAllPositionsProtected(run,ledger,state);
+    await assertSettledOperatorRecovery(service,run,ledger);
+    const statuses=await monthly(service,run,ledger.slots,ledger.accounts);
+    const progress=statuses.find(s=>s.physicalSlotNumber===slotNumber)!;
+    if(progress.monthlyTargetReached && !statuses.every(s=>s.monthlyTargetReached))
+      throw new Error("COINOPS_MARKET_ENTRY_MONTHLY_TARGET_REACHED");
+    const missed=await service.from("robot_v1_live_events").select("observed_at,details")
+      .eq("run_id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("slot_number",slotNumber)
+      .eq("event_type","MISSED_LEVEL").order("observed_at",{ascending:false}).limit(1).single();
+    if(missed.error || missed.data?.details?.reason!=="NO_RESIDENT_BUY_AT_OBSERVATION"
+      || Number(missed.data.details.target_price)!==amount(slot.entry_reference_price)
+      || Math.abs(Date.parse(missed.data.observed_at)-Date.parse(slot.missed_at))>5000)
+      throw new Error("COINOPS_MARKET_ENTRY_MISSED_EVIDENCE_UNPROVEN");
+    const account=ledger.accounts.find(a=>a.slot_number===slotNumber)!;
+    const period=monthlyPeriodKey(new Date()),key=`MISSED_MARKET_ENTRY_REQUESTED:${slot.id}:${operationSequence}:${period}`;
+    const authorization={policy:ENTRY_MARKET_POLICY,run_id:run.id,engine_id:run.trading_engine_id,
+      slot_id:slot.id,slot_number:slotNumber,operation_sequence:operationSequence,period,
+      source_missed_at:slot.missed_at,quote_cap:amount(account.balance_brl),authorization_event_key:key};
+    await event(service,run,key,"MISSED_MARKET_ENTRY_REQUESTED",slotNumber,authorization);
+    await renewLease(service,run);
+    const snapshot={...run.config_snapshot,market_entry_authorization:authorization};
+    const saved=await service.from("robot_v1_live_runs").update({config_snapshot:snapshot})
+      .eq("id",run.id).eq("trading_engine_id",run.trading_engine_id).eq("lease_owner",run.lease_owner)
+      .select("id").single();
+    if(saved.error || !saved.data)throw new Error("COINOPS_MARKET_ENTRY_AUTHORIZATION_UNPROVEN");
+    return {status:"MARKET_ENTRY_AUTHORIZED",cycle_id:run.id,slot_number:slotNumber,
+      operation_sequence:operationSequence,quote_cap:authorization.quote_cap};
+  }catch(error){
+    errorCode=error instanceof Error&&/^COINOPS_[A-Z0-9_]+$/.test(error.message)?error.message:"COINOPS_MARKET_ENTRY_AUTHORIZATION_FAILED";
+    throw new Error(errorCode);
+  }finally{
+    // This authorizes a future decision; it does not certify reconciliation or
+    // replace the worker's last_error/checkpoint with an authorization outcome.
+    await release(service,run,run.last_error,false);
+  }
 }
 
 /** Six-hour audit reuses the same ledger/reconciliation invariants. It never
@@ -2390,7 +2541,7 @@ async function assertSettledPermissionReadRecovery(service: Service, run: Run, i
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
     .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
-    .in("action_type", ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
+    .in("action_type", ["OPEN_INITIAL_MARKET", "OPEN_ENTRY_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
     .or(`created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`)
     .limit(1).abortSignal(AbortSignal.timeout(5_000));
   const dispatch = await service.from("account_order_budget_reservations").select("client_order_id")
@@ -2412,7 +2563,7 @@ async function assertSettledOperatorRecovery(service: Service, run: Run, ledger:
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
     .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
-    .in("action_type", ["OPEN_INITIAL_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
+    .in("action_type", ["OPEN_INITIAL_MARKET", "OPEN_ENTRY_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
     .or("result.neq.COMPLETED,result.is.null").limit(1).abortSignal(AbortSignal.timeout(5_000));
   const dispatch = await service.from("account_order_budget_reservations").select("client_order_id")
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
