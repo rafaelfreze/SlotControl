@@ -155,6 +155,25 @@ const REGISTRY_READ_RECOVERY_STAGES = new Set([
   "ARM_ENTRY", "ATH_TRANSITION", "RESTART_CYCLE", "CONFIG_UPDATE",
 ]);
 
+/** The legacy wrapper discarded the provider response. Eligibility proves only
+ * the exact GET site; guarded resume must reload an unchanged, matching ATH
+ * profile twice plus complete financial/dispatch proofs under lease and CAS. */
+export function isAthProfileReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  if (details?.stage !== "ATH_TRANSITION") return false;
+  if (code === "COINOPS_ATH_PROFILE_UNAVAILABLE") return details.root_code === code
+    && ["read_path", "http_status", "provider_code", "read_attempts"]
+      .every(key => details[key as keyof ReadRecoveryDetails] === undefined);
+  const status = details.http_status, provider = details.provider_code;
+  const transient = (provider === undefined || provider === null)
+    && (status === null || [0, 502, 503, 504, 525].includes(Number(status)))
+    || typeof provider === "string" && AUDIT_CONNECTION_CODES.has(provider)
+      && ([503, 504].includes(Number(status)) || provider === "57014" && status === 500);
+  return code === "COINOPS_LIVE_LEDGER_READ_STALE"
+    && details.root_code === "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE" && details.read_path === "ledger/ath_profile"
+    && Number.isInteger(details.read_attempts) && Number(details.read_attempts) >= 1
+    && Number(details.read_attempts) <= 2 && transient;
+}
+
 /** Eligibility for a known registry GET only, never proof that the provider
  * error was transient. Resume must reload real scope/permissions, all physical
  * slots, Binance/ledger ownership, TP, fills, monthly facts and caps. */
@@ -194,7 +213,9 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
     && (!NON_RECOVERABLE_READ_ROOTS.has(String(details?.root_code)) || isLedgerTlsReadRecovery(alertCode, details))
     && (details?.root_code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || isAuditEventRecovery(alertCode, details))
     && (details?.read_path !== "ledger/reset_recovery_milestone" || isResetMilestoneReadRecovery(alertCode, details))
+    && (details?.read_path !== "ledger/ath_profile" || isAthProfileReadRecovery(alertCode, details))
     && (isLedgerTlsReadRecovery(alertCode, details)
+      || isAthProfileReadRecovery(alertCode, details)
       || isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)
       || isExposureStateReadRecovery(alertCode, details)
@@ -274,7 +295,7 @@ export function verifiedReadRecoveryAlert(status: string, runId: string,
           "ledger/monthly_gains", "ledger/bulk_checkpoint", "ledger/config_gate", "ledger/quote_cap",
           "ledger/preparation", "ledger/operator", ...EXPOSURE_READ_PATHS,
           ...BUDGET_ALERT_READ_PATHS, CAPITAL_AUDIT_READ_PATH,
-          "ledger/reset_recovery_milestone"].includes(String(alert.details?.read_path)))
+          "ledger/reset_recovery_milestone", "ledger/ath_profile"].includes(String(alert.details?.read_path)))
     || alert.details?.read_path === "ledger/reset_recovery_milestone"
       && !isResetMilestoneReadRecovery(alert.code, alert.details)
     || BUDGET_ALERT_READ_PATHS.includes(String(alert.details?.read_path))

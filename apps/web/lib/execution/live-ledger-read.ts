@@ -2,7 +2,7 @@ import { LiveLedgerReadFailed, LiveReadUnavailable } from "./live-read-error.ts"
 import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "./engine-slot-topology.ts";
 
 type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "monthly_gains"
-  | "bulk_checkpoint" | "config_gate" | "quote_cap" | "preparation" | "operator"
+  | "bulk_checkpoint" | "config_gate" | "quote_cap" | "preparation" | "operator" | "ath_profile"
   | "exposure_runs" | "exposure_engines" | "exposure_slots" | "exposure_orders"
   | "capital_refresh_events"
   | "reset_recovery_milestone" | "reset_recovery_lineage"

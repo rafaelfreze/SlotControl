@@ -3,6 +3,8 @@ import { readBinanceHistoricalAth } from "./ath-market-source";
 import type { V1Asset } from "./robot-v1";
 import type { createServiceRoleClient } from "../supabase/service-role";
 import { resolveOperatorEngine } from "./operator-context-server";
+import { boundedLedgerRead, observeLedgerRecord } from "./live-ledger-read";
+import { assertAthProfileIdentity } from "./ath-profile-read";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Scope = { productId: string; tenantId: string; userId: string;
@@ -35,10 +37,19 @@ export async function loadAthProfile(service: Service, scope: Scope, environment
   asset: V1Asset): Promise<AthProfileRow> {
   const engine = await resolveOperatorEngine(service, { product_id: scope.productId, tenant_id: scope.tenantId, user_id: scope.userId },
     { environment, asset, operator_id: scope.operatorId, exchange_account_id: scope.exchangeAccountId, trading_engine_id: scope.tradingEngineId });
-  const { data, error } = await service.from("robot_v1_ath_profiles").select("*")
+  const query = () => service.from("robot_v1_ath_profiles").select("*")
     .eq("product_id", scope.productId).eq("tenant_id", scope.tenantId).eq("user_id", scope.userId)
-    .eq("environment", environment).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id).single();
-  if (error || !data) throw new Error("COINOPS_ATH_PROFILE_UNAVAILABLE");
+    .eq("environment", environment).eq("asset", asset).eq("trading_engine_id", engine.trading_engine_id);
+  const data = environment === "REAL" ? await boundedLedgerRead((deadline, attempt) =>
+    observeLedgerRecord("ath_profile", query().abortSignal(deadline).single(), deadline, attempt, "COINOPS_ATH_PROFILE_MISSING"))
+    : await query().single().then(result => {
+      if (result.error || !result.data) throw new Error("COINOPS_ATH_PROFILE_UNAVAILABLE");
+      return result.data;
+    });
+  if (environment === "REAL") assertAthProfileIdentity(data, { product_id: scope.productId,
+    tenant_id: scope.tenantId, user_id: scope.userId, operator_id: engine.operator_id,
+    exchange_account_id: engine.exchange_account_id, trading_engine_id: engine.trading_engine_id,
+    asset, quote_asset: engine.quote_asset });
   return { ...data, symbol: engine.symbol, quote_asset: engine.quote_asset, reference_symbol: engine.ath_reference_symbol } as AthProfileRow;
 }
 

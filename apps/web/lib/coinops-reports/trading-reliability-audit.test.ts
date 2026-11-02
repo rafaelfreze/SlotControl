@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildAuditReport } from "./report-engine.ts";
+
+test("ATH profile recovery exports bounded observation and unchanged-profile financial safeguards", () => {
+  const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
+    generatedAt: "2026-11-02T18:00:00Z", scope: { tenantId: "fixture", userId: "fixture" } },
+    { start: "2026-11-02T00:00:00Z", end: "2026-11-03T00:00:00Z", assets: ["SOL"], environments: ["REAL"] });
+  const rule = report.datasets.rules.find(row => row.parameter === "ath_profile_read_recovery");
+  assert.equal(rule?.version, 1);
+  assert.equal(rule?.value, "BOUNDED_GET_UNCHANGED_PROFILE_TWICE_BEFORE_ENGINE_RESUME");
+  assert.match(String(rule?.notes), /não comprova timeout\/503/);
+  assert.match(String(rule?.notes), /idêntico duas vezes/);
+  assert.match(String(rule?.notes), /BLOCKED_SAFE no engine/);
+});
 import { REPORT_VERSION } from "./filters.ts";
 
 test("v22 publishes the observation and recurrence contract without claiming missing evidence is zero", () => {

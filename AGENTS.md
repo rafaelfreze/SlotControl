@@ -242,6 +242,16 @@ no ambiente de destino antes de operação remota.
   ambíguos. Limites totais do motor/conta, posições, valores e irmãos não mudam.
   Protocolo ausente ou metadados divergentes mantém HOLD antes de cancelar BUY.
 
+## Leitura ATH — 02/11/2026
+
+- ATH REAL usa observação GET limitada em `ledger/ath_profile`; ausência,
+  ownership/configuração inválida e permissão/schema continuam fechados.
+  Recuperação legada somente em ATH_TRANSITION/root exatos, com perfil atual
+  íntegro e inalterado provado duas vezes, snapshot/versão/regime/rates iguais,
+  zero edição pendente e todas as provas financeiras/lease/CAS usuais.
+  Nunca repetir transição/UPDATE/trading como retry de leitura. Ver
+  `docs/COINOPS_ATH_PROFILE_READ_RECOVERY_20261102.md`.
+
 ## Recuperação de parcial terminal — 01/11/2026
 
 - `ORPHANED_PARTIAL_RECOVERY_V1` é recuperação explícita de uma BUY parcial

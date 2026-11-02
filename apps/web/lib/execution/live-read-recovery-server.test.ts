@@ -5,7 +5,7 @@ import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -15,9 +15,34 @@ import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event.ts";
 import * as resetMilestone from "./live-reset-recovery.ts";
+import { athProfileRecoveryProof } from "./ath-profile-read.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
+
+test("ATH read recovery proves the unchanged profile twice, preserves TP/BUY and settles dispatches", async () => {
+  const incident = { ...known, code: "COINOPS_ATH_PROFILE_UNAVAILABLE",
+    details: { root_code: "COINOPS_ATH_PROFILE_UNAVAILABLE", stage: "ATH_TRANSITION" } };
+  const safe = fixture({ alerts: [[incident]], athRecovery: true, caixetaLayout: true });
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.equal(safe.calls.filter(c => c === "ath-profile-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "operator-dispatch-read").length, 2);
+  assert.ok(safe.writes.some(w => w.data.kill_switch === false));
+  assert.equal(safe.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_slot_accounts",
+    "robot_v1_ath_profiles"].includes(w.table)), false);
+  for (const change of [{ athDenied: true }, { athChanges: { normal_spacing_rate: .03 } },
+    { athLateChanges: { updated_at: "2026-11-02T13:01:00Z" } },
+    { athLateChanges: { trading_engine_id: "sibling" } }, { operatorPendingDispatch: true },
+    { operatorLateUnsettledDecision: true }, { missingTp: true }, { bulkStatus: "PENDING" },
+    { lateBulk: true }, { configPending: true }, { exposureCap: 5 }]) {
+    const f = fixture({ alerts: [[incident]], athRecovery: true, caixetaLayout: true, ...change });
+    await assert.rejects(f.run()); assert.equal(f.writes.some(w => w.data.kill_switch === false), false);
+  }
+  const cas = fixture({ alerts: [[incident], [{ ...incident, last_seen_at: "2026-11-02T13:00:00Z" }]],
+    athRecovery: true, caixetaLayout: true });
+  await assert.rejects(cas.run(), /INCIDENT_CHANGED/);
+  assert.equal(cas.writes.some(w => w.data.kill_switch === false), false);
+});
 
 function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boolean; missingTp?: boolean;
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
@@ -43,7 +68,9 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   resetMilestoneMissing?: boolean; resetMilestoneDenied?: boolean;
   predecessorChanges?: Record<string, unknown>; successorChanges?: Record<string, unknown>;
   secondSuccessor?: boolean; lineageDenied?: boolean; lineageLateChanges?: boolean;
-  lineageNeverSettles?: boolean; milestoneLeaseLost?: boolean } = {}) {
+  lineageNeverSettles?: boolean; milestoneLeaseLost?: boolean;
+  athRecovery?: boolean; athDenied?: boolean; athChanges?: Record<string, unknown>;
+  athLateChanges?: Record<string, unknown> } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -51,9 +78,13 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   const eventScope = Object.fromEntries(["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
     "trading_engine_id", "quote_asset"].map(key => [key, scope[key as keyof typeof scope]]));
   const now = Date.now();
-  const run = { ...scope, id: "run-a", asset: "SOL", status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
+  const run = { ...scope, id: "run-a", asset: "SOL", config_version: 3, gain_rate: .055,
+    entry_regime: "NORMAL", entry_spacing: .015, ath_transition_key: null,
+    status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date(now - (options.auditEventRecovery ? 1_000 : 0)).toISOString(), lease_owner: "lease",
-    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25, config_snapshot: {},
+    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25,
+    config_snapshot: options.athRecovery ? { gain_rate: .055, normal_spacing_rate: .015, post_ath_spacing_rate: .03,
+      regime: "NORMAL", source_config_version: 3, ath_price: 296, ath_source: "CONFIRMED_HISTORY" } : {},
     previous_run_id: options.resetReplayRecovery ? "64b267d0-3897-4783-a07e-69c427472f81" : null,
     reset_idempotency_key: options.resetReplayRecovery ? "RESET:64b267d0-3897-4783-a07e-69c427472f81:owned:old-final-tp" : null };
   const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
@@ -88,7 +119,8 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   let auditProofReads = 0;
   let resetMilestoneReads = 0;
   let lineageReads = 0;
-  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery
+  let athReads = 0;
+  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery || options.athRecovery
     || options.auditEventRecovery || options.alerts?.some(group => group.some(alert => isLedgerTlsReadRecovery(alert.code, alert.details)));
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
@@ -259,6 +291,16 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./ath-profile-read": { athProfileRecoveryProof },
+    "./ath-profile-server": { loadAthProfile: async () => {
+      calls.push("ath-profile-read"); athReads++;
+      if (options.athDenied) throw new Error("COINOPS_LIVE_LEDGER_READ_FAILED");
+      return { ...scope, asset: "SOL", id: "profile", environment: "REAL", config_version: 3,
+        gain_rate: .055, normal_spacing_rate: .015, post_ath_spacing_rate: .03, regime: "NORMAL",
+        transition_key: null, next_config_version: null, next_gain_rate: null, next_normal_spacing_rate: null,
+        next_post_ath_spacing_rate: null, ath_price: 296, ath_source: "CONFIRMED_HISTORY",
+        updated_at: "2026-11-02T13:00:00Z", ...options.athChanges, ...(athReads > 1 ? options.athLateChanges : {}) };
+    } },
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-audit-event": { appendLiveAuditEvent, LiveAuditEventPersistError },
@@ -270,7 +312,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
       operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery,
+      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery,
       assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
