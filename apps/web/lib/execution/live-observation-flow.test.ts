@@ -10,6 +10,7 @@ import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./
 import { liveEngineOrderPrefix, LIVE_ACTIVE_ORDER_STATUSES } from "./robot-v1-live-cycle.ts";
 import * as liveAudit from "./live-audit-event.ts";
 import * as resetMilestone from "./live-reset-recovery.ts";
+import * as marketEntryPolicy from "./market-entry-policy.ts";
 
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
@@ -24,7 +25,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
   const previousRunId = "64b267d0-3897-4783-a07e-69c427472f81";
   const run={id:`run-${engineId}`,trading_engine_id:engineId,exchange_account_id:"same-account",operator_id:"operator",
     tenant_id:"tenant",product_id:"product",user_id:"user",asset:"SOL",symbol:"SOLBRL",quote_asset:"BRL",strategy_version:"fixture",lease_owner:"lease",
-    previous_run_id: metadata?.reset ? previousRunId : null, created_at: new Date(Date.now() - 86_400_000).toISOString(),
+    previous_run_id: metadata?.reset ? previousRunId : null, created_at: new Date(Date.now() - 86_400_000).toISOString(), config_snapshot: {},
     engine: { trading_engine_id: engineId, exchange_account_id: "same-account", base_asset: "SOL", status: "ACTIVE",
       legacy_compatible: false, executor_shard_id: "executor-03" } };
   const scope = Object.fromEntries(["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
@@ -100,6 +101,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES },
     "./live-audit-event": liveAudit,
     "./live-reset-recovery": resetMilestone,
+    "./market-entry-policy": marketEntryPolicy,
     "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
     "./live-read-error":readErrors,

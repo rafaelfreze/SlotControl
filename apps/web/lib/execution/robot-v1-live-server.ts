@@ -1143,11 +1143,12 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState, force = false) {
   const profile = await refreshRealAthProfile(service, run);
   const period = monthlyPeriodKey(new Date());
-  if (!force && run.entry_regime === profile.regime && run.ath_transition_key === profile.transition_key
-    && run.ath_period_key === period) return false;
+  const sameTransition = run.entry_regime === profile.regime && run.ath_transition_key === profile.transition_key;
+  if (!force && sameTransition && run.ath_period_key === period) return false;
+  const monthlyOnly = !force && sameTransition && run.ath_period_key !== null;
   const active = ledger.orders.find((item) => item.side === "BUY"
     && LIVE_ACTIVE_ORDER_STATUSES.has(item.status));
-  if (active) {
+  if (active && !monthlyOnly) {
     if (active.status === "PREPARED" && force) await retireNeverSubmittedEntry(service, run, active);
     else if (active.status === "PREPARED" || amount(active.executed_quantity) > 0)
       throw new Error("COINOPS_LIVE_ATH_BUY_RECONCILIATION_REQUIRED");
@@ -1187,7 +1188,37 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
           : slot.entry_state === "MISSED" ? "CANCELLED" : slot.entry_state,
         buyPrice: amount(slot.target_buy_price), entryOrigin: slot.entry_origin,
         operationSequence: slot.operation_sequence };
-    }), statuses[0]!.monthlyGainTarget, configuredEngineSlotCount(run.engine!));
+    }), statuses[0]!.monthlyGainTarget, configuredEngineSlotCount(run.engine!),
+    monthlyOnly ? "PRESERVE_LEVELS" : "REANCHOR");
+  if (monthlyOnly) {
+    // No exchange cancellation or level/rate/source write here. armNextEntry
+    // owns any priority permutation, including ONLY_NEW/fill-wins/CAS. A crash
+    // before the watermark retries metadata under lease before another entry.
+    for (const item of decisions) {
+      if (item.frozenReason === "OPEN_OR_TP") continue;
+      const slot = ledger.slots.find(row => row.id === item.physicalSlotId)!;
+      if (slot.operational_rank === item.operationalRank && slot.post_ath_group === item.postAthGroup
+        && slot.post_ath_group_rank === item.postAthGroupRank) continue;
+      await renewLease(service, run);
+      await updateSlot(service, run, slot, { operational_rank: item.operationalRank,
+        post_ath_group: item.postAthGroup, post_ath_group_rank: item.postAthGroupRank });
+    }
+    const checkpoint = { policy: ENTRY_PRIORITY_POLICY, period, previous_period: run.ath_period_key,
+      observed_at: new Date().toISOString(), reanchored: false, levels_preserved: true,
+      slot_count: configuredEngineSlotCount(run.engine!),
+      primary: decisions.filter(item => item.postAthGroup === "PRIMARY").length,
+      reserve: decisions.filter(item => item.postAthGroup === "RESERVE").length };
+    await renewLease(service, run);
+    const saved = await service.from("robot_v1_live_runs").update({ ath_period_key: period,
+      config_snapshot: { ...run.config_snapshot, monthly_priority_rollover: checkpoint } })
+      .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("trading_engine_id", run.trading_engine_id)
+      .eq("lease_owner", run.lease_owner).eq("entry_regime", run.entry_regime)
+      .select("*").single();
+    if (saved.error || !saved.data) throw new Error("COINOPS_LIVE_MONTHLY_PRIORITY_REFRESH_FAILED");
+    Object.assign(run, saved.data);
+    await event(service, run, `MONTHLY_PRIORITY_REFRESHED:${period}`, "MONTHLY_PRIORITY_REFRESHED", null, checkpoint);
+    return true;
+  }
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
   const gridContexts: Record<string, GridPriceContext> = {};
   const sources = { ...(run.config_snapshot.entry_price_sources as Record<string, Record<string, unknown>> | undefined) };

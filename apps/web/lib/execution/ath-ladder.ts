@@ -54,7 +54,8 @@ export function validateAthTransitionedGrid(slots: ReadonlyArray<{ physicalSlotN
  * targets under its cycle/run lease before allowing another BUY. */
 export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: number,
   parameters: AthParameters, tick: number, slots: readonly AthLadderSlot[],
-  monthlyTarget = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT): AthLadderDecision[] {
+  monthlyTarget = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT,
+  pricePolicy: "REANCHOR" | "PRESERVE_LEVELS" = "REANCHOR"): AthLadderDecision[] {
   validateEngineSlotCount(slotCount);
   if (!Number.isFinite(anchorPrice) || anchorPrice <= 0 || !Number.isFinite(tick) || tick <= 0
     || slots.length !== slotCount) throw new Error("COINOPS_ATH_LADDER_INPUT_INVALID");
@@ -77,6 +78,9 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   for (const slot of ordered) {
     const physical = slots.find((item) => item.physicalSlotId === slot.physicalSlotId)!;
     if (physical.entryOrigin === "REENTRY") continue;
+    // Month rollover refreshes eligibility/ranks/groups, not price geometry.
+    // Allocation of this proven pool remains the Strategy Engine's authority.
+    if (pricePolicy === "PRESERVE_LEVELS") continue;
     const target = athLadderLevelPrice(anchorPrice, spacing, nextLevel, tick);
     if (!Number.isFinite(target) || target <= 0) throw new Error("COINOPS_ATH_LADDER_FILTER_INVALID");
     computed.set(slot.physicalSlotId, target);
@@ -89,9 +93,10 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
     const frozenReason = ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status) ? "OPEN_OR_TP" as const
       : slot.entryOrigin === "REENTRY" ? "LOCAL_REENTRY" as const
         : reached&&!completed?"MONTHLY_TARGET" as const:!rankById.has(slot.physicalSlotId) ? "INELIGIBLE" as const : null;
-    const nextBuyPrice = frozenReason ? slot.buyPrice : computed.get(slot.physicalSlotId)!;
+    const nextBuyPrice = frozenReason || pricePolicy === "PRESERVE_LEVELS"
+      ? slot.buyPrice : computed.get(slot.physicalSlotId)!;
     if (!Number.isFinite(nextBuyPrice) || nextBuyPrice <= 0) throw new Error("COINOPS_ATH_LADDER_PRICE_INVALID");
-    if (!frozenReason) {
+    if (!frozenReason && pricePolicy === "REANCHOR") {
       const key = nextBuyPrice.toFixed(8);
       if (priceKeys.has(key)) throw new Error("COINOPS_ATH_LADDER_PRICE_COLLISION");
       priceKeys.add(key);

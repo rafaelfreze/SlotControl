@@ -399,6 +399,11 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     notes:"Monthly gains DESC below target; lifetime/physical tie; individual goal holds until local first day, except evidenced N/N complete releases all without resetting gains. Regime membership preserved; permutation of uncommitted levels only after exact zero-fill cancel, lease and atomic CAS. Historical snapshots without policy retain legacy meaning.",
     source:"robot_v1_live_runs.config_snapshot.entry_priority_checkpoint + ENTRY_PRIORITY_ALLOCATED" });
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "monthly_entry_level_preservation", value: "PRESERVE_PROVEN_LEVELS", version: 1,
+    evidence_scope: "CURRENT_CODE_CONTRACT",
+    source: "robot_v1_live_runs.config_snapshot.monthly_priority_rollover + MONTHLY_PRIORITY_REFRESHED",
+    notes: "Virada mensal atualiza elegibilidade, rank e grupos pela política vigente, sem reancorar no ticker, inventar níveis, alterar spacing/gain/meta/capital ou cancelar BUY. OPEN/TP/partial, referências e fontes GRID/REENTRY são preservados. Atribuição prospectiva usa o pool comprovado e o reconciliador oficial ONLY_NEW, fill-wins, lease/CAS e idempotência. Transição ATH real, edição explícita de spacing e reset integral conservam o planejamento canônico. Histórico anterior não é reescrito nem certificado retroativamente; preços de TPs/reentradas podem permanecer próximos." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "controlled_engine_handoff", value: "LEASE_CAS_SOURCE_FENCE_AND_FRESH_EXACT_PROOF", version: 30,
     source: "coinops.engine_handoffs", notes: "OFFBOARDED é gestão assumida pelo cliente, não ciclo concluído. Posições/TPs permanecem na exchange; leitura histórica não prova saldo, P&L ou proteção atuais. Migração preserva engine/run/slots/ordens e exige origem sem escrita, destino validado e Admission canônico; sem adoção por símbolo nem cópia de claims." });
   if(filters.environments.includes("REAL"))rules.push({effective_from:input.generatedAt,environment:"REAL",asset:null,

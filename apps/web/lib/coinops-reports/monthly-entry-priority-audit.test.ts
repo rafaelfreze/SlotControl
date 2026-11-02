@@ -18,3 +18,17 @@ test("v31 exports the policy and committed allocation without rewriting legacy r
  assert.equal(rows.find(r=>r.row_type==="RUN"&&r.id==="legacy")?.entry_priority_policy,"LEGACY_PRICE_FIRST");
  assert.deepEqual(rows.find(r=>r.row_type==="EVENT")?.details,checkpoint);assert.deepEqual(sources,original);
 });
+
+test("monthly level preservation exports persisted rollover and explains limits without changing history",()=>{
+ const rollover={policy:"MONTHLY_GAINS_V1",period:"2026-11",previous_period:"2026-10",reanchored:false,levels_preserved:true};
+ const sources={robot_v1_live_runs:[{id:"r",asset:"SOL",symbol:"SOLUSDT",status:"ACTIVE",created_at:at,
+   config_snapshot:{monthly_priority_rollover:rollover,ladder_anchor_price:119.7}}],
+  robot_v1_live_events:[{run_id:"r",event_type:"MONTHLY_PRIORITY_REFRESHED",observed_at:at,details:rollover}]};
+ const before=structuredClone(sources);
+ const r=buildAuditReport({sources,incompleteSources:[],warnings:[],generatedAt:at,scope:{tenantId:"t",userId:"u"}},
+  {start:"2026-10-01T00:00:00Z",end:"2026-12-01T00:00:00Z",assets:["SOL"],environments:["REAL"]});
+ assert.equal(r.datasets.rules.find(r=>r.parameter==="monthly_entry_level_preservation")?.value,"PRESERVE_PROVEN_LEVELS");
+ assert.deepEqual((r.datasets.live_execution.find(r=>r.row_type==="RUN")?.config_snapshot as Record<string,unknown>).monthly_priority_rollover,rollover);
+ assert.deepEqual(r.datasets.live_execution.find(r=>r.row_type==="EVENT")?.details,rollover);
+ assert.deepEqual(sources,before);
+});
