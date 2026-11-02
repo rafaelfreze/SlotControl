@@ -1,9 +1,9 @@
 {
   "contract_version": 1,
-  "target_sha": "8001cc6d6e754f5e0d4dd3f57b15926e2bf2ee59",
+  "target_sha": "59ed645653060631c07f83e41b6aad69bfeb85ac",
   "node_version": "v24.21.0",
   "runtime_entry": "apps/live-executor/src/server.mjs",
-  "runtime_sha256": "905f6e91f786e97e1316373ad484243034f123f38390dc974b38ee6c5a5a16ac",
+  "runtime_sha256": "4f61bd4127242564f8cf86ffd64890054297294e5f2ee8ef69c1b7541af33c56",
   "max_evidence_age_ms": 120000,
   "max_health_age_ms": 45000
 }
