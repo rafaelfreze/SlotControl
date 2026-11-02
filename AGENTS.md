@@ -410,6 +410,12 @@ no ambiente de destino antes de operação remota.
 - A release comum revisada está em `apps/live-executor/deploy/fleet-release.json`. Alteração de runtime exige publicação sequencial para TODOS os shards habilitados descobertos no registry oficial, seguida de `fleet-parity.mjs --check-code` e `--verify`. Um health individual ou SHA declarado não basta: conferir código público por fingerprint, processo, Node, identidade/IP e freshness. Nunca encerrar rollout sem `FLEET_PARITY_PASS`.
 - Novos shards usam a mesma release e entram na verificação automaticamente. Bootstrap/DEPLOY_HEALTHY individual não significa pronto para onboarding. Diferença durante janela rolling autorizada é transitória, não PASS final. Divergência de paridade não autoriza kill global, restart automático, troca de credenciais, migração de contas ou ordem corretiva.
 - Mudança exclusivamente web que não altera o grafo de runtime do executor não exige restart de VPS. A Strategy Engine/reconciliação server-side é compartilhada, não copiada como regra particular de uma conta. Procedimento e evidência: `docs/COINOPS_EXECUTOR_FLEET_PARITY.md`.
+- Fechamento de rollout exige também a versão aceita pela web: promover os
+  parâmetros públicos VALIDATED_VERSION e NEXT_VALIDATED_VERSION de cada shard
+  para o alvo comprovado. NEXT de janela antiga expirada ainda prevalece sobre
+  o base; não ampliar allowlists/janelas nem tocar HMAC/credenciais. Conferir
+  `/api/coinops-executor-observations` autenticada e painel em Production antes
+  de declarar conclusão. Verificador somente leitura: `tools/operations/executor-version-config.mjs`.
 
 ## Custos & Operação (FinOps ADMIN)
 

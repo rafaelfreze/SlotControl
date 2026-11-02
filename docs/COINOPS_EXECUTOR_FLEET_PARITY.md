@@ -20,6 +20,31 @@ A correção fica na camada de publicação/read-only, sem mudar Strategy Engine
 4. Usar assets de deploy do main revisado, incluindo manifest/helper/preflight juntos. Os scripts rejeitam SHA diferente do alvo comum antes de alterar host. Atualizar um shard por vez e confirmar health/reconciliation, sem mover contas. Rollback interno para versão anterior preserva a proteção existente; rollback planejado demanda alvo revisado compatível.
 5. Executar `node apps/live-executor/deploy/fleet-parity.mjs --verify`. Fornecer ambiente Supabase server-side oficial e caminho de chave SSH pelo mecanismo documentado no CLI; nunca copiar valores em comandos, Git ou logs. A lista de destinos vem do registry, não de uma lista fixa de IPs.
 6. Somente `FLEET_PARITY_PASS` de TODOS os habilitados conclui publicação. Ausência, stale, divergência de hash/SHA/Node/identidade é falha, não saúde presumida. Interromper fechamento, investigar e preservar motores saudáveis. Não transformar falha de auditoria em desligamento do trading.
+7. Fechar também a validação web: `COINOPS_EXECUTOR_NN_VALIDATED_VERSION` e
+   `COINOPS_EXECUTOR_NN_NEXT_VALIDATED_VERSION` devem convergir ao mesmo alvo
+   comprovado. Uma janela antiga expirada continua selecionando NEXT; atualizar
+   somente VALIDATED não basta. Não prolongar a janela nem aceitar releases
+   arbitrárias. Não alterar HMAC, JSON privado, IP ou credenciais. Publicar a
+   configuração exata em Production e conferir a API autenticada de observações
+   e o painel, mantendo ATTENTION para falha real. Paridade e Watchdog saudáveis
+   sozinhos não provam que esse gate de apresentação aceitou a release.
+
+O verificador offline `tools/operations/executor-version-config.mjs` confronta
+manifest, prova de frota fresca e somente metadados SHA/horários plain de
+Production. Não lê secrets nem escreve configuração. `planExecutorVersionPromotion`
+gera somente os dois parâmetros por shard comprovado; a publicação usa a
+integração Vercel oficial. Verificação:
+
+```text
+node --experimental-strip-types tools/operations/executor-version-config.mjs --fleet PROVA_FRESCA.json --versions SOMENTE_VERSOES_PUBLICAS.json
+```
+
+Regressão de 02/11: processos já em59ed645 e paridade PASS, mas os dois parâmetros
+web ainda8001cc6 e janela encerrada em01/11; todos os16 motores mostravam
+"Executor LIVE sem confirmação operacional atual". A correção promove os quatro
+valores públicos para59ed645. Não ocultar o aviso pelo frontend, afrouxar health
+ou limpar ledger/incidentes para obter verde. Testes cobrem NEXT expirado,
+promoção parcial, prova stale/estrangeira, escopo Production e novo shard.
 
 Novo shard deve receber exatamente o mesmo alvo antes de onboarding e será incluído automaticamente no próximo verify. Bootstrap isolado não significa pronto. Identidades, IPs, vaults, quotas e limites por conta continuam distintos por desenho; layout legado vs releases também pode diferir sem criar regras financeiras distintas.
 
