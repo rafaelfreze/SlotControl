@@ -1,3 +1,4 @@
+import { cumulativeSlotGoal, type SlotGoalPolicy } from "../execution/cumulative-slot-goal.ts";
 import { projectCurrentLiveSlotRanks } from "../slotgain/live-slot-read-model.ts";
 import { orderOperationalSlots, ledgerSlotKey } from "../slotgain/operational-slot-order.ts";
 import { monthlyPeriodKey } from "../execution/monthly-slot-policy.ts";
@@ -26,22 +27,24 @@ export function buildSlotPresentationAudit(sources: Record<string, AuditRow[]>, 
       return { slot_number: Number(slot.slot_number), lifetime_gain_count: units(own),
         monthly_gain_count: units(own.filter((row) => row.period_key === period)) };
     });
-    const target = Number(preparation.monthly_target);
+    const goalPolicy = preparation.slot_goal_policy as SlotGoalPolicy | null;
+    const goal = goalPolicy ? cumulativeSlotGoal(goalPolicy, at) : undefined;
+    const target = goal?.target ?? Number(preparation.monthly_target);
     // A partial historical credit source cannot certify current lifetime/rank.
     if (rawAccounts.some((row) => Number(row.gain_count) > (totals.find((total) => total.slot_number === row.slot_number)?.lifetime_gain_count ?? 0))) continue;
     const ranked = projectCurrentLiveSlotRanks(rawSlots.map((slot) => ({
-      id: String(slot.id), slot_number: Number(slot.slot_number), entry_state: String(slot.entry_state),
+      id: String(slot.id), slot_number: Number(slot.slot_number), entry_state: String(slot.entry_state), missed_at: slot.missed_at == null ? null : String(slot.missed_at),
       operational_rank: slot.operational_rank == null ? null : Number(slot.operational_rank),
       post_ath_group: slot.post_ath_group == null ? null : String(slot.post_ath_group),
     })), rawAccounts.map((row) => ({ slot_number: Number(row.slot_number), gain_count: Number(row.gain_count),
       balance_quote: Number(row.balance_quote ?? row.balance_brl) })), totals,
-    run.asset === "BTC" ? "BTC" : "SOL", target, at, slotCount);
+    run.asset === "BTC" ? "BTC" : "SOL", target, at, slotCount, goalPolicy);
     for (const [index, slot] of orderOperationalSlots(ranked, ledgerSlotKey).entries()) {
       const total = totals.find((row) => row.slot_number === slot.slot_number)!;
       output.set(slot.id, { visual_order: index + 1, current_operational_rank: slot.operational_rank,
         grid_operational_rank: slot.grid_operational_rank, monthly_gain_count: total.monthly_gain_count,
-        lifetime_gain_count: total.lifetime_gain_count, monthly_gain_target: target, period_key: period,
-        presentation_basis: "CURRENT_ENGINE_MONTHLY_POLICY; STATE_THEN_RANK; READ_ONLY" });
+        lifetime_gain_count: total.lifetime_gain_count, monthly_gain_target: target, slot_goal: goal ?? null, period_key: period,
+        presentation_basis: goal ? "CUMULATIVE_LIFETIME_V1; READ_ONLY" : "CURRENT_ENGINE_MONTHLY_POLICY; STATE_THEN_RANK; READ_ONLY" });
     }
   }
   return output;

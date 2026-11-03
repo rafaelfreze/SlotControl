@@ -98,8 +98,31 @@ before(async()=>{
   create table coinops.robot_v1_live_selective_contribution_allocations(trading_engine_id uuid,slot_number int,status text,
     applied_at timestamptz,applied_operation_sequence int,amount_quote numeric);`);
  const creditMigration=readFileSync(new URL('../../supabase/migrations/20260927133000_add_selective_slot_contributions.sql',import.meta.url),'utf8');
- const creditStart=creditMigration.indexOf('create or replace function coinops.credit_robot_v1_live_closed_slot(');
+ const creditStart=creditMigration.toLowerCase().indexOf('create or replace function coinops.credit_robot_v1_live_closed_slot(');
  await db.exec(creditMigration.slice(creditStart,creditMigration.indexOf('end $$;',creditStart)+8));
+ const cumulative=readFileSync(new URL('../../supabase/migrations/20261103110000_cumulative_slot_goals.sql',import.meta.url),'utf8');
+ // Compile the ENTIRE migration, including statement delimiters and the
+ // authenticated dashboard SQL, not only isolated PL/pgSQL definitions.
+ await db.exec(`alter table coinops.robot_v1_live_runs add column entry_regime text default 'NORMAL',add column last_reconciled_at timestamptz;
+  alter table coinops.robot_v1_live_slots add column post_ath_group text,add column post_ath_group_rank int,
+   add column position_committed_quote numeric generated always as(position_committed_brl)stored;
+  alter table coinops.robot_v1_live_orders add column created_at timestamptz default now(),add column updated_at timestamptz default now(),
+   add column fee_quote numeric default 0,add column fee_other jsonb default '[]',
+   add column reserved_notional_quote numeric generated always as(reserved_notional_brl)stored;
+  alter table coinops.robot_v1_live_slot_accounts add column balance_quote numeric generated always as(balance_brl)stored,
+   add column contribution_quote numeric generated always as(contribution_brl)stored,
+   add column market_pnl_quote numeric generated always as(market_pnl_brl)stored,
+   add column manual_gain_quote numeric generated always as(manual_gain_brl)stored,
+   add column fees_quote numeric generated always as(fees_brl)stored,add column dust_cost_quote numeric default 0;
+  alter table coinops.robot_v1_live_selective_contribution_allocations add column operator_id uuid,add column exchange_account_id uuid,
+   add column created_at timestamptz default now();
+  alter table coinops.robot_v1_live_alerts add column last_seen_at timestamptz default now();
+  alter table coinops.robot_v1_slot_gain_totals add column physical_slot_id text,add column market_gain_count bigint default 0,
+   add column manual_gain_count bigint default 0,add column monthly_market_gain_count bigint default 0,
+   add column monthly_manual_gain_count bigint default 0;
+  create table coinops.executor_shards(id text,enabled boolean);insert into coinops.executor_shards values('executor-02',true);`);
+ await db.exec(cumulative);
+
 });
 after(async()=>db.close());
 async function intent({missed=false,quote=22,explicit=false}={}){
@@ -281,4 +304,39 @@ test('combined original partial + rescue closes as exactly ONE gain, all fees in
  const a=(await query(sql))[0];assert.equal(a.balance_brl,'22.6815');assert.equal(a.gain_count,1);assert.equal(a.fees_brl,'0.006');
  assert.deepEqual((await query(sql))[0],a);assert.equal((await query('select count(*)::int n from coinops.robot_v1_monthly_slot_gains'))[0].n,1);
  assert.equal((await query(`select count(*)::int n from coinops.robot_v1_live_events where event_type='SLOT_PROFIT_CREDITED'`))[0].n,1);
+}));
+
+const goalPolicy=(rate=2)=>({policy:'CUMULATIVE_LIFETIME_V1',anchor_at:'2026-09-20T12:00:00Z',schedule:[{effective_period:'2026-09',monthly_target:rate,source:'FIRST_BUY'}]});
+test('cumulative SQL agrees on SOL2/4/6 BTC7/14/21, local/year boundary and prospective edits',()=>tx(async()=>{
+ for(const rate of [2,3,7,1000])for(const [at,m]of [['2026-09-30T12:00:00Z',1],['2026-10-01T03:59:59Z',1],['2026-10-01T04:00:00Z',2],['2026-11-01T04:00:00Z',3],['2027-01-01T04:00:00Z',5]]){
+  assert.equal((await query('select coinops.cumulative_slot_goal_target('+j(goalPolicy(rate))+','+q(at)+')n'))[0].n,rate*m);
+ }
+ const p=goalPolicy();p.schedule.push({effective_period:'2026-11',monthly_target:3,source:'CONFIG2'});
+ assert.equal((await query('select coinops.cumulative_slot_goal_target('+j(p)+','+q('2026-12-01T04:00:00Z')+')n'))[0].n,10);
+}));
+test('cumulative BUY guard holds reached lifetime, releases below-goal and excludes OPEN from all-available exception',()=>tx(async()=>{
+ await db.exec('update coinops.robot_v1_live_preparations set slot_goal_policy='+j(goalPolicy()));
+ const target=(await query('select coinops.cumulative_slot_goal_target('+j(goalPolicy())+',now())n'))[0].n;
+ await db.exec('update coinops.robot_v1_slot_gain_totals set lifetime_gain_count='+target+' where slot_number=7');
+ await intent();await denied(call());
+ await db.exec("update coinops.robot_v1_live_slots set entry_state='OPEN',position_quantity=1 where slot_number<>7");
+ const first=(await query(call()))[0];assert.equal(first.requested_quote,'22');
+ assert.equal((await query(call()))[0].id,first.id);
+}));
+test('goal anchor/history immutable; configured target changes only next competence without changing previous accrued goal',()=>tx(async()=>{
+ const p=goalPolicy();await db.exec('update coinops.robot_v1_live_preparations set slot_goal_policy='+j(p));
+ const before=(await query('select coinops.cumulative_slot_goal_target(slot_goal_policy,now())n from coinops.robot_v1_live_preparations'))[0].n;
+ await db.exec('update coinops.robot_v1_live_preparations set monthly_target=3');
+ const row=(await query('select slot_goal_policy p,coinops.cumulative_slot_goal_target(slot_goal_policy,now())n from coinops.robot_v1_live_preparations'))[0];
+ assert.equal(row.n,before);assert.equal(row.p.anchor_at,p.anchor_at);assert.equal(row.p.schedule.at(-1).monthly_target,3);
+ await denied('update coinops.robot_v1_live_preparations set slot_goal_policy=null');
+}));
+
+test('adoption persists earliest reconciled BUY once across reset lineage; no order/slot mutation or sibling adoption',()=>tx(async()=>{
+ await db.exec("select set_config('request.jwt.claim.role','service_role',true);insert into coinops.robot_v1_live_orders(id,run_id,slot_id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,slot_number,side,trades_reconciled)values('"+id(99)+"','"+id(7)+"','"+id(107)+"','"+id(2)+"','"+id(3)+"','"+id(4)+"','"+id(1)+"','"+id(5)+"','"+id(6)+"',7,'BUY',true);insert into coinops.robot_v1_live_fills(order_id,quantity,filled_at)values('"+id(99)+"',.01,'2026-09-25T23:00:00Z')");
+ const sql="select coinops.adopt_cumulative_slot_goal('"+id(7)+"','"+lease+"')p";
+ const first=(await query(sql))[0].p;assert.equal(new Date(first.anchor_at).toISOString(),'2026-09-25T23:00:00.000Z');
+ assert.deepEqual((await query(sql))[0].p,first);
+ assert.equal((await query("select count(*)::int n from coinops.robot_v1_live_events where event_type='SLOT_GOAL_POLICY_ADOPTED'"))[0].n,1);
+ assert.equal((await query('select count(*)::int n from coinops.robot_v1_live_orders'))[0].n,1);
 }));

@@ -128,3 +128,18 @@ test('50/100 complete physical sets use the same transaction; PUBLIC/authenticat
   has_function_privilege('anon','${signature}','execute') as anon,has_function_privilege('service_role','${signature}','execute') as service`))[0];
  assert.deepEqual(grants,{auth:false,anon:false,service:true});
 });
+
+test('new cumulative allocation requires exact goal snapshot and keeps existing CAS/ownership/permutation guards',async()=>{
+ await db.exec("alter table coinops.robot_v1_live_slot_accounts add column operator_id uuid default '"+id(1)+"',add column exchange_account_id uuid default '"+id(5)+"';");
+ const migration=readFileSync(new URL('../../supabase/migrations/20261103110000_cumulative_slot_goals.sql',import.meta.url),'utf8');
+ await db.exec(migration.split('-- GOAL_CORE_END')[0]+'commit;');
+ await db.exec(migration.slice(migration.indexOf('CREATE OR REPLACE FUNCTION coinops.allocate_live_monthly_entry_levels'),migration.indexOf('CREATE OR REPLACE FUNCTION coinops.dashboard_live_engine_reads')));
+ const policy={policy:'CUMULATIVE_LIFETIME_V1',anchor_at:'2026-09-20T12:00:00Z',schedule:[{effective_period:'2026-09',monthly_target:7,source:'FIRST_BUY'}]};
+ await db.exec('update coinops.robot_v1_live_preparations set slot_goal_policy='+j(policy));
+ const ex=await expected();await assert.rejects(query(call(ex,[],lease,'7'.repeat(64))),/SNAPSHOT_CHANGED/);
+ const target=(await query('select coinops.cumulative_slot_goal_target('+j(policy)+',now())n'))[0].n;
+ const sql=call(ex,[],lease,'8'.repeat(64)).replace('"shard":"executor-01"','"shard":"executor-01","goal_policy":"CUMULATIVE_LIFETIME_V1","goal_target":'+target);
+ const first=(await query(sql))[0].proof;assert.equal(first.goal_target,target);
+ assert.equal(first.goal_policy.policy,'CUMULATIVE_LIFETIME_V1');assert.deepEqual((await query(sql))[0].proof,first);
+ assert.deepEqual(await expected(),ex);
+});

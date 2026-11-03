@@ -108,6 +108,9 @@ export type AthSlot = {
   lifetimeGainCount: number;
   monthlyGainCount: number | null;
   entryState: string;
+  priorityGainCount?: number;
+  goalEntryEligible?: boolean;
+  goalTargetReached?: boolean;
   blocked?: boolean;
 };
 
@@ -132,27 +135,30 @@ export function buildPostAthQueue(asset: V1Asset, slots: readonly AthSlot[],
     ids.add(slot.physicalSlotId); numbers.add(slot.physicalSlotNumber);
   }
   const eligibleStates = new Set(["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"]);
-  const completed=monthlyGoalsComplete(asset,slots,monthlyTarget,slotCount);
+  const cumulative=slots.some(s=>s.priorityGainCount!==undefined);
+  if(cumulative && slots.some(s=>s.priorityGainCount!==s.lifetimeGainCount || typeof s.goalEntryEligible!=="boolean"))
+    throw new Error("COINOPS_ATH_SLOT_EVIDENCE_INVALID");
+  const completed=cumulative ? false : monthlyGoalsComplete(asset,slots,monthlyTarget,slotCount);
   const eligible = slots.filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-    && (completed||slot.monthlyGainCount<monthlyTarget)&&eligibleStates.has(slot.entryState));
-  const byPhysicalId = (left: AthSlot, right: AthSlot) => left.physicalSlotId.localeCompare(right.physicalSlotId);
+    && (cumulative ? slot.goalEntryEligible : completed||slot.monthlyGainCount<monthlyTarget)&&eligibleStates.has(slot.entryState));
+  const byPhysicalId = (left: AthSlot, right: AthSlot) => cumulative ? left.physicalSlotNumber-right.physicalSlotNumber : left.physicalSlotId.localeCompare(right.physicalSlotId);
   const byHighestGain = (left: AthSlot, right: AthSlot) => right.lifetimeGainCount - left.lifetimeGainCount
     || byPhysicalId(left, right);
-  const byGoal = (a:AthSlot,b:AthSlot)=>Number(a.monthlyGainCount!>=monthlyTarget)-Number(b.monthlyGainCount!>=monthlyTarget);
+  const byGoal = (a:AthSlot,b:AthSlot)=>Number(a.goalTargetReached ?? a.monthlyGainCount!>=monthlyTarget)-Number(b.goalTargetReached ?? b.monthlyGainCount!>=monthlyTarget);
   const selected = [...eligible].sort((a,b)=>byGoal(a,b)||byHighestGain(a,b)).slice(0, 15);
   const selectedIds = new Set(selected.map((slot) => slot.physicalSlotId));
-  const primary = selected.sort((left, right) => byGoal(left,right)||right.monthlyGainCount! - left.monthlyGainCount!
+  const primary = selected.sort((left, right) => byGoal(left,right)||(right.priorityGainCount ?? right.monthlyGainCount!) - (left.priorityGainCount ?? left.monthlyGainCount!)
     || left.lifetimeGainCount - right.lifetimeGainCount
     || byPhysicalId(left, right));
   const reserve = eligible.filter((slot) => !selectedIds.has(slot.physicalSlotId)).sort((left,right) =>
-    byGoal(left,right)||right.monthlyGainCount! - left.monthlyGainCount! || byHighestGain(left,right));
+    byGoal(left,right)||(right.priorityGainCount ?? right.monthlyGainCount!) - (left.priorityGainCount ?? left.monthlyGainCount!) || byHighestGain(left,right));
   const position = new Map<string, { group: PostAthGroup; groupRank: number; rank: number }>();
   primary.forEach((slot, index) => position.set(slot.physicalSlotId, { group: "PRIMARY", groupRank: index + 1, rank: index + 1 }));
   reserve.forEach((slot, index) => position.set(slot.physicalSlotId, { group: "RESERVE", groupRank: index + 1, rank: primary.length + index + 1 }));
   return slots.map((slot) => {
     const rank = position.get(slot.physicalSlotId);
-    return { ...slot, eligible: Boolean(rank), monthlyTargetReached: slot.monthlyGainCount !== null
-      && slot.monthlyGainCount >= monthlyTarget, postAthGroup: rank?.group ?? null,
+    return { ...slot, eligible: Boolean(rank), monthlyTargetReached: slot.goalTargetReached ?? (slot.monthlyGainCount !== null
+      && slot.monthlyGainCount >= monthlyTarget), postAthGroup: rank?.group ?? null,
       postAthGroupRank: rank?.groupRank ?? null, operationalRank: rank?.rank ?? null };
   });
 }

@@ -7,11 +7,12 @@ import { resolveOperatorEngine } from "./operator-context-server";
 import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRows } from "./live-ledger-read";
 import { LiveReadUnavailable } from "./live-read-error";
 import { configuredEngineSlotCount } from "./engine-slot-topology";
+import { cumulativeSlotGoal, type SlotGoalPolicy, type SlotGoal } from "./cumulative-slot-goal";
 
 type Service = ReturnType<typeof createServiceRoleClient>;
 type Scope = { product_id: string; tenant_id: string; user_id: string; asset: V1Asset; config_id?: string;
   operator_id?: string; exchange_account_id?: string; trading_engine_id?: string };
-type SlotSnapshot = { slot_number: number; balance_quote?: number | string; balance_usdc?: number | string; balance_brl?: number | string; gain_count?: number; entry_state: string };
+type SlotSnapshot = { slot_number: number; balance_quote?: number | string; balance_usdc?: number | string; balance_brl?: number | string; gain_count?: number; entry_state: string; entry_blocked?: boolean };
 type TotalRow = { slot_number: number; physical_slot_id: string; lifetime_gain_count: number;
   monthly_gain_count: number; period_key: string; market_gain_count: number; manual_gain_count: number;
   monthly_market_gain_count: number; monthly_manual_gain_count: number };
@@ -31,13 +32,14 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
     .eq("environment", environment).eq("asset", scope.asset).eq("trading_engine_id", engine.trading_engine_id);
   let totals: TotalRow[];
   let configuredTarget: number | null = null;
+  let goal: SlotGoal | undefined;
   if (environment === "REAL") {
     // This is a read-only dependency of every trading tick, not a gain mutation.
     // Discard partial target/totals on a transient error; never replay a trade.
     const snapshot = await boundedLedgerRead(async (deadline, attempt) => {
       const [target, gains] = await Promise.allSettled([
-        observeLedgerRows<{ monthly_target: number; slot_count?: number }>("monthly_target",
-          service.from("robot_v1_live_preparations").select("monthly_target,slot_count")
+        observeLedgerRows<{ monthly_target: number; slot_count?: number; slot_goal_policy?: SlotGoalPolicy | null }>("monthly_target",
+          service.from("robot_v1_live_preparations").select("monthly_target,slot_count,slot_goal_policy")
             .eq("product_id", scope.product_id).eq("tenant_id", scope.tenant_id).eq("user_id", scope.user_id)
             .eq("operator_id", engine.operator_id).eq("exchange_account_id", engine.exchange_account_id)
             .eq("trading_engine_id", engine.trading_engine_id).limit(2).abortSignal(deadline), deadline, attempt),
@@ -52,10 +54,11 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
       if (target.value.length !== 1 || !Number.isInteger(target.value[0].monthly_target)
         || target.value[0].monthly_target <= 0 || configuredEngineSlotCount(target.value[0]) !== slotCount)
         throw new Error("COINOPS_MONTHLY_TARGET_UNAVAILABLE");
-      return { target: target.value[0].monthly_target, totals: gains.value };
+      return { target: target.value[0].monthly_target, policy: target.value[0].slot_goal_policy, totals: gains.value };
     });
     totals = snapshot.totals;
     configuredTarget = snapshot.target;
+    if (snapshot.policy) goal = cumulativeSlotGoal(snapshot.policy, observedAt);
   } else {
     const { data, error } = await totalsQuery();
     if (error || !Array.isArray(data)) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_UNAVAILABLE");
@@ -77,9 +80,9 @@ export async function loadMonthlySlotStatuses(service: Service, environment: "SH
     if (slot.gain_count != null && (environment === "SHADOW" ? slot.gain_count !== lifetime : slot.gain_count > lifetime))
       throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_MISMATCH");
     return { physicalSlotNumber: slot.slot_number, physicalSlotId, lifetimeGainCount: lifetime,
-      monthlyGainCount: monthly, balanceUsdc: Number(slot.balance_quote ?? (environment === "REAL" ? slot.balance_brl : slot.balance_usdc)), entryState: slot.entry_state,
+      monthlyGainCount: monthly, balanceUsdc: Number(slot.balance_quote ?? (environment === "REAL" ? slot.balance_brl : slot.balance_usdc)), entryState: slot.entry_state, entryBlocked: slot.entry_blocked,
       marketGainCount: Number(row?.market_gain_count ?? 0), manualGainCount: Number(row?.manual_gain_count ?? 0),
       monthlyMarketGainCount: Number(row?.monthly_market_gain_count ?? 0),
       monthlyManualGainCount: Number(row?.monthly_manual_gain_count ?? 0) };
-  }), configuredTarget ?? (scope.asset === "BTC" ? 7 : 2), slotCount);
+  }), goal?.target ?? configuredTarget ?? (scope.asset === "BTC" ? 7 : 2), slotCount, undefined, goal);
 }

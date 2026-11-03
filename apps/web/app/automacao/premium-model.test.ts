@@ -34,6 +34,18 @@ function fundingHoldFixture(): Props {
   } } });
 }
 
+test("REAL presentation shows confirmed lifetime/cumulative target and separate monthly counter", () => {
+  const data = fundingHoldFixture(), live = data.liveAssetData!.BTC!;
+  live.slotGoalPolicy = { policy: "CUMULATIVE_LIFETIME_V1", anchor_at: "2026-09-24T05:14:21Z",
+    schedule: [{ effective_period: "2026-09", monthly_target: 7, source: "FIRST_BUY" }] };
+  live.monthlyGains = [{ slot_number: 1, lifetime_gain_count: 7, monthly_gain_count: 0 }];
+  const result = buildPremiumAssets(data,"REAL",Date.parse("2026-11-03T12:00:00Z"))[0];
+  assert.equal(result.goal,21);assert.equal(result.slots[0].gains,7);
+  assert.equal(result.slots[0].monthlyGains,0);assert.equal(result.slots[0].cumulativeGoal?.cycleMonth,3);
+  assert.equal(result.slots[0].cumulativeGoal?.nextTarget,28);
+  assert.equal(result.slots[0].targetReached,false);
+});
+
 /** A resumed engine can retain crossed, never-submitted levels in its ledger.
  * Those facts are audit history, not evidence of a current trading failure. */
 function historicalMissedLiveFixture(): Props {

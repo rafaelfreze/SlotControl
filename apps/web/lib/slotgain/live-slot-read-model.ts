@@ -1,3 +1,4 @@
+import { cumulativeSlotGoal, type SlotGoalPolicy } from "../execution/cumulative-slot-goal.ts";
 import { rankMonthlySlots } from "../execution/monthly-slot-policy.ts";
 import type { LiveAssetData } from "../../app/automacao/automation-mobile";
 import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "../execution/engine-slot-topology.ts";
@@ -13,23 +14,26 @@ type Total = { slot_number: number; lifetime_gain_count: number; monthly_gain_co
  * The persisted ledger/grid is never written or repriced by this projection. */
 export function projectLiveSlotRanks(data: LiveAssetData, asset: "BTC" | "SOL", target: number,
   observedAt: string, slotCount = DEFAULT_ENGINE_SLOT_COUNT): LiveAssetData {
-  return { ...data, slots: projectCurrentLiveSlotRanks(data.slots, data.accounts, data.monthlyGains, asset, target, observedAt, slotCount) };
+  return { ...data, slots: projectCurrentLiveSlotRanks(data.slots, data.accounts, data.monthlyGains, asset, target, observedAt, slotCount, data.slotGoalPolicy) };
 }
 
 export function projectCurrentLiveSlotRanks<T extends Slot>(slots: readonly T[], accountRows: readonly Account[],
   totalRows: readonly Total[], asset: "BTC" | "SOL", target: number, observedAt: string,
-  slotCount = DEFAULT_ENGINE_SLOT_COUNT): Array<T & { grid_operational_rank?: number | null }> {
+  slotCount = DEFAULT_ENGINE_SLOT_COUNT, goalPolicy?: SlotGoalPolicy | null): Array<T & { grid_operational_rank?: number | null }> {
   if (!hasCompletePhysicalSlotSet(slots.map((row) => row.slot_number), slotCount)
     || !hasCompletePhysicalSlotSet(accountRows.map((row) => row.slot_number), slotCount)) return [...slots];
   const totals = new Map(totalRows.map((row) => [row.slot_number, row]));
   const accounts = new Map(accountRows.map((row) => [row.slot_number, row]));
+  const goal = goalPolicy ? cumulativeSlotGoal(goalPolicy, observedAt) : undefined;
   const ranks = rankMonthlySlots(asset, observedAt, slots.map((slot) => {
     const account = accounts.get(slot.slot_number), total = totals.get(slot.slot_number);
     return { physicalSlotNumber: slot.slot_number, physicalSlotId: `READ:${slot.slot_number}`,
-      entryState: slot.entry_state, lifetimeGainCount: Number(total?.lifetime_gain_count ?? account?.gain_count ?? 0),
+      entryState: slot.entry_state, entryBlocked: Boolean((slot as T & { missed_at?: string | null }).missed_at)
+        || Number((slot as T & { position_quantity?: number | string }).position_quantity ?? 0) > 0 && slot.entry_state !== "CLOSED",
+      lifetimeGainCount: Number(total?.lifetime_gain_count ?? account?.gain_count ?? 0),
       monthlyGainCount: total ? Number(total.monthly_gain_count) : Number(account?.gain_count) === 0 ? 0 : null,
       balanceUsdc: Number(account?.balance_quote ?? account?.balance_brl) };
-  }), target, slotCount);
+  }), goal?.target ?? target, slotCount, undefined, goal);
   const byNumber = new Map(ranks.map((row) => [row.physicalSlotNumber, row]));
   return slots.map((slot) => {
     const rank = byNumber.get(slot.slot_number)!.operationalRank;

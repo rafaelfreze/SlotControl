@@ -395,8 +395,8 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     notes: "REAL ATH GET usa ledger/ath_profile: 2 tentativas de até 5s/250ms; nunca repetir UPDATE/transição/trading. Erro de provider preserva HTTP/code; ausência ou perfil inválido não recebe defaults. Legado COINOPS_ATH_PROFILE_UNAVAILABLE somente root/stage ATH_TRANSITION exatos não comprova timeout/503. Retomada exige perfil íntegro e idêntico duas vezes, ownership e configuração/regime/rates iguais ao snapshot, zero configuração pendente, Binance/ledger/TP/caps/slots e decisões/dispatches assentados sob lease/CAS. Atualização concorrente, permissão/schema ou ambiguidade continua BLOCKED_SAFE no engine. Exporta diagnóstico/evento persistido sem fabricar causa histórica ou recuperação.",
     source: "robot_v1_live_alerts + LIVE_RESUMED/VERIFIED_READ_RECOVERY" });
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
-    parameter:"monthly_entry_priority",value:"MONTHLY_GAINS_V1",version:31,
-    notes:"Monthly gains DESC below target; lifetime/physical tie; individual goal holds until local first day, except evidenced N/N complete releases all without resetting gains. Regime membership preserved; permutation of uncommitted levels only after exact zero-fill cancel, lease and atomic CAS. Historical snapshots without policy retain legacy meaning.",
+    parameter:"monthly_entry_priority",value:"CUMULATIVE_LIFETIME_V1",version:1,
+    notes:"Adopted REAL engines: confirmed lifetime DESC below accumulated calendar target from first reconciled BUY; physical ASC tie. Prospective target edits start next competence. Available entry slots all at goal release again; OPEN/partial remain protected. Unadopted and historical snapshots retain their previous goal policy. Regime membership preserved; permutation of uncommitted levels only after exact zero-fill cancel, lease and atomic CAS. Historical snapshots without policy retain legacy meaning.",
     source:"robot_v1_live_runs.config_snapshot.entry_priority_checkpoint + ENTRY_PRIORITY_ALLOCATED" });
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "monthly_entry_level_preservation", value: "PRESERVE_PROVEN_LEVELS", version: 1,
@@ -688,6 +688,7 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
         evidence_basis: "PERSISTED_COINOPS_LIVE_LEDGER", snapshot_at: input.generatedAt,
         ...own(row), ...(rowType === "RUN" ? { reconciliation_checkpoint: largeEngineProgressAudit(row.reconciliation_checkpoint),
           entry_priority_policy:object(row.config_snapshot).entry_priority_policy ?? "LEGACY_PRICE_FIRST",
+          slot_goal_state:object(row.config_snapshot).slot_goal_state ?? null,
           entry_priority_checkpoint:entryAllocationAudit(object(row.config_snapshot).entry_priority_checkpoint),
           entry_price_sources:entryPriceSourcesAudit(object(row.config_snapshot).entry_price_sources) } : {}),
         ...(rowType === "EVENT" && ["ENTRY_PRIORITY_ALLOCATED","ENTRY_PRIORITY_REALLOCATION_REQUESTED"].includes(str(row.event_type))

@@ -3,10 +3,12 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { planAthLadder } from "./ath-ladder.ts";
-import { monthlyPeriodKey, ENTRY_PRIORITY_POLICY } from "./monthly-slot-policy.ts";
+import { monthlyPeriodKey, ENTRY_PRIORITY_POLICY, rankMonthlySlots } from "./monthly-slot-policy.ts";
+import { cumulativeSlotGoal } from "./cumulative-slot-goal.ts";
 import * as topology from "./engine-slot-topology.ts";
 import * as snapshot from "./live-strategy-snapshot.ts";
 import * as priceInvariant from "./strategy-price-invariant.ts";
+import * as crypto from "node:crypto";
 
 type Row = Record<string, any>;
 const parameters = { gainRate: .055, normalSpacing: .03, postAthSpacing: .03 };
@@ -53,7 +55,7 @@ test("25/50/100 BTC/SOL: current monthly eligibility and PRIMARY/RESERVE with un
 
 /** Executes the production transition; all I/O is in-memory. Any transport
  * dependency outside these explicit stubs is absent and cannot place trades. */
-function harness(options: { partial?: boolean; transition?: boolean; force?: boolean; rankCrash?: number;
+function harness(options: { cumulative?: boolean; partial?: boolean; transition?: boolean; force?: boolean; rankCrash?: number;
   failedRunSave?: boolean; fillDuringCancel?: boolean; engine?: string } = {}) {
   const id = options.engine ?? "engine-a";
   const input = slots();
@@ -68,7 +70,7 @@ function harness(options: { partial?: boolean; transition?: boolean; force?: boo
   const run: Row = { id: `run-${id}`, tenant_id: "t", user_id: "u", product_id: "p", operator_id: "o",
     exchange_account_id: "a", trading_engine_id: id, engine: { slot_count: 25 }, asset: "SOL", gain_rate: .055,
     entry_spacing: .03, config_version: 7, entry_regime: "NORMAL", ath_transition_key: null,
-    ath_period_key: "2000-12", lease_owner: `lease-${id}`, anchor_price: 119.7,
+    ath_period_key: options.cumulative ? monthlyPeriodKey(new Date()) : "2000-12", lease_owner: `lease-${id}`, anchor_price: 119.7,
     config_snapshot: { gain_rate: .055, entry_spacing: .03, ladder_anchor_price: 119.7,
       normal_spacing_rate: .03, post_ath_spacing_rate: .03, regime: "NORMAL", marker: "PRESERVED",
       entry_price_sources: { s10: { run_id: `run-${id}`, engine_id: id, slot_id: "s10", price: 92.99, source_origin: "REENTRY" } },
@@ -86,13 +88,22 @@ function harness(options: { partial?: boolean; transition?: boolean; force?: boo
         Object.assign(run, structuredClone(data)); return { data: structuredClone(run), error: null };
       } }; return q;
   } };
-  const deps: Row = { "./ath-ladder": { planAthLadder }, "./monthly-slot-policy": { monthlyPeriodKey, ENTRY_PRIORITY_POLICY },
+  const deps: Row = { "node:crypto": crypto, "./ath-ladder": { planAthLadder }, "./monthly-slot-policy": { monthlyPeriodKey, ENTRY_PRIORITY_POLICY },
     "./engine-slot-topology": topology, "./live-strategy-snapshot": snapshot,
     "./strategy-price-invariant": priceInvariant, "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES: new Set(["NEW", "PARTIALLY_FILLED", "PREPARED"]) } };
   const source = ts.transpileModule(readFileSync(new URL("./robot-v1-live-server.ts", import.meta.url), "utf8"),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports: Row = {};
   const f = { run, ledger, effects, service, options,
+    statuses() {
+      const raw = ledger.slots.map((s: Row) => ({physicalSlotId:s.id,physicalSlotNumber:s.slot_number,
+        lifetimeGainCount:s.slot_number===10?2:0,monthlyGainCount:0,monthlyGainTarget:2,
+        entryState:s.entry_state,balanceUsdc:60}));
+      if(!options.cumulative) return raw;
+      const goal=cumulativeSlotGoal({policy:"CUMULATIVE_LIFETIME_V1",anchor_at:"2026-09-24T05:40:17Z",
+        schedule:[{effective_period:"2026-09",monthly_target:2,source:"FIRST_BUY"}]},new Date());
+      return rankMonthlySlots("SOL",new Date(),raw,goal.target,25,undefined,goal);
+    },
     async slot(slot: Row, data: Row) {
       if (crash !== undefined && effects.slot.length === crash) { crash = undefined; throw Error("FIXTURE_CRASH"); }
       effects.slot.push({ id: slot.id, data: structuredClone(data) }); Object.assign(slot, data);
@@ -100,8 +111,7 @@ function harness(options: { partial?: boolean; transition?: boolean; force?: boo
   new Function("require", "exports", "f", source + `
     refreshRealAthProfile=async()=>({regime:'NORMAL',transition_key:f.options.transition?'REAL_ATH_CHANGE':null,
       config_version:7,normal_spacing_rate:.03,post_ath_spacing_rate:.03});
-    monthly=async()=>f.ledger.slots.map(s=>({physicalSlotId:s.id,physicalSlotNumber:s.slot_number,
-      lifetimeGainCount:s.slot_number===10?2:0,monthlyGainCount:0,monthlyGainTarget:2}));
+    monthly=async()=>f.statuses();
     renewLease=async()=>{f.effects.leases++;};
     updateSlot=async(_service,_run,slot,data)=>f.slot(slot,data);
     cancelOwnedEntry=async()=>{f.effects.cancel++;return !f.options.fillDuringCancel;};
@@ -133,6 +143,16 @@ test("LIVE month-only refresh preserves resident/partial BUY, OPEN/TP, prices, s
     const counts = structuredClone(f.effects);
     assert.equal(await f.execute(), false); assert.deepEqual(f.effects, counts);
   }
+});
+
+test("adopting cumulative goal in the same calendar month only refreshes metadata, never resident BUY/OPEN/TP or prices",async()=>{
+  const f=harness({cumulative:true});assert.equal(await f.execute(),true);
+  assert.equal(f.effects.cancel,0);assert.deepEqual(f.ledger.orders,f.before.ledger.orders);
+  assert.deepEqual(f.ledger.accounts,f.before.ledger.accounts);
+  assert.deepEqual(f.ledger.slots.map((s:Row)=>s.target_buy_price),f.before.ledger.slots.map((s:Row)=>s.target_buy_price));
+  assert.equal(f.run.config_snapshot.slot_goal_state.policy,"CUMULATIVE_LIFETIME_V1");
+  assert.equal(f.run.config_snapshot.monthly_priority_rollover.levels_preserved,true);
+  assert.equal(await f.execute(),false);
 });
 
 test("crash or failed503 checkpoint retries metadata only before month watermark advances", async () => {

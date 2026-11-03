@@ -158,7 +158,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
   // Independent configuration reads overlap the ledger; no exchange action is performed.
   const legacyPreparationPromise = Promise.all([
     supabase.from("robot_v1_live_preparations")
-      .select("asset,symbol,slot_count,monthly_target,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,kill_switch,updated_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
+      .select("asset,symbol,slot_count,monthly_target,slot_goal_policy,configured_live_capital_brl,max_order_notional_brl,max_total_exposure_brl,config_version,live_enabled,kill_switch,updated_at").eq("exchange_account_id", legacyAccount.id).in("trading_engine_id", legacyEngineIds)
       .eq("product_id", productId).eq("tenant_id", tenantId).eq("user_id", user.id),
     supabase.from("robot_v1_live_global_caps")
       .select("max_total_live_exposure_brl,config_version").eq("exchange_account_id", legacyAccount.id)
@@ -329,6 +329,7 @@ export default async function AutomationPage({ searchParams }: { searchParams?: 
       ipRestricted: production?.ipRestricted ?? null,
       error: production ? sizing.length === 2 ? null : "Filtros ou cálculo de um dos pares indisponíveis." : "Consulta Production indisponível; preparação bloqueada." };
     for (const asset of ["BTC", "SOL"] as const) if (liveAssetData[asset]) {
+      liveAssetData[asset]!.slotGoalPolicy = preparations.data?.find(row => row.asset === asset)?.slot_goal_policy ?? null;
       liveAssetData[asset]!.monthlyGains = (monthlyResponse.data || []).filter((row) => row.environment === "REAL"
         && row.asset === asset && row.period_key === monthlyPeriodKey(new Date()))
         .map((row) => ({ slot_number: row.slot_number,

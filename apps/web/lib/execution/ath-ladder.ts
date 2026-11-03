@@ -62,13 +62,14 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   validateAthParameters(parameters);
   // Both regimes require the same physical identity and gain evidence checks.
   const validatedQueue = buildPostAthQueue(asset, slots, monthlyTarget, slotCount);
-  const completed=monthlyGoalsComplete(asset,slots,monthlyTarget,slotCount);
+  const cumulative=slots.some(s=>s.priorityGainCount!==undefined);
+  const completed=cumulative ? false : monthlyGoalsComplete(asset,slots,monthlyTarget,slotCount);
   const queue = regime === "POST_ATH" ? validatedQueue : null;
   const ordered = queue ? orderedPostAthSlots(queue) : [...slots]
     .filter((slot) => !slot.blocked && slot.monthlyGainCount !== null
-      && (completed||slot.monthlyGainCount<monthlyTarget)
+      && (cumulative ? slot.goalEntryEligible : completed||slot.monthlyGainCount<monthlyTarget)
       && ["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"].includes(slot.entryState))
-    .sort((a,b)=>Number(a.monthlyGainCount!>=monthlyTarget)-Number(b.monthlyGainCount!>=monthlyTarget)||compareMonthlyProgress(a,b));
+    .sort((a,b)=>Number(a.goalTargetReached ?? a.monthlyGainCount!>=monthlyTarget)-Number(b.goalTargetReached ?? b.monthlyGainCount!>=monthlyTarget)||compareMonthlyProgress(a,b));
   const rankById = new Map(ordered.map((slot, index) => [slot.physicalSlotId, index + 1]));
   const grouped = new Map(queue?.map((slot) => [slot.physicalSlotId, slot]) ?? []);
   const hasOpen = slots.some((slot) => ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status));
@@ -89,10 +90,10 @@ export function planAthLadder(asset: V1Asset, regime: AthRegime, anchorPrice: nu
   const priceKeys = new Set<string>();
   const decisions = slots.map((slot): AthLadderDecision => {
     const group = grouped.get(slot.physicalSlotId);
-    const reached=slot.monthlyGainCount!==null&&slot.monthlyGainCount>=monthlyTarget;
+    const reached=slot.goalTargetReached ?? (slot.monthlyGainCount!==null&&slot.monthlyGainCount>=monthlyTarget);
     const frozenReason = ["OPEN", "TP_ACTIVE", "PARTIALLY_FILLED"].includes(slot.status) ? "OPEN_OR_TP" as const
       : slot.entryOrigin === "REENTRY" ? "LOCAL_REENTRY" as const
-        : reached&&!completed?"MONTHLY_TARGET" as const:!rankById.has(slot.physicalSlotId) ? "INELIGIBLE" as const : null;
+        : reached&&!(cumulative ? slot.goalEntryEligible : completed)?"MONTHLY_TARGET" as const:!rankById.has(slot.physicalSlotId) ? "INELIGIBLE" as const : null;
     const nextBuyPrice = frozenReason || pricePolicy === "PRESERVE_LEVELS"
       ? slot.buyPrice : computed.get(slot.physicalSlotId)!;
     if (!Number.isFinite(nextBuyPrice) || nextBuyPrice <= 0) throw new Error("COINOPS_ATH_LADDER_PRICE_INVALID");

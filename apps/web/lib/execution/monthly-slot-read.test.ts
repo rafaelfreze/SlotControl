@@ -6,6 +6,7 @@ import * as policy from "./monthly-slot-policy.ts";
 import * as reads from "./live-ledger-read.ts";
 import * as errors from "./live-read-error.ts";
 import * as topology from "./engine-slot-topology.ts";
+import * as goals from "./cumulative-slot-goal.ts";
 
 type Row = Record<string, unknown>;
 type Failure = { code: string; status: number; persistent?: boolean };
@@ -41,7 +42,7 @@ function fixture(engineId = "engine-a", failures: Record<string, Failure> = {},
     return chain;
   } };
   const deps: Record<string, unknown> = { "./monthly-slot-policy": policy,
-    "./engine-slot-topology": topology,
+    "./engine-slot-topology": topology, "./cumulative-slot-goal": goals,
     "./live-ledger-read": reads, "./live-read-error": errors,
     "./operator-context-server": { resolveOperatorEngine: async () => engine } };
   const compiled = ts.transpileModule(readFileSync(new URL("./monthly-slot-server.ts", import.meta.url), "utf8"),
@@ -111,6 +112,17 @@ test("same account and symbol in separate engines/shards never share monthly fac
     const result = await f.read();
     assert.ok(result.every(slot => slot.physicalSlotId.startsWith(`REAL:${id}:`)));
   }
+});
+
+test("REAL scoped reader derives cumulative goal from persisted original anchor and confirmed lifetime despite monthly zero", async () => {
+  const f = fixture("engine-b", {}, "2026-11-03T12:00:00Z");
+  f.targets[0].slot_goal_policy = { policy: "CUMULATIVE_LIFETIME_V1", anchor_at: "2026-09-24T05:14:21Z",
+    schedule: [{ effective_period: "2026-09", monthly_target: 7, source: "FIRST_BUY" }] };
+  f.totals[0].monthly_gain_count = 0; f.totals[0].monthly_market_gain_count = 0;
+  const result = await f.read();
+  assert.equal(result[1].monthlyGainTarget,21);assert.equal(result[1].lifetimeGainCount,1);
+  assert.equal(result[1].monthlyGainCount,0);assert.equal(result[1].goal?.cycleMonth,3);
+  assert.equal(result[1].eligibleForNewEntry,false); // OPEN remains protected.
 });
 
 for (const slotCount of [25, 50, 75, 100]) test(`${slotCount} slots: actual monthly GET retries503 and rolls calendar without touching lifetime/OPEN/TP`, async () => {

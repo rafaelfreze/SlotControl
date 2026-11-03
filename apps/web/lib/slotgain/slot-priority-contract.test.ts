@@ -118,7 +118,7 @@ test("post-ATH primary gate still admits a priced reentry/resident; reruns do no
 test("UI explains rank/price/residency without introducing a second ranking or entry implementation", () => {
   const source = readFileSync(new URL("../../app/automacao/premium-automation.tsx", import.meta.url), "utf8");
   const note = source.slice(source.indexOf('data-testid="slot-priority-explanation"'), source.indexOf("</details>", source.indexOf('data-testid="slot-priority-explanation"')));
-  for (const text of ["gains do mês", "Gains totais (lifetime)", "PRIMARY", "RESERVE", "níveis", "fill parcial"])
+  for (const text of ["meta acumulada", "gains lifetime confirmados", "PRIMARY", "RESERVE", "níveis", "fill parcial"])
     assert.ok(note.includes(text), text);
   assert.doesNotMatch(note, /onClick=|onSubmit=|fetch\(|planStrategy/);
   assert.ok(source.includes("PRÓXIMA BUY identifica a ordem residente"));

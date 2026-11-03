@@ -38,6 +38,7 @@ export type LivePresentation = { configs: LiveConfig[]; sizing: ReturnType<typeo
   permissions: "READ_ONLY" | "SPOT_RESTRICTED" | "UNVERIFIED" | "UNSAFE";
   ipRestricted: boolean | null; error: string | null };
 export type LiveAssetData = {
+  slotGoalPolicy?: import("../../lib/execution/cumulative-slot-goal").SlotGoalPolicy | null;
   displayQuantityStep?: number | null;
   /** Public, deterministic ownership prefix computed from the server registry. */
   displayOrderNamespace?: string;

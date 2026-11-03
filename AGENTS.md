@@ -498,3 +498,18 @@ Componentes-base, templates e páginas legadas herdam a regra. Master e cliente 
 
 ### Continuidade — referência Hostinger (30/10/2026)
 Preservar os modos de consentimento válidos por site, inclusive Google Consent Mode avançado já existente: defaults negados, ads_data_redaction, sem cookies publicitários ou IDs de clique antes do aceite. Meta e demais tecnologias opcionais dependem da autorização aplicável. Não substituir silenciosamente o modo avançado por bloqueio total e não copiar carregamento presumido do Hostinger. A coleta operacional própria continua separada, agregada, com recibo efêmero/deduplicação e retry finito, sem identificar visitantes e sem bloquear WhatsApp. Labels, metas, campanhas e orçamentos permanecem intocados.
+
+## Meta acumulativa REAL — decisão de 03/11/2026
+
+`CUMULATIVE_LIFETIME_V1` substitui a meta mensal resetável nos engines adotados.
+Meta acumula competências desde o primeiro BUY reconciliado original do engine
+em America/Campo_Grande, incluindo predecessor runs. Progresso e prioridade usam
+lifetime confirmado DESC, físico ASC. Não zerar ganhos/âncora em dia1/reset/deploy.
+O valor configurado é individual; edições do Bulk Editor vigoram na próxima
+competência, preservando metas passadas. A exceção de mesma competência exige
+todos os disponíveis para entrada na meta, com conjunto físico/evidência íntegros;
+OPEN/partial/MISSED/bloqueado não entra outra vez nem impede a exceção dos demais.
+Preservar PRIMARY/RESERVE, reentrada, preços comprovados e protocolo de uma BUY.
+Adoção/virada não reancora o ticker; troca residente só pelo ONLY_NEW/lease/CAS
+oficial. Histórico sem marcador conserva a política original. Ver
+`docs/COINOPS_CUMULATIVE_SLOT_GOALS_20261103.md`.

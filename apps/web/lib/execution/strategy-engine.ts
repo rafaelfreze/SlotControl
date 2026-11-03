@@ -22,10 +22,11 @@ export type StrategyCandidate = {
   balanceQuote?: number;
   operationalRank?: number | null;
   monthlyTargetReached?: boolean;
-  /** Explicit policy result: a reached slot is eligible again only after all
-   * 25 physical slots have reached this month's target. */
+  /** Canonical goal result. Historical policy requires N/N; cumulative policy
+   * releases the complete available entry set, without including OPEN/partial. */
   monthlyEntryEligible?: boolean;
   monthlyGainCount?: number;
+  priorityGainCount?: number;
   lifetimeGainCount?: number;
   postAthGroup?: "PRIMARY" | "RESERVE" | null;
   entryOrigin?: "GRID" | "REENTRY";
@@ -96,7 +97,8 @@ function monthlyEligible(candidate: StrategyCandidate) {
 
 function monthlyPriority(a: StrategyCandidate, b: StrategyCandidate) {
   if (![a, b].every(s => Number.isInteger(s.monthlyGainCount) && s.monthlyGainCount! >= 0
-    && Number.isInteger(s.lifetimeGainCount) && s.lifetimeGainCount! >= s.monthlyGainCount!))
+    && Number.isInteger(s.lifetimeGainCount) && s.lifetimeGainCount! >= s.monthlyGainCount!
+    && (s.priorityGainCount === undefined || s.priorityGainCount === s.lifetimeGainCount)))
     throw new Error("COINOPS_MONTHLY_PRIORITY_EVIDENCE_INVALID");
   return Number(Boolean(a.monthlyTargetReached)) - Number(Boolean(b.monthlyTargetReached))
     || compareMonthlyProgress({ ...a, monthlyGainCount: a.monthlyGainCount!, lifetimeGainCount: a.lifetimeGainCount!, physicalSlotNumber: a.slotNumber },

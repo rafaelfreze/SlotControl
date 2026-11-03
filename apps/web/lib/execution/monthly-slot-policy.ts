@@ -1,5 +1,6 @@
 import { DEFAULT_ENGINE_SLOT_COUNT, validateEngineSlotCount } from "./engine-slot-topology.ts";
 import type { V1Asset } from "./robot-v1.ts";
+import type { SlotGoal } from "./cumulative-slot-goal.ts";
 
 export const MONTHLY_SLOT_TIMEZONE = "America/Campo_Grande";
 export const ENTRY_PRIORITY_POLICY = "MONTHLY_GAINS_V1" as const;
@@ -40,21 +41,24 @@ export type MonthlySlotInput = {
   monthlyGainCount: number | null;
   balanceUsdc: number;
   entryState: string;
+  entryBlocked?: boolean;
+  priorityGainCount?: number;
   marketGainCount?: number | null;
   manualGainCount?: number | null;
   monthlyMarketGainCount?: number | null;
   monthlyManualGainCount?: number | null;
 };
 
-/** Monthly progress is the primary key; lifetime is only a deterministic tie. */
-export function compareMonthlyProgress(a: { monthlyGainCount: number | null; lifetimeGainCount: number; physicalSlotNumber: number },
-  b: { monthlyGainCount: number | null; lifetimeGainCount: number; physicalSlotNumber: number }) {
-  return (b.monthlyGainCount ?? -1) - (a.monthlyGainCount ?? -1)
+/** Explicit cumulative progress overrides the historical monthly key. */
+export function compareMonthlyProgress(a: { monthlyGainCount: number | null; lifetimeGainCount: number; physicalSlotNumber: number; priorityGainCount?: number },
+  b: { monthlyGainCount: number | null; lifetimeGainCount: number; physicalSlotNumber: number; priorityGainCount?: number }) {
+  return (b.priorityGainCount ?? b.monthlyGainCount ?? -1) - (a.priorityGainCount ?? a.monthlyGainCount ?? -1)
     || b.lifetimeGainCount - a.lifetimeGainCount || a.physicalSlotNumber - b.physicalSlotNumber;
 }
 
 export type MonthlySlotStatus = MonthlySlotInput & {
   monthlyGainTarget: number;
+  goal?: SlotGoal;
   periodKey: string;
   timezone: typeof MONTHLY_SLOT_TIMEZONE;
   monthlyTargetReached: boolean;
@@ -78,9 +82,9 @@ export function monthlyGoalsComplete(asset: V1Asset,
  * opportunity is valid; an OPEN position can finish after reaching its goal. */
 export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs: readonly MonthlySlotInput[],
   target = MONTHLY_SLOT_TARGET[asset], slotCount = DEFAULT_ENGINE_SLOT_COUNT,
-  policy: typeof ENTRY_PRIORITY_POLICY | "LEGACY_PRICE_FIRST" = ENTRY_PRIORITY_POLICY): MonthlySlotStatus[] {
+  policy: typeof ENTRY_PRIORITY_POLICY | "LEGACY_PRICE_FIRST" = ENTRY_PRIORITY_POLICY, goal?: SlotGoal): MonthlySlotStatus[] {
   validateEngineSlotCount(slotCount);
-  if (!Number.isInteger(target) || target < 1 || target > 1000)
+  if (!Number.isSafeInteger(target) || target < 1 || !goal && target > 1000 || goal && target !== goal.target)
     throw new Error("COINOPS_MONTHLY_TARGET_INVALID");
   const periodKey = monthlyPeriodKey(instant);
   const ids = new Set<string>(), numbers = new Set<number>();
@@ -96,13 +100,22 @@ export function rankMonthlySlots(asset: V1Asset, instant: string | Date, inputs:
         && input.monthlyMarketGainCount + input.monthlyManualGainCount !== input.monthlyGainCount)
       throw new Error("COINOPS_MONTHLY_SLOT_EVIDENCE_INVALID");
     ids.add(input.physicalSlotId); numbers.add(input.physicalSlotNumber);
-    const reached = input.monthlyGainCount !== null && input.monthlyGainCount >= target;
+    const progress = goal ? input.lifetimeGainCount : input.monthlyGainCount;
+    const reached = progress !== null && progress >= target;
     const blockedReason = input.monthlyGainCount === null ? "GAIN_EVIDENCE_INCOMPLETE" as const
       : reached ? "MONTHLY_TARGET_REACHED" as const : null;
-    return { ...input, monthlyGainTarget: target, periodKey, timezone: MONTHLY_SLOT_TIMEZONE,
+    return { ...input, ...(goal ? { goal, priorityGainCount: input.lifetimeGainCount } : {}), monthlyGainTarget: target, periodKey, timezone: MONTHLY_SLOT_TIMEZONE,
       monthlyTargetReached: reached, eligibleForNewEntry: blockedReason === null, blockedReason, operationalRank: null };
   });
-  if (monthlyGoalsComplete(asset,statuses,target,slotCount))
+  if (goal) {
+    const available = statuses.filter(s => !s.entryBlocked && ["PLANNED", "PENDING", "ARMED", "CLOSED", "NONE"].includes(s.entryState));
+    const complete = statuses.length === slotCount && statuses.every(s => s.monthlyGainCount !== null)
+      && available.length > 0 && available.every(s => s.lifetimeGainCount >= target);
+    for (const s of statuses) {
+      s.eligibleForNewEntry = available.includes(s) && s.monthlyGainCount !== null && (!s.monthlyTargetReached || complete);
+      if (s.eligibleForNewEntry) s.blockedReason = null;
+    }
+  } else if (monthlyGoalsComplete(asset,statuses,target,slotCount))
     for (const s of statuses) { s.eligibleForNewEntry=true;s.blockedReason=null; }
   const eligible = statuses.filter((slot) => slot.eligibleForNewEntry)
     .sort((a,b)=>policy === "LEGACY_PRICE_FIRST"

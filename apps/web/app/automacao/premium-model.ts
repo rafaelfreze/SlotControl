@@ -1,3 +1,4 @@
+import { cumulativeSlotGoal, type SlotGoal } from "../../lib/execution/cumulative-slot-goal.ts";
 import { MONTHLY_SLOT_TARGET,monthlyGoalsComplete } from "../../lib/execution/monthly-slot-policy.ts";
 import { reconcileV1PhysicalSlotAccounts, summarizeV1ShadowOperations } from "../../lib/execution/robot-v1-audit.ts";
 import { summarizeTestnetLedgerTotals, summarizeTestnetResults, testnetDiagnosticIssue, testnetPresentationHealth } from "../../lib/slotgain/testnet-results.ts";
@@ -22,7 +23,7 @@ export type PremiumSlot = {
   entryPrice: number | null; currentPrice: number | null; tpPrice: number | null; quantity: number | null;
   balance: number | null; committed: number | null; reserved: number | null; realizedPnl: number | null;
   contributed: number | null; pendingContribution: number; valueAfterPending: number | null;
-  openPnl: number | null; fees: number | null; gains: number | null; monthlyGains: number | null; goal: number;
+  openPnl: number | null; fees: number | null; gains: number | null; monthlyGains: number | null; goal: number; cumulativeGoal?: SlotGoal;
   targetReached: boolean; eligible: boolean | null; operationSequence: number | null; nextAction: string;
   orders: PremiumOrder[]; events: PremiumEvent[]; historicalCount: number; raw: unknown;
   plannedPrice?:number|null; priorityReason?:string;
@@ -31,7 +32,7 @@ export type PremiumAsset = {
   asset: "BTC" | "SOL"; symbol: string; currency: string; environment: PremiumEnvironment;
   price: number | null; capital: number | null; committed: number | null; reserved: number | null;
   exposure: number | null; freeCapital: number | null; realizedPnl: number | null; openPnl: number | null;
-  fees: number | null; gains: number | null; monthlyGains: number | null; goal: number; regime: string | null;
+  fees: number | null; gains: number | null; monthlyGains: number | null; goal: number; cumulativeGoal?: SlotGoal; regime: string | null;
   gainRate: number | null; spacingRate: number | null; cap: number | null; health: PremiumHealth;
   status: string; lastCheck: string | null; cycleId: string | null; slots: PremiumSlot[];
   orders: PremiumOrder[]; events: PremiumEvent[]; alerts: Array<{ code: string; severity: string; at: string | null }>;
@@ -105,13 +106,16 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     ?? MONTHLY_SLOT_TARGET[asset];
   if (!live) return base;
   const orders = live.orders.map(normalizeOrder), events = eventsFor(live.events);
-  const complete=monthlyGoalsComplete(asset,live.slots.map(s=>({monthlyGainCount:
+  const goal = live.slotGoalPolicy ? cumulativeSlotGoal(live.slotGoalPolicy, new Date(now)) : undefined;
+  if (goal) { base.goal = goal.target; base.cumulativeGoal = goal; }
+  const complete=!goal && monthlyGoalsComplete(asset,live.slots.map(s=>({monthlyGainCount:
     number(live.monthlyGains.find(g=>g.slot_number===s.slot_number)?.monthly_gain_count)
       ?? (Number(live.accounts.find(a=>a.slot_number===s.slot_number)?.gain_count)===0?0:null)})),base.goal,slotCount);
   const slots = live.slots.map((row): PremiumSlot => {
     const account = live.accounts.find((item) => item.slot_number === row.slot_number);
     const monthly = live.monthlyGains.find((item) => item.slot_number === row.slot_number);
-    const gains = number(monthly?.lifetime_gain_count ?? account?.gain_count);
+    const gains = goal ? number(monthly?.lifetime_gain_count) ?? (number(account?.gain_count) === 0 ? 0 : null)
+      : number(monthly?.lifetime_gain_count ?? account?.gain_count);
     const month = number(monthly?.monthly_gain_count) ?? (gains === 0 ? 0 : null);
     const slotOrders = orders.filter((item) => item.slotNumber === row.slot_number);
     const tp = slotOrders.find((item) => item.side === "SELL" && item.resident);
@@ -134,20 +138,21 @@ function liveAsset(data: Props, asset: "BTC" | "SOL", now: number): PremiumAsset
     const pendingContribution = (live.selectiveAllocations ?? [])
       .filter((allocation) => allocation.slot_number === row.slot_number && allocation.status === "PENDING")
       .reduce((total, allocation) => total + (number(allocation.amount_quote) ?? 0), 0);
+    const progress = goal ? gains : month;
     const entryEligible = typeof rawField(row,"monthly_entry_eligible")==="boolean"
-      ? rawField(row,"monthly_entry_eligible")===true : month!==null&&(month<base.goal||complete);
+      ? rawField(row,"monthly_entry_eligible")===true : progress!==null&&(progress<base.goal||complete);
     return { number: row.slot_number, physicalId: null, rank: row.operational_rank,
       plannedPrice:number(row.target_buy_price),priorityReason:open?"Posição OPEN · preservar TP":buys.some(o=>o.resident)
-        ?"BUY residente confirmada · prioridade desejada não substitui execução":month===null?"Evidência mensal incompleta"
-          :month>=base.goal&&!complete?"Meta atingida · aguardar dia 1º ou meta de todos os slots"
-            :`${month} gains do mês · prioridade mensal decrescente no conjunto permitido`,
+        ?"BUY residente confirmada · prioridade desejada não substitui execução":progress===null?"Evidência de gains incompleta"
+          :progress>=base.goal&&!entryEligible?"Meta atingida · aguardar próxima competência ou meta de todos os elegíveis"
+            :goal?`${gains} gains lifetime · prioridade decrescente no conjunto permitido`:`${month} gains do mês · prioridade mensal decrescente no conjunto permitido`,
       group: row.post_ath_group, groupRank: row.post_ath_group_rank,
-      ...slotState(row.entry_state, month !== null && month >= base.goal, entryEligible), entryPrice: entry, currentPrice: price,
+      ...slotState(row.entry_state, progress !== null && progress >= base.goal, entryEligible), entryPrice: entry, currentPrice: price,
       tpPrice: tp?.price ?? null, quantity, balance, committed, reserved,
       contributed, pendingContribution, valueAfterPending: balance === null ? null : balance + pendingContribution,
       realizedPnl: difference(marketPnl, fees), fees, openPnl: open ? price === null || quantity === null || committed === null ? null : quantity * price - committed : 0,
-      gains, monthlyGains: month, goal: base.goal, targetReached: month !== null && month >= base.goal,
-      eligible: month === null ? null : entryEligible, operationSequence: row.operation_sequence,
+      gains, monthlyGains: month, goal: base.goal, cumulativeGoal: goal, targetReached: progress !== null && progress >= base.goal,
+      eligible: progress === null ? null : entryEligible, operationSequence: row.operation_sequence,
       orders: slotOrders, events: events.filter((item) => item.slotNumber === row.slot_number), historicalCount: 0,
       raw: { slot: row, account, monthly } };
   });

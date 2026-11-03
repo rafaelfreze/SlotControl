@@ -42,7 +42,7 @@ export const STRATEGY_PARAMETER_REGISTRY: Readonly<Record<StrategyParameterKey, 
   },
   monthly_target: {
     key: "monthly_target", label: "Meta mensal", type: "INTEGER", unit: "gains/slot/mês", min: 1, max: 1000, precision: 0,
-    description: "Objetivo mensal por slot no mês-calendário operacional. Não apaga gains e nunca para o motor.",
+    description: "Acréscimo mensal à meta acumulada por slot. Edições vigoram na próxima competência; metas já acumuladas e lifetime são preservados.",
     markets: ["BTC", "SOL"], applyPolicy: "FUTURE_ENTRIES_ONLY", requiresOrderReconciliation: false,
     scope: "ENGINE", editable: true, storage: { table: "PREPARATION", column: "monthly_target" },
   },

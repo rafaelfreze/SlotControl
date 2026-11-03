@@ -261,7 +261,8 @@ async function monthly(service: Service, run: Run, slots: Slot[], accounts: Acco
     const account = accounts.find((row) => row.slot_number === slot.slot_number);
     if (!account) throw new Error("COINOPS_LIVE_ACCOUNT_MISSING");
     return { slot_number: slot.slot_number, balance_brl: account.balance_brl,
-      gain_count: account.gain_count, entry_state: slot.entry_state };
+      gain_count: account.gain_count, entry_state: slot.entry_state,
+      entry_blocked: Boolean(slot.missed_at) || amount(slot.position_quantity)>0 && slot.entry_state!=="CLOSED" };
   }));
 }
 
@@ -1143,8 +1144,11 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState, force = false) {
   const profile = await refreshRealAthProfile(service, run);
   const period = monthlyPeriodKey(new Date());
+  const statuses = await monthly(service, run, ledger.slots, ledger.accounts);
+  const goalState = statuses[0]?.goal ?? null;
+  const sameGoal = JSON.stringify(run.config_snapshot.slot_goal_state ?? null) === JSON.stringify(goalState);
   const sameTransition = run.entry_regime === profile.regime && run.ath_transition_key === profile.transition_key;
-  if (!force && sameTransition && run.ath_period_key === period) return false;
+  if (!force && sameTransition && run.ath_period_key === period && sameGoal) return false;
   const monthlyOnly = !force && sameTransition && run.ath_period_key !== null;
   const active = ledger.orders.find((item) => item.side === "BUY"
     && LIVE_ACTIVE_ORDER_STATUSES.has(item.status));
@@ -1175,14 +1179,16 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
     }
     ledger = await runRows(service, run);
   }
-  const statuses = await monthly(service, run, ledger.slots, ledger.accounts);
+  const currentStatuses = monthlyOnly ? statuses : await monthly(service, run, ledger.slots, ledger.accounts);
   const decisions = planAthLadder(run.asset, profile.regime, state.price.price,
     { gainRate: amount(run.gain_rate), normalSpacing: amount(profile.normal_spacing_rate),
       postAthSpacing: amount(profile.post_ath_spacing_rate) }, state.filters.priceTick,
     ledger.slots.map((slot) => {
-      const status = statuses.find((item) => item.physicalSlotNumber === slot.slot_number)!;
+      const status = currentStatuses.find((item) => item.physicalSlotNumber === slot.slot_number)!;
       return { physicalSlotId: status.physicalSlotId, physicalSlotNumber: slot.slot_number,
         lifetimeGainCount: status.lifetimeGainCount, monthlyGainCount: status.monthlyGainCount,
+        priorityGainCount: status.priorityGainCount, goalEntryEligible: status.goal ? status.eligibleForNewEntry : undefined,
+        goalTargetReached: status.goal ? status.monthlyTargetReached : undefined,
         entryState: slot.entry_state, blocked: Boolean(slot.missed_at),
         status: slot.entry_state === "PLANNED" || slot.entry_state === "ARMED" ? "PENDING"
           : slot.entry_state === "MISSED" ? "CANCELLED" : slot.entry_state,
@@ -1203,20 +1209,21 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
       await updateSlot(service, run, slot, { operational_rank: item.operationalRank,
         post_ath_group: item.postAthGroup, post_ath_group_rank: item.postAthGroupRank });
     }
-    const checkpoint = { policy: ENTRY_PRIORITY_POLICY, period, previous_period: run.ath_period_key,
+    const checkpoint = { policy: ENTRY_PRIORITY_POLICY, goal: goalState, period, previous_period: run.ath_period_key,
       observed_at: new Date().toISOString(), reanchored: false, levels_preserved: true,
       slot_count: configuredEngineSlotCount(run.engine!),
       primary: decisions.filter(item => item.postAthGroup === "PRIMARY").length,
       reserve: decisions.filter(item => item.postAthGroup === "RESERVE").length };
     await renewLease(service, run);
     const saved = await service.from("robot_v1_live_runs").update({ ath_period_key: period,
-      config_snapshot: { ...run.config_snapshot, monthly_priority_rollover: checkpoint } })
+      config_snapshot: { ...run.config_snapshot, monthly_priority_rollover: checkpoint,
+        ...(goalState ? { slot_goal_state: goalState } : {}) } })
       .eq("id", run.id).eq("tenant_id", run.tenant_id).eq("trading_engine_id", run.trading_engine_id)
       .eq("lease_owner", run.lease_owner).eq("entry_regime", run.entry_regime)
       .select("*").single();
     if (saved.error || !saved.data) throw new Error("COINOPS_LIVE_MONTHLY_PRIORITY_REFRESH_FAILED");
     Object.assign(run, saved.data);
-    await event(service, run, `MONTHLY_PRIORITY_REFRESHED:${period}`, "MONTHLY_PRIORITY_REFRESHED", null, checkpoint);
+    await event(service, run, `MONTHLY_PRIORITY_REFRESHED:${period}:${createHash("sha256").update(JSON.stringify(goalState)).digest("hex").slice(0,16)}`, "MONTHLY_PRIORITY_REFRESHED", null, checkpoint);
     return true;
   }
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
@@ -1275,7 +1282,8 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
       entry_grid_contexts: gridContexts, entry_price_sources: sources,
       gain_rate: Number(run.gain_rate), normal_spacing_rate: Number(profile.normal_spacing_rate),
       post_ath_spacing_rate: Number(profile.post_ath_spacing_rate), regime: profile.regime,
-      monthly_target: statuses[0]!.monthlyGainTarget,
+      monthly_target: prep.monthly_target,
+      slot_goal_state: statuses[0]!.goal ?? null,
       entry_spacing: profile.regime === "POST_ATH"
         ? Number(profile.post_ath_spacing_rate) : Number(profile.normal_spacing_rate) },
     ath_transition_key: profile.transition_key, ath_period_key: period,
@@ -1452,6 +1460,11 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
   if (latest.orders.some((item) => LIVE_ACTIVE_ORDER_STATUSES.has(item.status))
     || latest.slots.some((item) => amount(item.position_quantity) > 0))
     throw new Error("COINOPS_LIVE_RESET_OLD_ORDERS_ACTIVE");
+  // A genuine, fully settled successor has fresh logical opportunities.
+  // Historical MISSED stays in the predecessor; the engine anchor/lifetime
+  // and accrued goal do not reset with its run id.
+  const nextStatuses = await monthly(service, run, latest.slots.map(slot => ({ ...slot,
+    entry_state: "PLANNED", missed_at: null })), latest.accounts);
   const profile = await activateQueuedRealProfile(service, run,
     await refreshRealAthProfile(service, run));
   const gain = amount(profile.gain_rate);
@@ -1461,9 +1474,11 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
     { gainRate: gain, normalSpacing: amount(profile.normal_spacing_rate),
       postAthSpacing: amount(profile.post_ath_spacing_rate) }, state.filters.priceTick,
     latest.slots.map((slot) => {
-      const month = statuses.find((item) => item.physicalSlotNumber === slot.slot_number)!;
+      const month = nextStatuses.find((item) => item.physicalSlotNumber === slot.slot_number)!;
       return { physicalSlotId: month.physicalSlotId, physicalSlotNumber: slot.slot_number,
         lifetimeGainCount: month.lifetimeGainCount, monthlyGainCount: month.monthlyGainCount,
+        priorityGainCount: month.priorityGainCount, goalEntryEligible: month.goal ? month.eligibleForNewEntry : undefined,
+        goalTargetReached: month.goal ? month.monthlyTargetReached : undefined,
         entryState: "PLANNED", status: "PENDING", buyPrice: amount(slot.target_buy_price),
         entryOrigin: "GRID" as const, operationSequence: 1 };
     }), statuses[0]!.monthlyGainTarget, configuredEngineSlotCount(run.engine!));
@@ -1492,7 +1507,8 @@ async function restartClosedCycle(service: Service, run: Run, ledger: Ledger,
     slot_count: configuredEngineSlotCount(run.engine!),
     normal_spacing_rate: amount(profile.normal_spacing_rate),
     post_ath_spacing_rate: amount(profile.post_ath_spacing_rate), regime: profile.regime,
-    monthly_target: statuses[0]!.monthlyGainTarget,
+    monthly_target: prep.monthly_target,
+      slot_goal_state: statuses[0]!.goal ?? null,
     ath_price: profile.ath_price, ath_source: profile.ath_source };
   await renewLease(service, run);
   const result = await service.rpc("restart_robot_v1_live_cycle", {
@@ -1911,7 +1927,7 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     const account = ledger.accounts.find((row) => row.slot_number === slot.slot_number)!;
     const rank = ranks.get(slot.slot_number)!;
     const value = { ...candidate(slot, account, rank.operationalRank, rank.monthlyTargetReached, rank.eligibleForNewEntry),
-      monthlyGainCount: rank.monthlyGainCount!, lifetimeGainCount: rank.lifetimeGainCount,
+      monthlyGainCount: rank.monthlyGainCount!, lifetimeGainCount: rank.lifetimeGainCount, priorityGainCount: rank.priorityGainCount,
       balanceQuote: Math.min(amount(account.balance_brl), amount(prep.max_order_notional_brl)) };
     const authorization=run.config_snapshot.market_entry_authorization as Record<string,unknown>|undefined;
     const authorizedMissed=slot.entry_state==="MISSED" && authorization?.policy===ENTRY_MARKET_POLICY
@@ -2034,7 +2050,8 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
     await renewLease(service, run);
     const saved = await service.rpc("allocate_live_monthly_entry_levels", { p_run_id:run.id,p_lease_owner:run.lease_owner,
       p_plan_id:planId,p_period:period,p_expected:expected,p_assignments:assignments,
-      p_context:{regime:run.entry_regime,config_version:run.config_version,monthly_target:status[0]!.monthlyGainTarget,
+      p_context:{regime:run.entry_regime,config_version:run.config_version,monthly_target:prep.monthly_target,
+        ...(status[0]!.goal ? {goal_target:status[0]!.goal.target,goal_policy:status[0]!.goal.policy} : {}),
         shard:run.engine!.executor_shard_id} });
     let committed = saved.data as { price_sources?:Record<string,unknown> } | null;
     if (saved.error) {
@@ -2220,6 +2237,33 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
           resident_buy_count: 0 });
       reconciliationComplete = true;
       return { status: "PAUSED", next: "ENTRIES_PAUSED" };
+    }
+    stage = "SLOT_GOAL_POLICY";
+    if (run.config_snapshot.slot_goal_adopted !== true) {
+      await renewLease(service, run);
+      const adopted = await service.rpc("adopt_cumulative_slot_goal", { p_run_id: run.id, p_lease_owner: run.lease_owner });
+      let policy = adopted.data;
+      if (adopted.error) {
+        // Observe this exact metadata commit before any retry; a lost response
+        // is not permission to repeat a financial stage or invent an anchor.
+        const proof = await boundedLedgerRead((deadline, attempt) => observeLedgerRecord<{ slot_goal_policy: unknown }>("preparation",
+          service.from("robot_v1_live_preparations").select("slot_goal_policy")
+            .eq("trading_engine_id",run.trading_engine_id).eq("operator_id",run.operator_id)
+            .eq("exchange_account_id",run.exchange_account_id).eq("tenant_id",run.tenant_id)
+            .abortSignal(deadline).single(),deadline,attempt,"COINOPS_LIVE_PREPARATION_UNAVAILABLE"));
+        policy = proof.slot_goal_policy;
+        if (!policy) {
+          if ([502,503,504].includes(adopted.status) || adopted.error.code === "PGRST003")
+            return { status:"RETRY",code:"COINOPS_SLOT_GOAL_ADOPTION_PENDING" };
+          throw new Error("COINOPS_SLOT_GOAL_ADOPTION_UNPROVEN");
+        }
+      }
+      if (policy) {
+        const saved = await service.from("robot_v1_live_runs").update({ config_snapshot: {
+          ...run.config_snapshot, slot_goal_adopted: true } }).eq("id",run.id).eq("lease_owner",run.lease_owner).select("*").single();
+        if(saved.error || !saved.data) throw new Error("COINOPS_SLOT_GOAL_ADOPTION_CHECKPOINT_FAILED");
+        Object.assign(run,saved.data);
+      }
     }
     stage = "RECYCLE_SLOTS";
     if (await recycleClosedSlots(service, run, refreshed, () => yieldForProgress("RECYCLE_SLOTS")))
