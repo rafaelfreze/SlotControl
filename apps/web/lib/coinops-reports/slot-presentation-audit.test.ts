@@ -42,3 +42,15 @@ test("corrected October accrual preserves September lifetime evidence in the cur
  assert.equal(goal.cycleMonth,2);assert.equal(goal.nextTarget,21);assert.equal(goal.anchorAt,policy.anchor_at);
  assert.deepEqual(source,before);
 });
+
+test("Thyely November start exports lifetime1/target3 and next6, keeping the October gain",()=>{
+ const source={...fixture(),robot_v1_live_runs:[{id:"run",trading_engine_id:"engine",status:"ACTIVE",asset:"SOL"}],
+  robot_v1_live_preparations:[{trading_engine_id:"engine",monthly_target:3,slot_goal_policy:{policy:"CUMULATIVE_LIFETIME_V1",
+   anchor_at:"2026-11-01T04:00:00Z",execution_anchor_at:"2026-10-27T23:33:55.329Z",
+   schedule:[{effective_period:"2026-11",monthly_target:3,source:"FIRST_BUY"}]}}],
+  robot_v1_monthly_slot_gains:[{trading_engine_id:"engine",environment:"REAL",slot_number:2,effective_gain_at:"2026-10-30T12:00:00Z",period_key:"2026-10",gain_units:1}]};
+ const before=structuredClone(source),slot=buildSlotPresentationAudit(source,"2026-11-03T14:00:00Z").get("slot-2")!;
+ assert.equal(slot.lifetime_gain_count,1);assert.equal(slot.monthly_gain_count,0);assert.equal(slot.monthly_gain_target,3);
+ const goal=slot.slot_goal as{cycleMonth:number;nextTarget:number};assert.equal(goal.cycleMonth,1);assert.equal(goal.nextTarget,6);
+ assert.deepEqual(source,before);
+});

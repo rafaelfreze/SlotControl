@@ -526,3 +526,10 @@ somente pelo RPC service_role `correct_cumulative_goal_october_start`, com
 CAS, lease breve própria e engine reconciliado/assentado. Não limpar lease alheia,
 gates ou alertas. Worker existente atualiza ranks prospectivos em PRESERVE_LEVELS;
 OPEN/TP, lifetime, capital, parâmetros e snapshots históricos permanecem intactos.
+
+Exceção adicional autorizada em 03/11/2026: somente Thyely/SOLBRL, engine
+`fa551904-15da-4e17-8259-b0a76e206fac`, meta mensal3, iniciou no fim de outubro
+e apura a partir de novembro: novembro3/dezembro6/janeiro9. Usar o RPC específico
+`correct_thyely_goal_november_start`, com os mesmos guards/lease/CAS/auditoria.
+Manter o gain já reconciliado e a primeira BUY original; não aplicar a exceção
+a outro engine, mesmo símbolo/conta, nem alterar as metas dos demais motores.

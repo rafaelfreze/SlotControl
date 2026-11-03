@@ -22,7 +22,7 @@ before(async()=>{
  create function auth.jwt()returns jsonb language sql as $$select jsonb_build_object('role',current_setting('request.jwt.claim.role',true))$$;
  create table coinops.operators(id uuid primary key,product_id uuid,tenant_id uuid,user_id uuid,status text,kill_switch boolean);
  create table coinops.trading_engines(id uuid primary key,operator_id uuid,exchange_account_id uuid,
- slot_count int,environment text,status text,kill_switch boolean,strategy_config_pending boolean);
+ slot_count int,environment text,status text,kill_switch boolean,strategy_config_pending boolean,symbol text default 'BTCBRL');
  create table coinops.robot_v1_live_runs(id uuid primary key,product_id uuid,tenant_id uuid,user_id uuid,operator_id uuid,
  exchange_account_id uuid,trading_engine_id uuid,quote_asset text,slot_count int,status text,lease_owner uuid,lease_until timestamptz,
  last_error text,last_reconciled_at timestamptz,config_snapshot jsonb);
@@ -46,7 +46,8 @@ before(async()=>{
  slot_number int,details jsonb,observed_at timestamptz default now(),unique(run_id,event_key));
  create table coinops.financial_history(engine_id uuid,payload jsonb);
  insert into coinops.operators values('${id(1)}','${id(2)}','${id(3)}','${id(4)}','ACTIVE',false);
- insert into coinops.trading_engines values('${id(6)}','${id(1)}','${id(5)}',25,'REAL','ACTIVE',false,false);
+ insert into coinops.trading_engines(id,operator_id,exchange_account_id,slot_count,environment,status,kill_switch,strategy_config_pending)
+ values('${id(6)}','${id(1)}','${id(5)}',25,'REAL','ACTIVE',false,false);
  insert into coinops.robot_v1_live_runs values('${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}','BRL',25,
  'ACTIVE',null,null,null,now(),'"historical snapshot"');
  insert into coinops.robot_v1_live_preparations(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
@@ -72,6 +73,7 @@ before(async()=>{
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261103133122_fix_cumulative_goal_operator_scope.sql',import.meta.url),'utf8'));
  await db.exec('begin');try{await assert.rejects(apply(),/HISTORY_IMMUTABLE/);realGeneratedFailureReproduced=true;}finally{await db.exec('rollback');}
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261103134124_fix_cumulative_goal_generated_alias_guard.sql',import.meta.url),'utf8'));
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261103140130_thyely_goal_november_start.sql',import.meta.url),'utf8'));
 });
 after(()=>db.close());
 test('real generated-column refusal reproduces before the fix and rolls back the policy and event',async()=>{
@@ -168,7 +170,7 @@ test('future edits after correction remain prospective and retain the execution 
 test('an actual sibling engine in the same account on another shard remains untouched',tx(async()=>{
  await db.exec(`alter table coinops.trading_engines add column shard text default 'executor-01';
  insert into coinops.trading_engines select '${id(60)}',operator_id,exchange_account_id,
- slot_count,environment,status,kill_switch,strategy_config_pending,'executor-02' from coinops.trading_engines where id='${id(6)}';
+ slot_count,environment,status,kill_switch,strategy_config_pending,symbol,'executor-02' from coinops.trading_engines where id='${id(6)}';
  insert into coinops.robot_v1_live_runs select '${id(70)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,
  '${id(60)}',quote_asset,slot_count,status,lease_owner,lease_until,last_error,last_reconciled_at,config_snapshot
  from coinops.robot_v1_live_runs where id='${id(7)}';
@@ -216,3 +218,71 @@ for(const slots of [25,50,100])test(`${slots} physical slots are preserved; exac
  assert.equal(await scalar('select slot_count n from coinops.trading_engines'),slots);
  assert.deepEqual(await scalar(`select payload n from coinops.financial_history where engine_id='${id(90)}'`),{same_account:true,other_shard:true});
 }));
+
+const thyely='fa551904-15da-4e17-8259-b0a76e206fac',thyelyAccount='5580c011-6ff1-44bd-b568-85932b424ceb';
+const thyelyPolicy=()=>policy(3,'2026-10-27T23:33:55.329Z');
+const convertThyely=p=>scalar('select coinops.november_thyely_slot_goal_policy('+j(p)+')n');
+const applyThyely=(p=thyelyPolicy(),run=id(70))=>scalar(`select coinops.correct_thyely_goal_november_start('${run}',${j(p)})n`);
+async function setupThyely(){
+ await db.exec(`insert into coinops.trading_engines values('${thyely}','${id(1)}','${thyelyAccount}',25,'REAL','ACTIVE',false,false,'SOLBRL');
+ insert into coinops.robot_v1_live_runs select '${id(70)}',product_id,tenant_id,user_id,operator_id,'${thyelyAccount}',
+ '${thyely}',quote_asset,slot_count,status,null,null,last_error,last_reconciled_at,config_snapshot from coinops.robot_v1_live_runs where id='${id(7)}';
+ insert into coinops.robot_v1_live_preparations(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
+ slot_count,monthly_target,config_version,kill_switch,live_enabled,slot_goal_policy,capital)
+ select '${id(80)}',product_id,tenant_id,user_id,operator_id,'${thyelyAccount}','${thyely}',slot_count,3,config_version,
+ kill_switch,live_enabled,${j(thyelyPolicy())},capital from coinops.robot_v1_live_preparations where id='${id(8)}';
+ insert into coinops.robot_v1_live_orders select '${id(100)}','${id(70)}',product_id,tenant_id,user_id,operator_id,'${thyelyAccount}',
+ '${thyely}',side,status,executed_quantity,trades_reconciled,slot_id,price,quantity from coinops.robot_v1_live_orders where id='${id(10)}';
+ insert into coinops.robot_v1_live_fills values('${id(100)}','2026-10-27T23:33:55.329Z',1);
+ insert into coinops.financial_history values('${thyely}','{"lifetime":1,"OPEN":1,"TP":1,"NEXT_BUY":1}');`);
+}
+test('Thyely late-October exception: November3, December6, January9, with real lifetime and first BUY preserved',async()=>{
+ const p=await convertThyely(thyelyPolicy());assert.equal(p.execution_anchor_at,thyelyPolicy().anchor_at);
+ for(const [at,target,month]of[['2026-11-01T04:00:00Z',3,1],['2026-12-01T04:00:00Z',6,2],['2027-01-01T04:00:00Z',9,3]]){
+  assert.equal(await scalar(`select coinops.cumulative_slot_goal_target(${j(p)},'${at}')n`),target);
+  const goal=cumulativeSlotGoal(p,at);assert.equal(goal.target,target);assert.equal(goal.cycleMonth,month);
+ }
+ assert.equal(cumulativeSlotGoal(p,'2026-12-01T03:59:59Z').target,3);
+ assert.deepEqual(await convertThyely(p),p);
+});
+test('Thyely correction applies once under service role, preserving generated aliases, lifetime, run snapshot and sibling policies',tx(async()=>{
+ await setupThyely();const history=await read('select * from coinops.financial_history order by engine_id'),orders=await read('select * from coinops.robot_v1_live_orders order by id'),
+  others=await scalar(`select slot_goal_policy n from coinops.robot_v1_live_preparations where trading_engine_id='${id(6)}'`),
+  run=await scalar(`select to_jsonb(r)n from coinops.robot_v1_live_runs r where id='${id(70)}'`);
+ await db.exec('set local role service_role');assert.equal((await applyThyely()).status,'APPLIED');assert.equal((await applyThyely()).status,'ALREADY_APPLIED');
+ assert.deepEqual(await read('select * from coinops.financial_history order by engine_id'),history);
+ assert.deepEqual(await read('select * from coinops.robot_v1_live_orders order by id'),orders);
+ assert.deepEqual(await scalar(`select to_jsonb(r)n from coinops.robot_v1_live_runs r where id='${id(70)}'`),run);
+ assert.deepEqual(await scalar(`select slot_goal_policy n from coinops.robot_v1_live_preparations where trading_engine_id='${id(6)}'`),others);
+ assert.equal(await scalar(`select count(*)::int n from coinops.robot_v1_live_events where event_key='SLOT_GOAL_START:THYELY_NOVEMBER_2026_V1'`),1);
+}));
+for(const [name,sql]of[
+ ['wrong account',`update coinops.trading_engines set exchange_account_id='${id(99)}'where id='${thyely}'`],
+ ['wrong market',`update coinops.trading_engines set symbol='SOLUSDT'where id='${thyely}'`],
+ ['wrong configured target',`update coinops.robot_v1_live_preparations set monthly_target=2 where trading_engine_id='${thyely}'`],
+])test(`Thyely exception rejects ${name} without policy change`,tx(async()=>{
+ await setupThyely();await db.exec(sql);await assert.rejects(applyThyely(),/SCOPE_DENIED/);
+}));
+test('Thyely correction defers a healthy worker lease and financial ambiguity, without closing gates',tx(async()=>{
+ await setupThyely();await db.exec(`update coinops.robot_v1_live_runs set lease_owner='${id(99)}',lease_until=now()+interval '5 minutes'where id='${id(70)}'`);
+ assert.equal((await applyThyely()).status,'DEFERRED');
+ assert.equal(await scalar(`select kill_switch n from coinops.trading_engines where id='${thyely}'`),false);
+ assert.deepEqual(await scalar(`select slot_goal_policy n from coinops.robot_v1_live_preparations where trading_engine_id='${thyely}'`),thyelyPolicy());
+}));
+test('same-account same-symbol sibling cannot inherit the Thyely start exception',tx(async()=>{
+ await setupThyely();await db.exec(`insert into coinops.trading_engines select '${id(60)}',operator_id,exchange_account_id,
+ slot_count,environment,status,kill_switch,strategy_config_pending,symbol from coinops.trading_engines where id='${thyely}';
+ insert into coinops.robot_v1_live_runs select '${id(61)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,
+ '${id(60)}',quote_asset,slot_count,status,null,null,last_error,last_reconciled_at,config_snapshot from coinops.robot_v1_live_runs where id='${id(70)}';
+ insert into coinops.robot_v1_live_preparations(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
+ slot_count,monthly_target,config_version,kill_switch,live_enabled,slot_goal_policy,capital)
+ select '${id(81)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,'${id(60)}',slot_count,monthly_target,
+ config_version,kill_switch,live_enabled,slot_goal_policy,capital from coinops.robot_v1_live_preparations where id='${id(80)}';`);
+ await assert.rejects(applyThyely(thyelyPolicy(),id(61)),/SCOPE_DENIED/);
+}));
+test('Thyely endpoint remains service-only; original October correction still retains its independent contract',async()=>{
+ assert.deepEqual((await read(`select has_function_privilege('anon','coinops.correct_thyely_goal_november_start(uuid,jsonb)','execute')a,
+ has_function_privilege('authenticated','coinops.correct_thyely_goal_november_start(uuid,jsonb)','execute')u,
+ has_function_privilege('service_role','coinops.correct_thyely_goal_november_start(uuid,jsonb)','execute')s`))[0],{a:false,u:false,s:true});
+ assert.equal((await convert(policy())).anchor_at,'2026-10-01T04:00:00Z');
+});

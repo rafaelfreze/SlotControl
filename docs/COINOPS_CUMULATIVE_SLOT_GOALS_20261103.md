@@ -54,6 +54,24 @@ graváveis de capital continuam comparados integralmente. Correção aditiva:
 `20261103134124_fix_cumulative_goal_generated_alias_guard.sql`; regressão com
 os três aliases reais reproduz a recusa anterior e comprova rollback integral.
 
+### Exceção Thyely SOLBRL iniciada no fim de outubro
+
+Decisão adicional de 03/11: somente engine `fa551904-15da-4e17-8259-b0a76e206fac`,
+conta `5580c011-6ff1-44bd-b568-85932b424ceb`, SOLBRL, mensal3. Apuração inicia
+01/11/2026 local, metas novembro3/dezembro6/janeiro9. A BUY de 27/10 e todos
+os gains lifetime continuam preservados, inclusive o gain já confirmado.
+`THYELY_NOVEMBER_START_V1` e seu evento exato distinguem a autorização da
+correção anterior de setembro. Não generalizar essa exceção a novas contas.
+
+Migration `20261103140130_thyely_goal_november_start.sql`, aplicada pelo helper
+`tools/operations/apply-thyely-goal-november-start.mjs --verify|--apply` após
+ref/schema/histórico/hashes reais. O novo RPC `correct_thyely_goal_november_start`
+reutiliza o corpo validado de lease/CAS/auditoria/settlement, mas restringe engine,
+conta, par e configuração mensal3 antes de qualquer escrita. O trigger conserva
+comparação integral de campos graváveis, aliases gerados e evento/lease próprios.
+Sem mudança de runtime, restart, ordens artificiais ou edição dos outros15motores.
+O worker atual apenas atualiza sua revisão de meta/rank em PRESERVE_LEVELS.
+
 Lifetime vem de `robot_v1_slot_gain_totals`, lastreado em créditos imutáveis,
 com separação de origem mercado/manual. Não sintetizar ganhos a partir de preço,
 P&L ou contadores de apresentação. Uma evidência incompleta continua fechada.
