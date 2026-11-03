@@ -44,6 +44,11 @@ a política resultante: só a revisão de metadados muda no mesmo mês, com
 PRESERVE_LEVELS e o protocolo existente para qualquer BUY residente. Nenhum
 restart de executor ou nova Strategy Engine é necessário.
 
+O escopo do engine herda product/tenant/user do registro `operators`, mantendo
+operator/account próprios no motor. A migration corretiva aditiva
+`20261103133122_fix_cumulative_goal_operator_scope.sql` fixa essa associação;
+fixtures SQL devem reproduzir as colunas reais, sem inventar campos no engine.
+
 Lifetime vem de `robot_v1_slot_gain_totals`, lastreado em créditos imutáveis,
 com separação de origem mercado/manual. Não sintetizar ganhos a partir de preço,
 P&L ou contadores de apresentação. Uma evidência incompleta continua fechada.

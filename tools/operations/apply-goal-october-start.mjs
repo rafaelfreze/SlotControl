@@ -54,8 +54,30 @@ export function migrateOctoberGoalStart(apply=false){
  VALUES('${VERSION}','cumulative_goal_october_start',ARRAY[${q(sql)}]);
  SELECT jsonb_build_object('status','APPLIED','version','${VERSION}')AS evidence;COMMIT;`,'evidence');
 }
+export function migrateOctoberGoalScopeFix(apply=false){
+ const c=goalCorrectionCLI(),version='20261103133122';
+ const state=c.query(`BEGIN READ ONLY;SELECT jsonb_build_object(
+ 'registered',exists(select 1 from supabase_migrations.schema_migrations where version='${version}'),
+ 'base_registered',exists(select 1 from supabase_migrations.schema_migrations where version='${VERSION}'),
+ 'definition',pg_get_functiondef('coinops.correct_cumulative_goal_october_start(uuid,jsonb)'::regprocedure),
+ 'hash',encode(sha256(convert_to(replace(pg_get_functiondef('coinops.correct_cumulative_goal_october_start(uuid,jsonb)'::regprocedure),chr(13),''),'UTF8')),'hex'))AS evidence;COMMIT;`,'evidence');
+ if(!state.base_registered)throw Error('COINOPS_GOAL_START_BASELINE_UNPROVEN');
+ if(state.registered){
+  if(state.definition.includes('e.product_id')||!state.definition.includes('from coinops.operators owner'))
+   throw Error('COINOPS_GOAL_START_SCOPE_SOURCE_DRIFT');
+  return{status:'ALREADY_APPLIED',version,no_replay:true};
+ }
+ if(state.hash!=='4e0622f6db572f3b80640343747ccc5f28878f30f23ad4f09627eba6190837df')
+  throw Error('COINOPS_GOAL_START_SCOPE_SOURCE_DRIFT');
+ if(!apply)return{status:'VERIFIED_NOT_APPLIED',version};
+ const sql=readFileSync(new URL('../../supabase/migrations/20261103133122_fix_cumulative_goal_operator_scope.sql',import.meta.url),'utf8');
+ return c.query(sql.replace(/commit;\s*$/i,'')+`INSERT INTO supabase_migrations.schema_migrations(version,name,statements)
+ VALUES('${version}','fix_cumulative_goal_operator_scope',ARRAY[${q(sql)}]);
+ SELECT jsonb_build_object('status','APPLIED','version','${version}')AS evidence;COMMIT;`,'evidence');
+}
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
  try{if(process.argv.length!==3||!['--verify','--apply'].includes(process.argv[2]))throw Error('MIGRATION_MODE_REQUIRED');
- console.log(JSON.stringify(migrateOctoberGoalStart(process.argv[2]==='--apply')));}
+ const apply=process.argv[2]==='--apply',base=migrateOctoberGoalStart(apply);
+ console.log(JSON.stringify({base,scope:base.status==='VERIFIED_NOT_APPLIED'?{status:'WAITING_BASE'}:migrateOctoberGoalScopeFix(apply)}));}
  catch(error){console.error(error.message);process.exitCode=1;}
 }

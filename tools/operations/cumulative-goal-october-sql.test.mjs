@@ -19,8 +19,9 @@ before(async()=>{
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
  create schema auth;create schema coinops;
  create function auth.jwt()returns jsonb language sql as $$select jsonb_build_object('role',current_setting('request.jwt.claim.role',true))$$;
- create table coinops.trading_engines(id uuid primary key,operator_id uuid,exchange_account_id uuid,product_id uuid,
- tenant_id uuid,user_id uuid,slot_count int,environment text,status text,kill_switch boolean,strategy_config_pending boolean);
+ create table coinops.operators(id uuid primary key,product_id uuid,tenant_id uuid,user_id uuid,status text,kill_switch boolean);
+ create table coinops.trading_engines(id uuid primary key,operator_id uuid,exchange_account_id uuid,
+ slot_count int,environment text,status text,kill_switch boolean,strategy_config_pending boolean);
  create table coinops.robot_v1_live_runs(id uuid primary key,product_id uuid,tenant_id uuid,user_id uuid,operator_id uuid,
  exchange_account_id uuid,trading_engine_id uuid,quote_asset text,slot_count int,status text,lease_owner uuid,lease_until timestamptz,
  last_error text,last_reconciled_at timestamptz,config_snapshot jsonb);
@@ -39,7 +40,8 @@ before(async()=>{
  operator_id uuid,exchange_account_id uuid,trading_engine_id uuid,quote_asset text,event_key text,event_type text,
  slot_number int,details jsonb,observed_at timestamptz default now(),unique(run_id,event_key));
  create table coinops.financial_history(engine_id uuid,payload jsonb);
- insert into coinops.trading_engines values('${id(6)}','${id(1)}','${id(5)}','${id(2)}','${id(3)}','${id(4)}',25,'REAL','ACTIVE',false,false);
+ insert into coinops.operators values('${id(1)}','${id(2)}','${id(3)}','${id(4)}','ACTIVE',false);
+ insert into coinops.trading_engines values('${id(6)}','${id(1)}','${id(5)}',25,'REAL','ACTIVE',false,false);
  insert into coinops.robot_v1_live_runs values('${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}','BRL',25,
  'ACTIVE',null,null,null,now(),'"historical snapshot"');
  insert into coinops.robot_v1_live_preparations values('${id(8)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}',25,2,1,false,true,${j(policy())},375);
@@ -60,6 +62,7 @@ before(async()=>{
  await db.exec(original.slice(original.indexOf('create or replace function coinops.cumulative_slot_goal_target'),
   original.indexOf('-- Adoption is idempotent')));
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261103131530_cumulative_goal_october_start.sql',import.meta.url),'utf8'));
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261103133122_fix_cumulative_goal_operator_scope.sql',import.meta.url),'utf8'));
 });
 after(()=>db.close());
 for(const rate of [2,3,7])test(`September excluded, rate${rate}, SQL/production TypeScript agree on October/November/December`,async()=>{
@@ -128,7 +131,9 @@ for(const [name,mutation]of[
 }));
 for(const [name,mutation]of[
  ['account',`update coinops.robot_v1_live_preparations set exchange_account_id='${id(99)}'`],
- ['tenant',`update coinops.trading_engines set tenant_id='${id(99)}'`],
+ ['tenant',`update coinops.operators set tenant_id='${id(99)}'`],
+ ['product',`update coinops.operators set product_id='${id(99)}'`],
+ ['inactive operator',"update coinops.operators set status='PAUSED'"],
  ['slot count',"update coinops.trading_engines set slot_count=50"],
  ['wrong origin',"update coinops.robot_v1_live_fills set filled_at='2026-09-25T12:00:00Z'"],
 ])test(`reject ${name} mismatch before any policy commit`,tx(async()=>{
@@ -148,7 +153,7 @@ test('future edits after correction remain prospective and retain the execution 
 }));
 test('an actual sibling engine in the same account on another shard remains untouched',tx(async()=>{
  await db.exec(`alter table coinops.trading_engines add column shard text default 'executor-01';
- insert into coinops.trading_engines select '${id(60)}',operator_id,exchange_account_id,product_id,tenant_id,user_id,
+ insert into coinops.trading_engines select '${id(60)}',operator_id,exchange_account_id,
  slot_count,environment,status,kill_switch,strategy_config_pending,'executor-02' from coinops.trading_engines where id='${id(6)}';
  insert into coinops.robot_v1_live_runs select '${id(70)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,
  '${id(60)}',quote_asset,slot_count,status,lease_owner,lease_until,last_error,last_reconciled_at,config_snapshot
@@ -161,6 +166,10 @@ test('an actual sibling engine in the same account on another shard remains unto
  assert.deepEqual(await scalar(`select to_jsonb(p)n from coinops.robot_v1_live_preparations p where p.trading_engine_id='${id(60)}'`),sibling);
  assert.equal(await scalar(`select count(*)::int n from coinops.robot_v1_live_events where trading_engine_id='${id(60)}'`),0);
 }));
+test('the fixture follows the real engine schema: scope is inherited through operators, never invented engine columns',async()=>{
+ const columns=await read("select column_name from information_schema.columns where table_schema='coinops'and table_name='trading_engines'");
+ assert.equal(columns.some(x=>['product_id','tenant_id','user_id'].includes(x.column_name)),false);
+});
 test('role grants, RLS and invoker privileges keep correction service-only',async()=>{
  assert.deepEqual((await read(`select has_function_privilege('anon','coinops.correct_cumulative_goal_october_start(uuid,jsonb)','execute')a,
  has_function_privilege('authenticated','coinops.correct_cumulative_goal_october_start(uuid,jsonb)','execute')u,
