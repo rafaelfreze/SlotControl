@@ -1202,7 +1202,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
     // before the watermark retries metadata under lease before another entry.
     for (const item of decisions) {
       if (item.frozenReason === "OPEN_OR_TP") continue;
-      const slot = ledger.slots.find(row => row.id === item.physicalSlotId)!;
+      const slot = ledger.slots.find(row => row.slot_number === item.physicalSlotNumber)!;
       if (slot.operational_rank === item.operationalRank && slot.post_ath_group === item.postAthGroup
         && slot.post_ath_group_rank === item.postAthGroupRank) continue;
       await renewLease(service, run);
@@ -1232,7 +1232,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   const previousRates = strategyRatesForOrder({ config_snapshot: run.config_snapshot }, run);
   for (const item of decisions) {
     if (item.frozenReason === "OPEN_OR_TP") continue;
-    const slot = ledger.slots.find(row => row.id === item.physicalSlotId)!;
+    const slot = ledger.slots.find(row => row.slot_number === item.physicalSlotNumber)!;
     const source = sources[slot.id];
     if (source && Number(source.price) === amount(slot.target_buy_price)
       && (source.run_id !== run.id || source.engine_id !== run.trading_engine_id || source.slot_id !== slot.id

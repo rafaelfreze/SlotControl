@@ -96,7 +96,7 @@ function harness(options: { cumulative?: boolean; partial?: boolean; transition?
   const exports: Row = {};
   const f = { run, ledger, effects, service, options,
     statuses() {
-      const raw = ledger.slots.map((s: Row) => ({physicalSlotId:s.id,physicalSlotNumber:s.slot_number,
+      const raw = ledger.slots.map((s: Row) => ({physicalSlotId:`REAL:${id}:${s.slot_number}`,physicalSlotNumber:s.slot_number,
         lifetimeGainCount:s.slot_number===10?2:0,monthlyGainCount:0,monthlyGainTarget:2,
         entryState:s.entry_state,balanceUsdc:60}));
       if(!options.cumulative) return raw;
