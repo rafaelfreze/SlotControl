@@ -43,6 +43,11 @@ Não reseta a âncora ou os créditos do engine.
 
 ## Ordens e snapshots
 
+A identidade histórica do slot (REAL:engine:n ou chave legada) não é o UUID da
+linha de ledger. Decisões do planner são associadas pelo número físico único
+dentro do run integral já validado por ownership. Fixtures devem manter essas
+duas identidades distintas, inclusive no refresh do mesmo mês.
+
 Adotar a política ou virar competência atualiza apenas metadados, ranks e grupos
 pela transição PRESERVE_LEVELS. Não reancorar preços no ticker. A atribuição futura
 é uma permutação do pool comprovado, na Strategy Engine existente. O identificador
@@ -76,7 +81,7 @@ seu snapshot CAS para o cálculo, sem N consultas adicionais por slot.
 Aplicador `tools/operations/apply-cumulative-goal-migration.mjs --verify|--apply`
 confere projeto, histórico, RLS e hashes das três funções remotas antes de escrever.
 Sem replay de migration ou sobrescrita de drift. A migration deixa o novo campo
-nulo: o novo worker adota sequencialmente sob o lease de cada run, depois de
+nulo: o novo worker adota individualmente sob o lease de cada run, depois de
 reconciliar e proteger TPs. A primeira BUY reconciliada ancora um motor novo;
 não financiar/iniciar automaticamente outro motor. O RPC de adoção é idempotente
 com evento imutável. Resposta perdida é observada antes de continuar; readback
