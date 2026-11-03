@@ -30,3 +30,15 @@ test("missing monthly source or incomplete physical set never certifies a presen
   const { robot_v1_monthly_slot_gains: _credits, ...missing } = source;
   assert.equal(buildSlotPresentationAudit(missing, at).size, 0);
 });
+
+test("corrected October accrual preserves September lifetime evidence in the current export",()=>{
+ const policy={policy:"CUMULATIVE_LIFETIME_V1",anchor_at:"2026-10-01T04:00:00Z",execution_anchor_at:"2026-09-24T05:14:21Z",
+  anchor_correction:{policy:"EXCLUDE_SEPTEMBER_TEST_V1",event_key:"SLOT_GOAL_START:OCTOBER_2026_V1"},
+  schedule:[{effective_period:"2026-10",monthly_target:7,source:"FIRST_BUY"}]};
+ const source={...fixture(),robot_v1_live_preparations:[{trading_engine_id:"engine",monthly_target:7,slot_goal_policy:policy}]};
+ const before=structuredClone(source),model=buildSlotPresentationAudit(source,"2026-11-03T13:00:00Z"),slot=model.get("slot-2")!;
+ assert.equal(slot.lifetime_gain_count,4);assert.equal(slot.monthly_gain_count,0);assert.equal(slot.monthly_gain_target,14);
+ const goal=slot.slot_goal as {cycleMonth:number;nextTarget:number;anchorAt:string};
+ assert.equal(goal.cycleMonth,2);assert.equal(goal.nextTarget,21);assert.equal(goal.anchorAt,policy.anchor_at);
+ assert.deepEqual(source,before);
+});

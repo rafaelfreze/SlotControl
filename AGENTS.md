@@ -513,3 +513,16 @@ Preservar PRIMARY/RESERVE, reentrada, preços comprovados e protocolo de uma BUY
 Adoção/virada não reancora o ticker; troca residente só pelo ONLY_NEW/lease/CAS
 oficial. Histórico sem marcador conserva a política original. Ver
 `docs/COINOPS_CUMULATIVE_SLOT_GOALS_20261103.md`.
+
+### Início da apuração em outubro — ajuste autorizado de 03/11/2026
+
+Setembro/2026 foi teste e não acumula meta nos motores que começaram nesse mês.
+A correção única `EXCLUDE_SEPTEMBER_TEST_V1` inicia a apuração em outubro, sem
+apagar gains de setembro: meta individual2 resulta outubro2/novembro4/dezembro6;
+meta7 resulta7/14/21. A primeira BUY original continua em `execution_anchor_at`
+e no evento imutável com políticas antes/depois. Motores iniciados em outubro ou
+posteriormente conservam sua própria âncora, nunca são retrodatados. Aplicação
+somente pelo RPC service_role `correct_cumulative_goal_october_start`, com
+CAS, lease breve própria e engine reconciliado/assentado. Não limpar lease alheia,
+gates ou alertas. Worker existente atualiza ranks prospectivos em PRESERVE_LEVELS;
+OPEN/TP, lifetime, capital, parâmetros e snapshots históricos permanecem intactos.

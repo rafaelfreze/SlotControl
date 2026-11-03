@@ -55,7 +55,7 @@ test("25/50/100 BTC/SOL: current monthly eligibility and PRIMARY/RESERVE with un
 
 /** Executes the production transition; all I/O is in-memory. Any transport
  * dependency outside these explicit stubs is absent and cannot place trades. */
-function harness(options: { cumulative?: boolean; partial?: boolean; transition?: boolean; force?: boolean; rankCrash?: number;
+function harness(options: { cumulative?: boolean; goalAnchor?: string; partial?: boolean; transition?: boolean; force?: boolean; rankCrash?: number;
   failedRunSave?: boolean; fillDuringCancel?: boolean; engine?: string } = {}) {
   const id = options.engine ?? "engine-a";
   const input = slots();
@@ -100,8 +100,9 @@ function harness(options: { cumulative?: boolean; partial?: boolean; transition?
         lifetimeGainCount:s.slot_number===10?2:0,monthlyGainCount:0,monthlyGainTarget:2,
         entryState:s.entry_state,balanceUsdc:60}));
       if(!options.cumulative) return raw;
-      const goal=cumulativeSlotGoal({policy:"CUMULATIVE_LIFETIME_V1",anchor_at:"2026-09-24T05:40:17Z",
-        schedule:[{effective_period:"2026-09",monthly_target:2,source:"FIRST_BUY"}]},new Date());
+      const anchor=options.goalAnchor??"2026-09-24T05:40:17Z";
+      const goal=cumulativeSlotGoal({policy:"CUMULATIVE_LIFETIME_V1",anchor_at:anchor,
+        schedule:[{effective_period:monthlyPeriodKey(anchor),monthly_target:2,source:"FIRST_BUY"}]},new Date());
       return rankMonthlySlots("SOL",new Date(),raw,goal.target,25,undefined,goal);
     },
     async slot(slot: Row, data: Row) {
@@ -153,6 +154,22 @@ test("adopting cumulative goal in the same calendar month only refreshes metadat
   assert.equal(f.run.config_snapshot.slot_goal_state.policy,"CUMULATIVE_LIFETIME_V1");
   assert.equal(f.run.config_snapshot.monthly_priority_rollover.levels_preserved,true);
   assert.equal(await f.execute(),false);
+});
+
+test("authorized September-to-October correction refreshes the real handler once, preserving resident and partial BUY and all prices",async()=>{
+ for(const partial of [false,true]){
+  const options={cumulative:true,partial,goalAnchor:"2026-09-24T05:40:17Z"};
+  const f=harness(options);await f.execute();const before=structuredClone({ledger:f.ledger,goal:f.run.config_snapshot.slot_goal_state});
+  options.goalAnchor="2026-10-01T04:00:00Z";assert.equal(await f.execute(),true);
+  const next=f.run.config_snapshot.slot_goal_state;
+  assert.equal(before.goal.target-next.target,2);assert.equal(before.goal.cycleMonth-next.cycleMonth,1);
+  assert.equal(next.anchorAt,options.goalAnchor);assert.equal(f.effects.cancel,0);
+  assert.deepEqual(f.ledger.orders,before.ledger.orders);assert.deepEqual(f.ledger.accounts,before.ledger.accounts);
+  assert.deepEqual(f.ledger.slots.map((s:Row)=>[s.target_buy_price,s.entry_reference_price,s.position_quantity,s.entry_state]),
+   before.ledger.slots.map((s:Row)=>[s.target_buy_price,s.entry_reference_price,s.position_quantity,s.entry_state]));
+  assert.equal(f.run.config_snapshot.monthly_priority_rollover.levels_preserved,true);
+  assert.equal(await f.execute(),false);
+ }
 });
 
 test("crash or failed503 checkpoint retries metadata only before month watermark advances", async () => {

@@ -6,8 +6,8 @@ SHADOW/Testnet e snapshots históricos continuam com seu significado original.
 
 ## Autoridades e cálculo
 
-`robot_v1_live_preparations.slot_goal_policy` mantém a âncora imutável e a agenda
-de metas por competência. A âncora é o primeiro BUY com fill reconciliado do
+`robot_v1_live_preparations.slot_goal_policy` mantém a âncora de apuração e a agenda
+de metas por competência. A referência inicial é o primeiro BUY com fill reconciliado do
 mesmo engine/account, incluindo predecessor runs. Não usar cadastro, deploy,
 último reset, mês atual ou número de linhas como início da operação.
 
@@ -15,8 +15,34 @@ No primeiro mês-calendário em America/Campo_Grande, acumula uma meta configura
 Cada dia 1º acumula mais uma. Com rate constante: rate × meses inclusivos. Com
 edições: soma das competências e suas versões, sem multiplicação retroativa do
 valor mais recente. SOL2:2/4/6; BTC7:7/14/21. Cada motor conserva sua própria meta.
-Início no meio do mês conta como mês1. Uma operação que começou em setembro está
-no mês3 em novembro; resets, migração entre shards e software novo não zeram isso.
+Início no meio do mês conta como mês1. Resets, migração entre shards e software
+novo não zeram isso. A exceção autorizada abaixo exclui setembro de teste.
+
+### Correção de setembro de teste, autorizada em 03/11
+
+Somente engines iniciados em setembro/2026 passam a acumular a partir de
+01/10/2026 em America/Campo_Grande. SOL2: outubro2/novembro4/dezembro6;
+BTC7: outubro7/novembro14/dezembro21. Cada rate individual permanece igual.
+Gains lifetime, inclusive os de setembro, não são zerados ou removidos.
+Engines iniciados em outubro ou depois conservam o seu próprio início.
+
+`anchor_at` passa a ser o início da apuração. `execution_anchor_at` preserva a
+primeira BUY real e `anchor_correction` aponta para o evento imutável
+`SLOT_GOAL_START_CORRECTED`, com políticas completas antes/depois, autorização,
+origem real e lease. Relatórios mantêm essa política completa e o evento; os
+snapshots passados continuam significando o que significavam na ocasião.
+O RPC específico `correct_cumulative_goal_october_start` usa role service,
+expected policy/CAS, lock e lease própria breve sem fabricar reconciliação.
+Worker ativo, pendência de dispatch/config/fill ou incidente real adia o ajuste,
+sem fechar gates. Replay observa o evento; uma resposta perdida nunca autoriza
+reenviar ou alterar ordens. Não é uma edição genérica/recorrente de âncora.
+
+A migration `20261103131530_cumulative_goal_october_start.sql` é aditiva e não
+reescreve dados automaticamente. O aplicador valida projeto/histórico/RLS/hashes;
+a aplicação posterior é individual por run reconciliado. O runtime já entende
+a política resultante: só a revisão de metadados muda no mesmo mês, com
+PRESERVE_LEVELS e o protocolo existente para qualquer BUY residente. Nenhum
+restart de executor ou nova Strategy Engine é necessário.
 
 Lifetime vem de `robot_v1_slot_gain_totals`, lastreado em créditos imutáveis,
 com separação de origem mercado/manual. Não sintetizar ganhos a partir de preço,
