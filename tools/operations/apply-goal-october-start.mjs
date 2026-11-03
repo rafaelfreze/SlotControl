@@ -12,7 +12,7 @@ const TARGET='a182df3577051dee6e4c282418d650207366f24c0d9aac5d6120773e3baa193b';
 const q=s=>"'"+String(s).replaceAll("'","''")+"'";
 export function goalCorrectionCLI(){
  const runner=(file,args)=>{let directory,path;try{
-  if(args[0]==='db'&&args[1]==='query'&&args.at(-1).length>7000){
+  if(args[0]==='db'&&args[1]==='query'&&(args.at(-1).length>7000||args.at(-1).includes('\n'))){
    directory=mkdtempSync(join(tmpdir(),'coinops-october-'));path=join(directory,'migration.sql');
    writeFileSync(path,args.at(-1),{mode:0o600});args=[...args.slice(0,-1),'--file',path];
   }
@@ -75,9 +75,32 @@ export function migrateOctoberGoalScopeFix(apply=false){
  VALUES('${version}','fix_cumulative_goal_operator_scope',ARRAY[${q(sql)}]);
  SELECT jsonb_build_object('status','APPLIED','version','${version}')AS evidence;COMMIT;`,'evidence');
 }
+export function migrateOctoberGoalGeneratedFix(apply=false){
+ const c=goalCorrectionCLI(),version='20261103134124';
+ const state=c.query(`BEGIN READ ONLY;SELECT jsonb_build_object(
+ 'registered',exists(select 1 from supabase_migrations.schema_migrations where version='${version}'),
+ 'scope_registered',exists(select 1 from supabase_migrations.schema_migrations where version='20261103133122'),
+ 'definition',pg_get_functiondef('coinops.preserve_cumulative_slot_goal_history()'::regprocedure),
+ 'hash',encode(sha256(convert_to(replace(pg_get_functiondef('coinops.preserve_cumulative_slot_goal_history()'::regprocedure),chr(13),''),'UTF8')),'hex'))AS evidence;COMMIT;`,'evidence');
+ if(!state.scope_registered)throw Error('COINOPS_GOAL_START_BASELINE_UNPROVEN');
+ if(state.registered){
+  if(!state.definition.includes('a.attgenerated')||!state.definition.includes('COINOPS_SLOT_GOAL_HISTORY_IMMUTABLE'))
+   throw Error('COINOPS_GOAL_START_GENERATED_SOURCE_DRIFT');
+  return{status:'ALREADY_APPLIED',version,no_replay:true};
+ }
+ if(state.hash!=='13cc897d5d5c88a61ac5a95f954181b264b46fda09bad40963ba214fe4129661')
+  throw Error('COINOPS_GOAL_START_GENERATED_SOURCE_DRIFT');
+ if(!apply)return{status:'VERIFIED_NOT_APPLIED',version};
+ const sql=readFileSync(new URL('../../supabase/migrations/20261103134124_fix_cumulative_goal_generated_alias_guard.sql',import.meta.url),'utf8');
+ return c.query(sql.replace(/commit;\s*$/i,'')+`INSERT INTO supabase_migrations.schema_migrations(version,name,statements)
+ VALUES('${version}','fix_cumulative_goal_generated_alias_guard',ARRAY[${q(sql)}]);
+ SELECT jsonb_build_object('status','APPLIED','version','${version}')AS evidence;COMMIT;`,'evidence');
+}
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
  try{if(process.argv.length!==3||!['--verify','--apply'].includes(process.argv[2]))throw Error('MIGRATION_MODE_REQUIRED');
  const apply=process.argv[2]==='--apply',base=migrateOctoberGoalStart(apply);
- console.log(JSON.stringify({base,scope:base.status==='VERIFIED_NOT_APPLIED'?{status:'WAITING_BASE'}:migrateOctoberGoalScopeFix(apply)}));}
+ const scope=base.status==='VERIFIED_NOT_APPLIED'?{status:'WAITING_BASE'}:migrateOctoberGoalScopeFix(apply);
+ const generated=['APPLIED','ALREADY_APPLIED'].includes(scope.status)?migrateOctoberGoalGeneratedFix(apply):{status:'WAITING_SCOPE'};
+ console.log(JSON.stringify({base,scope,generated}));}
  catch(error){console.error(error.message);process.exitCode=1;}
 }

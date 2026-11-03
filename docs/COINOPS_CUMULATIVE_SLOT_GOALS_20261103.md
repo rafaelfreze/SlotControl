@@ -48,6 +48,11 @@ O escopo do engine herda product/tenant/user do registro `operators`, mantendo
 operator/account próprios no motor. A migration corretiva aditiva
 `20261103133122_fix_cumulative_goal_operator_scope.sql` fixa essa associação;
 fixtures SQL devem reproduzir as colunas reais, sem inventar campos no engine.
+O guard também ignora apenas aliases que o próprio PostgreSQL declara gerados
+(`attgenerated`), pois BEFORE UPDATE ocorre antes do recálculo deles. Os campos
+graváveis de capital continuam comparados integralmente. Correção aditiva:
+`20261103134124_fix_cumulative_goal_generated_alias_guard.sql`; regressão com
+os três aliases reais reproduz a recusa anterior e comprova rollback integral.
 
 Lifetime vem de `robot_v1_slot_gain_totals`, lastreado em créditos imutáveis,
 com separação de origem mercado/manual. Não sintetizar ganhos a partir de preço,

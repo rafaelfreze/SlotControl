@@ -15,6 +15,7 @@ const scalar=async sql=>(await read(sql))[0].n;
 const convert=async p=>scalar('select coinops.october_slot_goal_policy('+j(p)+')n');
 const apply=(p=policy(),run=id(7))=>scalar(`select coinops.correct_cumulative_goal_october_start('${run}',${j(p)})n`);
 const tx=fn=>async()=>{await db.exec('begin');try{await fn();}finally{await db.exec('rollback');}};
+let realGeneratedFailureReproduced=false;
 before(async()=>{
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
  create schema auth;create schema coinops;
@@ -27,7 +28,11 @@ before(async()=>{
  last_error text,last_reconciled_at timestamptz,config_snapshot jsonb);
  create table coinops.robot_v1_live_preparations(id uuid primary key,product_id uuid,tenant_id uuid,user_id uuid,operator_id uuid,
  exchange_account_id uuid,trading_engine_id uuid,slot_count int,monthly_target int,config_version int,kill_switch boolean,
- live_enabled boolean,slot_goal_policy jsonb,capital numeric default 375);
+ live_enabled boolean,slot_goal_policy jsonb,capital numeric default 375,
+ max_total_exposure_brl numeric default 375,max_order_notional_brl numeric default 22,configured_live_capital_brl numeric default 375,
+ max_total_exposure_quote numeric generated always as(max_total_exposure_brl)stored,
+ max_order_notional_quote numeric generated always as(max_order_notional_brl)stored,
+ configured_live_capital_quote numeric generated always as(configured_live_capital_brl)stored);
  create table coinops.robot_v1_live_orders(id uuid primary key,run_id uuid,product_id uuid,tenant_id uuid,user_id uuid,operator_id uuid,
  exchange_account_id uuid,trading_engine_id uuid,side text,status text,executed_quantity numeric,trades_reconciled boolean,
  slot_id uuid,price numeric,quantity numeric);
@@ -44,7 +49,9 @@ before(async()=>{
  insert into coinops.trading_engines values('${id(6)}','${id(1)}','${id(5)}',25,'REAL','ACTIVE',false,false);
  insert into coinops.robot_v1_live_runs values('${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}','BRL',25,
  'ACTIVE',null,null,null,now(),'"historical snapshot"');
- insert into coinops.robot_v1_live_preparations values('${id(8)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}',25,2,1,false,true,${j(policy())},375);
+ insert into coinops.robot_v1_live_preparations(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
+ slot_count,monthly_target,config_version,kill_switch,live_enabled,slot_goal_policy,capital)
+ values('${id(8)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}',25,2,1,false,true,${j(policy())},375);
  insert into coinops.robot_v1_live_orders values('${id(10)}','${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}',
  'BUY','FILLED',1,true,'${id(11)}',100,1),('${id(12)}','${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}',
  'SELL','NEW',0,false,'${id(11)}',103,1),('${id(13)}','${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}',
@@ -63,8 +70,15 @@ before(async()=>{
   original.indexOf('-- Adoption is idempotent')));
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261103131530_cumulative_goal_october_start.sql',import.meta.url),'utf8'));
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261103133122_fix_cumulative_goal_operator_scope.sql',import.meta.url),'utf8'));
+ await db.exec('begin');try{await assert.rejects(apply(),/HISTORY_IMMUTABLE/);realGeneratedFailureReproduced=true;}finally{await db.exec('rollback');}
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261103134124_fix_cumulative_goal_generated_alias_guard.sql',import.meta.url),'utf8'));
 });
 after(()=>db.close());
+test('real generated-column refusal reproduces before the fix and rolls back the policy and event',async()=>{
+ assert.equal(realGeneratedFailureReproduced,true);
+ assert.equal(await scalar('select count(*)::int n from coinops.robot_v1_live_events'),0);
+ assert.deepEqual(await scalar('select slot_goal_policy n from coinops.robot_v1_live_preparations'),policy());
+});
 for(const rate of [2,3,7])test(`September excluded, rate${rate}, SQL/production TypeScript agree on October/November/December`,async()=>{
  const p=await convert(policy(rate));
  assert.equal(p.execution_anchor_at,policy(rate).anchor_at);
@@ -158,7 +172,9 @@ test('an actual sibling engine in the same account on another shard remains unto
  insert into coinops.robot_v1_live_runs select '${id(70)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,
  '${id(60)}',quote_asset,slot_count,status,lease_owner,lease_until,last_error,last_reconciled_at,config_snapshot
  from coinops.robot_v1_live_runs where id='${id(7)}';
- insert into coinops.robot_v1_live_preparations select '${id(80)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,
+ insert into coinops.robot_v1_live_preparations(id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
+ slot_count,monthly_target,config_version,kill_switch,live_enabled,slot_goal_policy,capital)
+ select '${id(80)}',product_id,tenant_id,user_id,operator_id,exchange_account_id,
  '${id(60)}',slot_count,monthly_target,config_version,kill_switch,live_enabled,slot_goal_policy,capital
  from coinops.robot_v1_live_preparations where id='${id(8)}';`);
  const sibling=await scalar(`select to_jsonb(p)n from coinops.robot_v1_live_preparations p where p.trading_engine_id='${id(60)}'`);
@@ -177,6 +193,22 @@ test('role grants, RLS and invoker privileges keep correction service-only',asyn
  assert.equal(await scalar("select relrowsecurity and relforcerowsecurity n from pg_class where oid='coinops.robot_v1_live_preparations'::regclass"),true);
  assert.equal(await scalar("select prosecdef n from pg_proc where oid='coinops.correct_cumulative_goal_october_start(uuid,jsonb)'::regprocedure"),false);
 });
+test('generated aliases stay equal and every writable capital field stays protected by the correction guard',tx(async()=>{
+ const original=await scalar('select to_jsonb(p)n from coinops.robot_v1_live_preparations p');
+ await apply();const next=await scalar('select to_jsonb(p)n from coinops.robot_v1_live_preparations p');
+ delete original.slot_goal_policy;delete next.slot_goal_policy;assert.deepEqual(next,original);
+ for(const [alias,stored]of[['max_total_exposure_quote','max_total_exposure_brl'],['max_order_notional_quote','max_order_notional_brl'],
+ ['configured_live_capital_quote','configured_live_capital_brl']])assert.equal(next[alias],next[stored]);
+}));
+for(const field of ['max_total_exposure_brl','max_order_notional_brl','configured_live_capital_brl'])
+test(`even a matching correction event cannot change writable ${field}`,tx(async()=>{
+ const next=await convert(policy());
+ await db.exec(`update coinops.robot_v1_live_runs set lease_owner='${id(99)}',lease_until=now()+interval '1 minute';
+ insert into coinops.robot_v1_live_events(run_id,product_id,tenant_id,user_id,operator_id,exchange_account_id,trading_engine_id,
+ quote_asset,event_key,event_type,details)values('${id(7)}','${id(2)}','${id(3)}','${id(4)}','${id(1)}','${id(5)}','${id(6)}','BRL',
+ 'SLOT_GOAL_START:OCTOBER_2026_V1','SLOT_GOAL_START_CORRECTED',${j({authorization:'OWNER_20261103_EXCLUDE_SEPTEMBER_TEST',lease_owner:id(99),before:policy(),after:next})});`);
+ await assert.rejects(db.exec(`update coinops.robot_v1_live_preparations set slot_goal_policy=${j(next)},${field}=1000`),/HISTORY_IMMUTABLE/);
+}));
 for(const slots of [25,50,100])test(`${slots} physical slots are preserved; exact scope can share account or symbol across shards`,tx(async()=>{
  await db.exec(`update coinops.trading_engines set slot_count=${slots};update coinops.robot_v1_live_runs set slot_count=${slots};update coinops.robot_v1_live_preparations set slot_count=${slots};
  insert into coinops.financial_history values('${id(90)}','{"same_account":true,"other_shard":true}');`);
