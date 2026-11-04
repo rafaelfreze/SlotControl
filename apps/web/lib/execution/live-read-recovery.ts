@@ -12,6 +12,19 @@ const AUDIT_DETAIL_KEYS = READ_RECOVERY_DIAGNOSTIC_KEYS.filter(key => key.starts
 const AUDIT_CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
   "08000", "08003", "08006", "53300", "57014"]);
 
+/** Exact pre-fix monthly metadata replay. Missing key is legacy evidence only;
+ * the server must derive and prove the historical key/payload under lease. */
+export function isMonthlyPriorityAuditReplayRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  return code === "COINOPS_LIVE_EVENT_PERSIST_FAILED" && details?.root_code === code
+    && details.stage === "ATH_TRANSITION" && details.audit_phase === "READBACK"
+    && details.audit_reason === "READBACK_MISMATCH" && details.audit_event_type === "MONTHLY_PRIORITY_REFRESHED"
+    && Number.isInteger(details.audit_attempts) && Number(details.audit_attempts) >= 1 && Number(details.audit_attempts) <= 2
+    && details.audit_http_status === null && details.audit_provider_code === null
+    && details.http_status === undefined && details.provider_code === undefined
+    && (details.audit_event_key === undefined || typeof details.audit_event_key === "string"
+      && /^MONTHLY_PRIORITY_REFRESHED:\d{4}-(0[1-9]|1[0-2]):[a-f0-9]{16}$/.test(details.audit_event_key));
+}
+
 /** Eligibility only for the old RESET_RECOVERED replay site. That milestone
  * has one stable key but was previously reemitted with current position
  * counts. A mismatch is never generally transient: the server must prove the
@@ -43,6 +56,7 @@ export function isResetMilestoneReadRecovery(code: string | null, details?: Read
  * write. Resume additionally requires a later fresh RECONCILED checkpoint,
  * complete exchange/ledger protection and twice-settled dispatches under lease. */
 export function isAuditEventRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  if (isMonthlyPriorityAuditReplayRecovery(code, details)) return true;
   if (code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || details?.root_code !== code
     || details.stage !== "AUDIT_EVENT") return false;
   if (isResetAuditReplayRecovery(code, details)) return true;

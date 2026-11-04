@@ -25,7 +25,7 @@ const safeStatus = (status: unknown) => Number.isInteger(status) && Number(statu
   && Number(status) <= 599 ? Number(status) : null;
 
 /** Evidence contains a fixed phase/reason, sanitized provider codes and only
- * the two explicitly allowed audit-key shapes. No payload, arbitrary key,
+ * the explicitly allowed audit-key shapes. No payload, arbitrary key,
  * path, provider message or response body is retained. */
 export class LiveAuditEventPersistError extends Error {
   readonly code = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
@@ -42,7 +42,9 @@ export class LiveAuditEventPersistError extends Error {
     this.eventKey = typeof eventKey === "string" && (this.eventType === "RECONCILED"
       && /^RECONCILED:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$/.test(eventKey)
       || this.eventType === "RESET_RECOVERED"
-      && /^RESET_RECOVERED:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(eventKey))
+      && /^RESET_RECOVERED:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(eventKey)
+      || this.eventType === "MONTHLY_PRIORITY_REFRESHED"
+      && /^MONTHLY_PRIORITY_REFRESHED:\d{4}-(0[1-9]|1[0-2]):[a-f0-9]{16}$/.test(eventKey))
       ? eventKey : null;
     this.httpStatus = safeStatus(evidence?.httpStatus);
     this.providerCode = safeCode(evidence?.providerCode);

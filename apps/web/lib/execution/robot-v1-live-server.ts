@@ -13,12 +13,14 @@ import { loadLiveEngineExecutorStatus } from "./live-executor-health";
 import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
   isResetMilestoneReadRecovery,
+  isMonthlyPriorityAuditReplayRecovery,
   isLedgerTlsReadRecovery, isAthProfileReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS,
   type ReadRecoveryAlert, type AuditRecoveryEvent } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event";
 import { readResetRecoveryMilestone } from "./live-reset-recovery";
+import { sameMonthlyGoal, monthlyPriorityEventKey, assertMonthlyPriorityAuditRecoveryEvidence } from "./monthly-priority-audit";
 import { loadMonthlySlotStatuses } from "./monthly-slot-server";
 import { monthlyPeriodKey, ENTRY_PRIORITY_POLICY } from "./monthly-slot-policy";
 import { liveClientOrderId, liveEngineOrderPrefix, liveUncoveredQuantity,
@@ -1146,7 +1148,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
   const period = monthlyPeriodKey(new Date());
   const statuses = await monthly(service, run, ledger.slots, ledger.accounts);
   const goalState = statuses[0]?.goal ?? null;
-  const sameGoal = JSON.stringify(run.config_snapshot.slot_goal_state ?? null) === JSON.stringify(goalState);
+  const sameGoal = sameMonthlyGoal(run.config_snapshot.slot_goal_state ?? null, goalState);
   const sameTransition = run.entry_regime === profile.regime && run.ath_transition_key === profile.transition_key;
   if (!force && sameTransition && run.ath_period_key === period && sameGoal) return false;
   const monthlyOnly = !force && sameTransition && run.ath_period_key !== null;
@@ -1223,7 +1225,7 @@ async function applyAthTransition(service: Service, run: Run, ledger: Ledger,
       .select("*").single();
     if (saved.error || !saved.data) throw new Error("COINOPS_LIVE_MONTHLY_PRIORITY_REFRESH_FAILED");
     Object.assign(run, saved.data);
-    await event(service, run, `MONTHLY_PRIORITY_REFRESHED:${period}:${createHash("sha256").update(JSON.stringify(goalState)).digest("hex").slice(0,16)}`, "MONTHLY_PRIORITY_REFRESHED", null, checkpoint);
+    await event(service, run, monthlyPriorityEventKey(period, goalState), "MONTHLY_PRIORITY_REFRESHED", null, checkpoint);
     return true;
   }
   const prep = await scopedPreparation(service, run.user_id, run.asset, { environment: "REAL", ...run });
@@ -2896,6 +2898,20 @@ async function assertFreshAuditRecovery(service: Service, run: Run, incident: Re
   assertAuditEventRecoveryEvidence(incident, run, result.data as AuditRecoveryEvent | null);
 }
 
+async function assertMonthlyPriorityAuditRecovery(service: Service, run: Run, incident: ReadRecoveryAlert, ledger: Ledger) {
+  if (!isMonthlyPriorityAuditReplayRecovery(incident.code, incident.details))
+    throw new Error("COINOPS_LIVE_MONTHLY_AUDIT_RECOVERY_UNPROVEN");
+  const goal = (await monthly(service, run, ledger.slots, ledger.accounts))[0]?.goal ?? null;
+  if (!goal) throw new Error("COINOPS_LIVE_MONTHLY_AUDIT_RECOVERY_UNPROVEN");
+  let query = service.from("robot_v1_live_events").select("*");
+  for (const [key, value] of Object.entries(owned(run))) query = query.eq(key, value);
+  const result = await query.eq("run_id", run.id).eq("event_key", monthlyPriorityEventKey(goal.period, goal))
+    .eq("event_type", "MONTHLY_PRIORITY_REFRESHED").limit(2).abortSignal(AbortSignal.timeout(5_000));
+  if (result.error || !Array.isArray(result.data) || result.data.length !== 1)
+    throw new Error("COINOPS_LIVE_MONTHLY_AUDIT_RECOVERY_UNPROVEN");
+  assertMonthlyPriorityAuditRecoveryEvidence(incident, run, goal, configuredEngineSlotCount(run.engine!), result.data[0]);
+}
+
 /** A historical reset milestone can legitimately contain fewer positions
  * than exist today. This proves that exact historical fact and its immutable
  * run lineage, not that an arbitrary READBACK_MISMATCH was harmless. */
@@ -3022,6 +3038,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     const resetAuditReplayRecovery = Boolean(recoveryIncident
       && (isResetAuditReplayRecovery(recoveryIncident.code, recoveryIncident.details)
         || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));
+    const monthlyAuditReplayRecovery = Boolean(recoveryIncident
+      && isMonthlyPriorityAuditReplayRecovery(recoveryIncident.code, recoveryIncident.details));
     await assertNoPendingStrategyUpdate(service, run);
     if (recoveryIncident?.code === "COINOPS_LIVE_EXCHANGE_ORDER_MISSING")
       await assertLateReconciledFill(service, run, recoveryIncident);
@@ -3039,6 +3057,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       await assertSettledOperatorRecovery(service, run, ledger);
       await assertFreshAuditRecovery(service, run, recoveryIncident!);
       if (resetAuditReplayRecovery) await assertResetAuditReplayRecovery(service, run, recoveryIncident!);
+      if (monthlyAuditReplayRecovery) await assertMonthlyPriorityAuditRecovery(service, run, recoveryIncident!, ledger);
     }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
@@ -3074,6 +3093,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if (auditEventRecovery) {
       await assertFreshAuditRecovery(service, run, recoveryIncident!);
       if (resetAuditReplayRecovery) await assertResetAuditReplayRecovery(service, run, recoveryIncident!);
+      if (monthlyAuditReplayRecovery) await assertMonthlyPriorityAuditRecovery(service, run, recoveryIncident!, ledger);
     }
     // Recheck after the external reads: a new/changed critical condition must
     // never inherit approval from the earlier cron observation.

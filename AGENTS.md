@@ -501,6 +501,12 @@ Preservar os modos de consentimento válidos por site, inclusive Google Consent 
 
 ## Meta acumulativa REAL — decisão de 03/11/2026
 
+Comparação de metas JSONB é estrutural, independente da ordem das propriedades.
+Não reemitir MONTHLY_PRIORITY_REFRESHED por ordem de campos. Recovery do replay
+tipado desse evento exige prova histórica e financeira duas vezes sob lease/CAS;
+não relaxar mismatch genérico nem alterar evento original. Ver
+`docs/COINOPS_MONTHLY_AUDIT_REPLAY_20261104.md`.
+
 `CUMULATIVE_LIFETIME_V1` substitui a meta mensal resetável nos engines adotados.
 Meta acumula competências desde o primeiro BUY reconciliado original do engine
 em America/Campo_Grande, incluindo predecessor runs. Progresso e prioridade usam

@@ -5,7 +5,7 @@ import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isMonthlyPriorityAuditReplayRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -16,6 +16,8 @@ import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event.ts";
 import * as resetMilestone from "./live-reset-recovery.ts";
 import { athProfileRecoveryProof } from "./ath-profile-read.ts";
+import * as monthlyAudit from "./monthly-priority-audit.ts";
+import { cumulativeSlotGoal } from "./cumulative-slot-goal.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
@@ -70,7 +72,8 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   secondSuccessor?: boolean; lineageDenied?: boolean; lineageLateChanges?: boolean;
   lineageNeverSettles?: boolean; milestoneLeaseLost?: boolean;
   athRecovery?: boolean; athDenied?: boolean; athChanges?: Record<string, unknown>;
-  athLateChanges?: Record<string, unknown> } = {}) {
+  athLateChanges?: Record<string, unknown>; monthlyAuditRecovery?: boolean; monthlyEventMissing?: boolean;
+  monthlyEventDenied?: boolean; monthlyEventChanges?: Record<string, unknown>; monthlyEventLateChanges?: Record<string, unknown> } = {}) {
   const calls: string[] = [];
   const writes: Array<{ table: string; data: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "operator",
@@ -78,15 +81,22 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   const eventScope = Object.fromEntries(["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
     "trading_engine_id", "quote_asset"].map(key => [key, scope[key as keyof typeof scope]]));
   const now = Date.now();
+  const goal = cumulativeSlotGoal({ policy: "CUMULATIVE_LIFETIME_V1", anchor_at: "2026-10-01T04:00:00Z",
+    schedule: [{ effective_period: "2026-10", monthly_target: 2, source: "BASELINE" }] }, new Date(now));
+  const monthlyCheckpoint = { policy: "MONTHLY_GAINS_V1", goal, period: goal.period, previous_period: goal.period,
+    observed_at: new Date(now - 86_400_000).toISOString(), reanchored: false, levels_preserved: true,
+    slot_count: 25, primary: 0, reserve: 0 };
   const run = { ...scope, id: "run-a", asset: "SOL", config_version: 3, gain_rate: .055,
     entry_regime: "NORMAL", entry_spacing: .015, ath_transition_key: null,
     status: options.runStatus ?? "ACTIVE", strategy_version: "fixture-v1",
     last_error: null, last_reconciled_at: new Date(now - (options.auditEventRecovery ? 1_000 : 0)).toISOString(), lease_owner: "lease",
-    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25,
+    created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25, ath_period_key: goal.period,
     config_snapshot: options.athRecovery ? { gain_rate: .055, normal_spacing_rate: .015, post_ath_spacing_rate: .03,
       regime: "NORMAL", source_config_version: 3, ath_price: 296, ath_source: "CONFIRMED_HISTORY" } : {},
     previous_run_id: options.resetReplayRecovery ? "64b267d0-3897-4783-a07e-69c427472f81" : null,
     reset_idempotency_key: options.resetReplayRecovery ? "RESET:64b267d0-3897-4783-a07e-69c427472f81:owned:old-final-tp" : null };
+  if (options.monthlyAuditRecovery) Object.assign(run.config_snapshot, { slot_goal_state: goal,
+    monthly_priority_rollover: { ...monthlyCheckpoint, observed_at: new Date(now).toISOString() } });
   const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
     environment: "REAL", executor_shard_id: "executor-02", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
@@ -120,6 +130,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   let resetMilestoneReads = 0;
   let lineageReads = 0;
   let athReads = 0;
+  let monthlyEventReads = 0;
   const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery || options.athRecovery
     || options.auditEventRecovery || options.alerts?.some(group => group.some(alert => isLedgerTlsReadRecovery(alert.code, alert.details)));
   const service = { from(table: string) {
@@ -225,6 +236,16 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
       else if (table === "account_quote_caps") data = { ...scope, hard_cap_quote: 275 };
       else if (table === "robot_v1_live_events") {
         if (!mutation) {
+          if (filters.event_type === "MONTHLY_PRIORITY_REFRESHED") {
+            calls.push("monthly-priority-audit-read"); monthlyEventReads++;
+            for (const key of Object.keys(eventScope)) assert.equal(filters[key], eventScope[key]);
+            assert.equal(filters.run_id, run.id); assert.equal(filters.event_key, monthlyAudit.monthlyPriorityEventKey(goal.period, goal));
+            if (options.monthlyEventDenied) return { data: null, error: { code: "42501" }, status: 403 };
+            return { data: options.monthlyEventMissing ? [] : [{ ...eventScope, run_id: run.id,
+              event_key: filters.event_key, event_type: "MONTHLY_PRIORITY_REFRESHED", slot_number: null,
+              observed_at: new Date(now - 86_399_999).toISOString(), details: structuredClone(monthlyCheckpoint),
+              ...options.monthlyEventChanges, ...(monthlyEventReads > 1 ? options.monthlyEventLateChanges : {}) }], error: null };
+          }
           if (filters.event_key === `RESET_RECOVERED:${run.previous_run_id}`) {
             calls.push("reset-milestone-read"); resetMilestoneReads++;
             for (const key of ["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id", "trading_engine_id", "quote_asset"])
@@ -305,6 +326,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-audit-event": { appendLiveAuditEvent, LiveAuditEventPersistError },
     "./live-reset-recovery": resetMilestone,
+    "./monthly-priority-audit": monthlyAudit,
     "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
@@ -312,7 +334,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
       operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery,
+      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isMonthlyPriorityAuditReplayRecovery,
       assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
@@ -326,7 +348,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "./strategy-engine": { STRATEGY_VERSION: "fixture-v1" },
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => {
       if (options.monthlyFailure) throw new Error("COINOPS_MONTHLY_GAIN_LEDGER_MISMATCH");
-      return [];
+      return options.monthlyAuditRecovery ? [{ goal }] : [];
     } },
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => {
       calls.push("health"); return { gate: options.healthy === false ? "ATTENTION" : "LIVE_EXECUTOR_PROTECTED" };
@@ -1093,4 +1115,35 @@ test("lineage observation enforces its real deadline even if the provider ignore
   assert.equal(scenario.calls.filter(value => value === "successor-proof-read").length, 2);
   assert.equal(scenario.writes.some(write => write.data.kill_switch === false), false);
   assert.equal(scenario.writes.some(write => write.data.resolved_at), false);
+});
+
+test("monthly JSONB replay recovers through canonical finance/lease/CAS twice, without any order write", async () => {
+  const incident: ReadRecoveryAlert = { ...known, code: "COINOPS_LIVE_EVENT_PERSIST_FAILED",
+    first_seen_at: new Date(Date.now() - 60_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(),
+    details: { stage: "ATH_TRANSITION", root_code: "COINOPS_LIVE_EVENT_PERSIST_FAILED", audit_phase: "READBACK",
+      audit_reason: "READBACK_MISMATCH", audit_event_type: "MONTHLY_PRIORITY_REFRESHED", audit_attempts: 1,
+      audit_http_status: null, audit_provider_code: null } };
+  const base = { alerts: [[incident]], auditEventRecovery: true, monthlyAuditRecovery: true, caixetaLayout: true };
+  const safe = fixture(base);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.equal(safe.calls.filter(c => c === "monthly-priority-audit-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "audit-checkpoint-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "operator-dispatch-read").length, 2);
+  assert.equal(safe.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_slot_accounts"].includes(w.table)), false);
+  assert.equal(safe.writes.some(w => w.data.event_type === "MONTHLY_PRIORITY_REFRESHED"), false);
+  for (const change of [{ monthlyEventMissing: true }, { monthlyEventDenied: true },
+    { monthlyEventChanges: { trading_engine_id: "sibling-other-shard" } },
+    { monthlyEventLateChanges: { event_key: "foreign-key" } }, { missingTp: true },
+    { auditProofMissing: true }, { operatorPendingDispatch: true }, { operatorLateUnsettledDecision: true },
+    { monthlyFailure: true }, { healthy: false }, { configPending: true }]) {
+    const blocked = fixture({ ...base, ...change }); await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false, JSON.stringify(change));
+    assert.equal(blocked.writes.some(w => w.data.resolved_at), false);
+  }
+  const changed = fixture({ ...base, alerts: [[incident], [{ ...incident, details: { ...incident.details, audit_attempts: 2 } }]] });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(w => w.data.kill_switch === false), false);
+  const lost = fixture({ ...base, casLost: true }); await assert.rejects(lost.run(), /INCIDENT_CHANGED/);
+  assert.ok(lost.writes.some(w => w.data.kill_switch === true));
+  assert.equal(lost.writes.some(w => w.data.event_type === "LIVE_RESUMED"), false);
 });

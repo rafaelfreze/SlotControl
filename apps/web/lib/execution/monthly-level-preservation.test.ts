@@ -9,6 +9,7 @@ import * as topology from "./engine-slot-topology.ts";
 import * as snapshot from "./live-strategy-snapshot.ts";
 import * as priceInvariant from "./strategy-price-invariant.ts";
 import * as crypto from "node:crypto";
+import * as monthlyAudit from "./monthly-priority-audit.ts";
 
 type Row = Record<string, any>;
 const parameters = { gainRate: .055, normalSpacing: .03, postAthSpacing: .03 };
@@ -89,6 +90,7 @@ function harness(options: { cumulative?: boolean; goalAnchor?: string; partial?:
       } }; return q;
   } };
   const deps: Row = { "node:crypto": crypto, "./ath-ladder": { planAthLadder }, "./monthly-slot-policy": { monthlyPeriodKey, ENTRY_PRIORITY_POLICY },
+    "./monthly-priority-audit": monthlyAudit,
     "./engine-slot-topology": topology, "./live-strategy-snapshot": snapshot,
     "./strategy-price-invariant": priceInvariant, "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES: new Set(["NEW", "PARTIALLY_FILLED", "PREPARED"]) } };
   const source = ts.transpileModule(readFileSync(new URL("./robot-v1-live-server.ts", import.meta.url), "utf8"),
@@ -154,6 +156,21 @@ test("adopting cumulative goal in the same calendar month only refreshes metadat
   assert.equal(f.run.config_snapshot.slot_goal_state.policy,"CUMULATIVE_LIFETIME_V1");
   assert.equal(f.run.config_snapshot.monthly_priority_rollover.levels_preserved,true);
   assert.equal(await f.execute(),false);
+});
+
+test("JSONB key order on every read is not another monthly refresh or immutable audit replay", async () => {
+  for (const partial of [false, true]) {
+    const f = harness({ cumulative: true, partial }); await f.execute();
+    const reorder = (v: Row) => Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)));
+    f.run.config_snapshot.slot_goal_state = reorder(f.run.config_snapshot.slot_goal_state);
+    const watermark = structuredClone(f.run.config_snapshot.monthly_priority_rollover);
+    for (let repeat = 0; repeat < 5; repeat++) assert.equal(await f.execute(), false);
+    assert.equal(f.effects.events.length, 1); assert.equal(f.effects.save.length, 1);
+    assert.deepEqual(f.run.config_snapshot.monthly_priority_rollover, watermark);
+    assert.deepEqual(f.ledger.orders, f.before.ledger.orders); assert.equal(f.effects.cancel, 0);
+    f.run.config_snapshot.slot_goal_state = { ...f.run.config_snapshot.slot_goal_state, target: -1 };
+    assert.equal(await f.execute(), true, "real goal change still refreshes");
+  }
 });
 
 test("authorized September-to-October correction refreshes the real handler once, preserving resident and partial BUY and all prices",async()=>{

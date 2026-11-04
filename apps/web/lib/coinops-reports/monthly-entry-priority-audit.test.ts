@@ -32,3 +32,17 @@ test("monthly level preservation exports persisted rollover and explains limits 
  assert.deepEqual(r.datasets.live_execution.find(r=>r.row_type==="EVENT")?.details,rollover);
  assert.deepEqual(sources,before);
 });
+
+test("monthly JSONB recovery is an explicit read-only exported rule and retains typed mismatch diagnostics", () => {
+ const details={stage:"ATH_TRANSITION",root_code:"COINOPS_LIVE_EVENT_PERSIST_FAILED",audit_phase:"READBACK",
+  audit_reason:"READBACK_MISMATCH",audit_event_type:"MONTHLY_PRIORITY_REFRESHED",audit_attempts:1,
+  audit_http_status:null,audit_provider_code:null};
+ const sources={robot_v1_live_runs:[{id:"r",asset:"SOL",symbol:"SOLBRL",status:"ACTIVE",created_at:at}],
+  robot_v1_live_alerts:[{id:"a",run_id:"r",asset:"SOL",code:"COINOPS_LIVE_EVENT_PERSIST_FAILED",details}]};
+ const before=structuredClone(sources),r=buildAuditReport({sources,incompleteSources:[],warnings:[],generatedAt:at,scope:{tenantId:"t",userId:"u"}},
+  {start:"2026-10-01T00:00:00Z",end:"2026-12-01T00:00:00Z",assets:["SOL"],environments:["REAL"]});
+ const rule=r.datasets.rules.find(row=>row.parameter==="monthly_priority_metadata_recovery")!;
+ assert.equal(rule.version,1);assert.match(String(rule.notes),/duas vezes/);assert.match(String(rule.notes),/lease\/CAS/);
+ assert.deepEqual(r.datasets.live_execution.find(row=>row.id==="a")?.details,details);
+ assert.deepEqual(sources,before);
+});
