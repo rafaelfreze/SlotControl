@@ -18,6 +18,7 @@ import * as marketPolicy from "../execution/market-entry-policy.ts";
 import * as partialRecovery from "../execution/partial-entry-recovery.ts";
 import * as athLadder from "../execution/ath-ladder.ts";
 import * as monthlyPolicy from "../execution/monthly-slot-policy.ts";
+import * as monthlyAudit from "../execution/monthly-priority-audit.ts";
 import * as liveAudit from "../execution/live-audit-event.ts";
 import * as strategyParameterRegistry from "../execution/strategy-parameter-registry.ts";
 import * as scope from "../execution/operator-context.ts";
@@ -302,7 +303,8 @@ function harness(options: Options = {}) {
     "./live-read-recovery": liveReadRecovery,
     "./live-exposure-read": { readLiveExposure },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck }, "./live-quote-balance": { liveQuoteBalanceCheck },
-    "./live-account-budget-alert": { ...liveBudgetAlert, resolveAccountBudgetAlert: async () => undefined },
+    "./live-account-budget-alert": { ...liveBudgetAlert, resolveAccountBudgetAlert: async () => ({ status: "ABSENT" }) },
+    "./monthly-priority-audit": monthlyAudit,
     "./engine-slot-topology": slotTopology,
     "./engine-exposure": engineExposure, "./complete-ledger-read": ledgerRead,
     "./robot-v1-live-cycle": cycle, "./strategy-engine": strategy, "./live-entry-capital-refresh": capitalRefresh,

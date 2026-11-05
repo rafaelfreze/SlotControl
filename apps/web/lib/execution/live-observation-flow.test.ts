@@ -7,7 +7,7 @@ import ts from "typescript";
 import * as readErrors from "./live-read-error.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
-import { liveEngineOrderPrefix, LIVE_ACTIVE_ORDER_STATUSES } from "./robot-v1-live-cycle.ts";
+import { liveEngineOrderPrefix, LIVE_ACTIVE_ORDER_STATUSES, LIVE_TERMINAL_ORDER_STATUSES } from "./robot-v1-live-cycle.ts";
 import * as liveAudit from "./live-audit-event.ts";
 import * as resetMilestone from "./live-reset-recovery.ts";
 import * as marketEntryPolicy from "./market-entry-policy.ts";
@@ -16,6 +16,7 @@ import * as marketEntryPolicy from "./market-entry-policy.ts";
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
 function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registryFailure=false,
   metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean;
+    sell?: boolean; pendingAck?: boolean; prioritySqlGuard?: boolean; protectionFailure?: boolean;
     auditFailure?: "once" | "committed" | "persistent" | "hard";
     reset?: { existing?: boolean; currentOpen?: number; changed?: Record<string, unknown>;
       readFailure?: "once" | "persistent" | "hard"; loseLease?: boolean } }) {
@@ -25,7 +26,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
   const previousRunId = "64b267d0-3897-4783-a07e-69c427472f81";
   const run={id:`run-${engineId}`,trading_engine_id:engineId,exchange_account_id:"same-account",operator_id:"operator",
     tenant_id:"tenant",product_id:"product",user_id:"user",asset:"SOL",symbol:"SOLBRL",quote_asset:"BRL",strategy_version:"fixture",lease_owner:"lease",
-    previous_run_id: metadata?.reset ? previousRunId : null, created_at: new Date(Date.now() - 86_400_000).toISOString(), config_snapshot: {},
+    previous_run_id: metadata?.reset ? previousRunId : null, created_at: new Date(Date.now() - 86_400_000).toISOString(), config_snapshot: { slot_goal_adopted: true },
     engine: { trading_engine_id: engineId, exchange_account_id: "same-account", base_asset: "SOL", status: "ACTIVE",
       legacy_compatible: false, executor_shard_id: "executor-03" } };
   const scope = Object.fromEntries(["product_id", "tenant_id", "user_id", "operator_id", "exchange_account_id",
@@ -37,13 +38,13 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     ...metadata.reset.changed } : null;
   let resetReads = 0;
   const order = { ...run, id: "resident-buy", run_id: run.id, slot_id: "slot-8", operation_sequence: 1,
-    side: "BUY", status: "NEW", executed_quantity: 0, trades_reconciled: true,
-    client_order_id: `${liveEngineOrderPrefix(run.engine)}8-B-fixture`, strategy_decision_id: "decision-8",
+    side: metadata?.sell ? "SELL" : "BUY", status: "NEW", executed_quantity: 0, trades_reconciled: true,
+    client_order_id: `${liveEngineOrderPrefix(run.engine)}8-${metadata?.sell ? "S" : "B"}-fixture`, strategy_decision_id: "decision-8",
     exchange_order_id: "binance-next-buy-8" };
   const budgetAlert = { ...run, id: "budget-warning", alert_key: `LIVE_RUN:${run.id}:ACCOUNT_ORDER_BUDGET`,
     code: "COINOPS_ACCOUNT_ORDER_BUDGET_UNKNOWN", first_seen_at: "2026-10-14T00:00:00Z",
     last_seen_at: "2026-10-14T00:01:00Z", resolved_at: null,
-    details: { run_id: run.id, side: "BUY", client_order_id: order.client_order_id } };
+    details: { run_id: run.id, side: order.side, client_order_id: order.client_order_id } };
   const service={from(table:string){
     const filters:Record<string,unknown>={};let data:Record<string,unknown>|null=null;
     const result=()=>{
@@ -77,16 +78,17 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
         if (metadata.writeFailure) return { data: null, error: { code: metadata.writeFailure === "permission"
           ? "42501" : "PGRST001", message: "Private provider payload must not escape" },
           status: metadata.writeFailure === "permission" ? 403 : 503 };
+        Object.assign(budgetAlert, data);
         return { data: [{ id: budgetAlert.id }], error: null };
       }
       if (metadata && table === "robot_v1_strategy_decisions") return { data: [{ ...run,
         decision_id: order.strategy_decision_id, environment: "REAL", cycle_id: run.id,
-        slot_id: order.slot_id, operation_sequence: 1, action_type: "ARM_NEXT_BUY", result: "COMPLETED",
+        slot_id: order.slot_id, operation_sequence: 1, action_type: metadata.sell ? "CREATE_TP" : "ARM_NEXT_BUY", result: metadata.pendingAck ? "PENDING" : "COMPLETED",
         completed_at: "2026-10-14T00:02:00Z", exchange_ack_at: "2026-10-14T00:02:00Z",
         observed_next_state: { exchange_order_id: order.exchange_order_id } }], error: null };
       if (metadata && table === "account_order_budget_reservations") return { data: [{ ...run,
         executor_shard_id: "executor-03", client_order_id: order.client_order_id,
-        reserved_at: "2026-10-14T00:01:00Z", acknowledged_at: "2026-10-14T00:02:00Z" }], error: null };
+        reserved_at: "2026-10-14T00:01:00Z", acknowledged_at: metadata.pendingAck ? null : "2026-10-14T00:02:00Z" }], error: null };
       if (metadata && table === "robot_v1_live_runs" && data?.lease_until)
         return { data: metadata.reset?.loseLease && resetReads > 0 ? null : { id: run.id }, error: null };
       return {error:null,data:oldFirstSeen?{first_seen_at:oldFirstSeen}:null};
@@ -98,7 +100,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     return chain;
   }};
   const deps:Record<string,unknown>={
-    "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES },
+    "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES, LIVE_TERMINAL_ORDER_STATUSES },
     "./live-audit-event": liveAudit,
     "./live-reset-recovery": resetMilestone,
     "./market-entry-policy": marketEntryPolicy,
@@ -119,20 +121,22 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
   const compiled=ts.transpileModule(readFileSync(new URL("./robot-v1-live-server.ts",import.meta.url),"utf8"),
     {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports:Record<string,unknown>={};
-  new Function("require","exports","fixtureRun","registryError","metadata","fixtureOrder","effects",compiled+`
+  new Function("require","exports","fixtureRun","registryError","metadata","fixtureOrder","effects","fixtureBudgetAlert",compiled+`
     assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError)throw registryError;};
     runRows=async()=>({slots:metadata?.reset?Array.from({length:metadata.reset.currentOpen??5},()=>({position_quantity:1})):[],orders:metadata?[fixtureOrder]:[],accounts:[]}); assertLiveResidentPrices=()=>{};
     if (metadata) {
       reconcileOrder=async()=>{effects.reconcileOrder++;};
       ensureTakeProfits=async()=>{effects.protect++;}; creditClosedSlots=async()=>{};
-      recycleClosedSlots=async()=>{}; assertAllPositionsProtected=async()=>{};
+      recycleClosedSlots=async()=>{}; assertAllPositionsProtected=async()=>{if(metadata.protectionFailure)throw Error("COINOPS_LIVE_TP_UNPROTECTED");};
       applyPendingStrategyUpdate=async()=>{}; configUpdatePending=async()=>false;
+      hydrateRetainedGridContexts=async()=>{};
       restartClosedCycle=async()=>null; applyAthTransition=async()=>{};
-      armNextEntry=async()=>{effects.arm++;return metadata.next??"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT";};
+      armNextEntry=async()=>{effects.arm++;if(metadata.prioritySqlGuard&&fixtureBudgetAlert.resolved_at===null)
+        throw Error("COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN");return metadata.next??"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT";};
       confirmCapitalRefreshes=async()=>{};
     }
     exports.testAdvance=()=>advanceLiveRunOnce(fixtureRun.id,"LIVE_CRON");
-  `)((name:string)=>deps[name]??{},exports,run,registryFailure?error:null,metadata,order,effects);
+  `)((name:string)=>deps[name]??{},exports,run,registryFailure?error:null,metadata,order,effects,budgetAlert);
   return {execute:exports.testAdvance as ()=>Promise<{status:string}>,writes,run,effects};
 }
 
@@ -307,22 +311,46 @@ test("reset milestone transient GET converges in the executor while persistent r
   }
 });
 
-test("normal balance/fee/budget HOLD does not clear an existing budget warning or repeat financial work", async () => {
+test("a completed old budget hold settles before planning even when a separate balance/fee/gate hold remains", async () => {
   for (const next of ["QUOTE_BALANCE_HOLD", "BNB_FEE_BALANCE_HOLD", "KILL_SWITCH", "ENTRY_FILLED_DURING_REPLACEMENT"]) {
     const f = fixture(new Error("unused"), undefined, "engine-b", false, { next });
     assert.equal((await f.execute()).status, "OK");
     assert.equal(f.effects.arm, 1);
     assert.equal(f.effects.reconcileOrder, 1);
-    assert.equal(f.writes.some(write => write.table === "robot_v1_live_alerts"
-      && write.filters.alert_key === `LIVE_RUN:${f.run.id}:ACCOUNT_ORDER_BUDGET`), false);
+    assert.equal(f.writes.filter(write => write.table === "robot_v1_live_alerts"
+      && write.filters.alert_key === `LIVE_RUN:${f.run.id}:ACCOUNT_ORDER_BUDGET`).length, 1);
     assert.equal(f.writes.some(write => write.data.kill_switch), false);
+  }
+});
+
+test("settled SELL TP hold closes before the SQL priority guard for each engine; duplicate ticks do not resend anything", async () => {
+  for (const engine of ["engine-a", "same-account-engine-b"]) {
+    const f = fixture(new Error("unused"), undefined, engine, false, { sell: true, prioritySqlGuard: true });
+    assert.equal((await f.execute()).status, "OK"); assert.equal((await f.execute()).status, "OK");
+    const resolved = f.writes.filter(w => w.table === "robot_v1_live_alerts" && w.data.resolved_at
+      && w.filters.alert_key === `LIVE_RUN:${f.run.id}:ACCOUNT_ORDER_BUDGET`);
+    assert.equal(resolved.length, 1); assert.equal(resolved[0].filters["details->>side"], "SELL");
+    assert.equal(resolved[0].filters.trading_engine_id, engine); assert.equal(f.effects.arm, 2);
+    assert.equal(f.writes.some(w => w.data.kill_switch), false);
+    assert.equal(f.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts",
+      "robot_v1_strategy_decisions", "account_order_budget_reservations"].includes(w.table)), false);
+  }
+});
+
+test("missing ACK or TP protection never settles a SELL hold or reaches entry planning", async () => {
+  for (const change of [{ pendingAck: true }, { protectionFailure: true }]) {
+    const f = fixture(new Error("unused"), undefined, "engine-a", false, { sell: true, prioritySqlGuard: true, ...change });
+    if (change.protectionFailure) await assert.rejects(f.execute(), /TP_UNPROTECTED/);
+    else assert.equal((await f.execute()).status, "RETRY");
+    assert.equal(f.effects.arm, 0);
+    assert.equal(f.writes.some(w => w.table === "robot_v1_live_alerts" && w.data.resolved_at), false);
   }
 });
 
 test("normal advance metadata CAS 503 preserves diagnostic evidence without retrying its financial step", async () => {
   const f = fixture(new Error("unused"), undefined, "engine-b", false, { writeFailure: "transient" });
   await assert.rejects(f.execute(), /COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_RESOLVE_RETRY/);
-  assert.equal(f.effects.arm, 1, "metadata retry cannot repeat entry planning/dispatch");
+  assert.equal(f.effects.arm, 0, "metadata failure must stop before entry planning/dispatch");
   assert.equal(f.effects.reconcileOrder, 1, "metadata retry cannot replay order reconciliation");
   assert.equal(f.effects.protect, 1, "metadata retry cannot replay TP creation");
   const attempts = f.writes.filter(write => write.table === "robot_v1_live_alerts"
@@ -348,7 +376,7 @@ test("normal advance metadata CAS 503 preserves diagnostic evidence without retr
 test("metadata permission failure is fail-closed and never converted into GET or financial retry", async () => {
   const f = fixture(new Error("unused"), undefined, "engine-a", false, { writeFailure: "permission" });
   await assert.rejects(f.execute(), /COINOPS_LIVE_ACCOUNT_BUDGET_ALERT_WRITE_FAILED/);
-  assert.equal(f.effects.arm, 1);
+  assert.equal(f.effects.arm, 0);
   assert.equal(f.effects.reconcileOrder, 1);
   assert.equal(f.writes.filter(write => write.table === "robot_v1_live_alerts"
     && write.filters.alert_key === `LIVE_RUN:${f.run.id}:ACCOUNT_ORDER_BUDGET`).length, 1);

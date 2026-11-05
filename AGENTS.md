@@ -332,6 +332,13 @@ no ambiente de destino antes de operação remota.
   repetir ordem. Sem prova, causa histórica permanece desconhecida; preservar
   razão tipada futura: `docs/COINOPS_ACCOUNT_BUDGET_WINDOW_20261013.md`.
 
+- Hold de orçamento já superado deve ser encerrado pelo resolver canônico após
+  reconciliação/proteção e antes de planejar entradas. Exigir ordem/decisão/ACK
+  e CAS exatos; DEFERRED impede planejamento, sem limpar gates ou outro alerta.
+  Não deixar um alerta SELL confirmado bloquear o RPC que antecedia sua baixa.
+  Cada novo dispatch ainda exige orçamento fresco. Ver
+  `docs/COINOPS_TP_BUDGET_PRIORITY_GUARD_20261105.md`.
+
 - Watchdog operacional é server-side: crons Vercel, telemetria dos executores e reconciliação LIVE. Navegador, PC e Codex não são componentes do laço 24/7. A checagem rápida usa dados internos; Binance REST e qualquer correção de ordem passam somente pelo reconciliador com lease/idempotência por motor. Condição ambígua permanece `BLOCKED_SAFE` no menor escopo, com incidente persistido e push. Consulte `docs/COINOPS_SERVER_WATCHDOG.md`; não aumente o polling Binance para satisfazer um indicador visual.
 - Push automático escala somente bloqueio persistente confirmado pelo Watchdog (120s, evidência fresca até 150s, identidade exata engine/account/run/shard/código e sem recovery). Lease adia até 10min; depois, bloqueio confirmado ainda OPEN/BLOCKED_SAFE pode notificar apesar do worker de proteção, sem starvation. RECOVERING nunca escala. WARNING, reconciliação, recuperação, pausa intencional, saúde do ativo e recomendações de capacidade ficam no painel. Executor OFFLINE persistente também exige prova Watchdog fresca. Revalidar antes de enviar e deduplicar por episódio/dispositivo, inclusive alerta raiz/derivado. Aceitação pelo provedor ou resposta incerta nunca autoriza reenvio cego; envio de teste é manual. Não resolver incidente financeiro para silenciar push. Ver `docs/COINOPS_BLOCKED_ONLY_PUSH_20261015.md`.
 - Auditoria de refresh de capital usa GET completo paginado/escopado com retry limitado de observação; confirmação de evento permanece fora do retry. Recuperação legada de `COINOPS_LIVE_CAPITAL_AUDIT_UNAVAILABLE` só em root/stage exatos e após auditoria GET fresca, prova financeira integral, duas provas de dispatch/decisão e CAS sob lease. Erros duros/permissão/schema permanecem fechados. Ver `docs/COINOPS_CAPITAL_AUDIT_READ_20261015.md`.

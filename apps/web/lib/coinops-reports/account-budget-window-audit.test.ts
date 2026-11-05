@@ -16,3 +16,13 @@ test("REAL export documents read-only window scheduling without inventing a fina
   assert.ok(!buildAuditReport(input, { ...filters, environments: ["SHADOW"] }).datasets.rules
     .some(row => row.parameter === "account_order_budget_window_retry"));
 });
+
+test("settlement before entry planning exports its exact metadata authority without certifying capacity or clearing other incidents", () => {
+ const filters={start:"2026-11-05T00:00:00Z",end:"2026-11-06T00:00:00Z",assets:["SOL"] as ["SOL"],environments:["REAL"] as ["REAL"]};
+ const report=buildAuditReport({sources:{},incompleteSources:[],warnings:[],generatedAt:filters.start,scope:{tenantId:"t",userId:"u"}},filters);
+ const rule=report.datasets.rules.find(row=>row.parameter==="account_budget_hold_settlement")!;
+ assert.equal(rule.value,"PROTECT_ACK_AND_CAS_BEFORE_ENTRY_PLANNING");assert.equal(rule.version,1);
+ for(const text of [/proteção integral/,/COMPLETED/,/ACK/,/lease\/CAS/,/DEFERRED/,/não limpa outro incidente/,/orçamento fresco/])
+  assert.match(String(rule.notes),text);
+ assert.equal(report.datasets.live_execution.length,0);
+});

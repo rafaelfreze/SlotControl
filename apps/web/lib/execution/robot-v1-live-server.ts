@@ -2274,6 +2274,14 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     stage = "ASSERT_PROTECTION";
     state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, current, state);
+    // Settle a completed TP hold before planning RPCs that reject CRITICAL
+    // alerts. This exact proof/CAS never certifies current Binance capacity
+    // or resolves another incident. Unsettled evidence keeps entries pending.
+    stage = "RESOLVE_ACCOUNT_BUDGET_ALERT";
+    const budgetResolution = await resolveAccountBudgetAlert(service, run, current.orders,
+      "PROTECTED_DISPATCH_RECONCILED", { renewLease: () => renewLease(service, run) });
+    if (budgetResolution.status === "DEFERRED")
+      return { status: "RETRY", code: "COINOPS_LIVE_ACCOUNT_BUDGET_RECOVERY_PENDING" };
     stage = "CONFIG_UPDATE";
     await applyPendingStrategyUpdate(service, run, current, state);
     if (await configUpdatePending(service, run)) return { status: "RETRY", code: "COINOPS_STRATEGY_CONFIG_UPDATE_PENDING" };
@@ -2311,9 +2319,6 @@ async function advanceLiveRunOnce(runId: string, source: string): Promise<LiveAd
     const finalLedger = await runRows(service, run);
     stage = "CONFIRM_CAPITAL_REFRESH";
     await confirmCapitalRefreshes(service, run, finalLedger);
-    stage = "RESOLVE_ACCOUNT_BUDGET_ALERT";
-    await resolveAccountBudgetAlert(service, run, finalLedger.orders, next,
-      { renewLease: () => renewLease(service, run) });
     stage = "AUDIT_EVENT";
     await event(service, run, `RECONCILED:${new Date().toISOString().slice(0, 16)}`,
       "RECONCILED", null, { source, next, strategy_version: STRATEGY_VERSION });

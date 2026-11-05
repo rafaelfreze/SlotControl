@@ -87,7 +87,7 @@ test("entry holds, partial fills, unknown next states never hide a budget warnin
 
 test("same completed held intent resolves only its exact metadata CAS and never financial records", async () => {
   for (const next of ["INITIAL_SUBMITTED", "NEXT_BUY_ARMED", "HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT",
-    "NO_UNCROSSED_ENTRY_CANDIDATE", "VERIFIED_METADATA_RECOVERY"]) {
+    "NO_UNCROSSED_ENTRY_CANDIDATE", "VERIFIED_METADATA_RECOVERY", "PROTECTED_DISPATCH_RECONCILED"]) {
     const f = fixture();
     f.rows.robot_v1_live_alerts.push({ ...f.alert, id: "other-alert", trading_engine_id: "engine-b" });
     assert.deepEqual(await f.resolve(next), { status: "RESOLVED" });

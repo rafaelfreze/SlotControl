@@ -71,6 +71,20 @@ test('real event schema reproduces the original failure atomically; corrective m
  assert.deepEqual((await query('select config_snapshot from coinops.robot_v1_live_runs'))[0].config_snapshot,{});
  await db.exec(readFileSync(new URL('../../supabase/migrations/20261026144000_fix_monthly_priority_event_schema.sql',import.meta.url),'utf8'));
 });
+test('unresolved critical TP budget hold blocks priority atomically; settlement removes only that obstruction',async()=>{
+ const ex=await expected();
+ await db.exec(`insert into coinops.robot_v1_live_alerts values('${id(6)}','CRITICAL',null)`);
+ await assert.rejects(query(call(ex)),/COINOPS_ENTRY_PRIORITY_SCOPE_DENIED/);
+ assert.deepEqual(await expected(),ex);
+ assert.equal((await query('select count(*)::integer as n from coinops.robot_v1_live_events'))[0].n,0);
+ await db.exec(`update coinops.robot_v1_live_alerts set resolved_at=now() where trading_engine_id='${id(6)}';
+ insert into coinops.robot_v1_live_alerts values('${id(88)}','CRITICAL',null)`);
+ // Own resolved history and another engine's live critical do not block this
+ // transaction. Roll it back so subsequent tests retain the original fixture.
+ await db.exec('begin');await query(call(ex));await db.exec('rollback');
+ assert.deepEqual(await expected(),ex);
+});
+
 test('atomic swap, exact source provenance, capital unchanged and idempotent replay',async()=>{
  const ex=await expected(),before=await query('select * from coinops.robot_v1_live_slot_accounts');
  await db.exec('set role service_role');
