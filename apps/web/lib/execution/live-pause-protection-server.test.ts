@@ -12,11 +12,16 @@ import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysic
 import * as readErrors from "./live-read-error.ts";
 import { AccountOrderNotSubmitted } from "./account-order-unsent-proof.ts";
 import * as liveAudit from "./live-audit-event.ts";
+import * as partialEntryRecovery from "./partial-entry-recovery.ts";
+import * as marketEntryPolicy from "./market-entry-policy.ts";
+import * as strategySnapshot from "./live-strategy-snapshot.ts";
+import { calculateStrategyTakeProfit } from "./strategy-engine.ts";
 
 type Row = Record<string, any>;
 type Options = { status?: string; lastTpFill?: boolean; remainingOpen?: boolean; missingTp?: boolean;
   residentBuy?: boolean; fillDuringCancel?: boolean; cancelUnknown?: boolean; busy?: boolean;
-  ambiguousBuy?: boolean; gateLost?: boolean; exposureBreach?: boolean; sibling?: boolean; slotCount?: number };
+  ambiguousBuy?: boolean; gateLost?: boolean; exposureBreach?: boolean; sibling?: boolean; slotCount?: number;
+  partialBuyQuantity?: number };
 
 /** In-memory DB and exchange only. Exercise the real public pause/advance
  * orchestrators, with isolated deterministic transport and no LIVE credentials. */
@@ -27,7 +32,7 @@ function fixture(options: Options = {}) {
     exchange_account_id: "account-a", trading_engine_id: "engine-a", symbol: "SOLBRL", quote_asset: "BRL" };
   const run: Row = { ...scope, id: "run-a", asset: "SOL", status: options.status ?? "PAUSED",
     strategy_version: "fixture", last_error: null, last_reconciled_at: new Date().toISOString(),
-    lease_owner: null, lease_until: null, gain_rate: .1, entry_spacing: .03, entry_regime: "NORMAL",
+    lease_owner: null, lease_until: null, anchor_price: 10, gain_rate: .1, entry_spacing: .03, entry_regime: "NORMAL",
     slot_count: count, config_snapshot: { slot_count: count } };
   const engine: Row = { ...scope, id: "engine-a", environment: "REAL", base_asset: "SOL", status: "ACTIVE",
     engine_kill_switch: true, kill_switch: true, global_kill_switch: false, account_kill_switch: false,
@@ -66,6 +71,11 @@ function fixture(options: Options = {}) {
   if (options.residentBuy || options.ambiguousBuy) {
     slots[2].entry_state = "ARMED";
     orders.push({ ...order(3, "BUY", options.ambiguousBuy ? "UNKNOWN" : "NEW", 0), trades_reconciled: false });
+  }
+  if (options.partialBuyQuantity !== undefined) {
+    Object.assign(slots[2], { entry_state: "OPEN", position_quantity: options.partialBuyQuantity,
+      position_committed_brl: options.partialBuyQuantity * 10 });
+    orders.push({ ...order(3, "BUY", "PARTIALLY_FILLED", options.partialBuyQuantity), trades_reconciled: false });
   }
   const siblingScope = { ...scope, trading_engine_id: "engine-b" };
   const siblingRun: Row = { ...run, ...siblingScope, id: "run-b", status: "ACTIVE", slot_count: 25, config_snapshot: { slot_count: 25 } };
@@ -162,7 +172,8 @@ function fixture(options: Options = {}) {
     executedQuantity: Number(row.executed_quantity), cumulativeQuoteQuantity: Number(row.cumulative_quote),
     price: Number(row.price), originalQuantity: Number(row.requested_quantity) });
   const state = () => ({ ...scope, observed_at: new Date().toISOString(), supports_unfilled_buy_cancel: true,
-    filters: { baseAsset: "SOL", quoteAsset: "BRL", priceTick: .01, quantityStep: .001, minNotional: 1 },
+    filters: { baseAsset: "SOL", quoteAsset: "BRL", priceTick: .01, quantityStep: .001,
+      minQuantity: .001, maxQuantity: 1000, minNotional: 1 },
     price: { price: 10, observedAt: new Date().toISOString() },
     open_orders: [...exchangeOrders.values()].filter(row => active.has(row.status)).map(row => ({
       id: row.exchange_order_id, ...observed(row) })) });
@@ -171,6 +182,8 @@ function fixture(options: Options = {}) {
     - rows.filter(row => row.side === "SELL").reduce((n, row) => n + Number(row.executed_quantity)
       + (active.has(row.status) ? Number(row.requested_quantity) - Number(row.executed_quantity) : 0), 0));
   const dependencies: Record<string, unknown> = {
+    "./partial-entry-recovery": partialEntryRecovery,
+    "./market-entry-policy": marketEntryPolicy,
     "./live-audit-event": liveAudit,
     "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
@@ -192,10 +205,11 @@ function fixture(options: Options = {}) {
     "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES: active, LIVE_TERMINAL_ORDER_STATUSES: terminal,
       liveEngineOrderPrefix: () => "owned:", liveUncoveredQuantity: uncovered,
       liveClientOrderId: (_run: string, _asset: string, slot: number) => `owned:${slot}:SELL` },
-    "./strategy-engine": { STRATEGY_VERSION: "fixture", planStrategyTakeProfit: () => ({ action_type: "CREATE_TP", target_price: 11 }),
+    "./strategy-engine": { STRATEGY_VERSION: "fixture", calculateStrategyTakeProfit,
+      planStrategyTakeProfit: () => ({ action_type: "CREATE_TP", target_price: 11 }),
       planStrategyClosedSlot: () => assert.fail("No recycle/reset decision while PAUSED") },
     "./strategy-price-invariant": { assertStrategyBuyPrice: () => {}, assertStrategyTakeProfitPrice: () => {} },
-    "./live-strategy-snapshot": { strategyRatesForOrder: () => ({ gain: .1, spacing: .03 }) },
+    "./live-strategy-snapshot": strategySnapshot,
     "./monthly-slot-server": { loadMonthlySlotStatuses: async () => slots.map(slot => ({ physicalSlotNumber: slot.slot_number,
       operationalRank: slot.slot_number, monthlyTargetReached: false, eligibleForNewEntry: true })) },
     "./strategy-decision-server": { persistStrategyDecision: async () => {}, dispatchStrategyDecision: async () => new Date().toISOString(),
@@ -321,6 +335,37 @@ test("uncertain cancellation is never treated as confirmed pause or recreated BU
   assert.equal(f.run.status, "ACTIVE"); assert.equal(f.orders.find(row => row.slot_number === 3)!.status, "NEW");
   assert.equal(f.calls.some(call => call === "create-protective-tp"), false);
   assert.equal(f.writes.some(write => write.values.kill_switch === false), false);
+});
+
+test("protection worker keeps a tiny partial BUY resident when its TP would be below the venue minimum", async () => {
+  const f = fixture({ lastTpFill: false, remainingOpen: true, partialBuyQuantity: .04, sibling: true });
+  const oldTp = JSON.stringify(f.orders.find(row => row.slot_number === 2 && row.side === "SELL"));
+  await assert.rejects(f.advance(), /COINOPS_LIVE_TP_FILTER_UNPROTECTABLE/);
+  assert.equal(f.orders.find(row => row.slot_number === 3 && row.side === "BUY")!.status, "PARTIALLY_FILLED");
+  assert.equal(f.slots[2].position_quantity, .04);
+  assert.equal(f.calls.includes("cancel-own-buy"), false, "never strand the tiny partial by canceling its remainder");
+  assert.equal(f.calls.includes("create-protective-tp"), false);
+  assert.equal(JSON.stringify(f.orders.find(row => row.slot_number === 2 && row.side === "SELL")), oldTp);
+  assert.equal(f.writes.some(write => write.values.kill_switch === false), false);
+  f.assertSibling();
+});
+
+test("manual pause protects an already executable partial without a supplemental BUY or changes to old TPs", async () => {
+  // This exercises the existing explicit PAUSE contract. It does not certify
+  // automatic volatility suspension, which needs its own persisted entry gate.
+  const f = fixture({ status: "ACTIVE", lastTpFill: false, remainingOpen: true,
+    partialBuyQuantity: .2, sibling: true });
+  const oldTp = JSON.stringify(f.orders.find(row => row.slot_number === 2 && row.side === "SELL"));
+  assert.equal((await f.pause()).status, "PAUSED");
+  const source = f.orders.find(row => row.slot_number === 3 && row.side === "BUY")!;
+  const tp = f.orders.find(row => row.slot_number === 3 && row.side === "SELL")!;
+  assert.equal(source.status, "CANCELED"); assert.equal(source.executed_quantity, .2);
+  assert.equal(tp.status, "NEW"); assert.equal(tp.requested_quantity, .2); assert.equal(tp.price, 11);
+  assert.equal(f.calls.filter(call => call === "cancel-own-buy").length, 1);
+  assert.equal(f.calls.filter(call => call === "create-protective-tp").length, 1);
+  assert.equal(f.orders.filter(row => row.slot_number === 3 && row.side === "BUY").length, 1);
+  assert.equal(JSON.stringify(f.orders.find(row => row.slot_number === 2 && row.side === "SELL")), oldTp);
+  f.assertSibling();
 });
 
 for (const count of [25, 50, 75, 100]) test(`${count} physical slots: gain credited once, reinvestment retained and sibling25 cross-shard untouched`, async () => {

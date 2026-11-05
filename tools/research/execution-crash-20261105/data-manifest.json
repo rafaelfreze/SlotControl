@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "purpose": "OFFLINE_PUBLIC_MARKET_DATA_INTEGRITY",
+  "source": "Binance Data Vision official native Spot monthly klines",
+  "sourceDocumentation": "https://github.com/binance/binance-public-data",
+  "archiveUrlTemplate": "https://data.binance.vision/data/spot/monthly/klines/{symbol}/5m/{symbol}-5m-{YYYY-MM}.zip",
+  "checksumUrlSuffix": ".CHECKSUM",
+  "cacheDownloadedAt": "2026-10-09T13:41:37.692Z",
+  "legacyResearchProvenanceCommit": "808247906fec3a8c2eb7d6a9314404926e86529b",
+  "legacyFullManifestSha256": "cda7371267755ceac10a86d3c0a9255edb7424290f5970a7e33fa567dffefccd",
+  "normalization": "Native OHLCV; UTC OPEN timestamp milliseconds. Official Spot >=2025 microseconds divided by1000. Observation available only at OPEN+300000. No interpolation, forward fill or BRL synthesis.",
+  "csvHeader": "timestamp,open,high,low,close,volume,quote_volume,trades",
+  "reproduction": "Large CSV files are excluded from Git. This runner requires the existing local cache and verifies these exact hashes; it does not download, install, query a database, or require the historical research Git object. Missing cache fails with its path. A deliberately rebuilt dataset must adopt a new audited manifest.",
+  "datasets": [
+    {
+      "symbol": "BTCBRL",
+      "interval": "5m",
+      "path": "backtest-data/short-grid-20261009/BTCBRL-5m.csv",
+      "sha256": "94b91321bc16e00ae6cb594c45d55aababa4f65fb0a167531aa5bbf56af51c45",
+      "rows": 525675,
+      "firstOpenUtc": "2021-01-01T00:00:00.000Z",
+      "lastOpenUtc": "2025-12-31T23:55:00.000Z",
+      "gaps": 7,
+      "zeroVolumeBars": 389
+    },
+    {
+      "symbol": "BTCUSDT",
+      "interval": "5m",
+      "path": "backtest-data/short-grid-20261009/BTCUSDT-5m.csv",
+      "sha256": "e5a1901425b5d13a1816a0b62e8456ddaaca7300fffe99f4addc55c813aacedb",
+      "rows": 525675,
+      "firstOpenUtc": "2021-01-01T00:00:00.000Z",
+      "lastOpenUtc": "2025-12-31T23:55:00.000Z",
+      "gaps": 7,
+      "zeroVolumeBars": 32
+    },
+    {
+      "symbol": "SOLBRL",
+      "interval": "5m",
+      "path": "backtest-data/short-grid-20261009/SOLBRL-5m.csv",
+      "sha256": "7b19e1e716f524d11ef9c6507c2fa5ec1227fed80dcd3167c894c2d7519b0916",
+      "rows": 477290,
+      "firstOpenUtc": "2021-06-18T10:00:00.000Z",
+      "lastOpenUtc": "2025-12-31T23:55:00.000Z",
+      "gaps": 3,
+      "zeroVolumeBars": 46875
+    },
+    {
+      "symbol": "SOLUSDT",
+      "interval": "5m",
+      "path": "backtest-data/short-grid-20261009/SOLUSDT-5m.csv",
+      "sha256": "787f58d37556e17ea9d317e66d9fc06e5078495b02c697645e143afc0c4f9f40",
+      "rows": 525675,
+      "firstOpenUtc": "2021-01-01T00:00:00.000Z",
+      "lastOpenUtc": "2025-12-31T23:55:00.000Z",
+      "gaps": 7,
+      "zeroVolumeBars": 31
+    }
+  ]
+}

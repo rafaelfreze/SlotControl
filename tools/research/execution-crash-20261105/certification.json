@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-05T18:07:51.047Z",
+  "purpose": "OFFLINE_CANDIDATE_ONLY",
+  "liveEnabled": false,
+  "resultsSha256": "01e51add29cd4cfb98443e279a5c7e5bcd520fab3ec61657b38ea51cc2e0f5ed",
+  "policy": "EXECUTION_CRASH_CANDIDATE_V1",
+  "unitTests": {
+    "passed": 52,
+    "failed": 0,
+    "logSha256": "694f9a88173d17275875474baba07dae7f6125dee30ad4f369f58c1795217f81",
+    "scope": "PURE_FUNCTIONS_AND_SIMULATED_PROTOCOL"
+  },
+  "historicalPairs": 4,
+  "syntheticPairs": 468,
+  "economicScreen": {
+    "status": "FAIL",
+    "failed": [
+      {
+        "symbol": "BTCBRL",
+        "gate": "drawdownWithin2pp",
+        "drawdownDeltaPP": 8.946795999999999,
+        "returnDeltaPP": 3.719346,
+        "gainRetention": 1.32786885
+      },
+      {
+        "symbol": "SOLUSDT",
+        "gate": "returnWithin2pp",
+        "drawdownDeltaPP": -0.474564,
+        "returnDeltaPP": -2.778969,
+        "gainRetention": 1.25510204
+      }
+    ]
+  },
+  "hardGates": {
+    "canonicalWorkerIntegration": "NOT_TESTED",
+    "databaseAtomicityRLS": "NOT_TESTED",
+    "productionLeaseFencing": "NOT_TESTED",
+    "allEntryPaths": "NOT_TESTED",
+    "historicalDepthSpread": "UNAVAILABLE",
+    "cancelLatency": "NOT_CALIBRATED",
+    "historicalFiltersLotSize": "NOT_RECONSTRUCTED",
+    "watchdogAndReportsIntegration": "NOT_IMPLEMENTED"
+  },
+  "decision": "LIVE_DESATIVADA",
+  "reason": "Model fixtures are not financial execution certification; economic/implementation gates remain unmet."
+}
