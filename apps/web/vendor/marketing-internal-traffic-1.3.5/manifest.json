@@ -1,0 +1,10 @@
+{
+  "version": "1.3.5",
+  "source": "@onplay/marketing-premium",
+  "sourceTarballSha256": "93020a77be528c9303cf5a82c700ba112070b87e8acfc6e33a235aa077a2be4d",
+  "scope": "Unmodified QA module only. Existing marketing-1.3.2 bundle and financial dependencies remain unchanged.",
+  "files": {
+    "internal-traffic.mjs": "082b664f025061130edde35591e8415c1cbb552d8ab8812410b2c758b4cac9a1",
+    "internal-traffic.d.mts": "bf506e7c76a8591e11e140d9075a0d19cba816e1ed4838e8c1451e8b2bd51812"
+  }
+}
