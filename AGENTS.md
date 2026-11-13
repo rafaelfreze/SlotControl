@@ -244,6 +244,14 @@ no ambiente de destino antes de operação remota.
 
 ## Leitura ATH — 02/11/2026
 
+- Ticker público ATH (13/11): somente GET do `ath_reference_symbol` original,
+  duas tentativas de até4s/250ms, sem fallback/cache. Timeout/rede/502/503/504
+  tipados usam checkpoint normal; após bloqueio prolongado, cron pode retomar
+  via VERIFIED_READ_RECOVERY com dois GETs frescos, perfil/snapshot idênticos
+  duas vezes e todos os guardas financeiros/lease/CAS. Erros duros e legado
+  ATH_TRANSITION_FAILED/UNCLASSIFIED nunca herdam essa exceção. Sem retry de
+  transição/UPDATE/trading. Ver `docs/COINOPS_ATH_TICKER_READ_RECOVERY_20261113.md`.
+
 - ATH REAL usa observação GET limitada em `ledger/ath_profile`; ausência,
   ownership/configuração inválida e permissão/schema continuam fechados.
   Recuperação legada somente em ATH_TRANSITION/root exatos, com perfil atual

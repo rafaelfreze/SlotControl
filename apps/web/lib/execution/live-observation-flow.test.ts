@@ -15,7 +15,7 @@ import * as marketEntryPolicy from "./market-entry-policy.ts";
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
 function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registryFailure=false,
-  metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean;
+  metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean; athFailure?: boolean;
     sell?: boolean; pendingAck?: boolean; prioritySqlGuard?: boolean; protectionFailure?: boolean;
     auditFailure?: "once" | "committed" | "persistent" | "hard";
     reset?: { existing?: boolean; currentOpen?: number; changed?: Record<string, unknown>;
@@ -122,7 +122,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports:Record<string,unknown>={};
   new Function("require","exports","fixtureRun","registryError","metadata","fixtureOrder","effects","fixtureBudgetAlert",compiled+`
-    assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError)throw registryError;};
+    assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError&&!metadata?.athFailure)throw registryError;};
     runRows=async()=>({slots:metadata?.reset?Array.from({length:metadata.reset.currentOpen??5},()=>({position_quantity:1})):[],orders:metadata?[fixtureOrder]:[],accounts:[]}); assertLiveResidentPrices=()=>{};
     if (metadata) {
       reconcileOrder=async()=>{effects.reconcileOrder++;};
@@ -130,15 +130,35 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
       recycleClosedSlots=async()=>{}; assertAllPositionsProtected=async()=>{if(metadata.protectionFailure)throw Error("COINOPS_LIVE_TP_UNPROTECTED");};
       applyPendingStrategyUpdate=async()=>{}; configUpdatePending=async()=>false;
       hydrateRetainedGridContexts=async()=>{};
-      restartClosedCycle=async()=>null; applyAthTransition=async()=>{};
+      restartClosedCycle=async()=>null; applyAthTransition=async()=>{if(metadata.athFailure)throw registryError;};
       armNextEntry=async()=>{effects.arm++;if(metadata.prioritySqlGuard&&fixtureBudgetAlert.resolved_at===null)
         throw Error("COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN");return metadata.next??"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT";};
       confirmCapitalRefreshes=async()=>{};
     }
     exports.testAdvance=()=>advanceLiveRunOnce(fixtureRun.id,"LIVE_CRON");
-  `)((name:string)=>deps[name]??{},exports,run,registryFailure?error:null,metadata,order,effects,budgetAlert);
+  `)((name:string)=>deps[name]??{},exports,run,registryFailure||metadata?.athFailure?error:null,metadata,order,effects,budgetAlert);
   return {execute:exports.testAdvance as ()=>Promise<{status:string}>,writes,run,effects};
 }
+
+test("ATH ticker outage checkpoints after TP protection, then contains only the affected engine after five minutes", async () => {
+  for (const engineId of ["engine-a", "engine-b"]) {
+    const error = new readErrors.LiveReadUnavailable("COINOPS_LIVE_ATH_PRICE_TIMEOUT", "market/ath_ticker/SOLUSDC", 2);
+    const recent = fixture(error, undefined, engineId, false, { athFailure: true });
+    assert.equal((await recent.execute()).status, "RETRY");
+    assert.equal(recent.effects.protect, 1); assert.equal(recent.effects.arm, 0);
+    assert.equal(recent.writes.some(w => w.data.kill_switch), false);
+    const warning = recent.writes.find(w => w.data.severity === "WARNING")!;
+    assert.equal((warning.data.details as Record<string, unknown>).stage, "ATH_TRANSITION");
+    assert.equal(warning.data.trading_engine_id, engineId);
+    const expired = fixture(error, new Date(Date.now() - 360_000).toISOString(), engineId, false, { athFailure: true });
+    await assert.rejects(expired.execute(), /COINOPS_LIVE_EXECUTOR_READ_STALE/);
+    assert.equal(expired.effects.protect, 1); assert.equal(expired.effects.arm, 0);
+    const gates = expired.writes.filter(w => w.data.kill_switch === true);
+    assert.equal(gates.length, 2);
+    assert.ok(gates.every(w => w.filters.id === engineId || w.filters.trading_engine_id === engineId));
+    assert.equal(expired.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots"].includes(w.table)), false);
+  }
+});
 
 test("exhausted observation resumes through normal cron checkpoint, never Watchdog or a financial gate",async()=>{
   for(const id of ["engine-a","engine-b"]){

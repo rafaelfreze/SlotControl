@@ -33,7 +33,19 @@ export class LiveReadUnavailable extends Error {
 }
 
 const safeProviderCode = (code: unknown) => typeof code === "string"
-  && /^(?:[0-9A-Z]{5}|PGRST[0-9X]{3})$/.test(code) ? code : null;
+  && /^(?:[0-9A-Z]{5}|PGRST[0-9X]{3}|-\d{1,6})$/.test(code) ? code : null;
+
+/** Hard public-market GET failures retain numeric diagnostics without a body,
+ * URL or provider message. They never enter the transient-read allowlist. */
+export class LiveMarketReadFailed extends Error {
+  readonly providerCode: string | null;
+  readonly path: string; readonly attempts: number; readonly httpStatus: number | null;
+  constructor(path: string, attempts: number, httpStatus: number | null, providerCode: unknown) {
+    super("COINOPS_LIVE_ATH_PRICE_READ_FAILED");
+    this.path = path; this.attempts = attempts; this.httpStatus = httpStatus;
+    this.providerCode = safeProviderCode(providerCode);
+  }
+}
 
 /** A non-transient database read error is not an incomplete ledger or a retry. */
 export class LiveLedgerReadFailed extends Error {
@@ -86,7 +98,7 @@ export function liveFailureEvidence(error: unknown, stage: string, source: strin
   return { stage, source: source.startsWith("WATCHDOG") ? "WATCHDOG" : "ENGINE",
     root_code: error instanceof Error && /^(EXECUTOR|COINOPS)_[A-Z0-9_]+$/.test(error.message)
       ? error.message : "UNCLASSIFIED_FAILURE",
-    ...(error instanceof LiveReadUnavailable || error instanceof LiveLedgerReadFailed
+    ...(error instanceof LiveReadUnavailable || error instanceof LiveLedgerReadFailed || error instanceof LiveMarketReadFailed
       ? { read_path: error.path, read_attempts: error.attempts, http_status: error.httpStatus,
         ...(error.providerCode ? { provider_code: error.providerCode } : {}),
         ...(error instanceof LiveReadUnavailable && error.readEvidence ? {

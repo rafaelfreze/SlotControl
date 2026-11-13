@@ -7,7 +7,8 @@ import ts from "typescript";
 import * as reads from "./live-ledger-read.ts";
 import * as errors from "./live-read-error.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
-import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
+import { AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
+import { LiveAuditEventPersistError } from "./live-audit-event.ts";
 
 /** Exercise the real configuration GETs/catch path. No network or exchange
  * write is available; any database mutation at this boundary fails the test. */
@@ -16,7 +17,8 @@ function fixture(options: { engine?: string; resource?: string; status?: number;
   const engine = options.engine ?? "a";
   const scope = { product_id: "product", tenant_id: "tenant", user_id: "user", operator_id: "op",
     exchange_account_id: "same-account", trading_engine_id: engine, quote_asset: "BRL", symbol: "SOLBRL" };
-  const run = { ...scope, id: `run-${engine}`, asset: "SOL", strategy_version: "fixture", engine: scope };
+  const run = { ...scope, id: `run-${engine}`, asset: "SOL", strategy_version: "fixture", engine: scope,
+    config_snapshot: { slot_goal_adopted: true } };
   const counts: Record<string, number> = {};
   const effects: Array<{ kind: string; evidence?: unknown }> = [];
   const service = { from(table: string) {
@@ -60,7 +62,9 @@ function fixture(options: { engine?: string; resource?: string; status?: number;
   const deps: Record<string, unknown> = { "./live-ledger-read": reads, "./live-read-error": errors,
     "./live-observation-retry-budget": observationRetryBudget,
     "./engine-slot-topology": slotTopology,
-    "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
+    // Budget cleanup precedes CONFIG_UPDATE now; it is unrelated to these GETs.
+    "./live-account-budget-alert": { resolveAccountBudgetAlert: async () => ({ status: "NONE" }), AccountBudgetAlertResolutionError },
+    "./live-audit-event": { LiveAuditEventPersistError },
     "./live-exposure-read": { readLiveExposure },
     "./strategy-engine": { STRATEGY_VERSION: "fixture" },
     "./strategy-parameter-registry": { strategyParameter: () => ({ applyPolicy: "CURRENT_LADDER", requiresOrderReconciliation: true }) },

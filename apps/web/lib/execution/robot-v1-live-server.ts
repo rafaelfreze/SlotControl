@@ -5,6 +5,7 @@ import { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysic
 import { planAthLadder } from "./ath-ladder";
 import { loadAthProfile, refreshAthProfile, type AthProfileRow } from "./ath-profile-server";
 import { athProfileRecoveryProof } from "./ath-profile-read";
+import { readAthTickerPrice, athTickerReadPath } from "./ath-ticker-read";
 import { buildLiveSizing, parseLiveRules, type LiveConfig, type RawLiveSymbol } from "./live-preparation";
 import { readLiveExecutorState, readLiveExecutorOrder, readLiveExecutorTrades, readLiveExecutorOrderObservation,
   createLiveExecutorOrder, cancelLiveExecutorOrder, proveLiveExecutorUnsentOrder, type LiveOrder,
@@ -14,7 +15,7 @@ import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateRead
   isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
   isResetMilestoneReadRecovery,
   isMonthlyPriorityAuditReplayRecovery,
-  isLedgerTlsReadRecovery, isAthProfileReadRecovery,
+  isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS,
   type ReadRecoveryAlert, type AuditRecoveryEvent } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
@@ -1100,13 +1101,8 @@ async function refreshRealAthProfile(service: Service, run: Run) {
   // The legacy Rafael ATH baseline is explicitly USDC even for BRL execution.
   // Switching its unit during scope migration would manufacture a new ATH.
   if (!run.engine?.ath_reference_symbol) throw new Error("COINOPS_LIVE_ATH_REFERENCE_MISSING");
-  const response = await fetch(`${PUBLIC_SPOT}/api/v3/ticker/price?symbol=${run.engine.ath_reference_symbol}`,
-    { cache: "no-store", signal: AbortSignal.timeout(8000) });
-  if (!response.ok) throw new Error("COINOPS_LIVE_ATH_PRICE_UNAVAILABLE");
-  const quote = await response.json() as { price?: string };
-  const price = Number(quote.price);
-  if (!Number.isFinite(price) || price <= 0) throw new Error("COINOPS_LIVE_ATH_PRICE_INVALID");
-  return refreshAthProfile(service, athScope(run), "REAL", run.asset, { price, observedAt: new Date().toISOString() });
+  const market = await readAthTickerPrice(run.engine.ath_reference_symbol);
+  return refreshAthProfile(service, athScope(run), "REAL", run.asset, market);
 }
 
 async function activateQueuedRealProfile(service: Service, run: Run, profile: AthProfileRow) {
@@ -3036,7 +3032,15 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       && isLedgerTlsReadRecovery(recoveryIncident.code, recoveryIncident.details));
     const athProfileRecovery = Boolean(recoveryIncident
       && isAthProfileReadRecovery(recoveryIncident.code, recoveryIncident.details));
-    const athProof = athProfileRecovery ? athProfileRecoveryProof(
+    const athTickerRecovery = Boolean(recoveryIncident
+      && isAthTickerReadRecovery(recoveryIncident.code, recoveryIncident.details));
+    if (athTickerRecovery) {
+      if (!run.engine!.ath_reference_symbol
+        || recoveryIncident!.details?.read_path !== athTickerReadPath(run.engine!.ath_reference_symbol))
+        throw new Error("COINOPS_LIVE_ATH_TICKER_RECOVERY_UNPROVEN");
+      await readAthTickerPrice(run.engine!.ath_reference_symbol);
+    }
+    const athProof = athProfileRecovery || athTickerRecovery ? athProfileRecoveryProof(
       await loadAthProfile(service, athScope(run), "REAL", run.asset), run) : null;
     const auditEventRecovery = Boolean(recoveryIncident && (isAuditEventRecovery(recoveryIncident.code, recoveryIncident.details)
       || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));
@@ -3066,7 +3070,7 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
-    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery || athProfileRecovery)
+    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
@@ -3106,10 +3110,11 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       await readVerifiedRecoveryIncident(service, run, recoveryIncident);
     else await readOperatorRecoveryIncident(service, run, recoveryIncident ?? null);
     await assertNoPendingStrategyUpdate(service, run);
-    if (athProfileRecovery && athProfileRecoveryProof(
+    if (athTickerRecovery) await readAthTickerPrice(run.engine!.ath_reference_symbol!);
+    if ((athProfileRecovery || athTickerRecovery) && athProfileRecoveryProof(
       await loadAthProfile(service, athScope(run), "REAL", run.asset), run) !== athProof)
       throw new Error("COINOPS_LIVE_ATH_PROFILE_RECOVERY_UNPROVEN");
-    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery || athProfileRecovery)
+    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);

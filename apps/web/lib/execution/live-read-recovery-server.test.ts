@@ -5,7 +5,7 @@ import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isMonthlyPriorityAuditReplayRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isMonthlyPriorityAuditReplayRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -18,6 +18,7 @@ import * as resetMilestone from "./live-reset-recovery.ts";
 import { athProfileRecoveryProof } from "./ath-profile-read.ts";
 import * as monthlyAudit from "./monthly-priority-audit.ts";
 import { cumulativeSlotGoal } from "./cumulative-slot-goal.ts";
+import { athTickerReadPath } from "./ath-ticker-read.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
@@ -42,6 +43,34 @@ test("ATH read recovery proves the unchanged profile twice, preserves TP/BUY and
   }
   const cas = fixture({ alerts: [[incident], [{ ...incident, last_seen_at: "2026-11-02T13:00:00Z" }]],
     athRecovery: true, caixetaLayout: true });
+  await assert.rejects(cas.run(), /INCIDENT_CHANGED/);
+  assert.equal(cas.writes.some(w => w.data.kill_switch === false), false);
+});
+
+test("typed ATH ticker outage resumes automatically only after two fresh GETs, unchanged profile and financial proofs", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_EXECUTOR_READ_STALE", details: {
+    root_code: "COINOPS_LIVE_ATH_PRICE_TIMEOUT", stage: "ATH_TRANSITION",
+    read_path: athTickerReadPath("SOLUSDC"), http_status: null, read_attempts: 2 } };
+  const options = { alerts: [[incident]], athRecovery: true, caixetaLayout: true };
+  const safe = fixture(options);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.equal(safe.calls.filter(c => c === "ath-ticker-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "ath-profile-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "operator-dispatch-read").length, 2);
+  const event = safe.writes.find(w => w.table === "robot_v1_live_events");
+  assert.equal((event?.data.details as Record<string, unknown>).source, "VERIFIED_READ_RECOVERY");
+  assert.equal(safe.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_slot_accounts",
+    "robot_v1_ath_profiles"].includes(w.table)), false);
+  for (const change of [{ tickerDeniedAt: 1 }, { tickerDeniedAt: 2 }, { tickerSymbol: "SOLUSDT" },
+    { athDenied: true }, { athChanges: { regime: "POST_ATH" } },
+    { athLateChanges: { updated_at: "2026-11-02T13:01:00Z" } },
+    { operatorPendingDispatch: true }, { operatorLateUnsettledDecision: true }, { missingTp: true },
+    { missingSlot: true }, { bulkStatus: "PENDING" }, { configPending: true }, { exposureCap: 5 }]) {
+    const f = fixture({ ...options, ...change });
+    await assert.rejects(f.run()); assert.equal(f.writes.some(w => w.data.kill_switch === false), false);
+  }
+  const cas = fixture({ ...options, alerts: [[incident], [{ ...incident,
+    details: { ...incident.details, read_path: athTickerReadPath("SOLUSDT") } }]] });
   await assert.rejects(cas.run(), /INCIDENT_CHANGED/);
   assert.equal(cas.writes.some(w => w.data.kill_switch === false), false);
 });
@@ -72,6 +101,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   secondSuccessor?: boolean; lineageDenied?: boolean; lineageLateChanges?: boolean;
   lineageNeverSettles?: boolean; milestoneLeaseLost?: boolean;
   athRecovery?: boolean; athDenied?: boolean; athChanges?: Record<string, unknown>;
+  tickerDeniedAt?: number; tickerSymbol?: string;
   athLateChanges?: Record<string, unknown>; monthlyAuditRecovery?: boolean; monthlyEventMissing?: boolean;
   monthlyEventDenied?: boolean; monthlyEventChanges?: Record<string, unknown>; monthlyEventLateChanges?: Record<string, unknown> } = {}) {
   const calls: string[] = [];
@@ -98,6 +128,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   if (options.monthlyAuditRecovery) Object.assign(run.config_snapshot, { slot_goal_state: goal,
     monthly_priority_rollover: { ...monthlyCheckpoint, observed_at: new Date(now).toISOString() } });
   const engine = { ...scope, id: "engine-a", hard_cap_quote: options.exposureCap ?? 275, base_asset: "SOL", status: "ACTIVE",
+    ath_reference_symbol: options.tickerSymbol ?? "SOLUSDC",
     environment: "REAL", executor_shard_id: "executor-02", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
   const slots = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index}`, run_id: run.id,
@@ -311,7 +342,13 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     };
     return chain;
   } };
+  let tickerReads = 0;
   const dependencies: Record<string, unknown> = {
+    "./ath-ticker-read": { athTickerReadPath, readAthTickerPrice: async () => {
+      calls.push("ath-ticker-read"); tickerReads++;
+      if (options.tickerDeniedAt === tickerReads) throw new Error("COINOPS_LIVE_ATH_PRICE_TIMEOUT");
+      return { symbol: "SOLUSDC", price: 100, observedAt: new Date().toISOString() };
+    } },
     "./ath-profile-read": { athProfileRecoveryProof },
     "./ath-profile-server": { loadAthProfile: async () => {
       calls.push("ath-profile-read"); athReads++;
@@ -334,7 +371,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
       operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isMonthlyPriorityAuditReplayRecovery,
+      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isMonthlyPriorityAuditReplayRecovery,
       assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },

@@ -1,3 +1,5 @@
+import { ATH_TICKER_TRANSIENT_ROOTS, transientAthTickerProvider, validAthTickerSymbol } from "./ath-ticker-read.ts";
+
 export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown; metadata_path?: unknown;
   audit_phase?: unknown; audit_reason?: unknown; audit_event_type?: unknown; audit_attempts?: unknown;
   audit_http_status?: unknown; audit_provider_code?: unknown; audit_event_key?: unknown;
@@ -188,6 +190,22 @@ export function isAthProfileReadRecovery(code: string | null, details?: ReadReco
     && Number(details.read_attempts) <= 2 && transient;
 }
 
+/** Only typed failures from the public GET boundary qualify. The old generic
+ * ATH_TRANSITION_FAILED/UNCLASSIFIED incident is deliberately NOT inferred. */
+export function isAthTickerReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  const path = String(details?.read_path ?? ""), prefix = "market/ath_ticker/";
+  if (code !== "COINOPS_LIVE_EXECUTOR_READ_STALE" || details?.stage !== "ATH_TRANSITION"
+    || !path.startsWith(prefix) || !validAthTickerSymbol(path.slice(prefix.length))
+    || !Number.isInteger(details.read_attempts) || Number(details.read_attempts) < 1 || Number(details.read_attempts) > 2)
+    return false;
+  if (details.root_code === ATH_TICKER_TRANSIENT_ROOTS[2])
+    return typeof details.http_status === "number" && [502, 503, 504].includes(details.http_status)
+      && transientAthTickerProvider(details.provider_code);
+  return ATH_TICKER_TRANSIENT_ROOTS.slice(0, 2).some(root => root === details.root_code)
+    && (details.http_status === null || details.http_status === 200)
+    && (details.provider_code === null || details.provider_code === undefined);
+}
+
 /** Eligibility for a known registry GET only, never proof that the provider
  * error was transient. Resume must reload real scope/permissions, all physical
  * slots, Binance/ledger ownership, TP, fills, monthly facts and caps. */
@@ -228,7 +246,10 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
     && (details?.root_code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || isAuditEventRecovery(alertCode, details))
     && (details?.read_path !== "ledger/reset_recovery_milestone" || isResetMilestoneReadRecovery(alertCode, details))
     && (details?.read_path !== "ledger/ath_profile" || isAthProfileReadRecovery(alertCode, details))
+    && (!(String(details?.read_path).startsWith("market/ath_ticker/")
+      || String(details?.root_code).startsWith("COINOPS_LIVE_ATH_PRICE_")) || isAthTickerReadRecovery(alertCode, details))
     && (isLedgerTlsReadRecovery(alertCode, details)
+      || isAthTickerReadRecovery(alertCode, details)
       || isAthProfileReadRecovery(alertCode, details)
       || isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)
