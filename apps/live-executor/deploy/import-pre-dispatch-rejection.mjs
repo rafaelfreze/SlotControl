@@ -25,7 +25,10 @@ const env = Object.fromEntries(readFileSync("/etc/coinops/live-executor.env", "u
   .filter(line => /^[A-Z][A-Z0-9_]*=/.test(line)).map(line => {
     const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1).replace(/^(["'])(.*)\1$/, "$2")];
   }));
-if (env.COINOPS_EXECUTOR_SHARD_ID !== shard || env.LIVE_EXECUTOR_EGRESS_IP !== ip)
+// The official Executor01 layout predates an explicit shard variable. Match
+// only its fixed identity/IP; every other shard still needs its explicit ID.
+const configuredShard = env.COINOPS_EXECUTOR_SHARD_ID || (shard === "executor-01" && ip === "46.101.104.48" ? "executor-01" : null);
+if (configuredShard !== shard || env.LIVE_EXECUTOR_EGRESS_IP !== ip)
   throw new Error("PRE_DISPATCH_IMPORT_HOST_MISMATCH");
 const pin = historicalPreDispatchRuntimePin(env.COINOPS_EXECUTOR_VERSION, graph.runtime_sha256);
 if (!pin || (pin.side ?? "BUY") !== side)
