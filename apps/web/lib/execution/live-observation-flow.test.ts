@@ -15,7 +15,7 @@ import * as marketEntryPolicy from "./market-entry-policy.ts";
 /** Execute the real advanceOnce catch/checkpoint/release logic. Financial work
  * and network are replaced with fixtures; an unexpected dependency cannot trade. */
 function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registryFailure=false,
-  metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean; athFailure?: boolean;
+  metadata?: { next?: string; writeFailure?: "transient" | "permission"; absent?: boolean; athFailure?: boolean; armFailure?: boolean;
     sell?: boolean; pendingAck?: boolean; prioritySqlGuard?: boolean; protectionFailure?: boolean;
     auditFailure?: "once" | "committed" | "persistent" | "hard";
     reset?: { existing?: boolean; currentOpen?: number; changed?: Record<string, unknown>;
@@ -122,7 +122,7 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
     {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports:Record<string,unknown>={};
   new Function("require","exports","fixtureRun","registryError","metadata","fixtureOrder","effects","fixtureBudgetAlert",compiled+`
-    assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError&&!metadata?.athFailure)throw registryError;};
+    assertScope=()=>{}; claim=async()=>fixtureRun; validateRunEngine=async()=>{if(registryError&&!metadata?.athFailure&&!metadata?.armFailure)throw registryError;};
     runRows=async()=>({slots:metadata?.reset?Array.from({length:metadata.reset.currentOpen??5},()=>({position_quantity:1})):[],orders:metadata?[fixtureOrder]:[],accounts:[]}); assertLiveResidentPrices=()=>{};
     if (metadata) {
       reconcileOrder=async()=>{effects.reconcileOrder++;};
@@ -131,14 +131,31 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
       applyPendingStrategyUpdate=async()=>{}; configUpdatePending=async()=>false;
       hydrateRetainedGridContexts=async()=>{};
       restartClosedCycle=async()=>null; applyAthTransition=async()=>{if(metadata.athFailure)throw registryError;};
-      armNextEntry=async()=>{effects.arm++;if(metadata.prioritySqlGuard&&fixtureBudgetAlert.resolved_at===null)
+      armNextEntry=async()=>{effects.arm++;if(metadata.armFailure)throw registryError;if(metadata.prioritySqlGuard&&fixtureBudgetAlert.resolved_at===null)
         throw Error("COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN");return metadata.next??"HIGHEST_PRIORITY_BUY_ALREADY_RESIDENT";};
       confirmCapitalRefreshes=async()=>{};
     }
     exports.testAdvance=()=>advanceLiveRunOnce(fixtureRun.id,"LIVE_CRON");
-  `)((name:string)=>deps[name]??{},exports,run,registryFailure||metadata?.athFailure?error:null,metadata,order,effects,budgetAlert);
+  `)((name:string)=>deps[name]??{},exports,run,registryFailure||metadata?.athFailure||metadata?.armFailure?error:null,metadata,order,effects,budgetAlert);
   return {execute:exports.testAdvance as ()=>Promise<{status:string}>,writes,run,effects};
 }
+
+test("rate-limited safety GET during ARM_ENTRY checkpoints and preserves protection; prolonged outage stays engine-local", async () => {
+  const error = new readErrors.LiveReadUnavailable("EXECUTOR_BINANCE_RATE_LIMITED", "/v1/state", 1, 503);
+  for (const id of ["engine-a", "engine-b"]) {
+    const f = fixture(error, undefined, id, false, { armFailure: true });
+    assert.equal((await f.execute()).status, "RETRY");
+    assert.equal(f.effects.protect, 1); assert.equal(f.effects.arm, 1);
+    assert.equal(f.writes.some(w => w.data.kill_switch), false);
+    const warning = f.writes.find(w => w.data.severity === "WARNING")!;
+    assert.equal((warning.data.details as Record<string, unknown>).stage, "ARM_ENTRY");
+    assert.equal((warning.data.details as Record<string, unknown>).read_path, "/v1/state");
+    const stale = fixture(error, new Date(Date.now() - 360_000).toISOString(), id, false, { armFailure: true });
+    await assert.rejects(stale.execute(), /COINOPS_LIVE_EXECUTOR_READ_STALE/);
+    assert.ok(stale.writes.filter(w => w.data.kill_switch).every(w => w.filters.id === id || w.filters.trading_engine_id === id));
+    assert.equal(stale.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots"].includes(w.table)), false);
+  }
+});
 
 test("ATH ticker outage checkpoints after TP protection, then contains only the affected engine after five minutes", async () => {
   for (const engineId of ["engine-a", "engine-b"]) {

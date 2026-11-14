@@ -36,7 +36,7 @@ function fixture(options: { mode?: string; reconciled?: string; details?: Record
       auditLiveRun: async () => ({ status: "OK" }),
       resumeLiveRun: async (...args: unknown[]) => { resumed.push(args);
         if (options.resumeDenied) throw Error("COINOPS_LIVE_TP_UNPROTECTED");
-        return { status: "RESUMED", recovered_alert_code: alert.code,
+        return { status: "RESUMED", recovered_alert_code: options.code ?? alert.code,
           recovered_alert_last_seen_at: "2026-11-13T17:40:29Z" };
       },
     },
@@ -67,6 +67,25 @@ test("normal server cron automatically resumes the typed outage and records exac
     alertCode: alert.code, alertSeenAt: "2026-11-13T17:40:29Z", action: "VERIFIED_READ_RECOVERY" }]);
   assert.equal(result.reports.find(r => r.run_id === "run-a")?.status, "RECOVERED");
   assert.equal(result.reports.find(r => r.run_id === "run-b")?.status, "OK");
+});
+
+test("rate-limited observation and exact legacy pre-dispatch outage recover through normal cron, not a second trader", async () => {
+  const root = "EXECUTOR_BINANCE_RATE_LIMITED";
+  for (const [code, details] of [
+    ["COINOPS_LIVE_ARM_ENTRY_FAILED", { stage: "ARM_ENTRY", root_code: root }],
+    ["COINOPS_LIVE_EXECUTOR_READ_STALE", { stage: "ARM_ENTRY", root_code: root, read_path: "/v1/state", read_attempts: 1, http_status: 503 }],
+  ] as const) {
+    const f = fixture({ code, details }), result = await f.run();
+    assert.equal(result.reports.find(r => r.run_id === "run-a")?.status, "RECOVERED");
+    assert.equal(result.reports.find(r => r.run_id === "run-b")?.status, "OK");
+    assert.equal(f.resumed[0][3], "VERIFIED_READ_RECOVERY");
+    assert.equal(f.audits[0].alertCode, code); assert.equal(f.audits[0].engineId, "engine-a");
+    for (const denied of [{ reconciled: "RETRY" }, { paused: true }, { mode: "MONITOR" },
+      { details: { ...details, read_path: "/v1/create-order" } }]) {
+      const blocked = fixture({ code, details, ...denied }); await blocked.run();
+      assert.equal(blocked.resumed.length, 0); assert.equal(blocked.audits.length, 0);
+    }
+  }
 });
 
 test("cron never resumes on partial reconciliation, intentional pause, monitor, hard failure or generic legacy cause", async () => {

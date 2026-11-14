@@ -30,6 +30,39 @@ const state = { ...engine, environment: "REAL",
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
 
+test("rate-limited observations yield immediately without a retry burst, bound to the exact shard and order", async () => {
+  for (const shardId of ["executor-01", "executor-02"]) {
+    const target = { shardId, ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };
+    for (const path of ["/v1/state", "/v1/query-order"]) {
+      let calls = 0;
+      const fetcher = (async (url: unknown, init?: RequestInit) => {
+        calls++; assert.equal(new URL(String(url)).pathname, path);
+        const body = JSON.parse(String(init?.body));
+        assert.equal(body.trading_engine_id, engine.trading_engine_id);
+        assert.equal(body.executor_shard_id, shardId === "executor-01" ? undefined : shardId);
+        if (path === "/v1/query-order") assert.equal(body.clientOrderId, "owned:prepared");
+        return Response.json({ error: "EXECUTOR_BINANCE_RATE_LIMITED" }, { status: 503 });
+      }) as typeof fetch;
+      const promise = path === "/v1/state" ? transport.readLiveExecutorState(engine, fetcher, async () => target)
+        : transport.readLiveExecutorOrder(engine, "owned:prepared", null, fetcher, async () => target);
+      await assert.rejects(promise, (error: unknown) => {
+        assert.ok(error instanceof LiveReadUnavailable); assert.equal(error.code, "EXECUTOR_BINANCE_RATE_LIMITED");
+        assert.equal(error.path, path); assert.equal(error.attempts, 1); assert.equal(error.httpStatus, 503); return true;
+      });
+      assert.equal(calls, 1);
+    }
+    let writes = 0;
+    const rejected = (error: unknown) => error instanceof ExecutorHttpError
+      && !(error instanceof LiveReadUnavailable) && !(error instanceof AccountOrderNotSubmitted);
+    const fail = (async () => { writes++; return Response.json({ error: "EXECUTOR_BINANCE_RATE_LIMITED" }, { status: 503 }); }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder({ clientOrderId: "owned:prepared", side: "BUY" }, engine,
+      "decision", fail, async () => target), rejected);
+    await assert.rejects(transport.cancelLiveExecutorOrder({ symbol: engine.symbol, clientOrderId: "owned:prepared", orderId: "1" },
+      engine, fail, async () => target), rejected);
+    assert.equal(writes, 2, "write outcomes never inherit observation retries or unsent proof");
+  }
+});
+
 test("restriction GET outage retries only scoped state observations on independent shards", async () => {
   for (const shardId of ["executor-02", "executor-03"]) {
     const scoped = { ...engine, trading_engine_id: shardId === "executor-02" ? engine.trading_engine_id

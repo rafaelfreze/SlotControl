@@ -171,6 +171,21 @@ const REGISTRY_READ_RECOVERY_STAGES = new Set([
   "ARM_ENTRY", "ATH_TRANSITION", "RESTART_CYCLE", "CONFIG_UPDATE",
 ]);
 
+/** Legacy ARM_ENTRY needs additional never-dispatched-plan proof in resume.
+ * New typed evidence is bound to an observation endpoint, never create/cancel. */
+export function isRateLimitReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
+  if (details?.root_code !== "EXECUTOR_BINANCE_RATE_LIMITED") return false;
+  if (code === "COINOPS_LIVE_ARM_ENTRY_FAILED" && details.stage === "ARM_ENTRY")
+    return ["read_path", "read_attempts", "http_status", "provider_code"]
+      .every(key => details[key as keyof ReadRecoveryDetails] === undefined);
+  return code === "COINOPS_LIVE_EXECUTOR_READ_STALE"
+    && (REGISTRY_READ_RECOVERY_STAGES.has(String(details.stage))
+      || ["READ_STATE", "CONFIRM_CAPITAL_REFRESH", "OBSERVE_BNB_FEE"].includes(String(details.stage)))
+    && ["/v1/health", "/v1/state", "/v1/query-order", "/v1/trades", "/v1/observe-order"].includes(String(details.read_path))
+    && details.http_status === 503 && (details.provider_code === undefined || details.provider_code === null)
+    && Number.isInteger(details.read_attempts) && Number(details.read_attempts) >= 1 && Number(details.read_attempts) <= 4;
+}
+
 /** The legacy wrapper discarded the provider response. Eligibility proves only
  * the exact GET site; guarded resume must reload an unchanged, matching ATH
  * profile twice plus complete financial/dispatch proofs under lease and CAS. */
@@ -246,10 +261,12 @@ export function mayRecoverReadOutage(status: string, reconciledStatus: string,
     && (details?.root_code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || isAuditEventRecovery(alertCode, details))
     && (details?.read_path !== "ledger/reset_recovery_milestone" || isResetMilestoneReadRecovery(alertCode, details))
     && (details?.read_path !== "ledger/ath_profile" || isAthProfileReadRecovery(alertCode, details))
+    && (details?.root_code !== "EXECUTOR_BINANCE_RATE_LIMITED" || isRateLimitReadRecovery(alertCode, details))
     && (!(String(details?.read_path).startsWith("market/ath_ticker/")
       || String(details?.root_code).startsWith("COINOPS_LIVE_ATH_PRICE_")) || isAthTickerReadRecovery(alertCode, details))
     && (isLedgerTlsReadRecovery(alertCode, details)
       || isAthTickerReadRecovery(alertCode, details)
+      || isRateLimitReadRecovery(alertCode, details)
       || isAthProfileReadRecovery(alertCode, details)
       || isPermissionStateReadRecovery(alertCode, details)
       || isRegistryStateReadRecovery(alertCode, details)

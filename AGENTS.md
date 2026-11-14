@@ -244,6 +244,13 @@ no ambiente de destino antes de operação remota.
 
 ## Leitura ATH — 02/11/2026
 
+- Rate limit em GET autenticado de observação (14/11) cede ao worker normal,
+  sem burst. Recovery legado ARM_ENTRY exige prova duas vezes de uma única
+  LIMIT PREPARED nunca despachada, GET exato ausente, TP/ledger/health/caps,
+  lease e CAS; preserva ordem/client/slot. Guard, fill, decisão/dispatch pendente
+  diferente ou POST incerto continuam fechados. Nunca estender a create/cancel.
+  Ver `docs/COINOPS_RATE_LIMIT_READ_RECOVERY_20261114.md`.
+
 - Ticker público ATH (13/11): somente GET do `ath_reference_symbol` original,
   duas tentativas de até4s/250ms, sem fallback/cache. Timeout/rede/502/503/504
   tipados usam checkpoint normal; após bloqueio prolongado, cron pode retomar

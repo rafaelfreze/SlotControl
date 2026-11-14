@@ -15,10 +15,11 @@ import { verifiedReadRecoveryAlert, operatorRecoveryAlert, isPermissionStateRead
   isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
   isResetMilestoneReadRecovery,
   isMonthlyPriorityAuditReplayRecovery,
-  isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery,
+  isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isRateLimitReadRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS,
   type ReadRecoveryAlert, type AuditRecoveryEvent } from "./live-read-recovery";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert";
+import { proveUndispatchedRateLimitEntry } from "./rate-limit-read-recovery";
 import { appendLiveAuditEvent, LiveAuditEventPersistError } from "./live-audit-event";
 import { readResetRecoveryMilestone } from "./live-reset-recovery";
 import { sameMonthlyGoal, monthlyPriorityEventKey, assertMonthlyPriorityAuditRecoveryEvidence } from "./monthly-priority-audit";
@@ -2883,6 +2884,36 @@ async function assertSettledOperatorRecovery(service: Service, run: Run, ledger:
     || decisions.data.length || dispatch.data.length) throw new Error("COINOPS_LIVE_OPERATOR_RECOVERY_UNSETTLED");
 }
 
+/** The standard settled proof is unchanged for every other recovery. Only a
+ * certified pre-dispatch LIMIT may remain pending in this exact GET outage. */
+async function assertRateLimitReadRecovery(service: Service, run: Run, incident: ReadRecoveryAlert) {
+  const reconciled = Date.parse(run.last_reconciled_at ?? "");
+  const after = Math.max(Date.parse(incident.first_seen_at ?? ""), Date.parse(incident.last_seen_at));
+  if (![reconciled, after].every(Number.isFinite) || reconciled <= after
+    || reconciled > Date.now() || Date.now() - reconciled > 150_000)
+    throw Error("COINOPS_LIVE_RATE_LIMIT_RECOVERY_UNPROVEN");
+  const ledger = await runRows(service, run);
+  const prepared = ledger.orders.filter(order => order.status === "PREPARED");
+  if (!prepared.length) { await assertSettledOperatorRecovery(service, run, ledger); return "SETTLED"; }
+  if (prepared.length !== 1) throw Error("COINOPS_LIVE_RATE_LIMIT_RECOVERY_UNPROVEN");
+  const order = prepared[0];
+  const pending = await service.from("robot_v1_strategy_decisions").select("*")
+    .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).eq("environment", "REAL")
+    .in("action_type", ["OPEN_INITIAL_MARKET", "OPEN_ENTRY_MARKET", "CREATE_TP", "ARM_NEXT_BUY", "CANCEL_REPLACE_NEXT_BUY"])
+    .or("result.neq.COMPLETED,result.is.null").limit(2).abortSignal(AbortSignal.timeout(5_000));
+  const dispatch = await service.from("account_order_budget_reservations").select("client_order_id")
+    .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+    .eq("trading_engine_id", run.trading_engine_id).is("acknowledged_at", null)
+    .limit(1).abortSignal(AbortSignal.timeout(5_000));
+  if (pending.error || dispatch.error || !Array.isArray(pending.data) || !Array.isArray(dispatch.data))
+    throw Error("COINOPS_LIVE_RATE_LIMIT_RECOVERY_PROOF_UNAVAILABLE");
+  const observed = await readLiveExecutorOrder(run, order.client_order_id, null);
+  return proveUndispatchedRateLimitEntry(run, ledger.orders, ledger.slots, pending.data,
+    dispatch.data, observed.order, liveEngineOrderPrefix(run.engine!), incident);
+}
+
 async function assertFreshAuditRecovery(service: Service, run: Run, incident: ReadRecoveryAlert) {
   const after = Math.max(Date.parse(incident.first_seen_at ?? ""), Date.parse(incident.last_seen_at));
   if (!Number.isFinite(after)) throw new Error("COINOPS_LIVE_AUDIT_RECOVERY_UNPROVEN");
@@ -3034,6 +3065,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       && isAthProfileReadRecovery(recoveryIncident.code, recoveryIncident.details));
     const athTickerRecovery = Boolean(recoveryIncident
       && isAthTickerReadRecovery(recoveryIncident.code, recoveryIncident.details));
+    const rateLimitRecovery = Boolean(recoveryIncident && isRateLimitReadRecovery(recoveryIncident.code, recoveryIncident.details));
+    let rateLimitProof: string | undefined;
     if (athTickerRecovery) {
       if (!run.engine!.ath_reference_symbol
         || recoveryIncident!.details?.read_path !== athTickerReadPath(run.engine!.ath_reference_symbol))
@@ -3070,7 +3103,8 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     }
     const state = await readLiveExecutorState(run);
     await assertAllPositionsProtected(run, ledger, state);
-    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
+    if (rateLimitRecovery) rateLimitProof = await assertRateLimitReadRecovery(service, run, recoveryIncident!);
+    else if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     const bnbFeeReadRecovery = recoveryIncident?.details?.root_code === "COINOPS_LIVE_BNB_FEE_BALANCE_UNAVAILABLE";
     // Protection agreement does not prove that the BUY-only fee observation
@@ -3114,7 +3148,10 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     if ((athProfileRecovery || athTickerRecovery) && athProfileRecoveryProof(
       await loadAthProfile(service, athScope(run), "REAL", run.asset), run) !== athProof)
       throw new Error("COINOPS_LIVE_ATH_PROFILE_RECOVERY_UNPROVEN");
-    if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
+    if (rateLimitRecovery) {
+      if (await assertRateLimitReadRecovery(service, run, recoveryIncident!) !== rateLimitProof)
+        throw Error("COINOPS_LIVE_RATE_LIMIT_RECOVERY_UNPROVEN");
+    } else if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
     await renewLease(service, run);

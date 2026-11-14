@@ -5,7 +5,7 @@ import * as slotTopology from "./engine-slot-topology.ts";
 import ts from "typescript";
 import { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
   operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isMonthlyPriorityAuditReplayRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isRateLimitReadRecovery, isMonthlyPriorityAuditReplayRecovery,
   assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS, type ReadRecoveryAlert } from "./live-read-recovery.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -19,9 +19,41 @@ import { athProfileRecoveryProof } from "./ath-profile-read.ts";
 import * as monthlyAudit from "./monthly-priority-audit.ts";
 import { cumulativeSlotGoal } from "./cumulative-slot-goal.ts";
 import { athTickerReadPath } from "./ath-ticker-read.ts";
+import { proveUndispatchedRateLimitEntry } from "./rate-limit-read-recovery.ts";
 
 const known = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_MONITOR_EXECUTOR_UNHEALTHY",
   first_seen_at: "2026-09-27T00:00:12.000Z", last_seen_at: "2026-09-27T00:00:12.000Z" };
+
+test("rate recovery proves the same never-dispatched plan twice, without financial writes or replacing its identity", async () => {
+  const when = new Date(Date.now() - 60_000).toISOString();
+  const incident = { ...known, first_seen_at: when, last_seen_at: when, code: "COINOPS_LIVE_ARM_ENTRY_FAILED",
+    details: { stage: "ARM_ENTRY", root_code: "EXECUTOR_BINANCE_RATE_LIMITED" } };
+  const base = { alerts: [[incident]], ratePrepared: true, caixetaLayout: true };
+  const f = fixture(base), before = structuredClone([f.orders, f.slots]);
+  assert.equal((await f.run()).status, "RESUMED");
+  assert.deepEqual([f.orders, f.slots], before);
+  assert.equal(f.calls.filter(c => c === "exact-prepared-order-read").length, 2);
+  assert.equal(f.calls.filter(c => c === "operator-dispatch-read").length, 2);
+  assert.equal(f.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_slot_accounts",
+    "robot_v1_strategy_decisions", "account_order_budget_reservations"].includes(w.table)), false);
+  assert.equal((f.writes.find(w => w.table === "robot_v1_live_events")?.data.details as Record<string, unknown>).source, "VERIFIED_READ_RECOVERY");
+  const typed = fixture({ ...base, alerts: [[{ ...incident, code: "COINOPS_LIVE_EXECUTOR_READ_STALE",
+    details: { ...incident.details, read_path: "/v1/state", read_attempts: 1, http_status: 503 } }]] });
+  assert.equal((await typed.run()).status, "RESUMED");
+  assert.equal(typed.calls.filter(c => c === "exact-prepared-order-read").length, 2);
+  for (const change of [{ rateObserved: true }, { rateOrderChange: { submission_guarded_at: when } },
+    { rateOrderChange: { executed_quantity: .001 } }, { rateDecisionChange: { dispatched_at: when } },
+    { rateLateDecisionChange: { target_notional: 11 } }, { operatorPendingDispatch: true },
+    { operatorLatePendingDispatch: true }, { operatorProofDenied: true }, { configPending: true },
+    { missingTp: true }, { missingSlot: true }, { bulkStatus: "PENDING" }, { healthy: false }, { exposureCap: 5 }]) {
+    const blocked = fixture({ ...base, ...change });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false);
+  }
+  const cas = fixture({ ...base, alerts: [[incident], [{ ...incident, last_seen_at: new Date().toISOString() }]] });
+  await assert.rejects(cas.run(), /INCIDENT_CHANGED/);
+  assert.equal(cas.writes.some(w => w.data.kill_switch === false), false);
+});
 
 test("ATH read recovery proves the unchanged profile twice, preserves TP/BUY and settles dispatches", async () => {
   const incident = { ...known, code: "COINOPS_ATH_PROFILE_UNAVAILABLE",
@@ -76,6 +108,8 @@ test("typed ATH ticker outage resumes automatically only after two fresh GETs, u
 });
 
 function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boolean; missingTp?: boolean;
+  ratePrepared?: boolean; rateOrderChange?: Record<string, unknown>; rateDecisionChange?: Record<string, unknown>;
+  rateLateDecisionChange?: Record<string, unknown>; rateObserved?: boolean;
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
   ledgerDenied?: boolean; monthlyFailure?: boolean; configPending?: boolean; bulkStatus?: string;
   lateBulk?: boolean; bulkDenied?: boolean; configCasLost?: boolean;
@@ -148,6 +182,14 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     orders.push({ ...orders[0], id: "order-next-buy", slot_id: "slot-7", side: "BUY", price: 630,
       client_order_id: "owned:next-buy-8", exchange_order_id: "next-buy-8", reserved_notional_brl: 10 });
   }
+  if (options.ratePrepared) {
+    Object.assign(orders[orders.length - 1], { status: "PREPARED", purpose: "ENTRY", slot_number: 8, operation_sequence: 1,
+      requested_quantity: .01, requested_quote: null, reserved_notional_brl: 6.3,
+      strategy_decision_id: "decision-buy-8", exchange_order_id: null, submission_guarded_at: null,
+      account_order_unsent_receipt: null, fee_base: 0, fee_quote: 0, fee_other: [],
+      created_at: new Date(now - 70_000).toISOString(), ...options.rateOrderChange });
+    Object.assign(slots[7], { entry_state: "ARMED", operation_sequence: 1, target_buy_price: 630 });
+  }
   if (options.permissionRecovery) orders.push({ ...orders[0], id: "order-buy", side: "BUY", price: 630,
     client_order_id: "owned:buy", exchange_order_id: "buy-a", slot_id: "slot-1",
     status: options.permissionOrderStatus ?? "NEW",
@@ -162,7 +204,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   let lineageReads = 0;
   let athReads = 0;
   let monthlyEventReads = 0;
-  const settledProof = options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery || options.athRecovery
+  const settledProof = options.ratePrepared || options.operatorRecovery || options.budgetMetadataRecovery || options.capitalAuditRecovery || options.athRecovery
     || options.auditEventRecovery || options.alerts?.some(group => group.some(alert => isLedgerTlsReadRecovery(alert.code, alert.details)));
   const service = { from(table: string) {
     const filters: Record<string, unknown> = {};
@@ -248,6 +290,11 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
             assert.equal(filters.or, "result.neq.COMPLETED,result.is.null");
             data = options.operatorUnsettledDecision || options.operatorLateUnsettledDecision && operatorIntentReads > 1
               ? [{ id: "unsettled-decision" }] : [];
+            if (options.ratePrepared) data = [{ ...scope, decision_id: "decision-buy-8", environment: "REAL", cycle_id: run.id,
+              slot_id: "slot-7", operation_sequence: 1, action_type: "ARM_NEXT_BUY", expected_next_state: "ARMED", result: "PENDING",
+              dispatched_at: null, exchange_ack_at: null, completed_at: null, target_price: 630, target_notional: 10,
+              created_at: new Date(now - 71_000).toISOString(), ...options.rateDecisionChange,
+              ...(operatorIntentReads > 1 ? options.rateLateDecisionChange : {}) }];
           } else {
             const cutoff = options.permissionExpectedCutoff ?? "2026-09-26T23:58:42.000Z";
             assert.equal(filters.or, `created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`);
@@ -367,11 +414,12 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "./live-exposure-read": { readLiveExposure }, "./complete-ledger-read": { completeLedgerRead },
     "./live-ledger-read": { boundedLedgerRead, observeLedgerRows, observeLedgerRecord, assertPhysicalLedger },
     "./live-read-error": readErrors,
+    "./rate-limit-read-recovery": { proveUndispatchedRateLimitEntry },
     "./live-bnb-fee-balance": { liveBnbFeeBalanceCheck },
     "node:crypto": { randomUUID: () => "lease" },
     "./live-read-recovery": { verifiedReadRecoveryAlert, isPermissionStateReadRecovery, assertPermissionReadRecoveryOrders,
       operatorRecoveryAlert, isAccountBudgetAlertRecovery, isCapitalAuditReadRecovery, isAuditEventRecovery, isResetAuditReplayRecovery,
-      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isMonthlyPriorityAuditReplayRecovery,
+      isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isAthProfileReadRecovery, isAthTickerReadRecovery, isRateLimitReadRecovery, isMonthlyPriorityAuditReplayRecovery,
       assertAuditEventRecoveryEvidence, READ_RECOVERY_DIAGNOSTIC_KEYS },
     "../supabase/env": { getSupabaseDataSchema: () => "coinops", getCoinOpsServiceTenantId: () => "tenant" },
     "../supabase/service-role": { createServiceRoleClient: () => service },
@@ -390,7 +438,10 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => {
       calls.push("health"); return { gate: options.healthy === false ? "ATTENTION" : "LIVE_EXECUTOR_PROTECTED" };
     } },
-    "./live-executor-transport": { readLiveExecutorOrder: async () => ({ order: null }),
+    "./live-executor-transport": { readLiveExecutorOrder: async (_run: unknown, client: string, exchangeId: unknown) => {
+      if (options.ratePrepared) { calls.push("exact-prepared-order-read"); assert.equal(client, "owned:next-buy-8"); assert.equal(exchangeId, null); }
+      return { order: options.rateObserved ? { status: "FILLED" } : null };
+    },
       readLiveExecutorState: async () => {
       calls.push("exchange-state"); return { ...scope, filters: { quantityStep: 0.001 },
         price: { price: 630, observedAt: new Date().toISOString() }, observed_at: new Date().toISOString(),
@@ -398,7 +449,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
         bnb_quote_price: { symbol: "BNBBRL", price: 6000,
           observedAt: new Date(Date.now() - (options.staleBnb ? 30_001 : 0)).toISOString() },
         open_orders: options.missingTp ? [] : options.caixetaLayout
-          ? orders.map(order => ({ id: order.exchange_order_id, side: order.side,
+          ? orders.filter(order => order.status !== "PREPARED").map(order => ({ id: order.exchange_order_id, side: order.side,
             clientOrderId: order.client_order_id, status: "NEW", price: order.price,
             executedQuantity: 0, originalQuantity: 1 })) : options.permissionRecovery
           ? [{ id: "tp-a", side: "SELL", clientOrderId: "owned:tp", status: "NEW", price: 650, executedQuantity: 0, originalQuantity: 1 },

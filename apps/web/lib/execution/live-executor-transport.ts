@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { ExecutorHttpError, observationFailure, retryableObservation } from "./live-read-error.ts";
+import { ExecutorHttpError, LiveReadUnavailable, observationFailure, retryableObservation } from "./live-read-error.ts";
 import { reserveLiveObservationRetry } from "./live-observation-retry-budget.ts";
 
 import { signedExecutorHeaders } from "./live-executor-client.ts";
@@ -123,6 +123,11 @@ async function readWithRetry<T>(path: "/v1/health" | "/v1/state" | "/v1/query-or
       const key = readKey();
       return await request<T>(path, input(key), key, fetcher, resolver);
     } catch (error) {
+      // The authenticated endpoint is observation-only. Do NOT burst retries
+      // against a rate-limited IP; checkpoint and wait for the normal worker.
+      // Create/cancel requests never pass through this boundary.
+      if (error instanceof ExecutorHttpError && error.message === "EXECUTOR_BINANCE_RATE_LIMITED" && error.status === 503)
+        throw new LiveReadUnavailable(error.message, path, attempt + 1, error.status);
       if (!retryableObservation(error)) throw error;
       if (attempt === 3 || !reserveLiveObservationRetry(engine))
         throw observationFailure(error, path, attempt + 1);

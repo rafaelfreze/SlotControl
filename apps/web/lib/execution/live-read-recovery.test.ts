@@ -4,8 +4,26 @@ import test from "node:test";
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert, assertPermissionReadRecoveryOrders,
   isRegistryStateReadRecovery, isExposureStateReadRecovery, isAccountBudgetAlertRecovery,
   isCapitalAuditReadRecovery, operatorRecoveryAlert, isAuditEventRecovery, isResetAuditReplayRecovery,
-  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery,
+  isResetMilestoneReadRecovery, isLedgerTlsReadRecovery, isRateLimitReadRecovery,
   assertAuditEventRecoveryEvidence, type AuditRecoveryEvent } from "./live-read-recovery.ts";
+
+test("rate recovery is exact: legacy ARM needs guarded proof; new evidence must identify a read endpoint", () => {
+  const legacy = { stage: "ARM_ENTRY", root_code: "EXECUTOR_BINANCE_RATE_LIMITED" };
+  const code = "COINOPS_LIVE_ARM_ENTRY_FAILED";
+  assert.equal(isRateLimitReadRecovery(code, legacy), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, legacy), true);
+  for (const patch of [{ stage: "POST_ORDER" }, { read_path: "/v1/create-order" }, { http_status: 503 },
+    { root_code: "EXECUTOR_BINANCE_RESULT_UNKNOWN" }, { read_attempts: 1 }])
+    assert.equal(isRateLimitReadRecovery(code, { ...legacy, ...patch }), false);
+  const typed = { ...legacy, read_path: "/v1/state", read_attempts: 1, http_status: 503 };
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_EXECUTOR_READ_STALE", typed), true);
+  for (const patch of [{ read_path: "/v1/create-order" }, { read_path: "/v1/cancel-order" },
+    { stage: "POST_ORDER" }, { http_status: 429 }, { http_status: null }, { read_attempts: 0 },
+    { read_attempts: 5 }, { provider_code: "42501" }])
+    assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "COINOPS_LIVE_EXECUTOR_READ_STALE", { ...typed, ...patch }), false);
+  assert.equal(mayRecoverReadOutage("PAUSED", "OK", code, legacy), false);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, legacy), false);
+});
 
 test("legacy525 eligibility is exact; permission/schema/unknown reads never inherit it and CAS binds evidence", () => {
   const code = "COINOPS_LIVE_LEDGER_READ_FAILED";
