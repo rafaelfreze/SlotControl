@@ -82,7 +82,8 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
   if (!response.ok) {
     const rejectedBeforePost = response.status === 403
       && ["EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT"].includes(payload.error ?? "")
-      || response.status === 503 && payload.error === "EXECUTOR_BNB_FEE_RESERVE_MISSING" && input.side === "BUY";
+      || response.status === 503 && (payload.error === "EXECUTOR_BNB_FEE_RESERVE_MISSING" && input.side === "BUY"
+        || payload.error === "EXECUTOR_RATE_LIMITED_BEFORE_POST" && ["BUY", "SELL"].includes(String(input.side)));
     if (path === "/v1/create-order" && rejectedBeforePost && payload.unsent_proof) {
       const { side, ...proofScope } = permitScope;
       void side;
@@ -109,9 +110,10 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
 
 /** Attests durable absence with fencing and exact Binance GET. Never POSTs an order. */
 export async function proveLiveExecutorUnsentOrder(engine: ExecutorEngineScope, clientOrderId: string,
-  decisionId: string, dispatchedAt: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver) {
+  decisionId: string, dispatchedAt: string, fetcher?: typeof fetch, resolver?: ExecutorEngineResolver,
+  side: "BUY" | "SELL" = "BUY") {
   return request<never>("/v1/prove-unsent-order", { ...executorContext(engine, decisionId, clientOrderId),
-    clientOrderId, dispatched_at: dispatchedAt, side: "BUY", purpose: "ENTRY" }, clientOrderId, fetcher, resolver);
+    clientOrderId, dispatched_at: dispatchedAt, side, purpose: side === "BUY" ? "ENTRY" : "TP" }, clientOrderId, fetcher, resolver);
 }
 
 const readKey = () => `COINOPS:REAL:READ:${randomUUID()}`;

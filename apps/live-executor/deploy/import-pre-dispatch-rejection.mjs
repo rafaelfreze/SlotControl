@@ -9,9 +9,9 @@ import { loadExecutorRegistry, loadCombinedRegistry, assertEngineOrder, durableI
 import { historicalPreDispatchProof, historicalPreDispatchRuntimePin } from "../src/pre-dispatch-evidence.mjs";
 import { discoverRuntimeFiles } from "./fleet-parity.mjs";
 
-const [shard, ip, engineId, clientOrderId, decisionId, dispatchedAt, expectedPid] = process.argv.slice(2);
+const [shard, ip, engineId, clientOrderId, decisionId, dispatchedAt, expectedPid, side = "BUY"] = process.argv.slice(2);
 if (process.getuid?.() !== 0 || !/^executor-\d{2}$/.test(shard ?? "") || !/^\d+(\.\d+){3}$/.test(ip ?? "")
-  || !/^[a-f0-9-]{36}$/.test(engineId ?? "") || !/^\d+$/.test(expectedPid ?? "")
+  || !/^[a-f0-9-]{36}$/.test(engineId ?? "") || !/^\d+$/.test(expectedPid ?? "") || !["BUY", "SELL"].includes(side)
   || !Number.isFinite(Date.parse(dispatchedAt)) || Date.now() - Date.parse(dispatchedAt) < 90_000)
   throw new Error("PRE_DISPATCH_IMPORT_SCOPE_DENIED");
 const system = (args) => execFileSync("systemctl", args, { encoding: "utf8" }).trim();
@@ -27,13 +27,14 @@ const env = Object.fromEntries(readFileSync("/etc/coinops/live-executor.env", "u
   }));
 if (env.COINOPS_EXECUTOR_SHARD_ID !== shard || env.LIVE_EXECUTOR_EGRESS_IP !== ip)
   throw new Error("PRE_DISPATCH_IMPORT_HOST_MISMATCH");
-if (!historicalPreDispatchRuntimePin(env.COINOPS_EXECUTOR_VERSION, graph.runtime_sha256))
+const pin = historicalPreDispatchRuntimePin(env.COINOPS_EXECUTOR_VERSION, graph.runtime_sha256);
+if (!pin || (pin.side ?? "BUY") !== side)
   throw new Error("PRE_DISPATCH_IMPORT_RUNTIME_NOT_PINNED");
 const registry = await loadCombinedRegistry(await loadExecutorRegistry(env.COINOPS_EXECUTOR_REGISTRY_PATH),
   env.COINOPS_EXECUTOR_STATE_DIR, () => { throw new Error("PRE_DISPATCH_IMPORT_REGISTRY_FAILED"); });
 const engine = registry.engines.find(row => row.trading_engine_id === engineId);
 if (!engine || engine.environment !== "REAL") throw new Error("PRE_DISPATCH_IMPORT_ENGINE_DENIED");
-assertEngineOrder(engine, engine.symbol, clientOrderId, "BUY");
+assertEngineOrder(engine, engine.symbol, clientOrderId, side);
 const claim = durableIntent(engine, {}, clientOrderId, "", "CREATE_ORDER");
 const base = join(env.COINOPS_EXECUTOR_STATE_DIR, "orders", createHash("sha256").update(claim.key).digest("hex"));
 if (existsSync(`${base}.json`)) throw new Error("PRE_DISPATCH_IMPORT_ORDER_ALREADY_COMPLETED");

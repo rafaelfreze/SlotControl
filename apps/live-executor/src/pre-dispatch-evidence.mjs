@@ -8,11 +8,18 @@ export const HISTORICAL_REJECTION_RUNTIME = "65f2e382a441d5c51509d06a17e6ddfe74c
 export const HISTORICAL_REJECTION_FINGERPRINT = "a1ad68e6892405409f145d5035557b3959ecb3859cc5458bca83073697f623c8";
 export const HISTORICAL_BNB_REJECTION_RUNTIME = "bc43636bfd96cbb3618a7380c86e0d7f61f8b9fd";
 export const HISTORICAL_BNB_REJECTION_FINGERPRINT = "9ac54825d53da6ed250c904a1c232e07b64643460c4aa99308dba4b16b2dd963";
+export const HISTORICAL_TP_RATE_RUNTIME = "8db2cd73c1418dff49825b992b0fdab195fab535";
+export const HISTORICAL_TP_RATE_FINGERPRINT = "b38d280d7ca8adfcff250571235a985c362707f530eb645e548c8bf90adfb8b0";
 const pins = Object.freeze([
   Object.freeze({ runtimeSha: HISTORICAL_REJECTION_RUNTIME, runtimeFingerprint: HISTORICAL_REJECTION_FINGERPRINT,
     rejectionCode: "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", httpStatus: 403 }),
   Object.freeze({ runtimeSha: HISTORICAL_BNB_REJECTION_RUNTIME, runtimeFingerprint: HISTORICAL_BNB_REJECTION_FINGERPRINT,
     rejectionCode: "EXECUTOR_BNB_FEE_RESERVE_MISSING", httpStatus: 503 }),
+  // In this exact source graph RATE_LIMITED can arise in CREATE_ORDER only
+  // before its POST barrier: signed POST returns RESULT/POST_UNKNOWN instead.
+  // Limit the legacy import to protective SELL/TP, not arbitrary failures.
+  Object.freeze({ runtimeSha: HISTORICAL_TP_RATE_RUNTIME, runtimeFingerprint: HISTORICAL_TP_RATE_FINGERPRINT,
+    rejectionCode: "EXECUTOR_BINANCE_RATE_LIMITED", httpStatus: 503, side: "SELL" }),
 ]);
 export function historicalPreDispatchRuntimePin(runtimeSha, runtimeFingerprint) {
   return pins.find(pin => pin.runtimeSha === runtimeSha && pin.runtimeFingerprint === runtimeFingerprint) ?? null;
@@ -27,6 +34,7 @@ export function historicalPreDispatchProof({ secret, engine, clientOrderId, deci
   const pin = historicalPreDispatchRuntimePin(runtimeSha, runtimeFingerprint);
   if (typeof secret !== "string" || Buffer.byteLength(secret) < 32
     || !pin || !Array.isArray(records)
+    || pin.side === "SELL" && !/-S-[a-f0-9]{14}$/.test(clientOrderId)
     || !/^[a-f0-9]{64}$/.test(pendingHash) || !/^[a-f0-9]{64}$/.test(decisionId)
     || !Number.isFinite(pendingMtime) || !Number.isFinite(Date.parse(dispatchedAt))) denied();
   const keyHash = sha256(clientOrderId).slice(0, 12);
@@ -52,7 +60,8 @@ export function historicalPreDispatchProof({ secret, engine, clientOrderId, deci
     pendingHash, pendingMtime, request_id: rejection.request_id, rejectedAt: rejection.timestamp,
     rejection_code: rejection.result,
     // Preserve byte-for-byte compatibility of the original quote proof.
-    ...(runtimeSha === HISTORICAL_BNB_REJECTION_RUNTIME ? { rejection_http_status: rejection.http_status } : {}) };
+    ...(runtimeSha === HISTORICAL_BNB_REJECTION_RUNTIME || pin.side ? { rejection_http_status: rejection.http_status } : {}),
+    ...(pin.side ? { side: "SELL", purpose: "TP" } : {}) };
   return { proof, signature: sign(secret, proof) };
 }
 
@@ -69,6 +78,8 @@ export function verifiedHistoricalRejection(base, secret, scope, claimKey, dispa
     || !timingSafeEqual(Buffer.from(sign(secret, proof), "hex"), Buffer.from(value.signature, "hex"))
     || proof.protocol !== 1 || proof.source !== "PINNED_EXECUTOR_JOURNAL"
     || !pin || proof.rejection_code !== pin.rejectionCode
+    || pin.side === "SELL" && (proof.side !== "SELL" || proof.purpose !== "TP"
+      || !/-S-[a-f0-9]{14}$/.test(proof.clientOrderId) || proof.rejection_http_status !== 503)
     || (pin.runtimeSha === HISTORICAL_BNB_REJECTION_RUNTIME
       && proof.rejection_http_status !== pin.httpStatus)
     || (proof.rejection_http_status !== undefined && proof.rejection_http_status !== pin.httpStatus)

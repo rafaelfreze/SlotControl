@@ -7,6 +7,7 @@ import { createHmac } from "node:crypto";
 import { historicalPreDispatchProof, historicalPreDispatchRuntimePin,
   HISTORICAL_REJECTION_RUNTIME, HISTORICAL_REJECTION_FINGERPRINT,
   HISTORICAL_BNB_REJECTION_RUNTIME, HISTORICAL_BNB_REJECTION_FINGERPRINT } from "../src/pre-dispatch-evidence.mjs";
+import { HISTORICAL_TP_RATE_RUNTIME, HISTORICAL_TP_RATE_FINGERPRINT } from "../src/pre-dispatch-evidence.mjs";
 import { attestNeverDispatched, assertUnsentFence } from "../src/unsent-recovery.mjs";
 import { sha256 } from "../src/security.mjs";
 
@@ -41,6 +42,23 @@ test("only pinned runtime and one exact scoped pre-POST rejection import; never 
     ...[{ result: "EXECUTOR_ORDER_POST_UNKNOWN" }, { http_status: 503 }, { trading_engine_id: "engine-b" },
       { executor_shard_id: "executor-03" }, { idempotency_key_hash: "wrong" }].map(changed => ({ records: [{ ...record, ...changed }] }))])
     assert.throws(() => historicalPreDispatchProof({ ...input, ...patch }), /UNPROVEN/);
+});
+
+test("legacy TP rate limit requires the exact reviewed runtime, unique journal identity and SELL; fence archives without deleting", async () => {
+  const f = await fixture(), client = "C2-fixture-17-S-0123456789abcd";
+  const row = { ...record, result: "EXECUTOR_BINANCE_RATE_LIMITED", http_status: 503,
+    idempotency_key_hash: sha256(client).slice(0, 12) };
+  const input = { ...f.input, clientOrderId: client, records: [row],
+    runtimeSha: HISTORICAL_TP_RATE_RUNTIME, runtimeFingerprint: HISTORICAL_TP_RATE_FINGERPRINT };
+  const value = historicalPreDispatchProof(input);
+  assert.equal(value.proof.side, "SELL"); assert.equal(value.proof.purpose, "TP");
+  for (const patch of [{ clientOrderId }, { runtimeSha: HISTORICAL_BNB_REJECTION_RUNTIME },
+    { runtimeFingerprint: HISTORICAL_BNB_REJECTION_FINGERPRINT }, { records: [row, row] },
+    { records: [{ ...row, result: "EXECUTOR_ORDER_POST_UNKNOWN" }] }, { records: [{ ...row, http_status: 429 }] }])
+    assert.throws(() => historicalPreDispatchProof({ ...input, ...patch }), /UNPROVEN/);
+  await writeFile(`${f.base}.pre-post-evidence`, JSON.stringify(value));
+  await attestNeverDispatched({ ...f.args, historical: { secret, scope: { ...engine, clientOrderId: client, decisionId } }, query: async () => null });
+  assert.equal((await readdir(f.directory)).filter(n => n.endsWith(".rejected")).length, 1);
 });
 
 test("new BNB evidence is restricted to exact runtime fingerprint, BNB503, ownership, unique journal identity and claim time", async () => {

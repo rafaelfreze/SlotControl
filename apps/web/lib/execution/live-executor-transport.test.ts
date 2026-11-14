@@ -30,6 +30,27 @@ const state = { ...engine, environment: "REAL",
   bnb_brl_price: null, open_orders: [], observed_at: "2026-09-24T10:00:00Z",
 };
 
+test("pre-POST rate-limit receipt releases only the exact BUY or TP request; a bare error remains ambiguous", async () => {
+  const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };
+  for (const side of ["BUY", "SELL"] as const) {
+    let calls = 0;
+    const fetcher = (async (_url: unknown, init?: RequestInit) => {
+      calls++; const raw = String(init!.body), body = JSON.parse(raw), headers = new Headers(init!.headers);
+      const proof = signAccountOrderUnsentProof(target.secret, { ...engine, executor_shard_id: target.shardId,
+        environment: "REAL", clientOrderId: body.clientOrderId, decision_id: body.decision_id,
+        request_nonce: headers.get("x-coinops-nonce")! }, createHash("sha256").update(raw).digest("hex"));
+      return Response.json({ error: "EXECUTOR_RATE_LIMITED_BEFORE_POST", unsent_proof: proof }, { status: 503 });
+    }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder({ clientOrderId: `owned-${side}`, side,
+      purpose: side === "SELL" ? "TP" : "ENTRY" }, engine, "fixture-decision", fetcher, async () => target),
+      error => error instanceof AccountOrderNotSubmitted);
+    assert.equal(calls, 1);
+    await assert.rejects(transport.createLiveExecutorOrder({ clientOrderId: `owned-${side}`, side }, engine,
+      "fixture-decision", (async () => Response.json({ error: "EXECUTOR_RATE_LIMITED_BEFORE_POST" }, { status: 503 })) as typeof fetch,
+      async () => target), error => error instanceof ExecutorHttpError && !(error instanceof AccountOrderNotSubmitted));
+  }
+});
+
 test("rate-limited observations yield immediately without a retry burst, bound to the exact shard and order", async () => {
   for (const shardId of ["executor-01", "executor-02"]) {
     const target = { shardId, ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };

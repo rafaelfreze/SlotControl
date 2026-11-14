@@ -244,6 +244,13 @@ no ambiente de destino antes de operação remota.
 
 ## Leitura ATH — 02/11/2026
 
+- TP com rejeição rate-limit comprovada antes de POST (14/11): receipt HMAC
+  distinta do retry GET, guard orderPostAttempted=false, release/claim sob lease
+  e mesma identidade. Recovery legado somente SHA/fingerprint/root/SELL exatos,
+  journal/PID e claim íntegros, fence+GET e arquivo original preservado. Protocolo
+  unsent_tp_recovery_protocol=1 é obrigatório. POST incerto continua fechado.
+  Ver `docs/COINOPS_TP_PRE_POST_RATE_RECOVERY_20261114.md`.
+
 - Rate limit em GET autenticado de observação (14/11) cede ao worker normal,
   sem burst. Recovery legado ARM_ENTRY exige prova duas vezes de uma única
   LIMIT PREPARED nunca despachada, GET exato ausente, TP/ledger/health/caps,

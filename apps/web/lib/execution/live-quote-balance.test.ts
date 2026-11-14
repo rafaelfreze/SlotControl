@@ -8,6 +8,8 @@ import { liveBnbFeeBalanceCheck } from "./live-bnb-fee-balance.ts";
 import { LiveReadUnavailable, liveFailureEvidence } from "./live-read-error.ts";
 import { readLiveExposure } from "./live-exposure-read.ts";
 import { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError } from "./live-account-budget-alert.ts";
+import * as marketEntryPolicy from "./market-entry-policy.ts";
+import { monthlyPeriodKey } from "./monthly-slot-policy.ts";
 
 const now = Date.parse("2026-10-07T13:50:03Z");
 const snapshot = (free: number, asset = "BRL") => ({ observed_at: new Date(now).toISOString(), balances: [{ asset, free }] });
@@ -42,7 +44,7 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
   const asset = options.asset ?? "SOL", quote = options.quote ?? "BRL";
   const scope = { operator_id: "operator", exchange_account_id: "account", trading_engine_id: options.engineId ?? "engine-a",
     product_id: "product", tenant_id: "tenant", user_id: "user", symbol: `${asset}${quote}`, quote_asset: quote };
-  const run = { ...scope, id: `run-${scope.trading_engine_id}`, asset, status: "ACTIVE", entry_regime: "NORMAL",
+  const run = { ...scope, id: `run-${scope.trading_engine_id}`, asset, status: "ACTIVE", entry_regime: "NORMAL", config_snapshot: {},
     engine: { id: scope.trading_engine_id } };
   const slot = { ...scope, id: "slot-4", slot_number: options.initial ? 1 : 4, operational_rank: 1,
     entry_state: "PLANNED", position_quantity: 0, operation_sequence: 1, target_buy_price: 562 };
@@ -50,12 +52,12 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
     status: options.prepared ? "PREPARED" : "NEW", executed_quantity: 0, cumulative_quote: 0,
     reserved_notional_brl: 10.678, price: 562, exchange_order_id: options.prepared ? null : "own-buy",
     client_order_id: "owned-buy", operation_sequence: 1, requested_quantity: .019,
-    strategy_decision_id: "fixture-decision",
+    strategy_decision_id: "fixture-decision", config_snapshot: {}, requested_quote: null,
     account_order_unsent_receipt: options.provenUnsent ? { request_nonce: "verified-under-lease" } : null };
   const tp = { ...scope, id: "tp", run_id: run.id, slot_id: "open-slot-2", side: "SELL", purpose: "TP", revision: 1,
     status: "NEW", executed_quantity: 0, cumulative_quote: 0, price: 600, exchange_order_id: "own-tp",
     client_order_id: "owned-tp", operation_sequence: 1, requested_quantity: .02, trades_reconciled: false,
-    reserved_notional_brl: 0, strategy_decision_id: "tp-decision", account_order_unsent_receipt: null };
+    reserved_notional_brl: 0, strategy_decision_id: "tp-decision", account_order_unsent_receipt: null, config_snapshot: {}, requested_quote: null };
   const ledger = { slots: [slot], accounts: [{ slot_number: slot.slot_number, balance_brl: 11 }],
     orders: options.resident || options.prepared ? [resident] : options.initial ? [] : [{ side: "BUY", status: "FILLED", executed_quantity: .018 }] };
   if (options.withTp) ledger.orders.push(tp);
@@ -118,6 +120,9 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
     return chain;
   } };
   const dependencies: Record<string, unknown> = {
+    "./partial-entry-recovery": { partialEntryRecoveryIntent: () => null },
+    "./market-entry-policy": marketEntryPolicy,
+    "./monthly-slot-policy": { monthlyPeriodKey },
     "./engine-slot-topology": slotTopology,
     "./live-account-budget-alert": { resolveAccountBudgetAlert, AccountBudgetAlertResolutionError },
     "./live-quote-balance": { liveQuoteBalanceCheck },
@@ -129,12 +134,14 @@ function fixture(options: { initial?: boolean; free?: number; asset?: "BTC" | "S
         ? { ...tp, clientOrderId: tp.client_order_id, symbol: scope.symbol, orderId: tp.exchange_order_id } : null }) },
     "./live-reconciliation-shortcut": { unchangedUnfilledResidentOrder: (order: { side: string }) => order.side === "SELL" },
     "./live-unsent-entry-recovery": { mayAttestUnsentEntry: () => false },
-    "./live-unsent-tp-recovery": { isProvablyUnsentTakeProfit: () => false },
+    "./live-unsent-tp-recovery": { isProvablyUnsentTakeProfit: () => false, mayAttestUnsentTakeProfit: () => false },
     "./live-executor-health": { loadLiveEngineExecutorStatus: async () => ({ gate: "LIVE_EXECUTOR_ACTIVE" }) },
     "./robot-v1-live-cycle": { LIVE_ACTIVE_ORDER_STATUSES: new Set(["NEW", "PREPARED"]),
       liveClientOrderId: () => "same-id" },
     "./live-entry-capital-refresh": { canRestoreUnfilledEntry: () => false, planLiveEntryCapitalRefresh: () => null },
-    "./strategy-engine": { STRATEGY_VERSION: "fixture", planStrategyInitialEntry: () => ({ action_type: "OPEN_INITIAL_MARKET" }),
+    "./strategy-engine": { STRATEGY_VERSION: "fixture", planStrategyMissedMarketEntry: () => null,
+      allocateMonthlyEntryLevels: () => ({ assignments: [], held: true, requiresResidentCancel: false }),
+      planStrategyInitialEntry: () => ({ action_type: "OPEN_INITIAL_MARKET" }),
       planStrategyNextEntry: () => ({ decision: { action_type: "ARM_NEXT_BUY", reason: "fixture" },
         nextCandidateId: slot.id, missedCandidateIds: [] }) },
     "./strategy-decision-server": { persistStrategyDecision: async () => { calls.push("persist-decision"); } },

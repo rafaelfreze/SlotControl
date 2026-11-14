@@ -25,6 +25,7 @@ export type LiveExecutorHealth = {
   order_observation_protocol?: number;
   account_order_budget_enforced?: boolean;
   unsent_recovery_protocol?: number;
+  unsent_tp_recovery_protocol?: number;
   entry_market_protocol?: number;
   order_cap_alignment_protocol?: number;
   partial_entry_recovery_protocol?: number;

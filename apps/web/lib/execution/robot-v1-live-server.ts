@@ -39,7 +39,7 @@ import type { ExchangeSymbolInfo } from "./types";
 import { resolveOperatorEngine } from "./operator-context-server";
 import { assertStrategyBuyPrice, assertStrategyTakeProfitPrice } from "./strategy-price-invariant";
 import { unchangedUnfilledResidentOrder } from "./live-reconciliation-shortcut";
-import { isProvablyUnsentTakeProfit } from "./live-unsent-tp-recovery";
+import { isProvablyUnsentTakeProfit, mayAttestUnsentTakeProfit } from "./live-unsent-tp-recovery";
 import { isConfirmedFilledSnapshotRace } from "./live-order-snapshot-race";
 import { continueLiveAdvance, type LiveAdvanceResult } from "./live-cycle-continuation";
 import { planLiveEntryCapitalRefresh, canRestoreUnfilledEntry } from "./live-entry-capital-refresh";
@@ -573,12 +573,14 @@ async function reconcileOrder(service: Service, run: Run, order: Order,
       let certifiedUnsent = Boolean(order.account_order_unsent_receipt?.request_nonce
         && decision.data?.result === "PENDING" && decision.data.dispatched_at === null
         && decision.data.exchange_ack_at === null && decision.data.completed_at === null);
-      if (!decision.error && !certifiedUnsent && mayAttestUnsentEntry(order, decision.data)) {
+      const attestTp = mayAttestUnsentTakeProfit(order, decision.data);
+      if (!decision.error && !certifiedUnsent && (mayAttestUnsentEntry(order, decision.data) || attestTp)) {
         const recoveryHealth = await loadLiveEngineExecutorStatus(run);
         if (["LIVE_EXECUTOR_ACTIVE", "LIVE_EXECUTOR_PROTECTED"].includes(recoveryHealth.gate)
-          && recoveryHealth.health?.unsent_recovery_protocol === 1) {
+          && (attestTp ? recoveryHealth.health?.unsent_tp_recovery_protocol === 1 : recoveryHealth.health?.unsent_recovery_protocol === 1)) {
           await renewLease(service, run);
-          try { await proveLiveExecutorUnsentOrder(run, order.client_order_id, order.strategy_decision_id!, decision.data!.dispatched_at!); }
+          try { await proveLiveExecutorUnsentOrder(run, order.client_order_id, order.strategy_decision_id!, decision.data!.dispatched_at!,
+            undefined, undefined, order.side); }
           catch (error) {
             if (!(error instanceof AccountOrderNotSubmitted)) throw new Error("COINOPS_LIVE_SUBMISSION_OUTCOME_UNKNOWN");
             await renewLease(service, run);

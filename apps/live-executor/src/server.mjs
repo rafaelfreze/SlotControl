@@ -492,7 +492,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           egress_ipv4: ip, egress_ipv4_verified: ip === expectedEgressIp,
           isolation_contract: ACCOUNT_ORDER_POLICY, account_order_budget_protocol: 1,
           order_observation_protocol: 1,
-          account_order_budget_enforced: accountBudgetEnabled, unsent_recovery_protocol: 1, entry_market_protocol: 1,
+          account_order_budget_enforced: accountBudgetEnabled, unsent_recovery_protocol: 1, unsent_tp_recovery_protocol: 1, entry_market_protocol: 1,
           order_cap_alignment_protocol:1,
           partial_entry_recovery_protocol:1,
           trading_enabled: flags.tradingEnabled, kill_switch: flags.killSwitch, latency_ms: now() - started };
@@ -540,9 +540,10 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           return;
         }
         if (path === "/v1/prove-unsent-order") {
-          if (key !== input.clientOrderId || input.side !== "BUY" || input.purpose !== "ENTRY")
+          if (key !== input.clientOrderId || !(input.side === "BUY" && input.purpose === "ENTRY"
+            || input.side === "SELL" && input.purpose === "TP"))
             throw new ExecutorRejection("EXECUTOR_UNSENT_RECOVERY_SCOPE_DENIED", 403);
-          transport.ownership(symbol, input.clientOrderId, "BUY");
+          transport.ownership(symbol, input.clientOrderId, input.side);
           const claim = durableIntent(engine, input, key, verified.bodyHash, "CREATE_ORDER");
           await attestNeverDispatched({ directory: join(stateDirectory, "orders"), key: claim.key,
             dispatchedAt: input.dispatched_at, now,
@@ -574,7 +575,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           catch (error) {
             if (error instanceof ExecutorPreDispatchRejection && !transport.orderPostAttempted
               && (error.code === "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT" && error.status === 403
-                || error.code === "EXECUTOR_BNB_FEE_RESERVE_MISSING" && error.status === 503))
+                || ["EXECUTOR_BNB_FEE_RESERVE_MISSING", "EXECUTOR_RATE_LIMITED_BEFORE_POST"].includes(error.code) && error.status === 503))
               error.unsentProof = signAccountOrderUnsentProof(secret, { ...scope, clientOrderId: input.clientOrderId,
                 decision_id: input.decision_id, request_nonce: verified.nonce }, verified.bodyHash, now());
             throw error;

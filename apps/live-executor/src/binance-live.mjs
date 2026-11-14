@@ -264,6 +264,18 @@ export class BinanceLiveTransport {
   /** Query-first, one dispatch only. A lost outcome stays unknown until the
    * exact client ID is observed; callers must never submit a second ID. */
   async createOwnedOrder(input, { allowCreate, tradingEnabled, killSwitch }) {
+    try { return await this.#createOwnedOrder(input, { allowCreate, tradingEnabled, killSwitch }); }
+    catch (error) {
+      // Only this invocation's synchronous POST barrier proves non-submission.
+      // A rate limit after POST (including confirmation reads) stays ambiguous.
+      if (!this.orderPostAttempted && (error instanceof ExecutorRejection && error.code === "EXECUTOR_BINANCE_RATE_LIMITED"
+        || error instanceof BinanceReadOnlyError && error.code === "BINANCE_RATE_LIMITED"))
+        throw new ExecutorPreDispatchRejection("EXECUTOR_RATE_LIMITED_BEFORE_POST", 503);
+      throw error;
+    }
+  }
+
+  async #createOwnedOrder(input, { allowCreate, tradingEnabled, killSwitch }) {
     const { symbol, clientOrderId, side, purpose } = input;
     const match = this.ownership(symbol, clientOrderId, side);
     const marketEntry = side === "BUY" && purpose === "ENTRY" && input.type === "MARKET"

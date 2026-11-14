@@ -22,3 +22,18 @@ export function isProvablyUnsentTakeProfit(order: {
     && decision.dispatched_at === null && decision.exchange_ack_at === null
     && decision.completed_at === null;
 }
+
+/** Eligibility to request durable fenced proof, never permission to resend.
+ * The executor must attest no POST, not merely an absent exchange order. */
+export function mayAttestUnsentTakeProfit(order: Parameters<typeof isProvablyUnsentTakeProfit>[0] & {
+  exchange_order_id: string | null; executed_quantity: number | string; cumulative_quote: number | string },
+  decision: Parameters<typeof isProvablyUnsentTakeProfit>[1], now = Date.now()) {
+  return order.status === "PREPARED" && order.side === "SELL" && order.purpose === "TP"
+    && order.exchange_order_id === null && Number(order.executed_quantity) === 0 && Number(order.cumulative_quote) === 0
+    && Boolean(order.strategy_decision_id) && decision?.decision_id === order.strategy_decision_id
+    && decision.cycle_id === order.run_id && decision.slot_id === order.slot_id
+    && decision.operation_sequence === order.operation_sequence && decision.action_type === "CREATE_TP"
+    && decision.result === "DISPATCHED" && decision.exchange_ack_at === null && decision.completed_at === null
+    && decision.dispatched_at !== null && Number.isFinite(Date.parse(decision.dispatched_at))
+    && now - Date.parse(decision.dispatched_at) >= 90_000;
+}

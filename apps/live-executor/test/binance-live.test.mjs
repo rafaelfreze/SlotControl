@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BinanceLiveTransport } from "../src/binance-live.mjs";
-import { ExecutorPreDispatchRejection } from "../src/security.mjs";
+import { ExecutorPreDispatchRejection, ExecutorRejection } from "../src/security.mjs";
 
 const NOW = Date.parse("2026-09-24T03:00:00.000Z");
 const BTC_ID = "COR1-BTC-1-1-BUY-0123456789abcd";
@@ -84,6 +84,22 @@ function marketIntent(overrides = {}) {
     assetCapBrl: 450, globalCapBrl: 725, assetExposureBeforeBrl: 0,
     globalExposureBeforeBrl: 0, ...overrides };
 }
+
+test("rate-limited pre-POST observations prove unsent for BUY/TP, but never after the POST barrier", async () => {
+  for (const side of ["BUY", "SELL"]) {
+    const f = fixture();
+    f.transport.queryOrder = async () => null;
+    f.transport.safetySnapshot = async () => { throw new ExecutorRejection("EXECUTOR_BINANCE_RATE_LIMITED", 503); };
+    const intent = side === "BUY" ? marketIntent() : marketIntent({ side, purpose: "TP", type: "LIMIT",
+      clientOrderId: BTC_ID.replace("BUY", "SELL") });
+    await assert.rejects(f.transport.createOwnedOrder(intent, { allowCreate: true, tradingEnabled: true, killSwitch: false }),
+      error => error instanceof ExecutorPreDispatchRejection && error.code === "EXECUTOR_RATE_LIMITED_BEFORE_POST");
+    assert.equal(f.calls.filter(c => c.method === "POST").length, 0);
+    f.transport.orderPostAttempted = true;
+    await assert.rejects(f.transport.createOwnedOrder(intent, { allowCreate: true, tradingEnabled: true, killSwitch: false }),
+      error => !(error instanceof ExecutorPreDispatchRejection) && error.code === "EXECUTOR_BINANCE_RATE_LIMITED");
+  }
+});
 
 test("Production transport rejects unsupported pairs and kill switch before Binance POST", async () => {
   const { transport, calls } = fixture();
