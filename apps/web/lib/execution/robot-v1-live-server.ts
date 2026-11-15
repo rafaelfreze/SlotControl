@@ -2848,7 +2848,9 @@ async function assertLateReconciledFill(service: Service, run: Run, incident: Re
 async function assertSettledPermissionReadRecovery(service: Service, run: Run, incident: ReadRecoveryAlert,
   ledger: Ledger, state: LiveExecutorState) {
   const cutoff = assertPermissionReadRecoveryOrders(incident, ledger.orders, state.open_orders,
-    liveEngineOrderPrefix(run.engine!));
+    liveEngineOrderPrefix(run.engine!), { slotCount: configuredEngineSlotCount(run.engine!),
+      openSlotNumbers: ledger.slots.filter(slot => slot.entry_state === "OPEN"
+        && amount(slot.position_quantity) >= state.filters.quantityStep).map(slot => slot.slot_number) });
   const decisions = await service.from("robot_v1_strategy_decisions").select("id")
     .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
     .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
@@ -3156,6 +3158,12 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
     } else if (source === "OPERATOR_CONTROL" || protectionRecovery || budgetAlertRecovery || capitalAuditRecovery || auditEventRecovery || ledgerTlsReadRecovery || athProfileRecovery || athTickerRecovery)
       await assertSettledOperatorRecovery(service, run, ledger);
     if (bnbFeeReadRecovery) liveBnbFeeBalanceCheck(state, run.quote_asset);
+    if (recoveryIncident && isPermissionStateReadRecovery(recoveryIncident.code, recoveryIncident.details)) {
+      const settledLedger = await runRows(service, run);
+      const settledState = await readLiveExecutorState(run);
+      await assertAllPositionsProtected(run, settledLedger, settledState);
+      await assertSettledPermissionReadRecovery(service, run, recoveryIncident, settledLedger, settledState);
+    }
     await renewLease(service, run);
     const updated = await service.from("robot_v1_live_preparations")
       .update({ kill_switch: false })

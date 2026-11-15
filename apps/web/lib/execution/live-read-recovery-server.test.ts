@@ -113,10 +113,11 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   casLost?: boolean; lateFill?: boolean; registryDenied?: boolean; missingSlot?: boolean; duplicateSlot?: boolean;
   ledgerDenied?: boolean; monthlyFailure?: boolean; configPending?: boolean; bulkStatus?: string;
   lateBulk?: boolean; bulkDenied?: boolean; configCasLost?: boolean;
-  permissionRecovery?: boolean; permissionOrderStatus?: string; permissionRecentOrder?: boolean;
+  permissionRecovery?: boolean; fullOpenPermission?: boolean; permissionOrderStatus?: string; permissionRecentOrder?: boolean;
   permissionResidentQuantity?: number; permissionResidentPrice?: number;
   permissionRecentDecision?: boolean; permissionUnsettledDecision?: boolean;
   permissionPendingDispatch?: boolean; permissionProofDenied?: boolean;
+  permissionLateDecision?: boolean; permissionLateDispatch?: boolean;
   permissionSiblingOrder?: boolean; permissionExpectedCutoff?: string;
   bnbFree?: number; staleBnb?: boolean; unknownBnb?: boolean; runStatus?: "ACTIVE" | "PAUSED";
   operatorRecovery?: boolean; operatorPendingDispatch?: boolean; operatorUnsettledDecision?: boolean;
@@ -166,7 +167,8 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     environment: "REAL", executor_shard_id: "executor-02", engine_kill_switch: true,
     global_kill_switch: false, account_kill_switch: false, strategy_config_pending: options.configPending ?? false };
   const slots = Array.from({ length: 25 }, (_, index) => ({ ...scope, id: `slot-${index}`, run_id: run.id,
-    slot_number: index + 1, position_quantity: index < (options.caixetaLayout ? 7 : 1) ? 1 : 0,
+    entry_state: options.fullOpenPermission || index < (options.caixetaLayout ? 7 : 1) ? "OPEN" : "PLANNED",
+    slot_number: index + 1, position_quantity: options.fullOpenPermission || index < (options.caixetaLayout ? 7 : 1) ? 1 : 0,
     position_committed_brl: index < (options.caixetaLayout ? 7 : 1) ? 10 : 0 }));
   const accounts = slots.map((slot) => ({ ...slot, balance_brl: 11, gain_count: 0 }));
   if (options.missingSlot) slots.pop();
@@ -195,6 +197,9 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     status: options.permissionOrderStatus ?? "NEW",
     trading_engine_id: options.permissionSiblingOrder ? "engine-b" : "engine-a",
     created_at: options.permissionRecentOrder ? "2026-09-27T00:00:00Z" : orders[0].created_at });
+  if (options.fullOpenPermission) for (let index = 1; index < 25; index++) orders.push({ ...orders[0],
+    id: `order-tp-${index + 1}`, slot_id: `slot-${index}`, client_order_id: `owned:tp-${index + 1}`,
+    exchange_order_id: `tp-${index + 1}` });
   let alertReads = 0;
   let bulkReads = 0;
   let operatorIntentReads = 0;
@@ -296,9 +301,11 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
               created_at: new Date(now - 71_000).toISOString(), ...options.rateDecisionChange,
               ...(operatorIntentReads > 1 ? options.rateLateDecisionChange : {}) }];
           } else {
+            operatorIntentReads++;
             const cutoff = options.permissionExpectedCutoff ?? "2026-09-26T23:58:42.000Z";
             assert.equal(filters.or, `created_at.gte.${cutoff},dispatched_at.gte.${cutoff},result.neq.COMPLETED,result.is.null`);
-            data = options.permissionRecentDecision || options.permissionUnsettledDecision ? [{ id: "unsettled-decision" }] : [];
+            data = options.permissionRecentDecision || options.permissionUnsettledDecision
+              || options.permissionLateDecision && operatorIntentReads > 1 ? [{ id: "unsettled-decision" }] : [];
           }
         } else {
           assert.equal(filters.acknowledged_at, null);
@@ -306,7 +313,11 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
             operatorDispatchReads++;
             data = options.operatorPendingDispatch || options.operatorLatePendingDispatch && operatorDispatchReads > 1
               ? [{ client_order_id: "uncertain-dispatch" }] : [];
-          } else data = options.permissionPendingDispatch ? [{ client_order_id: "uncertain-dispatch" }] : [];
+          } else {
+            operatorDispatchReads++;
+            data = options.permissionPendingDispatch || options.permissionLateDispatch && operatorDispatchReads > 1
+              ? [{ client_order_id: "uncertain-dispatch" }] : [];
+          }
         }
         if (options.permissionProofDenied || options.operatorProofDenied)
           return { data: null, error: { code: "42501" }, status: 403 };
@@ -448,7 +459,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
         balances: options.unknownBnb ? [] : [{ asset: "BNB", free: options.bnbFree ?? .001 }],
         bnb_quote_price: { symbol: "BNBBRL", price: 6000,
           observedAt: new Date(Date.now() - (options.staleBnb ? 30_001 : 0)).toISOString() },
-        open_orders: options.missingTp ? [] : options.caixetaLayout
+        open_orders: options.missingTp ? [] : options.caixetaLayout || options.fullOpenPermission
           ? orders.filter(order => order.status !== "PREPARED").map(order => ({ id: order.exchange_order_id, side: order.side,
             clientOrderId: order.client_order_id, status: "NEW", price: order.price,
             executedQuantity: 0, originalQuantity: 1 })) : options.permissionRecovery
@@ -887,12 +898,14 @@ test("late incident CAS loss re-closes only this engine instead of reporting suc
 
 test("legacy permission GET wrapper resumes only after settled pre-incident order and dispatch proof under lease/CAS", async () => {
   for (const [code, stage] of [["COINOPS_LIVE_ARM_ENTRY_FAILED", "ARM_ENTRY"],
-    ["COINOPS_LIVE_CREDIT_SLOTS_FAILED", "CREDIT_SLOTS"]]) {
+    ["COINOPS_LIVE_CREDIT_SLOTS_FAILED", "CREDIT_SLOTS"],
+    ["COINOPS_LIVE_ASSERT_PROTECTION_FAILED", "ASSERT_PROTECTION"]]) {
     const incident = { ...known, code, details: { stage, root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" } };
     const safe = fixture({ alerts: [[incident]], permissionRecovery: true });
     assert.equal((await safe.run()).status, "RESUMED");
     assert.deepEqual(safe.calls, ["lease-claimed", "alert-read", "health", "exchange-state",
-      "permission-intent-read", "permission-dispatch-read", "alert-read"]);
+      "permission-intent-read", "permission-dispatch-read", "alert-read", "exchange-state",
+      "permission-intent-read", "permission-dispatch-read"]);
     assert.ok(safe.writes.every(write => !["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts"].includes(write.table)));
     const cleared = safe.writes.find(write => write.table === "robot_v1_live_alerts" && write.data.resolved_at)!;
     assert.equal(cleared.filters.code, code); assert.equal(cleared.filters.last_seen_at, incident.last_seen_at);
@@ -917,6 +930,34 @@ test("legacy permission GET wrapper resumes only after settled pre-incident orde
     await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
     assert.equal(changed.writes.some(write => write.data.kill_switch === false), false);
   }
+});
+
+test("full engine ASSERT_PROTECTION recovery proves all TPs and settled intents twice without financial writes", async () => {
+  const incident = { ...known, code: "COINOPS_LIVE_ASSERT_PROTECTION_FAILED",
+    details: { stage: "ASSERT_PROTECTION", root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" } };
+  const safe = fixture({ alerts: [[incident]], fullOpenPermission: true });
+  const before = structuredClone([safe.orders, safe.slots]);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.deepEqual([safe.orders, safe.slots], before);
+  assert.equal(safe.orders.length, 25);
+  for (const call of ["exchange-state", "permission-intent-read", "permission-dispatch-read"])
+    assert.equal(safe.calls.filter(c => c === call).length, 2);
+  assert.equal(safe.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts",
+    "robot_v1_strategy_decisions", "account_order_budget_reservations"].includes(w.table)), false);
+  for (const change of [{ missingTp: true }, { missingSlot: true }, { duplicateSlot: true }, { healthy: false },
+    { permissionRecentDecision: true }, { permissionUnsettledDecision: true }, { permissionPendingDispatch: true },
+    { permissionProofDenied: true }, { permissionLateDecision: true }, { permissionLateDispatch: true },
+    { configPending: true }, { bulkStatus: "PENDING" }, { exposureCap: 5 }]) {
+    const blocked = fixture({ alerts: [[incident]], fullOpenPermission: true, ...change });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false);
+  }
+  const incomplete = fixture({ alerts: [[incident]], fullOpenPermission: true });
+  incomplete.slots[24].entry_state = "PLANNED";
+  await assert.rejects(incomplete.run(), /PERMISSION_RECOVERY_UNPROVEN/);
+  const changed = fixture({ alerts: [[incident], [{ ...incident, details: { ...incident.details, stage: "PROTECT_TP" } }]], fullOpenPermission: true });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(w => w.data.kill_switch === false), false);
 });
 
 test("legacy permission recovery tolerates bounded DB/caller skew without rounding incident CAS timestamps", async () => {

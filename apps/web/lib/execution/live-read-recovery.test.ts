@@ -243,7 +243,8 @@ test("bulk checkpoint legacy recovery qualifies only the exact GET stage, never 
 
 test("legacy permission wrapper needs exact read-stage/root evidence; never generically allow ARM/CREDIT errors", () => {
   for (const [code, stage] of [["COINOPS_LIVE_ARM_ENTRY_FAILED", "ARM_ENTRY"],
-    ["COINOPS_LIVE_CREDIT_SLOTS_FAILED", "CREDIT_SLOTS"]]) {
+    ["COINOPS_LIVE_CREDIT_SLOTS_FAILED", "CREDIT_SLOTS"],
+    ["COINOPS_LIVE_ASSERT_PROTECTION_FAILED", "ASSERT_PROTECTION"]]) {
     const details = { stage, root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" };
     const alert = { alert_key: "LIVE_RUN:run-a:CRITICAL", code, details,
       first_seen_at: "2026-10-11T12:00:00Z", last_seen_at: "2026-10-11T12:00:00Z" };
@@ -259,6 +260,29 @@ test("legacy permission wrapper needs exact read-stage/root evidence; never gene
     assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, details), false);
   }
   assert.equal(mayRecoverReadOutage("ACTIVE", "OK", "EXECUTOR_PRODUCTION_PERMISSION_DENIED"), false);
+});
+
+test("ASSERT_PROTECTION permission recovery accepts a fully occupied engine without inventing NEXT BUY", () => {
+  const incident = { alert_key: "LIVE_RUN:run-a:CRITICAL", code: "COINOPS_LIVE_ASSERT_PROTECTION_FAILED",
+    details: { stage: "ASSERT_PROTECTION", root_code: "EXECUTOR_PRODUCTION_PERMISSION_DENIED" },
+    first_seen_at: "2026-11-15T12:08:34Z", last_seen_at: "2026-11-15T12:08:34Z" };
+  for (const slotCount of [25, 50, 100]) {
+    const topology = { slotCount, openSlotNumbers: Array.from({ length: slotCount }, (_, i) => i + 1) };
+    const orders = topology.openSlotNumbers.map(n => ({ status: "NEW", side: "SELL",
+      client_order_id: `owned:tp-${n}`, exchange_order_id: `tp-${n}`, created_at: "2026-11-13T12:00:00Z",
+      price: 500, requested_quantity: .03, executed_quantity: 0, cumulative_quote: 0, trades_reconciled: false }));
+    const observed = orders.map(o => ({ id: o.exchange_order_id, clientOrderId: o.client_order_id,
+      side: o.side, status: "NEW", price: o.price, executedQuantity: 0, originalQuantity: .03 }));
+    assert.equal(assertPermissionReadRecoveryOrders(incident, orders, observed, "owned:", topology), "2026-11-15T12:07:04.000Z");
+    for (const invalid of [undefined, { ...topology, slotCount: 101 },
+      { ...topology, openSlotNumbers: topology.openSlotNumbers.slice(1) },
+      { ...topology, openSlotNumbers: topology.openSlotNumbers.map(() => 1) },
+      { ...topology, openSlotNumbers: topology.openSlotNumbers.map(n => n - 1) }])
+      assert.throws(() => assertPermissionReadRecoveryOrders(incident, orders, observed, "owned:", invalid), /RECOVERY_UNPROVEN/);
+    assert.throws(() => assertPermissionReadRecoveryOrders(incident, orders.slice(1), observed.slice(1), "owned:", topology), /RECOVERY_UNPROVEN/);
+    assert.throws(() => assertPermissionReadRecoveryOrders({ ...incident, code: "COINOPS_LIVE_ARM_ENTRY_FAILED",
+      details: { ...incident.details, stage: "ARM_ENTRY" } }, orders, observed, "owned:", topology), /RECOVERY_UNPROVEN/);
+  }
 });
 
 test("permission read recovery accepts only old settled orders and exact unfilled resident NEXT BUY/TP", () => {

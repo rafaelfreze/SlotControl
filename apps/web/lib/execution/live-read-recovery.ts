@@ -1,4 +1,5 @@
 import { ATH_TICKER_TRANSIENT_ROOTS, transientAthTickerProvider, validAthTickerSymbol } from "./ath-ticker-read.ts";
+import { MIN_ENGINE_SLOT_COUNT, MAX_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "./engine-slot-topology.ts";
 
 export type ReadRecoveryDetails = { stage?: unknown; root_code?: unknown; read_path?: unknown; metadata_path?: unknown;
   audit_phase?: unknown; audit_reason?: unknown; audit_event_type?: unknown; audit_attempts?: unknown;
@@ -236,7 +237,8 @@ export function isRegistryStateReadRecovery(code: string | null, details?: ReadR
 export function isPermissionStateReadRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
   return details?.root_code === "EXECUTOR_PRODUCTION_PERMISSION_DENIED"
     && (code === "COINOPS_LIVE_ARM_ENTRY_FAILED" && details.stage === "ARM_ENTRY"
-      || code === "COINOPS_LIVE_CREDIT_SLOTS_FAILED" && details.stage === "CREDIT_SLOTS");
+      || code === "COINOPS_LIVE_CREDIT_SLOTS_FAILED" && details.stage === "CREDIT_SLOTS"
+      || code === "COINOPS_LIVE_ASSERT_PROTECTION_FAILED" && details.stage === "ASSERT_PROTECTION");
 }
 
 /** Compatibility for the exact captured pre-fix525 GET incident. Not a general
@@ -382,9 +384,12 @@ type PermissionRecoveryResident = { id: string; clientOrderId: string | null; si
 
 /** Deliberately narrow: keep all resident orders exactly as they existed well
  * before the incident. No prepared intent, partial fill, unknown status, recent
- * dispatch or empty NEXT BUY can inherit this permission-read recovery. */
+ * dispatch can inherit this permission-read recovery. ASSERT_PROTECTION also
+ * permits no BUY when every physical slot is already OPEN with a resident TP;
+ * a full engine must not require an impossible extra entry to recover. */
 export function assertPermissionReadRecoveryOrders(incident: ReadRecoveryAlert,
-  orders: PermissionRecoveryOrder[], observed: PermissionRecoveryResident[], prefix: string) {
+  orders: PermissionRecoveryOrder[], observed: PermissionRecoveryResident[], prefix: string,
+  topology?: { slotCount: number; openSlotNumbers: number[] }) {
   const first = Date.parse(incident.first_seen_at ?? "");
   const last = Date.parse(incident.last_seen_at);
   // DB default NOW() and the caller's timestamp may invert by milliseconds.
@@ -395,7 +400,13 @@ export function assertPermissionReadRecoveryOrders(incident: ReadRecoveryAlert,
     || !Number.isFinite(last) || first - last > 1_000 || !prefix || !orders.length) return fail();
   const settled = new Set(["FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"]);
   const residents = orders.filter(order => order.status === "NEW");
-  if (residents.filter(order => order.side === "BUY").length !== 1) return fail();
+  const buys = residents.filter(order => order.side === "BUY").length;
+  const fullyOpen = incident.code === "COINOPS_LIVE_ASSERT_PROTECTION_FAILED"
+    && topology && Number.isInteger(topology.slotCount)
+    && topology.slotCount >= MIN_ENGINE_SLOT_COUNT && topology.slotCount <= MAX_ENGINE_SLOT_COUNT
+    && hasCompletePhysicalSlotSet(topology.openSlotNumbers, topology.slotCount)
+    && residents.filter(order => order.side === "SELL").length === topology.slotCount;
+  if (buys !== 1 && !(buys === 0 && fullyOpen)) return fail();
   for (const order of orders) {
     if (!order.client_order_id.startsWith(prefix) || !order.exchange_order_id
       || !Number.isFinite(Date.parse(order.created_at)) || Date.parse(order.created_at) >= cutoff
