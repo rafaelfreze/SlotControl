@@ -129,7 +129,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
   capitalAuditRecovery?: boolean; capitalAuditReadDenied?: boolean; capitalAuditIncomplete?: boolean;
   capitalAuditPendingPlan?: boolean; auditEventRecovery?: boolean; auditProofDenied?: boolean;
   auditProofMissing?: boolean; auditEventChanges?: Record<string, unknown>;
-  auditEventLateChanges?: Record<string, unknown>; resetReplayRecovery?: boolean;
+  auditEventLateChanges?: Record<string, unknown>; resetReplayRecovery?: boolean; leaseAuditSuccessor?: boolean;
   resetMilestoneChanges?: Record<string, unknown>; resetMilestoneLateChanges?: Record<string, unknown>;
   resetMilestoneMissing?: boolean; resetMilestoneDenied?: boolean;
   predecessorChanges?: Record<string, unknown>; successorChanges?: Record<string, unknown>;
@@ -158,7 +158,7 @@ function fixture(options: { alerts?: Array<ReadRecoveryAlert[]>; healthy?: boole
     created_at: new Date(now - 86_400_000).toISOString(), slot_count: 25, ath_period_key: goal.period,
     config_snapshot: options.athRecovery ? { gain_rate: .055, normal_spacing_rate: .015, post_ath_spacing_rate: .03,
       regime: "NORMAL", source_config_version: 3, ath_price: 296, ath_source: "CONFIRMED_HISTORY" } : {},
-    previous_run_id: options.resetReplayRecovery ? "64b267d0-3897-4783-a07e-69c427472f81" : null,
+    previous_run_id: options.resetReplayRecovery || options.leaseAuditSuccessor ? "64b267d0-3897-4783-a07e-69c427472f81" : null,
     reset_idempotency_key: options.resetReplayRecovery ? "RESET:64b267d0-3897-4783-a07e-69c427472f81:owned:old-final-tp" : null };
   if (options.monthlyAuditRecovery) Object.assign(run.config_snapshot, { slot_goal_state: goal,
     monthly_priority_rollover: { ...monthlyCheckpoint, observed_at: new Date(now).toISOString() } });
@@ -1093,6 +1093,32 @@ test("audit recovery with delayed DB ingestion keeps financial proofs and exact 
   }
   const changed = fixture({ alerts: [[incident], [{ ...incident, first_seen_at: new Date(first + 1).toISOString() }]],
     auditEventRecovery: true, caixetaLayout: true });
+  await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
+  assert.equal(changed.writes.some(w => w.data.kill_switch === false), false);
+});
+
+test("audit lease loss resumes only an original run with two fresh reconciled and settled proofs", async () => {
+  const code = "COINOPS_LIVE_LEASE_LOST";
+  const when = new Date(Date.now() - 60_000).toISOString();
+  const incident = { ...known, code, first_seen_at: when, last_seen_at: when,
+    details: { stage: "AUDIT_EVENT", root_code: code } };
+  const options = { alerts: [[incident]], auditEventRecovery: true, caixetaLayout: true };
+  const safe = fixture(options), snapshot = structuredClone([safe.orders, safe.slots]);
+  assert.equal((await safe.run()).status, "RESUMED");
+  assert.deepEqual([safe.orders, safe.slots], snapshot);
+  assert.equal(safe.calls.filter(c => c === "audit-checkpoint-read").length, 2);
+  assert.equal(safe.calls.filter(c => c === "operator-dispatch-read").length, 2);
+  assert.equal(safe.writes.some(w => ["robot_v1_live_orders", "robot_v1_live_slots", "robot_v1_live_slot_accounts",
+    "robot_v1_strategy_decisions", "account_order_budget_reservations"].includes(w.table)), false);
+  for (const change of [{ leaseAuditSuccessor: true }, { auditProofMissing: true }, { auditProofDenied: true },
+    { auditEventLateChanges: { trading_engine_id: "other" } }, { operatorPendingDispatch: true },
+    { operatorLatePendingDispatch: true }, { operatorLateUnsettledDecision: true }, { missingTp: true },
+    { missingSlot: true }, { healthy: false }, { configPending: true }, { exposureCap: 5 }]) {
+    const blocked = fixture({ ...options, ...change });
+    await assert.rejects(blocked.run());
+    assert.equal(blocked.writes.some(w => w.data.kill_switch === false), false);
+  }
+  const changed = fixture({ ...options, alerts: [[incident], [{ ...incident, details: { ...incident.details, stage: "POST_ORDER" } }]] });
   await assert.rejects(changed.run(), /INCIDENT_CHANGED/);
   assert.equal(changed.writes.some(w => w.data.kill_switch === false), false);
 });

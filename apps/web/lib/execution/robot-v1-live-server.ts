@@ -3081,6 +3081,11 @@ export async function resumeLiveRun(runId: string, userId: string, asset: V1Asse
       await loadAthProfile(service, athScope(run), "REAL", run.asset), run) : null;
     const auditEventRecovery = Boolean(recoveryIncident && (isAuditEventRecovery(recoveryIncident.code, recoveryIncident.details)
       || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));
+    // AUDIT_EVENT also covers the successor-run reset milestone. A legacy
+    // LEASE_LOST has no event identity, so only an original run proves this
+    // was the final RECONCILED boundary; successors remain fail-closed.
+    if (auditEventRecovery && recoveryIncident?.code === "COINOPS_LIVE_LEASE_LOST"
+      && run.previous_run_id !== null) throw new Error("COINOPS_LIVE_AUDIT_LEASE_RECOVERY_UNPROVEN");
     const resetAuditReplayRecovery = Boolean(recoveryIncident
       && (isResetAuditReplayRecovery(recoveryIncident.code, recoveryIncident.details)
         || isResetMilestoneReadRecovery(recoveryIncident.code, recoveryIncident.details)));

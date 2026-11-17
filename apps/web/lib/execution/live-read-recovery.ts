@@ -60,6 +60,13 @@ export function isResetMilestoneReadRecovery(code: string | null, details?: Read
  * complete exchange/ledger protection and twice-settled dispatches under lease. */
 export function isAuditEventRecovery(code: string | null, details?: ReadRecoveryDetails | null) {
   if (isMonthlyPriorityAuditReplayRecovery(code, details)) return true;
+  // A failed lease renewal at the final audit boundary never authorizes a
+  // retry of that write or of an order. The server independently proves a
+  // newer reconciliation and settled financial state under a fresh lease.
+  if (code === "COINOPS_LIVE_LEASE_LOST" && details?.root_code === code
+    && details.stage === "AUDIT_EVENT" && details.read_path === undefined
+    && details.metadata_path === undefined && details.http_status === undefined
+    && details.provider_code === undefined && AUDIT_DETAIL_KEYS.every(key => details[key] === undefined)) return true;
   if (code !== "COINOPS_LIVE_EVENT_PERSIST_FAILED" || details?.root_code !== code
     || details.stage !== "AUDIT_EVENT") return false;
   if (isResetAuditReplayRecovery(code, details)) return true;

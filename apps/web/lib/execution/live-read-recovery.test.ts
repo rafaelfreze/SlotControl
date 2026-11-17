@@ -469,6 +469,20 @@ test("new capital audit exhaustion requires its exact GET path and stage; hard r
 
 const auditCode = "COINOPS_LIVE_EVENT_PERSIST_FAILED";
 const auditDetails = { stage: "AUDIT_EVENT", root_code: auditCode };
+
+test("lease loss is recoverable only for the exact unclassified final audit boundary", () => {
+  const code = "COINOPS_LIVE_LEASE_LOST";
+  const details = { stage: "AUDIT_EVENT", root_code: code };
+  assert.equal(isAuditEventRecovery(code, details), true);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "OK", code, details), true);
+  for (const change of [{ stage: "PROTECT_TP" }, { stage: "POST_ORDER" }, { stage: "ARM_ENTRY" },
+    { root_code: "COINOPS_LIVE_EVENT_PERSIST_FAILED" }, { read_path: "ledger/reset_recovery_milestone" },
+    { audit_reason: "READBACK_MISMATCH" }, { audit_event_type: "RESET_RECOVERED" },
+    { http_status: 403 }, { provider_code: "42501" }])
+    assert.equal(isAuditEventRecovery(code, { ...details, ...change }), false);
+  assert.equal(mayRecoverReadOutage("PAUSED", "OK", code, details), false);
+  assert.equal(mayRecoverReadOutage("ACTIVE", "RETRY", code, details), false);
+});
 const typedAuditDetails = { ...auditDetails, audit_phase: "WRITE", audit_reason: "TRANSIENT_EXHAUSTED",
   audit_event_type: "RECONCILED", audit_event_key: "RECONCILED:2026-10-21T13:28",
   audit_attempts: 2, audit_http_status: 503, audit_provider_code: null };
