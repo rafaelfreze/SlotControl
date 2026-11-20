@@ -1,9 +1,8 @@
-import { resolveHubPeriod } from "@/vendor/marketing-1.3.2/kit.mjs";
-import { parseChannel } from "@/vendor/marketing-1.3.2/hub-server.mjs";
+import { resolveEpochPeriod } from "@/vendor/marketing-1.4.18/epoch-server.js";
 import { MarketingDashboard } from "@/vendor/marketing-1.3.2/dashboard.mjs";
-import { readWebsiteDashboard } from "@/vendor/marketing-1.3.2/website-server.mjs";
+import { readPlatformEpochDashboard } from "@/lib/marketing-hub/epoch";
 import "@/vendor/marketing-1.3.2/styles.css";
-import { websiteDb, websiteProduct } from "@/lib/marketing-hub/website-source";
+import { websiteProduct } from "@/lib/marketing-hub/website-source";
 import { requireAssetHealthAccess } from "@/lib/coinops-asset-health/access";
 export const dynamic = "force-dynamic";
 export default async function WebsiteMarketing({
@@ -19,13 +18,8 @@ export default async function WebsiteMarketing({
         typeof v === "string" ? v : undefined,
       ]),
     );
-  const period = resolveHubPeriod(search, "America/Campo_Grande"),
-    data = await readWebsiteDashboard(
-      websiteDb(),
-      websiteProduct,
-      period,
-      parseChannel(search.channel),
-    );
+  const period = resolveEpochPeriod(search),
+    data = await readPlatformEpochDashboard(period);
   return (
     <MarketingDashboard
       product={websiteProduct}

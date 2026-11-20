@@ -2,7 +2,7 @@ import "server-only";
 import {
   assertWebsiteBackend,
   type WebsiteDb,
-} from "@/vendor/marketing-1.3.2/website-server.mjs";
+} from "@/vendor/marketing-1.4.18/website-server.js";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getSupabaseDataSchema } from "@/lib/supabase/env";
 export const websiteProduct = "coinops" as const;

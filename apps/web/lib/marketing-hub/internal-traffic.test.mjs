@@ -12,14 +12,15 @@ function load(path, mocks, globals = {}) {
 }
 test("public CoinOps wrapper suppresses the original counter during QA or explicit preview", () => {
  let internal = false;
- const api = load("components/marketing/website-counter.tsx", { "next/navigation": { usePathname: () => "/" }, "@/vendor/marketing-internal-traffic-1.3.5/internal-traffic.mjs": { isInternalTraffic: () => internal }, "@/vendor/marketing-1.3.2/website-counter.mjs": { WebsiteCounter: "counter" }, "react/jsx-runtime": { jsx: (type, props) => ({ type, props }) } });
+ const api = load("components/marketing/website-counter.tsx", { "next/navigation": { usePathname: () => "/" }, "@/vendor/marketing-internal-traffic-1.3.5/internal-traffic.mjs": { isInternalTraffic: () => internal }, "@/vendor/marketing-1.4.18/website-counter.js": { WebsiteCounter: "counter" }, "react/jsx-runtime": { jsx: (type, props) => ({ type, props }) } });
  assert.equal(api.PublicWebsiteCounter({}).props.preview, false);
+ assert.equal(api.PublicWebsiteCounter({}).props.version, 2);
  internal = true; assert.equal(api.PublicWebsiteCounter({}).props.preview, true);
  internal = false; assert.equal(api.PublicWebsiteCounter({ preview: true }).props.preview, true);
 });
 test("QA ingestion bypasses the database; unmarked production keeps the existing path", async () => {
  let dbCalls = 0, counts = 0;
- const api = load("app/api/marketing/platform/route.ts", { "@/vendor/marketing-internal-traffic-1.3.5/internal-traffic.mjs": qa, "@/vendor/marketing-1.3.2/website-server.mjs": { async serveWebsiteCounter() { counts++; return new Response(null,{status:204}); } }, "@/lib/marketing-hub/website-source": { websiteDb() { dbCalls++; return {}; }, websiteProduct: "coinops" } });
+ const api = load("app/api/marketing/platform/route.ts", { "@/vendor/marketing-internal-traffic-1.3.5/internal-traffic.mjs": qa, "@/vendor/marketing-1.4.18/website-server.js": { async serveWebsiteCounter() { counts++; return new Response(null,{status:204}); } }, "@/lib/marketing-hub/epoch": {recordPlatformActivity:()=>true}, "@/lib/marketing-hub/website-source": { websiteDb() { dbCalls++; return {}; }, websiteProduct: "coinops" } });
  for (const headers of [{ "x-onplay-qa":"1" }, { referer:"https://cripto-flax.vercel.app/?onplay_qa=1" }, { referer:"https://cripto-flax.vercel.app/preview/site" }]) assert.equal((await api.POST(new Request("https://cripto-flax.vercel.app/api/marketing/platform",{method:"POST",headers}))).status,204);
  assert.equal(dbCalls,0);assert.equal(counts,0);
  assert.equal((await api.POST(new Request("https://cripto-flax.vercel.app/api/marketing/platform",{method:"POST"}))).status,204);
