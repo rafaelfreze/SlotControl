@@ -337,3 +337,33 @@ test("state advertises safe cancel support and exact effective legacy caps witho
     assert.equal(JSON.stringify(updated.body).includes("fictional"), false);
   } finally { await scenario.close(); }
 });
+
+
+test("stale owned-order snapshot returns scoped signed unsent proof and retains no pending claim", async () => {
+ const f=await fixture({native:true,missingOrder:true});
+ try {
+  const patch={clientOrderId:f.clientId,side:"BUY",purpose:"ENTRY",type:"LIMIT",quantity:"0.05",price:"119.79",
+    expectedOwnedOpenIds:["C2-unexpected-owned"],assetCapBrl:275,globalCapBrl:725,assetExposureBeforeBrl:0,globalExposureBeforeBrl:0};
+  const result=await f.send("/v1/create-order",patch,f.clientId);
+  assert.equal(result.status,503);assert.equal(result.body.error,"EXECUTOR_UNRECONCILED_OWNED_ORDER");
+  const proof=JSON.parse(Buffer.from(result.body.unsent_proof.receipt,"base64url").toString());
+  const raw=JSON.stringify({...intentContext(f.engine,f.clientId),executor_shard_id:f.shardId,...patch});
+  assert.equal(verifyAccountOrderUnsentProof(SECRET,result.body.unsent_proof,proof,raw,NOW).outcome,"NOT_SUBMITTED");
+  const claim=durableIntent(f.engine,{},f.clientId,"","CREATE_ORDER");
+  await assert.rejects(readFile(join(f.directory,"orders",`${sha256(claim.key)}.pending`)),{code:"ENOENT"});
+  assert.equal(f.calls.filter(call=>call.method!=="GET").length,0);
+ } finally {await f.close();}
+});
+
+test("owned-order error raised after POST cannot create proof or release claim", async () => {
+ const f=await fixture({native:true,missingOrder:true,postError:new ExecutorPreDispatchRejection("EXECUTOR_UNRECONCILED_OWNED_ORDER",503)});
+ try {
+  const patch={clientOrderId:f.clientId,side:"BUY",purpose:"ENTRY",type:"LIMIT",quantity:"0.05",price:"119.79",
+    expectedOwnedOpenIds:[],assetCapBrl:275,globalCapBrl:725,assetExposureBeforeBrl:0,globalExposureBeforeBrl:0};
+  const r=await f.send("/v1/create-order",patch,f.clientId);assert.equal(r.body.unsent_proof,undefined);
+  const claim=durableIntent(f.engine,{},f.clientId,"","CREATE_ORDER");
+  assert.ok(await readFile(join(f.directory,"orders",`${sha256(claim.key)}.pending`)));
+  assert.equal((await f.send("/v1/create-order",patch,f.clientId)).body.error,"EXECUTOR_WRITE_OUTCOME_UNKNOWN");
+  assert.equal(f.calls.filter(call=>call.method==="POST").length,1);
+ } finally {await f.close();}
+});

@@ -83,7 +83,7 @@ async function request<T>(path: string, input: Record<string, unknown>, key: str
     const rejectedBeforePost = response.status === 403
       && ["EXECUTOR_ACCOUNT_ORDER_BUDGET_PERMIT_DENIED", "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT"].includes(payload.error ?? "")
       || response.status === 503 && (payload.error === "EXECUTOR_BNB_FEE_RESERVE_MISSING" && input.side === "BUY"
-        || payload.error === "EXECUTOR_RATE_LIMITED_BEFORE_POST" && ["BUY", "SELL"].includes(String(input.side)));
+        || ["EXECUTOR_RATE_LIMITED_BEFORE_POST", "EXECUTOR_UNRECONCILED_OWNED_ORDER"].includes(payload.error ?? "") && ["BUY", "SELL"].includes(String(input.side)));
     if (path === "/v1/create-order" && rejectedBeforePost && payload.unsent_proof) {
       const { side, ...proofScope } = permitScope;
       void side;

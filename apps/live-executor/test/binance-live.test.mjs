@@ -160,7 +160,8 @@ test("Production transport refuses stale own-open-order snapshot before POST", a
     executedQty: "0", price: "437000" }] });
   await assert.rejects(transport.createOwnedOrder(marketIntent(),
     { allowCreate: true, tradingEnabled: true, killSwitch: false }),
-  /UNRECONCILED_OWNED_ORDER/);
+  error => error instanceof ExecutorPreDispatchRejection && error.code === "EXECUTOR_UNRECONCILED_OWNED_ORDER");
+  assert.equal(transport.orderPostAttempted, false);
   assert.equal(calls.filter((call) => call.method === "POST").length, 0);
 });
 

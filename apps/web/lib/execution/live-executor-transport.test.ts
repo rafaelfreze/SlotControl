@@ -469,3 +469,24 @@ test("LIVE state retries a transient sanitized executor error after TP creation"
     else process.env.COINOPS_EXECUTOR_HMAC_SECRET = previous.secret;
   }
 });
+
+test("owned-order mismatch receipt releases only the exact BUY or TP request; a bare error remains ambiguous", async () => {
+  const target = { shardId: "executor-02", ip: "203.0.113.2", base: "https://203.0.113.2", secret: "x".repeat(32) };
+  for (const side of ["BUY", "SELL"] as const) {
+    let calls = 0;
+    const fetcher = (async (_url: unknown, init?: RequestInit) => {
+      calls++; const raw = String(init!.body), body = JSON.parse(raw), headers = new Headers(init!.headers);
+      const proof = signAccountOrderUnsentProof(target.secret, { ...engine, executor_shard_id: target.shardId,
+        environment: "REAL", clientOrderId: body.clientOrderId, decision_id: body.decision_id,
+        request_nonce: headers.get("x-coinops-nonce")! }, createHash("sha256").update(raw).digest("hex"));
+      return Response.json({ error: "EXECUTOR_UNRECONCILED_OWNED_ORDER", unsent_proof: proof }, { status: 503 });
+    }) as typeof fetch;
+    await assert.rejects(transport.createLiveExecutorOrder({ clientOrderId: `owned-${side}`, side,
+      purpose: side === "SELL" ? "TP" : "ENTRY" }, engine, "fixture-decision", fetcher, async () => target),
+      error => error instanceof AccountOrderNotSubmitted);
+    assert.equal(calls, 1);
+    await assert.rejects(transport.createLiveExecutorOrder({ clientOrderId: `owned-${side}`, side }, engine,
+      "fixture-decision", (async () => Response.json({ error: "EXECUTOR_UNRECONCILED_OWNED_ORDER" }, { status: 503 })) as typeof fetch,
+      async () => target), error => error instanceof ExecutorHttpError && !(error instanceof AccountOrderNotSubmitted));
+  }
+});

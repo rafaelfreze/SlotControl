@@ -155,3 +155,21 @@ test("PostgREST +00:00 and ISO Z are the same exact dispatch instant; another mi
     dispatchedAt: new Date(Date.parse(dispatchedAt) + 1).toISOString(), query: async () => null }), /EVIDENCE_INVALID/);
   assert.ok(await readFile(`${changed.base}.pending`));
 });
+
+
+test("legacy owned-order mismatch requires pinned BUY, exact journal, claim and fenced absent exchange order", async () => {
+  const f=await fixture();
+  const { HISTORICAL_OWNED_ORDER_RUNTIME, HISTORICAL_OWNED_ORDER_FINGERPRINT }=await import("../src/pre-dispatch-evidence.mjs");
+  const row={...record,result:"EXECUTOR_UNRECONCILED_OWNED_ORDER",http_status:503};
+  const input={...f.input,records:[row],runtimeSha:HISTORICAL_OWNED_ORDER_RUNTIME,runtimeFingerprint:HISTORICAL_OWNED_ORDER_FINGERPRINT};
+  const v=historicalPreDispatchProof(input);
+  assert.equal(v.proof.side,"BUY"); assert.equal(v.proof.purpose,"ENTRY");
+  for(const patch of [{clientOrderId:"C2-fixture-4-S-0123456789abcd"},{runtimeFingerprint:"0".repeat(64)},
+    {records:[row,row]},{records:[{...row,result:"EXECUTOR_ORDER_POST_UNKNOWN"}]},
+    {records:[{...row,trading_engine_id:"other"}]},{records:[{...row,http_status:200}]}])
+    assert.throws(()=>historicalPreDispatchProof({...input,...patch}),/UNPROVEN/);
+  await writeFile(`${f.base}.pre-post-evidence`,JSON.stringify(v));
+  await assert.rejects(attestNeverDispatched({...f.args,query:async()=>({orderId:"already-accepted"})}),/ORDER_EXISTS/);
+  assert.equal(await attestNeverDispatched({...f.args,query:async()=>null}),true);
+  assert.equal((await readdir(f.directory)).filter(n=>n.endsWith(".rejected")).length,1);
+});

@@ -10,7 +10,11 @@ export const HISTORICAL_BNB_REJECTION_RUNTIME = "bc43636bfd96cbb3618a7380c86e0d7
 export const HISTORICAL_BNB_REJECTION_FINGERPRINT = "9ac54825d53da6ed250c904a1c232e07b64643460c4aa99308dba4b16b2dd963";
 export const HISTORICAL_TP_RATE_RUNTIME = "8db2cd73c1418dff49825b992b0fdab195fab535";
 export const HISTORICAL_TP_RATE_FINGERPRINT = "b38d280d7ca8adfcff250571235a985c362707f530eb645e548c8bf90adfb8b0";
+export const HISTORICAL_OWNED_ORDER_RUNTIME = "dbf9c67eaaa0fa69cae47f0b17584c795b7b6ded";
+export const HISTORICAL_OWNED_ORDER_FINGERPRINT = "a9e1ff26fa91c0f6b5115ad283942814fcf95661d9440fe903f2b0795a74d3de";
 const pins = Object.freeze([
+  Object.freeze({runtimeSha:HISTORICAL_OWNED_ORDER_RUNTIME,runtimeFingerprint:HISTORICAL_OWNED_ORDER_FINGERPRINT,
+    rejectionCode:"EXECUTOR_UNRECONCILED_OWNED_ORDER",httpStatus:503,side:"BUY"}),
   Object.freeze({ runtimeSha: HISTORICAL_REJECTION_RUNTIME, runtimeFingerprint: HISTORICAL_REJECTION_FINGERPRINT,
     rejectionCode: "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT", httpStatus: 403 }),
   Object.freeze({ runtimeSha: HISTORICAL_BNB_REJECTION_RUNTIME, runtimeFingerprint: HISTORICAL_BNB_REJECTION_FINGERPRINT,
@@ -34,7 +38,7 @@ export function historicalPreDispatchProof({ secret, engine, clientOrderId, deci
   const pin = historicalPreDispatchRuntimePin(runtimeSha, runtimeFingerprint);
   if (typeof secret !== "string" || Buffer.byteLength(secret) < 32
     || !pin || !Array.isArray(records)
-    || pin.side === "SELL" && !/-S-[a-f0-9]{14}$/.test(clientOrderId)
+    || pin.side && !(pin.side === "SELL" ? /-S-[a-f0-9]{14}$/.test(clientOrderId) : /-B-[a-f0-9]{14}$/.test(clientOrderId))
     || !/^[a-f0-9]{64}$/.test(pendingHash) || !/^[a-f0-9]{64}$/.test(decisionId)
     || !Number.isFinite(pendingMtime) || !Number.isFinite(Date.parse(dispatchedAt))) denied();
   const keyHash = sha256(clientOrderId).slice(0, 12);
@@ -61,7 +65,7 @@ export function historicalPreDispatchProof({ secret, engine, clientOrderId, deci
     rejection_code: rejection.result,
     // Preserve byte-for-byte compatibility of the original quote proof.
     ...(runtimeSha === HISTORICAL_BNB_REJECTION_RUNTIME || pin.side ? { rejection_http_status: rejection.http_status } : {}),
-    ...(pin.side ? { side: "SELL", purpose: "TP" } : {}) };
+    ...(pin.side ? { side: pin.side, purpose: pin.side === "SELL" ? "TP" : "ENTRY" } : {}) };
   return { proof, signature: sign(secret, proof) };
 }
 
@@ -78,8 +82,9 @@ export function verifiedHistoricalRejection(base, secret, scope, claimKey, dispa
     || !timingSafeEqual(Buffer.from(sign(secret, proof), "hex"), Buffer.from(value.signature, "hex"))
     || proof.protocol !== 1 || proof.source !== "PINNED_EXECUTOR_JOURNAL"
     || !pin || proof.rejection_code !== pin.rejectionCode
-    || pin.side === "SELL" && (proof.side !== "SELL" || proof.purpose !== "TP"
-      || !/-S-[a-f0-9]{14}$/.test(proof.clientOrderId) || proof.rejection_http_status !== 503)
+    || pin.side && (proof.side !== pin.side || proof.purpose !== (pin.side === "SELL" ? "TP" : "ENTRY")
+      || !(pin.side === "SELL" ? /-S-[a-f0-9]{14}$/.test(proof.clientOrderId) : /-B-[a-f0-9]{14}$/.test(proof.clientOrderId))
+      || proof.rejection_http_status !== pin.httpStatus)
     || (pin.runtimeSha === HISTORICAL_BNB_REJECTION_RUNTIME
       && proof.rejection_http_status !== pin.httpStatus)
     || (proof.rejection_http_status !== undefined && proof.rejection_http_status !== pin.httpStatus)

@@ -302,7 +302,7 @@ export class BinanceLiveTransport {
       ? [...input.expectedOwnedOpenIds].sort() : null;
     if (!expectedOwn || new Set(expectedOwn).size !== expectedOwn.length
       || JSON.stringify(observedOwn) !== JSON.stringify(expectedOwn))
-      throw new ExecutorRejection("EXECUTOR_UNRECONCILED_OWNED_ORDER", 503);
+      throw new ExecutorPreDispatchRejection("EXECUTOR_UNRECONCILED_OWNED_ORDER", 503);
     const hard = this.engine ? { exposureBrl: this.engine.hard_cap_quote, orderBrl: this.engine.max_order_quote } : EXECUTOR_CAPS[match[1]];
     const maxAsset = Number(input.assetCapBrl), maxGlobal = Number(input.globalCapBrl);
     const beforeAsset = Number(input.assetExposureBeforeBrl), beforeGlobal = Number(input.globalExposureBeforeBrl);

@@ -575,7 +575,7 @@ export function createExecutorHandler({ secret, stateDirectory, expectedEgressIp
           catch (error) {
             if (error instanceof ExecutorPreDispatchRejection && !transport.orderPostAttempted
               && (error.code === "EXECUTOR_QUOTE_BALANCE_INSUFFICIENT" && error.status === 403
-                || ["EXECUTOR_BNB_FEE_RESERVE_MISSING", "EXECUTOR_RATE_LIMITED_BEFORE_POST"].includes(error.code) && error.status === 503))
+                || ["EXECUTOR_BNB_FEE_RESERVE_MISSING", "EXECUTOR_RATE_LIMITED_BEFORE_POST", "EXECUTOR_UNRECONCILED_OWNED_ORDER"].includes(error.code) && error.status === 503))
               error.unsentProof = signAccountOrderUnsentProof(secret, { ...scope, clientOrderId: input.clientOrderId,
                 decision_id: input.decision_id, request_nonce: verified.nonce }, verified.bodyHash, now());
             throw error;
