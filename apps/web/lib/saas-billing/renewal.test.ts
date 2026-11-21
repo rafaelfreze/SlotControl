@@ -43,6 +43,12 @@ test("a confirmed payment releases commercial web access without an engine actio
   assert.equal(billingViewerAccessAllowed(paid, "2026-10-18"), true);
   assert.equal(buildRenewalNotice(paid, "2026-10-18"), null);
 });
+test("a canceled subscription blocks the viewer even without a debt or with trial time remaining", () => {
+  const canceled = projection({ status: "canceled", balance_cents: 0, trial_ends_at: "2028-10-18T13:00:00Z" });
+  assert.equal(billingViewerAccessAllowed(canceled, "2026-10-18"), false);
+  assert.equal(buildRenewalNotice(canceled, "2026-10-18")?.title, "Assinatura cancelada");
+  assert.equal(billingViewerAccessAllowed(projection({ status: "active", balance_cents: 0 }), "2026-10-18"), true);
+});
 test("unlinked identity, missing date and legacy state do not create a local suspension or grace", () => {
   for (const p of [null, projection({ registration_pending: true }), projection({ next_due_date: null }), projection({ balance_cents: null })])
     assert.equal(billingViewerAccessAllowed(p, "2026-10-18"), true);
@@ -72,7 +78,7 @@ async function middleware(path: string, role = "VIEWER", p: BillingProjection | 
       "@/lib/supabase/env": { getSupabaseDataSchema: () => "coinops" }, "@/lib/saas-billing/contract": { parseProjection },
       "@/lib/saas-billing/renewal": { billingViewerAccessAllowed: (value: BillingProjection | null) => billingViewerAccessAllowed(value, "2026-10-18") },
       "@supabase/ssr": { createServerClient: () => ({ auth: { getUser: async () => { authChecks.push("auth"); return { data: { user: { id: user, app_metadata: { coinops_role: role } } } }; } },
-        from: (table: string) => { tables.push(table); if (table === "saas_billing_projections" && commercialReadThrows) throw Error("fixture-read-failure"); return { select: () => ({ eq: (_key: string, id: string) => { assert.equal(id, user); return { maybeSingle: async () => ({ data: table === "viewer_access" ? { status: "ACTIVE" } : p ? { projection: p } : null, error: null }) }; } }) }; } }) },
+        from: (table: string) => { tables.push(table); if (table === "saas_billing_projections" && commercialReadThrows) throw Error("fixture-read-failure"); return { select: () => ({ eq: (_key: string, id: string) => { assert.equal(id, user); return { maybeSingle: async () => ({ data: table === "viewer_access" ? { status: "ACTIVE", exchange_account_id: "verified-account" } : p ? { projection: p } : null, error: null }) }; } }) }; } }) },
     }) as { middleware: (r: unknown) => Promise<{ kind: string; location?: string; status?: number }> };
     const result = await handler.middleware({ url: url.toString(), nextUrl: Object.assign(url, { clone: () => new URL(url) }),
       method: path === "/api/assinatura" ? "POST" : "GET", cookies: { getAll: () => [], set() {} } });
@@ -85,6 +91,12 @@ test("expired VIEWER navigation redirects to own payment portal and read API ret
   assert.equal((await middleware("/meu-coinops")).result.location, "https://coinops.example/assinatura?aviso=renovacao-vencida");
   assert.equal((await middleware("/api/coinops-viewer-state")).result.status, 403);
   assert.equal((await middleware("/meu-coinops", "VIEWER", projection({ balance_cents: 0 }))).result.kind, "next");
+});
+test("cancellation closes the viewer page and read API without involving the trading engine", async () => {
+  const p = projection({ status: "canceled", balance_cents: 0 });
+  assert.equal((await middleware("/meu-coinops", "VIEWER", p)).result.kind, "redirect");
+  assert.equal((await middleware("/api/coinops-viewer-state", "VIEWER", p)).result.status, 403);
+  assert.equal((await middleware("/automacao", "ADMIN", p)).result.kind, "next");
 });
 test("subscription, checkout, ADMIN supervision and cron execution remain accessible", async () => {
   for (const path of ["/assinatura", "/api/assinatura", "/redefinir-senha"]) {

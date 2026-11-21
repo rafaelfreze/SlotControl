@@ -16,7 +16,9 @@ const label = (date: Date) => new Intl.DateTimeFormat("pt-BR", { timeZone: "Amer
 
 /** Commercial web access only. This function has no engine or exchange side effects. */
 export function billingViewerAccessAllowed(projection: BillingProjection | null, today = billingToday(), now = Date.now()) {
-  if (!projection || projection.registration_pending || (projection.balance_cents ?? 0) <= 0) return true;
+  if (!projection || projection.registration_pending) return true;
+  if (projection.status === "canceled" || projection.canceled_at) return false;
+  if ((projection.balance_cents ?? 0) <= 0) return true;
   if (projection.trial_ends_at && Date.parse(projection.trial_ends_at) > now) return true;
   const due = day(projection.next_due_date), limit = paymentDeadline(projection), current = day(today);
   // A missing deadline uses seven days from the genuine Central due date, never this visit.
@@ -25,6 +27,9 @@ export function billingViewerAccessAllowed(projection: BillingProjection | null,
 
 /** The renewal deadline is the persisted Central date, never seven days from the visit. */
 export function buildRenewalNotice(projection: BillingProjection | null, today = billingToday(), now = Date.now()): RenewalNotice | null {
+  if (projection && !projection.registration_pending && (projection.status === "canceled" || projection.canceled_at)) {
+    return { title: "Assinatura cancelada", description: "A reativação do acesso é feita pela OnPlay após a regularização.", blocked: true };
+  }
   if (!projection || projection.registration_pending || projection.manual_pause
     || projection.trial_ends_at && Date.parse(projection.trial_ends_at) > now
     || !projection.last_paid_at && (!projection.trial_ends_at || !Number.isFinite(Date.parse(projection.trial_ends_at)))
