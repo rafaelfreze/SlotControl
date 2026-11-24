@@ -1837,6 +1837,19 @@ async function alignRecoveryOrderCap(service:Service,run:Run,slot:Slot,account:A
   return fresh;
 }
 
+async function hasPriorityWatchdogStaleAlert(service: Service, run: Run): Promise<boolean> {
+  const alerts = await boundedLedgerRead((deadline, attempt) => observeLedgerRows<{ details: { run_id?: string } | null }>(
+    "entry_priority_watchdog_alert",
+    service.from("robot_v1_live_alerts").select("details")
+      .eq("product_id", run.product_id).eq("tenant_id", run.tenant_id).eq("user_id", run.user_id)
+      .eq("operator_id", run.operator_id).eq("exchange_account_id", run.exchange_account_id)
+      .eq("trading_engine_id", run.trading_engine_id).eq("alert_key", `WATCHDOG:${run.id}`)
+      .eq("severity", "CRITICAL").eq("code", "WATCHDOG_RECONCILIATION_STALE")
+      .is("resolved_at", null).limit(2).abortSignal(deadline),
+    deadline, attempt));
+  return alerts.length === 1 && alerts[0].details?.run_id === run.id;
+}
+
 async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   state: LiveExecutorState, priorityCommitted = false): Promise<string> {
   await validateRunEngine(service, run);
@@ -2012,6 +2025,9 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
   });
   if (!priorityCommitted && !allocation.held && (allocation.requiresResidentCancel || reallocates
     || run.config_snapshot.entry_priority_policy !== ENTRY_PRIORITY_POLICY)) {
+    // Allow the fully protected reconciliation to finish so the Watchdog can
+    // close its own stale alert. Keep any resident BUY and defer allocation.
+    if (await hasPriorityWatchdogStaleAlert(service, run)) return "PRIORITY_WATCHDOG_STALE_HOLD";
     // Preflight the priority owner's own capital at the newly assigned price.
     // This never borrows another slot's balance and never cancels for an
     // unaffordable/min-notional-invalid replacement.
@@ -2062,6 +2078,12 @@ async function armNextEntry(service: Service, run: Run, ledger: Ledger,
       const checkpoint = readback.data?.config_snapshot?.entry_priority_checkpoint;
       if (readback.error || checkpoint?.plan_id !== planId) {
         if (/COINOPS_ENTRY_PRIORITY_(SNAPSHOT_CHANGED|INPUT_INVALID)/.test(saved.error.message ?? "")) return "PRIORITY_SNAPSHOT_CHANGED";
+        // The Watchdog can persist a stale observation after our preflight.
+        // Only an explicit scope rejection plus that exact alert can defer;
+        // a lost response or an unreadable checkpoint remains unproven.
+        if (!readback.error && saved.error.code === "P0001"
+          && saved.error.message === "COINOPS_ENTRY_PRIORITY_SCOPE_DENIED"
+          && await hasPriorityWatchdogStaleAlert(service, run)) return "PRIORITY_WATCHDOG_STALE_HOLD";
         throw new Error("COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN");
       }
       committed = { ...checkpoint, price_sources:readback.data?.config_snapshot?.entry_price_sources };

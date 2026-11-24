@@ -116,3 +116,26 @@ Primeiro motor retomado: Rafael/BTCBRL. Às 14:53:32Z o cron confirmou a alocaç
 mensal e às 14:53:40Z observou NEW a BUY do slot físico #7, preço 432279 BRL;
 o slot #6 recebeu o nível prospectivo 427956 BRL. A recuperação dos demais
 motores e a paridade final serão registradas após a validação real completa.
+
+## Atraso de reconciliação confirmado pelo Watchdog
+
+Em 23/11/2026, o Postgres registrou interrupção e recuperação automática
+às 22h09 UTC. O Watchdog abriu `WATCHDOG_RECONCILIATION_STALE` e cinco
+motores SOL/BRL voltaram a reconciliar antes da baixa do alerta. O RPC ainda
+encontrou o alerta crítico e recusou a alocação entre 22h13min23s e 22h13min38s
+UTC com `COINOPS_ENTRY_PRIORITY_SCOPE_DENIED`. O worker classificou a recusa
+como commit sem prova e fechou os gates locais de novas compras.
+
+Ao planejar uma alocação, o worker agora verifica o alerta de atraso do
+Watchdog para o ciclo, motor, conta e operador exatos. Se ainda estiver aberto,
+adia a alocação, mantendo a BUY residente. Quando o alerta chega entre a
+checagem e a alocação, somente a rejeição SQL explícita `P0001` com a mesma
+prova permite adiar. Timeout, readback indisponível e outras causas conservam
+o tratamento existente.
+
+O evento protegido `RECONCILED` registra `PRIORITY_WATCHDOG_STALE_HOLD`.
+O Watchdog verifica o ciclo novamente e encerra o atraso quando houver
+proteção e reconciliação válidas. O próximo ciclo planeja entradas pelo
+fluxo normal. A transação SQL e os guardas de trading permanecem vigentes.
+Para bloqueios legados, use o controle oficial apenas com incidente exato,
+reconciliação recente e proteção, decisões e dispatches confirmados.

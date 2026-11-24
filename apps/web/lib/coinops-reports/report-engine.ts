@@ -407,6 +407,10 @@ export function buildAuditReport(input: AuditInput, filters: AuditFilters, exten
     notes:"Adopted REAL engines: confirmed lifetime DESC below accumulated calendar target from first reconciled BUY; physical ASC tie. Prospective target edits start next competence. Available entry slots all at goal release again; OPEN/partial remain protected. Unadopted and historical snapshots retain their previous goal policy. Regime membership preserved; permutation of uncommitted levels only after exact zero-fill cancel, lease and atomic CAS. Historical snapshots without policy retain legacy meaning.",
     source:"robot_v1_live_runs.config_snapshot.entry_priority_checkpoint + ENTRY_PRIORITY_ALLOCATED" });
   if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
+    parameter: "entry_priority_watchdog_stale_hold", value: "PRIORITY_WATCHDOG_STALE_HOLD", unit: "enum", version: 1,
+    source: "robot_v1_live_alerts:WATCHDOG_RECONCILIATION_STALE + robot_v1_live_events:RECONCILED", evidence_scope: "CURRENT_CODE_CONTRACT",
+    notes: "Alerta CRITICAL do Watchdog com escopo exato do ciclo adia a alocação e preserva a BUY residente na pré-checagem. A reconciliação protegida conclui e o Watchdog encerra seu alerta. Rejeição de escopo P0001 concorrente exige a mesma prova. Resposta incerta e demais guardas continuam fechados." });
+  if (filters.environments.includes("REAL")) rules.push({ effective_from: input.generatedAt, environment: "REAL", asset: null,
     parameter: "monthly_entry_level_preservation", value: "PRESERVE_PROVEN_LEVELS", version: 1,
     evidence_scope: "CURRENT_CODE_CONTRACT",
     source: "robot_v1_live_runs.config_snapshot.monthly_priority_rollover + MONTHLY_PRIORITY_REFRESHED",

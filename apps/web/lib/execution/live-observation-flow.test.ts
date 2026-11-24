@@ -140,6 +140,18 @@ function fixture(error:Error, oldFirstSeen?:string, engineId="engine-a", registr
   return {execute:exports.testAdvance as ()=>Promise<{status:string}>,writes,run,effects};
 }
 
+test("a priority stale hold completes protected reconciliation without closing entry gates", async () => {
+  const f = fixture(new Error("unused"), undefined, "engine-a", false, { next: "PRIORITY_WATCHDOG_STALE_HOLD" });
+  assert.deepEqual(await f.execute(), { status: "OK", next: "PRIORITY_WATCHDOG_STALE_HOLD" });
+  assert.equal(f.effects.protect, 1);
+  assert.equal(f.effects.arm, 1);
+  const event = f.writes.find(write => write.data.event_type === "RECONCILED");
+  assert.equal((event?.data.details as Record<string, unknown>)?.next, "PRIORITY_WATCHDOG_STALE_HOLD");
+  assert.ok(f.writes.some(write => write.table === "robot_v1_live_runs"
+    && write.filters.id === f.run.id && typeof write.data.last_reconciled_at === "string"));
+  assert.ok(f.writes.every(write => !write.data.kill_switch));
+});
+
 test("rate-limited safety GET during ARM_ENTRY checkpoints and preserves protection; prolonged outage stays engine-local", async () => {
   const error = new readErrors.LiveReadUnavailable("EXECUTOR_BINANCE_RATE_LIMITED", "/v1/state", 1, 503);
   for (const id of ["engine-a", "engine-b"]) {

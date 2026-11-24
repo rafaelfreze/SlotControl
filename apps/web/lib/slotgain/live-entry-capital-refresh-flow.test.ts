@@ -723,6 +723,44 @@ for (const slotCount of [50, 75, 100]) test(`${slotCount} slots NEXT BUY replace
   h.unchangedOpen();
 });
 
+test("priority lets reconciliation finish while the exact Watchdog stale alert is open", async () => {
+  const h = harness({ asset: "BTC", noContribution: true, monthlyCounts: { 2: 1, 3: 4 } });
+  const alert = { ...h.run, alert_key: `WATCHDOG:${h.run.id}`, severity: "CRITICAL",
+    code: "WATCHDOG_RECONCILIATION_STALE", resolved_at: null, details: { run_id: h.run.id } };
+  h.tables.robot_v1_live_alerts.push(alert);
+  assert.equal(await h.arm(), "PRIORITY_WATCHDOG_STALE_HOLD");
+  assert.equal(h.orders[2].status, "NEW");
+  assert.ok(!h.calls.some(call => ["cancel", "allocate", "order"].includes(call.kind)));
+  h.unchangedOpen();
+
+  h.tables.robot_v1_live_alerts[0] = { ...alert, trading_engine_id: "sibling" };
+  assert.equal(await h.arm(), "NEXT_BUY_ARMED");
+  assert.equal(h.orders.find(order => order.side === "BUY" && order.status === "NEW")?.slot_number, 3);
+  assert.equal(h.calls.filter(call => call.kind === "cancel").length, 1);
+  h.unchangedOpen();
+});
+
+for (const code of ["P0001", "PGRST003"]) {
+  test(`priority race defers only a definitive scope rejection (${code})`, async () => {
+    const h = harness({ asset: "BTC", noContribution: true, monthlyCounts: { 2: 1, 3: 4 } });
+    const existingBuy = h.orders[2];
+    Object.assign(existingBuy, { status: "CANCELED", trades_reconciled: true });
+    h.slots[1].entry_state = "PLANNED";
+    h.exchange.delete(String(existingBuy.client_order_id));
+    const rpc = h.service.rpc;
+    h.service.rpc = async (name, params) => {
+      if (name !== "allocate_live_monthly_entry_levels") return rpc(name, params);
+      h.tables.robot_v1_live_alerts.push({ ...h.run, alert_key: `WATCHDOG:${h.run.id}`, severity: "CRITICAL",
+        code: "WATCHDOG_RECONCILIATION_STALE", resolved_at: null, details: { run_id: h.run.id } });
+      return { data: null, error: { code, message: "COINOPS_ENTRY_PRIORITY_SCOPE_DENIED" } };
+    };
+    if (code === "P0001") assert.equal(await h.arm(), "PRIORITY_WATCHDOG_STALE_HOLD");
+    else await assert.rejects(h.arm(), /COINOPS_LIVE_ENTRY_PRIORITY_COMMIT_UNPROVEN/);
+    assert.equal(h.orders.length, 3);
+    h.unchangedOpen();
+  });
+}
+
 for(const slotCount of [25,50,100]) test(`${slotCount} monthly allocation replaces the owner after a verified zero-fill cancel`,async()=>{
  const h=harness({asset:"BTC",slotCount,noContribution:true,monthlyCounts:{2:1,3:4,4:3,5:2}});
  const money=structuredClone(h.tables.robot_v1_live_slot_accounts);

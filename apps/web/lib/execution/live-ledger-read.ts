@@ -4,7 +4,7 @@ import { DEFAULT_ENGINE_SLOT_COUNT, hasCompletePhysicalSlotSet } from "./engine-
 type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "monthly_gains"
   | "bulk_checkpoint" | "config_gate" | "quote_cap" | "preparation" | "operator" | "ath_profile"
   | "exposure_runs" | "exposure_engines" | "exposure_slots" | "exposure_orders"
-  | "capital_refresh_events"
+  | "capital_refresh_events" | "entry_priority_watchdog_alert"
   | "reset_recovery_milestone" | "reset_recovery_lineage"
   | "account_budget_alert" | "account_budget_decision" | "account_budget_reservation";
 type Response<T> = { data: T[] | null; error: unknown; status?: number };

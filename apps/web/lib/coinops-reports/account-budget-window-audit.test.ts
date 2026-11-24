@@ -26,3 +26,14 @@ test("settlement before entry planning exports its exact metadata authority with
   assert.match(String(rule.notes),text);
  assert.equal(report.datasets.live_execution.length,0);
 });
+
+test("REAL exports scoped Watchdog deferral as a rule, without inventing a recovery", () => {
+  const filters = { start: "2026-11-23T00:00:00Z", end: "2026-11-24T00:00:00Z",
+    assets: ["SOL"] as ["SOL"], environments: ["REAL"] as ["REAL"] };
+  const report = buildAuditReport({ sources: {}, incompleteSources: [], warnings: [],
+    generatedAt: filters.start, scope: { tenantId: "t", userId: "u" } }, filters);
+  const rule = report.datasets.rules.find(row => row.parameter === "entry_priority_watchdog_stale_hold")!;
+  assert.equal(rule.value, "PRIORITY_WATCHDOG_STALE_HOLD");
+  assert.match(String(rule.source), /WATCHDOG_RECONCILIATION_STALE.*RECONCILED/);
+  assert.equal(report.datasets.live_execution.length, 0);
+});
