@@ -144,15 +144,47 @@ test("historical crossed levels never hide present LIVE faults or missing protec
   });
 });
 
-test("current Spot or BNB funding warnings remain visible despite historical crossed levels", () => {
-  for (const code of ["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING"]) {
+test("current Spot and BNB holds name the missing reserve despite historical crossed levels", () => {
+  for (const [code, label, reason] of [
+    ["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "AGUARDANDO SALDO", /saldo Spot em BRL/],
+    ["COINOPS_LIVE_BNB_FEE_RESERVE_MISSING", "AGUARDANDO BNB", /reserva de BNB para taxas/],
+  ] as const) {
     const data = historicalMissedLiveFixture();
     data.liveAssetData!.SOL!.alerts.push({ code, severity: "WARNING", last_seen_at: AT });
     const model = buildPremiumAssets(data, "REAL", NOW)[1];
     assert.equal(model.health.healthy, false);
-    assert.equal(model.health.label, "AGUARDANDO SALDO");
+    assert.equal(model.health.label, label);
+    assert.match(model.health.reason, reason);
+    if (label === "AGUARDANDO BNB") assert.doesNotMatch(model.health.reason, /Spot|BRL/);
     assert.equal(model.activeIssueCount, 1); assert.equal(model.alerts[0].code, code);
   }
+  const data = historicalMissedLiveFixture();
+  data.liveAssetData!.SOL!.alerts.push(
+    { code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", last_seen_at: AT },
+    { code: "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING", severity: "WARNING", last_seen_at: AT });
+  const combined = buildPremiumAssets(data, "REAL", NOW)[1].health;
+  assert.equal(combined.label, "AGUARDANDO SALDO E BNB");
+  assert.match(combined.reason, /Spot em BRL.*BNB para taxas/);
+});
+
+test("six residual positions wait for LOT_SIZE without a false TP gap, then confirm dust", () => {
+  const data = historicalMissedLiveFixture(), live = data.liveAssetData!.SOL!;
+  for (const slot of live.slots.slice(0, 6)) slot.position_quantity = .02094;
+  data.livePreparation = null;
+  const unknown = buildPremiumAssets(data, "REAL", NOW)[1];
+  assert.equal(unknown.health.healthy, false);
+  assert.equal(unknown.health.tone, "attention");
+  assert.equal(unknown.health.label, "VERIFICANDO COBERTURA DE TP");
+  assert.match(unknown.health.reason, /tamanho de lote da Binance/);
+  live.displayQuantityStep = .001;
+  const confirmed = buildPremiumAssets(data, "REAL", NOW)[1];
+  assert.equal(confirmed.health.label, "OPERACIONAL");
+  assert.equal(confirmed.activeIssueCount, 0);
+  live.slots[0].position_quantity = .021;
+  assert.equal(buildPremiumAssets(data, "REAL", NOW)[1].health.label, "REVISAR LIVE");
+  live.displayQuantityStep = null;
+  live.orders.shift();
+  assert.equal(buildPremiumAssets(data, "REAL", NOW)[1].health.label, "REVISAR LIVE");
 });
 
 test("historical missed levels cannot bypass parent controls or a pending strategy update", () => {
@@ -282,6 +314,7 @@ test("LIVE uses CoinOps position only, actual fill price, remaining BUY reservat
   assert.equal(buildPremiumAssets(duplicate, "REAL", NOW)[0].health.tone, "error");
 
   const uncovered = structuredClone(data);
+  uncovered.liveAssetData!.BTC!.displayQuantityStep = .00001;
   uncovered.liveAssetData!.BTC!.orders[1].requested_quantity = .5;
   assert.equal(buildPremiumAssets(uncovered, "REAL", NOW)[0].health.tone, "error");
 

@@ -1,6 +1,11 @@
 /** Personal presentation preference only. Never resolves a ledger alert, changes
  * engine health, disables push, or grants permission for a financial action. */
 export const FUNDING_WARNING_AWARENESS_KEY = "coinops-funding-warning-awareness-v1";
+export const FUNDING_HOLD_LABEL = {
+  quote: "AGUARDANDO SALDO",
+  bnb: "AGUARDANDO BNB",
+  both: "AGUARDANDO SALDO E BNB",
+} as const;
 const LIMIT = 200;
 const CODES = new Set(["COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING"]);
 type Warning = { code: string; severity: string; at: string | null };
@@ -43,7 +48,8 @@ export function updateFundingWarningAwareness(storage: StorageLike, fingerprints
  * Mixed critical/read/TP/cap/schema/ownership problems always stay visible. */
 export function fundingOnlyBannerAcknowledged(engine: { engineId: string; engineStatus: string; killSwitch: boolean;
   health: { label: string }; activeIssueCount: number; alerts: Warning[] }, acknowledged: ReadonlySet<string>): boolean {
-  return engine.engineStatus === "ACTIVE" && !engine.killSwitch && engine.health.label === "AGUARDANDO SALDO"
+  return engine.engineStatus === "ACTIVE" && !engine.killSwitch
+    && Object.values(FUNDING_HOLD_LABEL).some((label) => label === engine.health.label)
     && engine.alerts.length > 0 && engine.activeIssueCount === engine.alerts.length
     && engine.alerts.every((warning) => {
       const fingerprint = fundingWarningFingerprint(engine.engineId, warning);

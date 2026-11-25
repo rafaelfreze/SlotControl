@@ -1478,17 +1478,21 @@ test("saldo completo expirado não copia um valor como confirmação atual", asy
 for (const width of [390, 1440]) test(`aviso de saldo ciente fica compacto sem liberar operação em ${width}px`, async ({ page }, testInfo) => {
   const data = automationOperatorFixture();
   const affected = data.operator!.engines.find((engine) => engine.accountId === ACCOUNT_A && engine.symbol === "SOLBRL")!;
-  affected.alerts = [{ code: "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT", severity: "WARNING", at: AUTOMATION_FIXTURE_NOW }];
-  affected.health = { healthy: false, tone: "attention", label: "AGUARDANDO SALDO", reason: "Novas compras aguardam reposição Spot." };
+  const bnbHold = width === 390;
+  affected.alerts = [{ code: bnbHold ? "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING" : "COINOPS_LIVE_QUOTE_BALANCE_INSUFFICIENT",
+    severity: "WARNING", at: AUTOMATION_FIXTURE_NOW }];
+  affected.health = { healthy: false, tone: "attention", label: bnbHold ? "AGUARDANDO BNB" : "AGUARDANDO SALDO",
+    reason: bnbHold ? "A reserva de BNB para taxas está abaixo do mínimo." : "O saldo Spot em BRL está abaixo do necessário para a próxima compra." };
   affected.activeIssueCount = 1;
   data.operator!.engines = [affected]; data.operator!.accounts = data.operator!.accounts.filter((account) => account.id === ACCOUNT_A);
   const audit = await mount(page, "live", width, 900, data, null, null, null, null, { balances: [], funding: [], unavailable: 1 });
   const ack = page.getByRole("button", { name: "Já avisei a pessoa · ocultar aviso · Rafael Demo · SOLBRL", exact: true });
+  await expect(page.locator(".px-alert-banner")).toContainText(affected.health.label);
   await expect(ack).toBeVisible();
   await ack.click();
   await expect(page.locator(".px-alert-banner")).toHaveCount(0);
-  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toContainText("Aguardando saldo · ciente");
-  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toContainText("1 aviso(s) de saldo oculto(s)");
+  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toContainText("Aviso conhecido");
+  await expect(page.getByRole("status", { name: "Avisos de saldo conhecidos" })).toContainText("1 aviso(s) de saldo ou taxa oculto(s)");
   await expect(page.locator(".px-live")).toContainText("ATENÇÃO");
   await expect(page.locator(".px-account-card .px-badge")).toHaveText("ACOMPANHAR");
   await page.getByRole("button", { name: "Reexibir avisos de saldo · Rafael Demo", exact: true }).click();

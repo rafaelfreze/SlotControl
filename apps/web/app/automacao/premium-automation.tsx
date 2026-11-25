@@ -479,7 +479,7 @@ const overviewEvents = overview.flatMap(({ env, assets: group }) => group.flatMa
           <small>Preferência somente deste navegador/dispositivo. Alerta, saúde real e proteções continuam ativos.</small></span> : null}</p>)}</div> : null}
       {acknowledgedFundingAccounts.length ? <section className="px-funding-awareness" aria-label="Avisos de saldo conhecidos" role="status">
         {acknowledgedFundingAccounts.map((account) => <div className="px-funding-awareness-row" key={account.accountId}>
-          <span><strong>{account.accountName} · Aguardando saldo · ciente</strong><small>{account.fingerprints.length} aviso(s) de saldo oculto(s)</small></span>
+          <span><strong>{account.accountName} · Aviso conhecido</strong><small>{account.fingerprints.length} aviso(s) de saldo ou taxa oculto(s)</small></span>
           <button type="button" className="px-button" onClick={() => changeFundingAwareness(account.fingerprints, false)}
             aria-label={`Reexibir avisos de saldo · ${account.accountName}`}>Reexibir avisos de saldo</button></div>)}
         <small>Somente neste navegador. O ledger, notificações e operação continuam sem alterações.</small>

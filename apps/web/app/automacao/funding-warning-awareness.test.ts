@@ -31,6 +31,11 @@ test("new engine, code or warning timestamp reappears and reexibir is reversible
   assert.equal(fundingOnlyBannerAcknowledged({ ...engine(), alerts: [{ ...warning, at: "2026-10-13T12:01:00Z" }] }, acknowledged), false);
   assert.equal(fundingOnlyBannerAcknowledged({ ...engine(), engineId: "20000000-0000-4000-8000-000000000003" }, acknowledged), false);
   assert.equal(fundingOnlyBannerAcknowledged({ ...engine(), alerts: [{ ...warning, code: "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING" }] }, acknowledged), false);
+  const bnb = { ...warning, code: "COINOPS_LIVE_BNB_FEE_RESERVE_MISSING" };
+  const withBnb = new Set([...acknowledged, fundingWarningFingerprint(engineId, bnb)!]);
+  assert.equal(fundingOnlyBannerAcknowledged({ ...engine(), health: { label: "AGUARDANDO BNB" }, alerts: [bnb] }, withBnb), true);
+  assert.equal(fundingOnlyBannerAcknowledged({ ...engine(), health: { label: "AGUARDANDO SALDO E BNB" },
+    alerts: [warning, bnb], activeIssueCount: 2 }, withBnb), true);
   assert.deepEqual(updateFundingWarningAwareness(browser, [fingerprint], false), []);
   assert.equal(readFundingWarningAwareness(storage()).length, 0); // another browser/device is independent
 });
@@ -53,6 +58,6 @@ test("local preference stores no amount or payload and failed storage cannot sil
   assert.doesNotMatch(source, /fetch\(|resolved_at|createServiceRoleClient|kill_switch|sendPush/);
   const premium = readFileSync(new URL("./premium-automation.tsx", import.meta.url), "utf8");
   assert.match(premium, /fundingOnlyBannerAcknowledged\(item, acknowledgedFunding\)/);
-  assert.match(premium, /Aguardando saldo · ciente/);
+  assert.match(premium, /Aviso conhecido/);
   assert.match(premium, /ledger, notificações e operação continuam sem alterações/);
 });
