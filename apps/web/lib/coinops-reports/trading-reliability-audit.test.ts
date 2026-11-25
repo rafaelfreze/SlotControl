@@ -30,7 +30,8 @@ test("v22 publishes the observation and recurrence contract without claiming mis
   assert.match(String(permission?.notes), /segurança atual, não a causa upstream histórica/);
   assert.match(String(rule?.notes), /UNKNOWN, não 0%/);
   assert.match(String(rule?.notes), /RECURRENCE_REGRESSION/);
-  assert.equal(rule?.version, 4);
+  assert.equal(rule?.version, 5);
+  assert.match(String(rule?.notes), /Status 0 no envelope exato do SDK, sem código do provedor, permite repetir somente o GET/);
   assert.match(String(rule?.notes), /registry: somente timeout comprovado/);
   assert.match(String(rule?.notes), /sem reutilizar autorização parcial/);
   assert.match(String(rule?.notes), /LEDGER_READ_STALE local/);

@@ -7,7 +7,8 @@ type Resource = "slots" | "orders" | "slot_accounts" | "monthly_target" | "month
   | "capital_refresh_events" | "entry_priority_watchdog_alert"
   | "reset_recovery_milestone" | "reset_recovery_lineage"
   | "account_budget_alert" | "account_budget_decision" | "account_budget_reservation";
-type Response<T> = { data: T[] | null; error: unknown; status?: number };
+type Response<T> = { data: T[] | null; error: unknown; status?: number; success?: boolean;
+  count?: number | null; statusText?: string };
 const CONNECTION_CODES = new Set(["PGRST000", "PGRST001", "PGRST002", "PGRST003",
   "08000", "08003", "08006", "53300", "57014"]);
 
@@ -29,8 +30,12 @@ export async function observeLedgerRows<T>(resource: Resource, query: PromiseLik
     const code = typeof provider.code === "string" ? provider.code.trim() : "";
     const status = Number.isInteger(result.status) && result.status! >= 0 && result.status! <= 599
       ? result.status! : null;
-    const network = !code && status === 0 && typeof provider.message === "string"
-      && /^TypeError:\s*fetch failed(?:\s|$)/.test(provider.message);
+    // The SDK catch returns status 0 with no upstream code when fetch or
+    // response consumption rejects. Its message depends on the transport.
+    const sdkReadRejected = status === 0 && provider.code === "" && result.success === false
+      && result.data === null && result.count === null && result.statusText === "";
+    const network = status === 0 && (sdkReadRejected || typeof provider.message === "string"
+      && /^TypeError:\s*fetch failed(?:\s|$)/.test(provider.message));
     // A deadline never overrides a real permission/schema/identity error.
     const connection = CONNECTION_CODES.has(code) && ([503, 504].includes(status ?? -1)
       || code === "57014" && status === 500);
@@ -62,10 +67,10 @@ export async function boundedLedgerRead<T>(read: (deadline: AbortSignal, attempt
 /** Required singleton GET: keep the provider evidence, but never turn a
  * successful missing/malformed configuration into an observation retry. */
 export async function observeLedgerRecord<T extends object>(resource: Resource,
-  query: PromiseLike<{ data: T | null; error: unknown; status?: number }>,
+  query: PromiseLike<Omit<Response<T>, "data"> & { data: T | null }>,
   deadline: AbortSignal, attempt: number, missingCode: string): Promise<T> {
   const rows = await observeLedgerRows<T>(resource, Promise.resolve(query).then(result => ({
-    ...result, data: result.data === null ? [] : [result.data],
+    ...result, data: result.data === null ? (result.error ? null : []) : [result.data],
   })), deadline, attempt);
   if (rows.length !== 1 || !rows[0] || typeof rows[0] !== "object" || Array.isArray(rows[0]))
     throw new Error(missingCode);

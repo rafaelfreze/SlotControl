@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import ts from "typescript";
-import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRows } from "./live-ledger-read.ts";
+import { assertPhysicalLedger, boundedLedgerRead, observeLedgerRecord, observeLedgerRows } from "./live-ledger-read.ts";
 import * as readErrors from "./live-read-error.ts";
 import { mayRecoverReadOutage, verifiedReadRecoveryAlert } from "./live-read-recovery.ts";
 import { completeLedgerRead } from "./complete-ledger-read.ts";
@@ -76,6 +76,63 @@ test("503/connection/timeout reads retry a complete snapshot once; provider evid
     return true;
   });
   assert.equal(calls, 2);
+});
+
+test("SDK status-zero rejection while consuming order rows retries the GET without exposing the cause", async () => {
+  for (const restored of [true, false]) {
+    let requests = 0;
+    const rows = [{ id: "own-order" }];
+    const client = createClient("https://offline.invalid", "offline-fixture-not-a-secret", {
+      db: { schema: "coinops" }, auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: async (_url, init) => {
+        assert.equal(init?.method, "GET");
+        assert.equal(init?.body, undefined);
+        if (++requests === 2 && restored) return Response.json(rows);
+        return new Response(new ReadableStream({
+          start(controller) { controller.error(new TypeError("terminated: PRIVATE_FIXTURE")); },
+        }), { headers: { "content-type": "application/json" } });
+      } },
+    });
+    const read = () => boundedLedgerRead((deadline, attempt) => observeLedgerRows("orders",
+      client.from("robot_v1_live_orders").select("id").abortSignal(deadline), deadline, attempt));
+    if (restored) assert.deepEqual(await read(), rows);
+    else await assert.rejects(read(), error => {
+      assert.ok(error instanceof readErrors.LiveReadUnavailable);
+      assert.deepEqual(readErrors.liveFailureEvidence(error, "RECONCILE_ORDERS", "LIVE_CRON"), {
+        source: "ENGINE", stage: "RECONCILE_ORDERS", root_code: "COINOPS_LIVE_LEDGER_READ_UNAVAILABLE",
+        read_path: "ledger/orders", read_attempts: 2, http_status: 0,
+      });
+      return true;
+    });
+    assert.equal(requests, 2);
+  }
+});
+
+test("status zero with an upstream code or an unrecognized envelope remains fail-closed", async () => {
+  const sdk = { success: false, data: null, count: null, status: 0, statusText: "" };
+  for (const result of [
+    { ...sdk, error: { code: "42501", message: "TypeError: fetch failed" } },
+    { ...sdk, success: undefined, error: { code: "", message: "TypeError: terminated" } },
+  ]) {
+    await assert.rejects(observeLedgerRows("orders", Promise.resolve(result),
+      AbortSignal.timeout(5_000), 1), readErrors.LiveLedgerReadFailed);
+  }
+});
+
+test("singleton GET passes SDK rejection evidence through and distinguishes a missing row", async () => {
+  const row = { id: "own-operator" };
+  let requests = 0;
+  const read = () => boundedLedgerRead((deadline, attempt) => observeLedgerRecord("operator",
+    Promise.resolve(++requests === 1
+      ? { success: false, data: null, count: null, status: 0, statusText: "",
+        error: { code: "", message: "TypeError: terminated" } }
+      : { data: row, error: null, status: 200 }),
+    deadline, attempt, "OPERATOR_MISSING"));
+  assert.deepEqual(await read(), row);
+  assert.equal(requests, 2);
+  await assert.rejects(observeLedgerRecord("operator",
+    Promise.resolve({ data: null, error: null, status: 200 }),
+    AbortSignal.timeout(5_000), 1, "OPERATOR_MISSING"), /OPERATOR_MISSING/);
 });
 
 test("own expired read deadline retries; permission/schema errors never inherit timeout treatment", async () => {

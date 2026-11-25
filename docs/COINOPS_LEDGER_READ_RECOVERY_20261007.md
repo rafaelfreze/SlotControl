@@ -80,3 +80,21 @@ Somente web/control plane; não modifica grafo/runtime de executor, não exige
 restart VPS nem mudança de secrets/credenciais/migration. Após Git/main e READY,
 aguardar cron normal e comprovar engine/ledger/Binance + Watchdog. Nunca provocar
 trade LIVE como teste. Rollback via versão web anterior; preservar histórico.
+
+## Leitura de ordens sem status HTTP em 25/11/2026
+
+Caixeta BTC/BRL, Executor 01. Em 05h58min09s UTC, o ledger registrou
+`COINOPS_LIVE_LEDGER_READ_FAILED` em `RECONCILE_ORDERS` / `ledger/orders`,
+tentativa 1, status interno 0 e sem código do provedor. O SDK usa status 0
+quando a requisição ou o consumo da resposta rejeita antes de entregar um
+resultado HTTP ao consumidor. O diagnóstico persistido não distingue a
+origem dessa rejeição. O classificador anterior dependia do texto de um tipo
+de erro e interrompeu o fluxo protegido sem a segunda leitura.
+
+Reconhecer o envelope exato do SDK no caminho de observação GET permite a
+segunda leitura limitada do snapshot. Após exaustão, usar o checkpoint
+existente de observação, com bloqueio local apenas se a indisponibilidade
+persistir. A retomada automática do bloqueio por atraso exige nova
+reconciliação íntegra e os guardas existentes. Resposta HTTP de permissão,
+schema, conjunto incompleto e ordens ambíguas conservam o fail-closed.
+Nenhuma mutação recebe retry por essa mudança.
