@@ -26,7 +26,11 @@ export const publicHomeStructuredData = {
     { "@type": "WebSite", "@id": `${PUBLIC_SITE_ORIGIN}/#website`, url: `${PUBLIC_SITE_ORIGIN}/`, name: PUBLIC_SITE_NAME,
       description: PUBLIC_SITE_DESCRIPTION, inLanguage: "pt-BR", image: PUBLIC_SHARE_IMAGE },
     { "@type": "WebPage", "@id": `${PUBLIC_SITE_ORIGIN}/#webpage`, url: `${PUBLIC_SITE_ORIGIN}/`, name: PUBLIC_SITE_TITLE,
-      description: PUBLIC_SITE_DESCRIPTION, inLanguage: "pt-BR", isPartOf: { "@id": `${PUBLIC_SITE_ORIGIN}/#website` } },
+      description: PUBLIC_SITE_DESCRIPTION, inLanguage: "pt-BR", isPartOf: { "@id": `${PUBLIC_SITE_ORIGIN}/#website` }, mainEntity: { "@id": `${PUBLIC_SITE_ORIGIN}/#software` } },
+    { "@type": "SoftwareApplication", "@id": `${PUBLIC_SITE_ORIGIN}/#software`, url: `${PUBLIC_SITE_ORIGIN}/`, name: PUBLIC_SITE_NAME,
+      description: PUBLIC_SITE_DESCRIPTION, applicationCategory: "FinanceApplication", operatingSystem: "Web",
+      featureList: ["Painel protegido", "Acompanhamento de operações em criptomoedas", "Dados separados por conta"],
+      mainEntityOfPage: { "@id": `${PUBLIC_SITE_ORIGIN}/#webpage` } },
   ],
 } as const;
 export const publicHomeJsonLd = JSON.stringify(publicHomeStructuredData).replaceAll("<", "\\u003c");

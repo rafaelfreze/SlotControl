@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PUBLIC_SHARE_IMAGE, PUBLIC_SITE_DESCRIPTION, PUBLIC_SITE_NAME, PUBLIC_SITE_ORIGIN, PUBLIC_SITE_TITLE, publicHomeJsonLd, publicHomeMetadata, publicHomeStructuredData, publicRobots, publicSitemap } from "./public-site-seo.ts";
 
+test("software identity describes the existing public dashboard without return or investment claims", () => {
+  const schema = JSON.parse(publicHomeJsonLd);
+  const software = schema['@graph'].find((item: Record<string, unknown>) => item['@type'] === 'SoftwareApplication');
+  assert.equal(software.name, PUBLIC_SITE_NAME);
+  assert.equal(software.url, `${PUBLIC_SITE_ORIGIN}/`);
+  assert.deepEqual(software.featureList, ['Painel protegido', 'Acompanhamento de operações em criptomoedas', 'Dados separados por conta']);
+  assert.doesNotMatch(JSON.stringify(software), /"(?:offers|price|rating|aggregateRating|account_id)":|lucro|rendimento garantido|LocalBusiness/);
+});
+
 test("only the official anonymous homepage is canonical and listed in the sitemap", () => {
   assert.equal(publicHomeMetadata.alternates?.canonical, `${PUBLIC_SITE_ORIGIN}/`);
   const sitemap = publicSitemap();
@@ -22,11 +31,11 @@ test("sharing uses the already published CoinOps icon with absolute canonical or
 test("structured data describes only the public homepage and preserves its actual site identity", () => {
   const graph = publicHomeStructuredData["@graph"];
   assert.equal(publicHomeStructuredData["@context"], "https://schema.org");
-  assert.deepEqual(graph.map(node=>node["@type"]),["WebSite","WebPage"]);
+  assert.deepEqual(graph.map(node=>node["@type"]),["WebSite","WebPage","SoftwareApplication"]);
   assert.ok(graph.every(node=>node.url===`${PUBLIC_SITE_ORIGIN}/`&&node.description===PUBLIC_SITE_DESCRIPTION&&node["@id"].startsWith(`${PUBLIC_SITE_ORIGIN}/#`)));
   assert.equal(graph.find(node=>node["@type"]==="WebSite")?.name,PUBLIC_SITE_NAME);
   assert.equal(graph.find(node=>node["@type"]==="WebPage")?.name,PUBLIC_SITE_TITLE);
-  assert.equal(new Set(graph.map(node=>node["@id"])).size,2);
+  assert.equal(new Set(graph.map(node=>node["@id"])).size,3);
   assert.deepEqual(JSON.parse(publicHomeJsonLd),publicHomeStructuredData);
   assert.doesNotMatch(publicHomeJsonLd,/tenant|account|token|gain|profit|offers|aggregateRating|price|balance|datePublished|dateModified|<\/script/);
 });
