@@ -5,6 +5,9 @@ import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { CoinOpsBrand } from "@/components/app/coinops-brand";
 import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
+import { publicHomeMetadata } from "@/lib/public-site-seo";
+
+export const metadata = publicHomeMetadata;
 
 async function getSessionEmail() {
   if (!isSupabaseConfigured()) {
