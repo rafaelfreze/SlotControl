@@ -9,3 +9,7 @@ O inventário da Central reutiliza `POST /api/marketing/platform-source` com `op
 Nenhum caminho financeiro, worker, cron, ordem, ledger, tenant ou fingerprint operacional foi alterado.
 
 A mesma configuração pública fornece imagem Open Graph/Twitter absoluta com o ícone CoinOps nativo de512px, sem criar outro asset ou promessa comercial. Um único JSON-LD `WebSite`/`WebPage` é emitido somente pela homepage anônima, depois do guard de sessão existente; contém apenas marca, descrição pública e canônica oficiais. Não infere entidade jurídica, rentabilidade, saldo, preço ou dados individuais. Metadados e schema compartilham as constantes públicas, evitando configuração manual divergente. Testes semânticos preservam as rotas privadas fora do sitemap e não autorizam indexação dessas rotas nem execução financeira. Schema presente não comprova indexação ou rich results.
+
+## SEO comercial v2
+
+Título e descrição da homepage explicam a oferta já publicada: acompanhamento de operações em criptomoedas, painel protegido e dados separados por conta, condicionado à configuração e autorização operacionais. `WebSite` conserva a marca CoinOps; `WebPage`, Open Graph e Twitter usam o título descritivo da página. Não há preço, previsão de ganho ou promessa de resultado. Conteúdo visual, login, rotas privadas, analytics e automação financeira permanecem intactos.
