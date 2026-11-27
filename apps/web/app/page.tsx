@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { CoinOpsBrand } from "@/components/app/coinops-brand";
 import { AUTHENTICATED_HOME } from "@/lib/auth/navigation";
-import { publicHomeMetadata } from "@/lib/public-site-seo";
+import { publicHomeJsonLd, publicHomeMetadata } from "@/lib/public-site-seo";
 
 export const metadata = publicHomeMetadata;
 
@@ -86,6 +86,7 @@ export default async function HomePage() {
           <p>Acesse pelo navegador e use os recursos disponíveis no seu dispositivo.</p>
         </article>
       </section>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: publicHomeJsonLd }}/>
     </main>
   );
 }
